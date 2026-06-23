@@ -1,0 +1,16 @@
+{
+  "name": "dexnest",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DexNest offline-first desktop workspace.",
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "dev": "corepack pnpm --filter @dexnest/desktop dev",
+    "build": "corepack pnpm -r build",
+    "rebuild:native": "corepack pnpm --filter @dexnest/desktop rebuild:native",
+    "typecheck": "corepack pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}

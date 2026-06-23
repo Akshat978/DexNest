@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "allowArbitraryExtensions": true,
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "paths": {
+      "@dexnest/action-registry": ["packages/action-registry/src/index.ts"],
+      "@dexnest/local-db": ["packages/local-db/src/index.ts"],
+      "@dexnest/shared-types": ["packages/shared-types/src/index.ts"],
+      "@dexnest/shared-ui/tokens.css": ["packages/shared-ui/src/tokens.css"],
+      "@dexnest/module-command": ["modules/command/src/index.tsx"],
+      "@dexnest/module-dev": ["modules/dev/src/index.tsx"],
+      "@dexnest/module-deck": ["modules/deck/src/index.ts"],
+      "@dexnest/module-clipboard": ["modules/clipboard/src/index.ts"],
+      "@dexnest/module-drop": ["modules/drop/src/index.ts"]
+    }
+  }
+}

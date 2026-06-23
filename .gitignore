@@ -1,0 +1,13 @@
+node_modules/
+dist/
+out/
+build/
+.vite/
+*.log
+.env
+.env.*
+local-data/
+*.db
+*.sqlite
+*.db-wal
+*.db-shm

@@ -1,0 +1,13 @@
+{
+  "name": "@dexnest/shared-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./tokens.css": "./src/tokens.css"
+  },
+  "scripts": {
+    "build": "echo shared-ui has no build step",
+    "typecheck": "echo shared-ui has no typecheck step"
+  }
+}

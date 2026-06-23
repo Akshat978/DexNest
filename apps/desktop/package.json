@@ -1,0 +1,35 @@
+{
+  "name": "@dexnest/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"vite build --config vite.main.config.ts --watch\" \"wait-on http://127.0.0.1:5173 dist/main/main.js dist/main/preload.js && electron .\"",
+    "build": "vite build --config vite.main.config.ts && vite build",
+    "rebuild:native": "electron-rebuild -f -w better-sqlite3",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit"
+  },
+  "dependencies": {
+    "@dexnest/action-registry": "workspace:*",
+    "@dexnest/local-db": "workspace:*",
+    "@dexnest/module-command": "workspace:*",
+    "@dexnest/module-deck": "workspace:*",
+    "@dexnest/module-dev": "workspace:*",
+    "@dexnest/shared-types": "workspace:*",
+    "better-sqlite3": "^11.9.1",
+    "electron": "^35.1.4",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.0.4",
+    "@types/node": "^22.13.14",
+    "@types/react": "^19.0.12",
+    "@types/react-dom": "^19.0.4",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "vite": "^6.2.3",
+    "wait-on": "^8.0.3"
+  }
+}

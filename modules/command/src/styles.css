@@ -1,0 +1,65 @@
+.command-home {
+  display: grid;
+  gap: var(--space-5);
+}
+
+.command-home__header {
+  display: grid;
+  gap: var(--space-2);
+  max-width: 760px;
+}
+
+.command-home__eyebrow,
+.command-home__header p,
+.command-card p {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.command-home__eyebrow {
+  color: var(--accent-command);
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.command-home h1,
+.command-card h2 {
+  margin: 0;
+  color: var(--text);
+}
+
+.command-home h1 {
+  font-size: 2.5rem;
+  line-height: 1.1;
+}
+
+.command-home__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: var(--space-4);
+}
+
+.command-card {
+  display: grid;
+  gap: var(--space-4);
+  align-content: space-between;
+  min-height: 170px;
+  padding: var(--space-5);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-panel);
+}
+
+.command-card__status {
+  width: fit-content;
+  padding: var(--space-1) var(--space-2);
+  color: var(--accent-command);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
