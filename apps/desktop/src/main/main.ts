@@ -1,6 +1,6 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell } from "electron";
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, shell, Tray } from "electron";
 import { exec, execFile, execFileSync } from "node:child_process";
-import { copyFileSync, cpSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, extname, join, resolve } from "node:path";
@@ -9,11 +9,12 @@ import { networkInterfaces } from "node:os";
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import AdmZip from "adm-zip";
 import { PDFDocument } from "pdf-lib";
+import { Jimp } from "jimp";
 import { createActionRegistry, seededActions } from "@dexnest/action-registry";
 import { createLocalDb } from "@dexnest/local-db";
 import type { MessageBoxOptions, MessageBoxSyncOptions, OpenDialogOptions, OpenDialogSyncOptions } from "electron";
 import type { DexNestActionDefinition, DexNestActionTrigger, DexNestEventStatus } from "@dexnest/shared-types";
-import { formatLocalDateTime, getLocalTodayDateString, parseLocalDateInput, resolveRelativeLocalDate } from "@dexnest/shared-types";
+import { formatLocalDateTime, getLocalTodayDateString, parseLocalDateInput, resolveRelativeLocalDate, toLocalDateInputValue } from "@dexnest/shared-types";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(currentDir, "../../../..");
@@ -33,25 +34,35 @@ const vaultImportsRoot = join(vaultFilesRoot, "imports");
 const vaultVersionsRoot = join(vaultFilesRoot, "versions");
 const vaultTempRoot = join(vaultFilesRoot, "temp");
 const vaultSecureRoot = join(vaultFilesRoot, "secure");
+const vaultOcrRoot = join(vaultFilesRoot, "ocr");
 const receiptsRoot = join(localDataRoot, "files", "receipts");
 const capturesRoot = join(localDataRoot, "files", "captures");
 const projectsConfigPath = join(settingsRoot, "projects.json");
+const commandSettingsPath = join(settingsRoot, "command-settings.json");
 const commandResultsPath = join(settingsRoot, "project-command-results.json");
 const pinnedActionsPath = join(settingsRoot, "pinned-actions.json");
 const clipboardHistoryPath = join(settingsRoot, "clipboard-history.json");
 const clipboardSnippetsPath = join(settingsRoot, "clipboard-snippets.json");
+const clipboardSettingsPath = join(settingsRoot, "clipboard-settings.json");
+const clipboardMultiGroupsPath = join(settingsRoot, "clipboard-multi-groups.json");
+const clipboardActiveMultiCopyPath = join(settingsRoot, "clipboard-active-multicopy.json");
+const clipboardSlotsPath = join(settingsRoot, "clipboard-slots.json");
 const dropShelfPath = join(settingsRoot, "drop-shelf.json");
 const dropIncomingPath = join(settingsRoot, "drop-incoming.json");
 const dropSettingsPath = join(settingsRoot, "drop-settings.json");
 const toolsOutputsPath = join(settingsRoot, "tools-outputs.json");
 const toolsSettingsPath = join(settingsRoot, "tools-settings.json");
 const vaultDocumentsPath = join(settingsRoot, "vault-documents.json");
+const vaultOcrJobsPath = join(settingsRoot, "vault-ocr-jobs.json");
+const vaultOcrSettingsPath = join(settingsRoot, "vault-ocr-settings.json");
 const secureVaultPath = join(vaultSecureRoot, "secure-vault.json");
 const searchIndexRoot = join(localDataRoot, "index");
 const searchIndexPath = join(searchIndexRoot, "search-index.json");
 const savedSearchesPath = join(settingsRoot, "saved-searches.json");
 const journalEntriesPath = join(settingsRoot, "journal-entries.json");
 const calendarEventsPath = join(settingsRoot, "calendar-events.json");
+const nudgesPath = join(settingsRoot, "nudges.json");
+const nudgeSettingsPath = join(settingsRoot, "nudge-settings.json");
 const finderItemsPath = join(settingsRoot, "finder-items.json");
 const financeTransactionsPath = join(settingsRoot, "finance-transactions.json");
 const financeRecurringPath = join(settingsRoot, "finance-recurring.json");
@@ -83,11 +94,26 @@ for (const action of seededActions) {
 }
 
 let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
 let actionServer: ReturnType<typeof createServer> | null = null;
 let secureVaultKey: Buffer | null = null;
 let secureVaultAutoLockTimer: NodeJS.Timeout | null = null;
 let secureVaultClipboardTimer: NodeJS.Timeout | null = null;
 let secureVaultProtectedClipboardValue: string | null = null;
+let clipboardListenerTimer: ReturnType<typeof setInterval> | null = null;
+let clipboardMultiCopyTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
+let clipboardPasteFallbackTimer: ReturnType<typeof setInterval> | null = null;
+let lastClipboardListenerText = "";
+let clipboardHotkeyRegistered = false;
+let registeredClipboardHotkey = "";
+let clipboardHotkeyBusy = false;
+let clipboardPasteHotkeyRegistered = false;
+let clipboardPasteReplayBusy = false;
+let clipboardArmedPasteText = "";
+let commandShortcutRegistered = false;
+let registeredCommandShortcut = "";
+let vaultOcrQueueRunning = false;
+let vaultOcrQueuePaused = false;
 
 interface DexNestProject {
   id: string;
@@ -128,6 +154,16 @@ interface RunActionInput {
   };
 }
 
+interface CommandSettings {
+  globalShortcutEnabled: boolean;
+  globalShortcut: string;
+  globalShortcutStatus: "active" | "disabled" | "failed";
+  globalShortcutLastError: string | null;
+  trayEnabled: boolean;
+  trayStatus: "active" | "failed";
+  performanceModePlaceholder: boolean;
+}
+
 interface ProjectCommandResult {
   actionId: string;
   projectId: string;
@@ -149,6 +185,7 @@ interface ClipboardHistoryItem {
   preview: string;
   byteLength: number;
   createdAt: string;
+  source?: "manual" | "listener" | "multi_copy" | "slot" | "snippet";
 }
 
 interface ClipboardSnippet {
@@ -156,6 +193,59 @@ interface ClipboardSnippet {
   title: string;
   text: string;
   createdAt: string;
+  updatedAt: string;
+}
+
+interface ClipboardSettings {
+  listenerEnabled: boolean;
+  listenerIntervalMs: number;
+  historyRetentionDays: 1 | 3 | 7 | 30 | "never";
+  lastHistoryCleanupAt: string | null;
+  multiCopyHotkeyEnabled: boolean;
+  multiCopyHotkey: string;
+  multiCopyHotkeyStatus: "active" | "disabled" | "failed";
+  multiCopyHotkeyLastError: string | null;
+  multiCopyAutoClearMinutes: number;
+  multiCopyLastHotkeyAt: string | null;
+  multiCopyLastHotkeyStatus: "idle" | "success" | "failed" | "skipped";
+  multiCopyLastHotkeyMessage: string;
+  lastCaptureAt: string | null;
+  lastCapturedPreview: string;
+  lastReadAt: string | null;
+  lastReadPreview: string;
+  lastReadError: string | null;
+  combinedSeparator: string;
+  activeMultiCopySession: {
+    id: string;
+    startedAt: string;
+    items: ClipboardHistoryItem[];
+  } | null;
+  appExclusionRules: string[];
+  secretProtectionEnabled: boolean;
+}
+
+interface ClipboardActiveMultiCopySession {
+  id: string;
+  startedAt: string;
+  updatedAt: string;
+  armedForPasteAt?: string | null;
+  completedAt?: string | null;
+  items: ClipboardHistoryItem[];
+}
+
+interface ClipboardMultiGroup {
+  id: string;
+  name: string;
+  items: ClipboardHistoryItem[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface ClipboardSlot {
+  slot: number;
+  text: string;
+  preview: string;
+  byteLength: number;
   updatedAt: string;
 }
 
@@ -205,6 +295,11 @@ interface ToolsSettings {
   outputFolderPath: string | null;
   ffmpegPath?: string | null;
   libreOfficePath?: string | null;
+  tesseractPath?: string | null;
+  pythonPath?: string | null;
+  ocrEngine?: "tesseract" | "paddleocr" | "easyocr_placeholder";
+  ocrDevice?: "gpu" | "cpu";
+  ocrLanguage?: string;
 }
 
 interface ToolsSelectedFile {
@@ -220,6 +315,8 @@ interface ToolsRunResult {
   outputs?: ToolsOutputItem[];
   output?: ToolsOutputItem;
   info?: Array<{ fileName: string; byteLength: number; pageCount: number | null }>;
+  ocrPreview?: string;
+  ocrMetadata?: { engine: string; averageConfidence: number | null };
   error?: string;
 }
 
@@ -240,6 +337,34 @@ interface VaultDocumentRecord {
   updatedAt: string;
   versionGroupId?: string | null;
   versionNumber?: number | null;
+  ocrStatus?: "not_ocred" | "queued" | "running" | "completed" | "failed" | "skipped" | "unsupported";
+  ocrTextPath?: string | null;
+  ocrMetadataPath?: string | null;
+  ocrError?: string | null;
+  ocrUpdatedAt?: string | null;
+}
+
+interface VaultOcrJob {
+  id: string;
+  documentId: string;
+  filePath: string;
+  fileType: string;
+  status: "queued" | "running" | "completed" | "failed" | "skipped";
+  engine: "paddleocr";
+  device: "gpu";
+  createdAt: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  error?: string | null;
+  outputTextPath?: string | null;
+  outputMetadataPath?: string | null;
+}
+
+interface VaultOcrSettings {
+  autoOcrOnImport: boolean;
+  engine: "paddleocr";
+  device: "gpu";
+  pythonPath?: string | null;
 }
 
 interface VaultImportInput {
@@ -263,6 +388,19 @@ interface VaultState {
   metadataPath: string;
   documentCount: number;
   totalSizeBytes: number;
+  ocrJobs: VaultOcrJob[];
+  ocrSettings: VaultOcrSettings;
+  ocrOutputPath: string;
+  ocrJobsPath: string;
+  ocrQueueRunning: boolean;
+  ocrQueuePaused: boolean;
+  paddleGpuStatus: {
+    ok: boolean;
+    message: string;
+    pythonPath: string | null;
+    paddleVersion?: string | null;
+    deviceCount?: number;
+  };
   secure: SecureVaultState;
 }
 
@@ -340,6 +478,7 @@ interface SearchIndexRecord {
   fileType?: string | null;
   sizeBytes?: number | null;
   textPreview?: string;
+  searchableText?: string;
   tags?: string[];
   category?: string | null;
   createdAt: string;
@@ -349,6 +488,7 @@ interface SearchIndexRecord {
 
 interface SearchQueryInput {
   query?: string;
+  question?: string;
   sourceModule?: string;
   fileType?: string;
   dateFrom?: string;
@@ -357,11 +497,45 @@ interface SearchQueryInput {
   savedSearchId?: string;
   resultId?: string;
   indexFolder?: boolean;
+  masterPassword?: string;
+  includeSecretValues?: boolean;
+  answerValue?: string;
+  fieldType?: string;
+  sourceId?: string;
+  confirmedDangerous?: boolean;
 }
 
 interface SearchResult extends SearchIndexRecord {
   score: number;
   matchReason: string;
+}
+
+interface SecureSearchResult {
+  id: string;
+  itemId: string;
+  title: string;
+  type: SecureVaultItemType;
+  username?: string;
+  url?: string;
+  matchedFields: string[];
+  masked: true;
+  score: number;
+}
+
+interface SmartLookupResult {
+  id: string;
+  fieldType: string;
+  answer: string;
+  maskedAnswer: string;
+  sensitive: boolean;
+  confidence: "high" | "medium" | "low";
+  sourceRecordId: string;
+  sourceModule: string;
+  sourceDocumentTitle: string;
+  sourceFilePath?: string | null;
+  ocrTextPath?: string | null;
+  preview: string;
+  score: number;
 }
 
 interface SavedSearch {
@@ -440,6 +614,32 @@ interface CalendarEventInput {
   recurrence?: string | null;
   reminderLevel?: "soft" | "normal" | "urgent";
   notes?: string | null;
+}
+
+type NudgePriority = "soft" | "normal" | "urgent";
+type NudgeStatus = "active" | "dismissed" | "snoozed" | "completed";
+
+interface Nudge {
+  id: string;
+  title: string;
+  message: string;
+  sourceModule: string;
+  sourceId?: string | null;
+  date: string;
+  time?: string | null;
+  priority: NudgePriority;
+  status: NudgeStatus;
+  snoozeUntil?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface NudgeSettings {
+  enabled: boolean;
+  vaultExpiryReminderDays: number[];
+  returnReminderDays: number[];
+  dailyJournalReminderEnabled: boolean;
+  backupReminderAfterDays: number;
 }
 
 type FinderItemStatus = "at_home" | "lent_out" | "missing" | "archived";
@@ -743,6 +943,7 @@ function ensureVaultRoot(): void {
   mkdirSync(vaultVersionsRoot, { recursive: true });
   mkdirSync(vaultTempRoot, { recursive: true });
   mkdirSync(vaultSecureRoot, { recursive: true });
+  mkdirSync(vaultOcrRoot, { recursive: true });
 }
 
 function ensureFinanceRoot(): void {
@@ -772,6 +973,10 @@ function byteLength(value: string): number {
 
 function previewText(value: string): string {
   return value.replace(/\s+/g, " ").trim().slice(0, 120);
+}
+
+function normalizeSearchText(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
 function sanitizeFileName(value: string): string {
@@ -843,7 +1048,21 @@ function readJsonFile<T>(path: string, fallback: T): T {
     return fallback;
   }
 
-  return JSON.parse(readFileSync(path, "utf8")) as T;
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as T;
+  } catch (error) {
+    // A truncated/corrupt file (e.g. power loss during a non-atomic write) must not
+    // crash the app forever. Preserve the bad file for recovery and fall back to defaults.
+    try {
+      const backupPath = `${path}.corrupt-${Date.now()}`;
+      renameSync(path, backupPath);
+      console.error(`DexNest: could not parse ${path}; backed up to ${backupPath} and reset to defaults.`, error);
+    } catch (backupError) {
+      console.error(`DexNest: could not parse or back up ${path}; resetting to defaults.`, backupError);
+    }
+    writeFileSync(path, `${JSON.stringify(fallback, null, 2)}\n`, "utf8");
+    return fallback;
+  }
 }
 
 function writeJsonFile<T>(path: string, value: T): T {
@@ -958,6 +1177,8 @@ function appHealthState(source: DexNestActionTrigger = "module_ui", writeAudit =
   const tools = toolsState();
   const search = searchState();
   const heatmap = heatmapState();
+  const clipboardSettings = loadClipboardSettings();
+  const commandSettings = loadCommandSettings();
   const latestBackup = listBackups()[0] ?? null;
   const localDataExists = existsSync(localDataRoot);
   const sqliteUnderLocalData = isPathInside(localDataRoot, localDb.dbPath);
@@ -1016,6 +1237,7 @@ function appHealthState(source: DexNestActionTrigger = "module_ui", writeAudit =
         check("secure-vault-lock", "Secure Vault lock state", secureState.isSetup && !secureState.isUnlocked ? "pass" : secureState.isSetup ? "warn" : "warn", secureState.isSetup ? (secureState.isUnlocked ? "Secure Vault is currently unlocked." : "Secure Vault is locked.") : "Not configured.", secureState.isUnlocked ? "Lock Secure Vault when not actively using secrets." : undefined),
         check("secure-vault-file", "Secure Vault encrypted file", !secureState.isSetup || existsSync(secureVaultPath) ? "pass" : "fail", secureVaultPath, "Secure Vault setup should create this encrypted file."),
         check("clipboard-secret-protection", "Clipboard secret protection", "warn", "Secret exclusion from Clipboard history is currently policy/placeholder based.", "Do not save secrets into normal Clipboard history."),
+        check("clipboard-multicopy-hotkey", "Clipboard multi-copy hotkey", !clipboardSettings.multiCopyHotkeyEnabled ? "warn" : clipboardSettings.multiCopyHotkeyStatus === "active" ? "pass" : "warn", `${clipboardSettings.multiCopyHotkey} / ${clipboardSettings.multiCopyHotkeyStatus}${clipboardSettings.multiCopyHotkeyLastError ? ` / ${clipboardSettings.multiCopyHotkeyLastError}` : ""}`, clipboardSettings.multiCopyHotkeyStatus === "failed" ? "Switch Clipboard fallback hotkey to Ctrl+Alt+C or Ctrl+Shift+X." : undefined),
         check("drop-pin-placeholder", "Drop PIN", "warn", "Drop PIN is a placeholder and is not enforced yet.", "Use Drop only on trusted local Wi-Fi.")
       ]
     },
@@ -1024,6 +1246,8 @@ function appHealthState(source: DexNestActionTrigger = "module_ui", writeAudit =
       title: "Performance",
       checks: [
         check("performance-mode", "Performance mode", "warn", "Performance mode is a placeholder."),
+        check("command-shortcut", "Command global shortcut", !commandSettings.globalShortcutEnabled ? "warn" : commandSettings.globalShortcutStatus === "active" ? "pass" : "warn", `${commandSettings.globalShortcut} / ${commandSettings.globalShortcutStatus}${commandSettings.globalShortcutLastError ? ` / ${commandSettings.globalShortcutLastError}` : ""}`, commandSettings.globalShortcutStatus === "failed" ? "Switch DexNest Command shortcut to Ctrl+Alt+Space or Ctrl+Shift+Space." : undefined),
+        check("tray-status", "Tray status", tray && commandSettings.trayStatus === "active" ? "pass" : "warn", tray && commandSettings.trayStatus === "active" ? "DexNest tray is active." : "DexNest tray is not active.", "Restart DexNest if the tray icon is missing."),
         check("heatmap-state", "Heatmap status", heatmap.settings.enabled && !heatmap.settings.paused ? "warn" : "pass", heatmap.trackingStatus, heatmap.settings.enabled && !heatmap.settings.paused ? "Heatmap samples only at configured interval." : undefined),
         check("polling-sources", "Active polling sources", "pass", "No global polling. Drop auto-refresh runs only while Drop page is open."),
         check("heavy-workers", "No OCR/Search/AI workers", "pass", "No background OCR, Search indexing, AI, embeddings, or local LLM workers are running.")
@@ -1037,6 +1261,8 @@ function appHealthState(source: DexNestActionTrigger = "module_ui", writeAudit =
         check("drop-lan-url", "Drop LAN URL", getLanIp() ? "pass" : "warn", dropPhoneUrl(), "LAN IP may be unavailable when offline or blocked by adapter settings."),
         check("ffmpeg", "ffmpeg", tools.detectedFfmpegPath || tools.ffmpegPath ? "pass" : "warn", tools.ffmpegPath || tools.detectedFfmpegPath || "Missing.", "Install ffmpeg or set the path in Tools settings for media conversions."),
         check("libreoffice", "LibreOffice", tools.detectedLibreOfficePath || tools.libreOfficePath ? "pass" : "warn", tools.libreOfficePath || tools.detectedLibreOfficePath || "Missing.", "Install LibreOffice or set soffice.exe path for Office conversions."),
+        check("tesseract", "Tesseract OCR", tools.detectedTesseractPath || tools.tesseractPath ? "pass" : "warn", tools.tesseractPath || tools.detectedTesseractPath || "Missing.", "Install Tesseract OCR or set tesseract.exe path in Tools settings for OCR."),
+        check("python-paddleocr", "Python/PaddleOCR", tools.detectedPythonPath || tools.pythonPath ? "pass" : "warn", tools.pythonPath || tools.detectedPythonPath || "Python missing.", "Use Python 3.12 for PaddleOCR, then run: py -3.12 -m pip install paddleocr paddlepaddle, or switch OCR engine to Tesseract."),
         check("search-index", "Search index", search.index.length > 0 ? "pass" : "warn", `${search.index.length} indexed record(s).`, "Run Search rebuild when you want local metadata search."),
         check("latest-backup", "Latest backup", latestBackup ? "pass" : "warn", latestBackup ? `${latestBackup.fileName} / ${formatLocalDateTime(latestBackup.createdAt)}` : "No backup found.", "Create a local backup from Settings.")
       ]
@@ -1441,6 +1667,113 @@ function saveVaultDocuments(documents: VaultDocumentRecord[]): VaultDocumentReco
   return writeJsonFile(vaultDocumentsPath, documents);
 }
 
+function defaultVaultOcrSettings(): VaultOcrSettings {
+  return {
+    autoOcrOnImport: true,
+    engine: "paddleocr",
+    device: "gpu",
+    pythonPath: null
+  };
+}
+
+function loadVaultOcrSettings(): VaultOcrSettings {
+  return { ...defaultVaultOcrSettings(), ...readJsonFile<Partial<VaultOcrSettings>>(vaultOcrSettingsPath, {}) };
+}
+
+function saveVaultOcrSettings(settings: Partial<VaultOcrSettings>): VaultOcrSettings {
+  const next: VaultOcrSettings = {
+    ...loadVaultOcrSettings(),
+    ...settings,
+    engine: "paddleocr",
+    device: "gpu"
+  };
+  return writeJsonFile(vaultOcrSettingsPath, next);
+}
+
+function loadVaultOcrJobs(): VaultOcrJob[] {
+  ensureVaultRoot();
+  return readJsonFile<VaultOcrJob[]>(vaultOcrJobsPath, []);
+}
+
+function saveVaultOcrJobs(jobs: VaultOcrJob[]): VaultOcrJob[] {
+  ensureVaultRoot();
+  return writeJsonFile(vaultOcrJobsPath, jobs);
+}
+
+function isVaultOcrSupported(fileType: string): boolean {
+  return [".png", ".jpg", ".jpeg", ".webp", ".pdf"].includes(fileType.toLowerCase());
+}
+
+function updateVaultDocumentOcr(documentId: string, patch: Partial<VaultDocumentRecord>): void {
+  const documents = loadVaultDocuments();
+  saveVaultDocuments(documents.map((document) => (
+    document.id === documentId ? { ...document, ...patch, updatedAt: new Date().toISOString() } : document
+  )));
+}
+
+function queueVaultOcrJob(document: VaultDocumentRecord, force = false): VaultOcrJob | null {
+  if (!isVaultOcrSupported(document.fileType)) {
+    updateVaultDocumentOcr(document.id, { ocrStatus: "unsupported", ocrError: "Unsupported OCR file type.", ocrUpdatedAt: new Date().toISOString() });
+    return null;
+  }
+
+  const jobs = loadVaultOcrJobs();
+  const existing = jobs.find((job) => job.documentId === document.id && ["queued", "running"].includes(job.status));
+  if (existing && !force) {
+    return existing;
+  }
+
+  const now = new Date().toISOString();
+  const job: VaultOcrJob = {
+    id: createId("vault-ocr-job"),
+    documentId: document.id,
+    filePath: document.filePath,
+    fileType: document.fileType,
+    status: "queued",
+    engine: "paddleocr",
+    device: "gpu",
+    createdAt: now,
+    startedAt: null,
+    completedAt: null,
+    error: null,
+    outputTextPath: null,
+    outputMetadataPath: null
+  };
+  saveVaultOcrJobs([job, ...jobs]);
+  updateVaultDocumentOcr(document.id, { ocrStatus: "queued", ocrError: null, ocrUpdatedAt: now });
+  localDb.appendActionEvent({
+    module: "DexNest Vault",
+    actionId: "vault.ocr.queue_document",
+    eventType: "vault_ocr_queued",
+    status: "success",
+    source: "system",
+    summary: "Queued Vault document for GPU OCR.",
+    metadataJson: { documentId: document.id, fileType: document.fileType, engine: "paddleocr", device: "gpu" }
+  });
+  return job;
+}
+
+function saveVaultOcrOutput(document: VaultDocumentRecord, text: string, metadata: Record<string, unknown>): { textPath: string; metadataPath: string } {
+  ensureVaultRoot();
+  const baseName = sanitizeFileName(`${document.id}-${basename(document.storedFileName, extname(document.storedFileName))}`);
+  const textPath = safeOutputPath(vaultOcrRoot, uniqueFileName(vaultOcrRoot, `${baseName}-paddleocr-gpu.txt`));
+  const metadataPath = safeOutputPath(vaultOcrRoot, uniqueFileName(vaultOcrRoot, `${baseName}-paddleocr-gpu-metadata.json`));
+  writeFileSync(textPath, text, "utf8");
+  writeFileSync(metadataPath, JSON.stringify(metadata, null, 2), "utf8");
+  return { textPath, metadataPath };
+}
+
+function setVaultOcrJob(jobId: string, patch: Partial<VaultOcrJob>): VaultOcrJob | null {
+  const jobs = loadVaultOcrJobs();
+  const existing = jobs.find((job) => job.id === jobId);
+  if (!existing) {
+    return null;
+  }
+  const updated: VaultOcrJob = { ...existing, ...patch };
+  saveVaultOcrJobs(jobs.map((job) => job.id === jobId ? updated : job));
+  return updated;
+}
+
 function defaultSecureVaultFile(masterPassword: string, autoLockMinutes = secureVaultDefaultAutoLockMinutes): SecureVaultFile {
   const salt = randomBytes(16);
   const kdf: SecureVaultFile["kdf"] = {
@@ -1469,7 +1802,14 @@ function loadSecureVaultFile(): SecureVaultFile | null {
   if (!existsSync(secureVaultPath)) {
     return null;
   }
-  return JSON.parse(readFileSync(secureVaultPath, "utf8")) as SecureVaultFile;
+  try {
+    return JSON.parse(readFileSync(secureVaultPath, "utf8")) as SecureVaultFile;
+  } catch (error) {
+    // Never treat a corrupt vault as "not set up" — that would let a later save
+    // overwrite the user's encrypted data. Surface a clear, actionable error instead.
+    console.error("DexNest: secure vault file is corrupt.", error);
+    throw new Error(`DexNest Secure Vault file is corrupt and could not be read (${secureVaultPath}). Restore it from a backup before continuing.`);
+  }
 }
 
 function saveSecureVaultFile(file: SecureVaultFile): SecureVaultFile {
@@ -1607,6 +1947,9 @@ function verifiedVaultDocument(documentId: string): VaultDocumentRecord {
 
 function vaultState(): VaultState {
   const documents = loadVaultDocuments();
+  const settings = loadVaultOcrSettings();
+  const pythonPath = settings.pythonPath && existsSync(settings.pythonPath) ? settings.pythonPath : resolvePythonPath();
+  const runtime = pythonPath ? getPaddleRuntimeInfo(pythonPath) : null;
   return {
     documents,
     categories: vaultCategories,
@@ -1617,6 +1960,23 @@ function vaultState(): VaultState {
     metadataPath: vaultDocumentsPath,
     documentCount: documents.length,
     totalSizeBytes: documents.reduce((total, document) => total + document.sizeBytes, 0),
+    ocrJobs: loadVaultOcrJobs(),
+    ocrSettings: settings,
+    ocrOutputPath: vaultOcrRoot,
+    ocrJobsPath: vaultOcrJobsPath,
+    ocrQueueRunning: vaultOcrQueueRunning,
+    ocrQueuePaused: vaultOcrQueuePaused,
+    paddleGpuStatus: {
+      ok: Boolean(runtime?.ok && runtime.cudaCompiled && runtime.deviceCount > 0),
+      message: !pythonPath
+        ? "Python path not found."
+        : runtime?.ok && runtime.cudaCompiled && runtime.deviceCount > 0
+          ? `PaddleOCR GPU ready with ${runtime.deviceCount} GPU${runtime.deviceCount === 1 ? "" : "s"}.`
+          : runtime?.error ?? "PaddlePaddle GPU runtime is not available.",
+      pythonPath,
+      paddleVersion: runtime?.paddleVersion ?? null,
+      deviceCount: runtime?.deviceCount ?? 0
+    },
     secure: secureVaultState()
   };
 }
@@ -1647,6 +2007,38 @@ function saveCommandResult(result: ProjectCommandResult): void {
   const results = loadCommandResults();
   results[result.actionId] = result;
   writeJsonFile(commandResultsPath, results);
+}
+
+const allowedCommandShortcuts = new Set(["CommandOrControl+Space", "CommandOrControl+Alt+Space", "CommandOrControl+Shift+Space"]);
+
+function defaultCommandSettings(): CommandSettings {
+  return {
+    globalShortcutEnabled: true,
+    globalShortcut: "CommandOrControl+Space",
+    globalShortcutStatus: "disabled",
+    globalShortcutLastError: null,
+    trayEnabled: true,
+    trayStatus: "failed",
+    performanceModePlaceholder: false
+  };
+}
+
+function normalizeCommandShortcut(value: unknown): string {
+  const shortcut = typeof value === "string" ? value : "";
+  return allowedCommandShortcuts.has(shortcut) ? shortcut : "CommandOrControl+Space";
+}
+
+function loadCommandSettings(): CommandSettings {
+  const saved = readJsonFile<Partial<CommandSettings>>(commandSettingsPath, defaultCommandSettings());
+  return {
+    ...defaultCommandSettings(),
+    ...saved,
+    globalShortcut: normalizeCommandShortcut(saved.globalShortcut)
+  };
+}
+
+function saveCommandSettings(settings: CommandSettings): CommandSettings {
+  return writeJsonFile(commandSettingsPath, settings);
 }
 
 function loadPinnedActions(): string[] {
@@ -1688,6 +2080,874 @@ function loadClipboardSnippets(): ClipboardSnippet[] {
 
 function saveClipboardSnippets(items: ClipboardSnippet[]): ClipboardSnippet[] {
   return writeJsonFile(clipboardSnippetsPath, items);
+}
+
+function defaultClipboardSettings(): ClipboardSettings {
+  return {
+    listenerEnabled: false,
+    listenerIntervalMs: 2000,
+    historyRetentionDays: 1,
+    lastHistoryCleanupAt: null,
+    multiCopyHotkeyEnabled: true,
+    multiCopyHotkey: "CommandOrControl+Shift+C",
+    multiCopyHotkeyStatus: "disabled",
+    multiCopyHotkeyLastError: null,
+    multiCopyAutoClearMinutes: 15,
+    multiCopyLastHotkeyAt: null,
+    multiCopyLastHotkeyStatus: "idle",
+    multiCopyLastHotkeyMessage: "",
+    lastCaptureAt: null,
+    lastCapturedPreview: "",
+    lastReadAt: null,
+    lastReadPreview: "",
+    lastReadError: null,
+    combinedSeparator: "\n\n",
+    activeMultiCopySession: null,
+    appExclusionRules: [],
+    secretProtectionEnabled: true
+  };
+}
+
+function loadClipboardSettings(): ClipboardSettings {
+  return {
+    ...defaultClipboardSettings(),
+    ...readJsonFile<Partial<ClipboardSettings>>(clipboardSettingsPath, defaultClipboardSettings())
+  };
+}
+
+function saveClipboardSettings(settings: ClipboardSettings): ClipboardSettings {
+  return writeJsonFile(clipboardSettingsPath, settings);
+}
+
+function loadClipboardActiveMultiCopySession(): ClipboardActiveMultiCopySession | null {
+  const activeSession = readJsonFile<ClipboardActiveMultiCopySession | null>(clipboardActiveMultiCopyPath, null);
+  if (activeSession?.id && Array.isArray(activeSession.items)) {
+    return {
+      ...activeSession,
+      updatedAt: activeSession.updatedAt ?? activeSession.startedAt
+    };
+  }
+
+  const legacySession = loadClipboardSettings().activeMultiCopySession;
+  if (legacySession?.id && Array.isArray(legacySession.items)) {
+    const migratedSession: ClipboardActiveMultiCopySession = {
+      ...legacySession,
+      updatedAt: legacySession.startedAt
+    };
+    saveClipboardActiveMultiCopySession(migratedSession);
+    saveClipboardSettings({ ...loadClipboardSettings(), activeMultiCopySession: null });
+    return migratedSession;
+  }
+
+  return null;
+}
+
+function saveClipboardActiveMultiCopySession(session: ClipboardActiveMultiCopySession | null): ClipboardActiveMultiCopySession | null {
+  writeJsonFile(clipboardActiveMultiCopyPath, session);
+  scheduleActiveMultiCopyAutoClear();
+  return session;
+}
+
+function loadClipboardMultiGroups(): ClipboardMultiGroup[] {
+  return readJsonFile<ClipboardMultiGroup[]>(clipboardMultiGroupsPath, []);
+}
+
+function saveClipboardMultiGroups(groups: ClipboardMultiGroup[]): ClipboardMultiGroup[] {
+  return writeJsonFile(clipboardMultiGroupsPath, groups.slice(0, 50));
+}
+
+function defaultClipboardSlots(): ClipboardSlot[] {
+  return Array.from({ length: 5 }, (_item, index) => ({
+    slot: index + 1,
+    text: "",
+    preview: "",
+    byteLength: 0,
+    updatedAt: ""
+  }));
+}
+
+function loadClipboardSlots(): ClipboardSlot[] {
+  const savedSlots = readJsonFile<ClipboardSlot[]>(clipboardSlotsPath, defaultClipboardSlots());
+  const savedSlotByNumber = new Map(savedSlots.map((slot) => [slot.slot, slot]));
+  return defaultClipboardSlots().map((slot) => savedSlotByNumber.get(slot.slot) ?? slot);
+}
+
+function saveClipboardSlots(slots: ClipboardSlot[]): ClipboardSlot[] {
+  const normalized = defaultClipboardSlots().map((slot) => slots.find((item) => item.slot === slot.slot) ?? slot);
+  return writeJsonFile(clipboardSlotsPath, normalized);
+}
+
+function isProtectedClipboardText(text: string): boolean {
+  return Boolean(secureVaultProtectedClipboardValue && text === secureVaultProtectedClipboardValue);
+}
+
+function makeClipboardHistoryItem(text: string, sourceName: ClipboardHistoryItem["source"] = "manual"): ClipboardHistoryItem {
+  return {
+    id: createId("clip"),
+    text,
+    preview: previewText(text),
+    byteLength: byteLength(text),
+    createdAt: new Date().toISOString(),
+    source: sourceName
+  };
+}
+
+function saveClipboardText(text: string, sourceName: ClipboardHistoryItem["source"]): { ok: boolean; item?: ClipboardHistoryItem; reason?: string } {
+  if (!text.trim()) {
+    return { ok: false, reason: "empty" };
+  }
+
+  if (isProtectedClipboardText(text)) {
+    return { ok: false, reason: "secure_vault" };
+  }
+
+  const history = loadClipboardHistory();
+  if (history[0]?.text === text) {
+    return { ok: false, reason: "duplicate" };
+  }
+
+  const item = makeClipboardHistoryItem(text, sourceName);
+  saveClipboardHistory([item, ...history.filter((historyItem) => historyItem.text !== text)]);
+
+  const settings = loadClipboardSettings();
+  saveClipboardSettings({
+    ...settings,
+    lastCaptureAt: item.createdAt,
+    lastCapturedPreview: item.preview,
+    lastReadError: null
+  });
+
+  return { ok: true, item };
+}
+
+function cleanupClipboardHistory(force = false, source: DexNestActionTrigger | "system" = "system"): { removedCount: number; skipped: boolean } {
+  const settings = loadClipboardSettings();
+  const today = getLocalTodayDateString();
+  const lastCleanupDay = settings.lastHistoryCleanupAt ? toLocalDateInputValue(new Date(settings.lastHistoryCleanupAt)) : "";
+  if (!force && lastCleanupDay === today) {
+    return { removedCount: 0, skipped: true };
+  }
+
+  if (settings.historyRetentionDays === "never") {
+    saveClipboardSettings({ ...settings, lastHistoryCleanupAt: new Date().toISOString() });
+    localDb.appendActionEvent({
+      module: "clipboard",
+      actionId: "clipboard.cleanup_history",
+      eventType: "clipboard_history_cleanup",
+      status: "skipped",
+      source,
+      summary: "Clipboard history cleanup skipped because retention is set to never.",
+      metadataJson: { retentionDays: "never", removedCount: 0 }
+    });
+    return { removedCount: 0, skipped: true };
+  }
+
+  const retentionMs = Number(settings.historyRetentionDays) * 24 * 60 * 60 * 1000;
+  const cutoffMs = Date.now() - retentionMs;
+  const history = loadClipboardHistory();
+  const retained = history.filter((item) => new Date(item.createdAt).getTime() >= cutoffMs);
+  const removedCount = history.length - retained.length;
+  if (removedCount > 0) {
+    saveClipboardHistory(retained);
+  }
+  saveClipboardSettings({ ...loadClipboardSettings(), lastHistoryCleanupAt: new Date().toISOString() });
+  localDb.appendActionEvent({
+    module: "clipboard",
+    actionId: "clipboard.cleanup_history",
+    eventType: "clipboard_history_cleanup",
+    status: "success",
+    source,
+    summary: `Clipboard history cleanup removed ${removedCount} item${removedCount === 1 ? "" : "s"}.`,
+    metadataJson: { retentionDays: settings.historyRetentionDays, removedCount }
+  });
+  return { removedCount, skipped: false };
+}
+
+function clipboardProtectedError(): string {
+  return "Protected secret skipped.";
+}
+
+function combinedClipboardText(items: ClipboardHistoryItem[], separator: string): string {
+  return items.map((item) => item.text).filter((text) => text.trim()).join(separator);
+}
+
+function notifyClipboardHotkey(message: string, tone: "success" | "error" = "success"): void {
+  mainWindow?.webContents.send("dexnest:clipboard-hotkey-result", { message, tone });
+}
+
+function updateClipboardHotkeyStatus(status: ClipboardSettings["multiCopyLastHotkeyStatus"], message: string): void {
+  saveClipboardSettings({
+    ...loadClipboardSettings(),
+    multiCopyLastHotkeyAt: new Date().toISOString(),
+    multiCopyLastHotkeyStatus: status,
+    multiCopyLastHotkeyMessage: message
+  });
+}
+
+function focusDexNestWindow(view: string = "command", source: DexNestActionTrigger | "tray" | "system" = "system"): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+  }
+
+  if (!mainWindow) {
+    return;
+  }
+
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  if (!mainWindow.isVisible()) {
+    mainWindow.show();
+  }
+  mainWindow.focus();
+  const sendView = () => mainWindow?.webContents.send("dexnest:open-view", { view });
+  if (mainWindow.webContents.isLoading()) {
+    mainWindow.webContents.once("did-finish-load", sendView);
+  } else {
+    sendView();
+  }
+
+  localDb.appendActionEvent({
+    module: "DexNest Command",
+    actionId: view === "command" ? "command.open_palette" : `tray.open_${view}`,
+    eventType: source === "tray" ? "tray_action_used" : "command_shortcut_opened",
+    status: "success",
+    source: source === "tray" ? "system" : source,
+    summary: source === "tray" ? `Opened DexNest ${view} from tray.` : "Opened DexNest Command from global shortcut.",
+    metadataJson: { view }
+  });
+}
+
+function unregisterCommandShortcut(): void {
+  if (commandShortcutRegistered && registeredCommandShortcut) {
+    globalShortcut.unregister(registeredCommandShortcut);
+  }
+  commandShortcutRegistered = false;
+  registeredCommandShortcut = "";
+}
+
+function registerCommandShortcut(): void {
+  unregisterCommandShortcut();
+  const settings = loadCommandSettings();
+  if (!settings.globalShortcutEnabled) {
+    saveCommandSettings({ ...settings, globalShortcutStatus: "disabled", globalShortcutLastError: null });
+    return;
+  }
+
+  const shortcut = normalizeCommandShortcut(settings.globalShortcut);
+  commandShortcutRegistered = globalShortcut.register(shortcut, () => {
+    focusDexNestWindow("command", "command");
+  });
+  registeredCommandShortcut = commandShortcutRegistered ? shortcut : "";
+  saveCommandSettings({
+    ...settings,
+    globalShortcut: shortcut,
+    globalShortcutStatus: commandShortcutRegistered ? "active" : "failed",
+    globalShortcutLastError: commandShortcutRegistered ? null : `Electron could not register ${shortcut}. Another app may already reserve it.`
+  });
+  localDb.appendActionEvent({
+    module: "DexNest Command",
+    actionId: "command.shortcut.register",
+    eventType: "command_shortcut_registration",
+    status: commandShortcutRegistered ? "success" : "failed",
+    source: "system",
+    summary: commandShortcutRegistered ? "Registered DexNest Command global shortcut." : "DexNest Command global shortcut registration failed.",
+    metadataJson: { shortcut, enabled: settings.globalShortcutEnabled },
+    errorMessage: commandShortcutRegistered ? null : `Could not register ${shortcut}.`
+  });
+}
+
+function createTrayIcon(): Electron.NativeImage {
+  const svg = encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" rx="8" fill="#000000"/><circle cx="16" cy="16" r="9" fill="none" stroke="#22D3EE" stroke-width="3"/><circle cx="16" cy="16" r="3" fill="#22D3EE"/></svg>`);
+  return nativeImage.createFromDataURL(`data:image/svg+xml;charset=utf-8,${svg}`);
+}
+
+function togglePerformancePlaceholder(): void {
+  const settings = loadCommandSettings();
+  const next = saveCommandSettings({ ...settings, performanceModePlaceholder: !settings.performanceModePlaceholder });
+  localDb.appendActionEvent({
+    module: "DexNest Command",
+    actionId: "command.performance_mode_placeholder",
+    eventType: "tray_action_used",
+    status: "success",
+    source: "system",
+    summary: `Performance Mode placeholder ${next.performanceModePlaceholder ? "enabled" : "disabled"}.`,
+    metadataJson: { enabled: next.performanceModePlaceholder }
+  });
+  createDexNestTray();
+}
+
+function createDexNestTray(): void {
+  if (tray) {
+    tray.destroy();
+    tray = null;
+  }
+
+  try {
+    tray = new Tray(createTrayIcon());
+    tray.setToolTip("DexNest");
+    const nudgeCount = currentNudges().length;
+    const menu = Menu.buildFromTemplate([
+      { label: mainWindow?.isVisible() ? "Hide DexNest" : "Show DexNest", click: () => mainWindow?.isVisible() ? mainWindow.hide() : focusDexNestWindow("command", "tray") },
+      { type: "separator" },
+      { label: `${nudgeCount} active nudge${nudgeCount === 1 ? "" : "s"}`, enabled: false },
+      { type: "separator" },
+      { label: "Open Command", click: () => focusDexNestWindow("command", "tray") },
+      { label: "Open Clipboard", click: () => focusDexNestWindow("clipboard", "tray") },
+      { label: "Open Drop", click: () => focusDexNestWindow("drop", "tray") },
+      { label: "Open Dev", click: () => focusDexNestWindow("dev", "tray") },
+      { label: "Open Journal", click: () => focusDexNestWindow("journal", "tray") },
+      { label: "Open Settings", click: () => focusDexNestWindow("settings", "tray") },
+      { type: "separator" },
+      { label: `${loadCommandSettings().performanceModePlaceholder ? "Disable" : "Enable"} Performance Mode placeholder`, click: () => togglePerformancePlaceholder() },
+      { type: "separator" },
+      { label: "Quit DexNest", click: () => app.quit() }
+    ]);
+    tray.setContextMenu(menu);
+    tray.on("click", () => focusDexNestWindow("command", "tray"));
+    saveCommandSettings({ ...loadCommandSettings(), trayStatus: "active" });
+  } catch {
+    saveCommandSettings({ ...loadCommandSettings(), trayStatus: "failed" });
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolveDelay) => {
+    setTimeout(resolveDelay, ms);
+  });
+}
+
+function sendWindowsCopyShortcut(): Promise<void> {
+  if (process.platform !== "win32") {
+    return Promise.reject(new Error("Ctrl+Shift+C multi-copy capture is currently implemented for Windows."));
+  }
+
+  const script = [
+    "$signature = '[DllImport(\"user32.dll\")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);';",
+    "Add-Type -MemberDefinition $signature -Name Keyboard -Namespace DexNestInput;",
+    "$keyup = 0x0002;",
+    "$ctrl = 0x11;",
+    "$shift = 0x10;",
+    "$alt = 0x12;",
+    "$c = 0x43;",
+    "[DexNestInput.Keyboard]::keybd_event($c, 0, $keyup, [UIntPtr]::Zero);",
+    "[DexNestInput.Keyboard]::keybd_event($shift, 0, $keyup, [UIntPtr]::Zero);",
+    "[DexNestInput.Keyboard]::keybd_event($alt, 0, $keyup, [UIntPtr]::Zero);",
+    "[DexNestInput.Keyboard]::keybd_event($ctrl, 0, $keyup, [UIntPtr]::Zero);",
+    "Start-Sleep -Milliseconds 180;",
+    "[DexNestInput.Keyboard]::keybd_event($ctrl, 0, 0, [UIntPtr]::Zero);",
+    "Start-Sleep -Milliseconds 25;",
+    "[DexNestInput.Keyboard]::keybd_event($c, 0, 0, [UIntPtr]::Zero);",
+    "Start-Sleep -Milliseconds 70;",
+    "[DexNestInput.Keyboard]::keybd_event($c, 0, $keyup, [UIntPtr]::Zero);",
+    "[DexNestInput.Keyboard]::keybd_event($ctrl, 0, $keyup, [UIntPtr]::Zero);"
+  ].join(" ");
+
+  return new Promise((resolveCopy, rejectCopy) => {
+    execFile(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-STA",
+        "-WindowStyle",
+        "Hidden",
+        "-Command",
+        script
+      ],
+      { windowsHide: true, timeout: 2500 },
+      (error) => {
+        if (error) {
+          rejectCopy(error);
+          return;
+        }
+        resolveCopy();
+      }
+    );
+  });
+}
+
+function sendWindowsPasteShortcut(): Promise<void> {
+  if (process.platform !== "win32") {
+    return Promise.reject(new Error("Ctrl+V paste replay is currently implemented for Windows."));
+  }
+
+  return new Promise((resolvePaste, rejectPaste) => {
+    execFile(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-STA",
+        "-Command",
+        "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^v')"
+      ],
+      { windowsHide: true, timeout: 2500 },
+      (error) => {
+        if (error) {
+          rejectPaste(error);
+          return;
+        }
+        resolvePaste();
+      }
+    );
+  });
+}
+
+function currentActiveCombinedText(session: ClipboardActiveMultiCopySession | null = loadClipboardActiveMultiCopySession()): string {
+  return combinedClipboardText(session?.items ?? [], loadClipboardSettings().combinedSeparator || "\n\n");
+}
+
+const allowedClipboardHotkeys = new Set(["CommandOrControl+Shift+C", "CommandOrControl+Alt+C", "CommandOrControl+Shift+X"]);
+
+function normalizeClipboardHotkey(value: unknown): string {
+  const hotkey = typeof value === "string" ? value : "";
+  return allowedClipboardHotkeys.has(hotkey) ? hotkey : "CommandOrControl+Shift+C";
+}
+
+function stopArmedMultiCopyPasteDetection(): void {
+  if (clipboardPasteHotkeyRegistered) {
+    globalShortcut.unregister("CommandOrControl+V");
+  }
+  clipboardPasteHotkeyRegistered = false;
+  if (clipboardPasteFallbackTimer) {
+    clearInterval(clipboardPasteFallbackTimer);
+    clipboardPasteFallbackTimer = null;
+  }
+  clipboardArmedPasteText = "";
+}
+
+function clearActiveMultiCopyAfterPaste(reason: "pasted" | "clipboard_changed" | "manual" | "auto_clear", source: DexNestActionTrigger | "system" = "system"): void {
+  const session = loadClipboardActiveMultiCopySession();
+  if (!session?.items.length) {
+    stopArmedMultiCopyPasteDetection();
+    return;
+  }
+
+  const itemCount = session.items.length;
+  const combinedText = currentActiveCombinedText(session);
+  if (combinedText && clipboard.readText() === combinedText) {
+    clipboard.clear();
+    lastClipboardListenerText = "";
+  }
+  writeJsonFile(clipboardActiveMultiCopyPath, {
+    ...session,
+    items: [],
+    completedAt: new Date().toISOString(),
+    armedForPasteAt: null
+  });
+  writeJsonFile(clipboardActiveMultiCopyPath, null);
+  stopArmedMultiCopyPasteDetection();
+  updateClipboardHotkeyStatus("success", reason === "pasted" ? "Multi-copy pasted and cleared." : "Multi-copy group cleared.");
+  notifyClipboardHotkey(reason === "pasted" ? "Multi-copy pasted and cleared" : "Multi-copy group cleared", "success");
+  localDb.appendActionEvent({
+    module: "clipboard",
+    actionId: "clipboard.clear_multi_copy_session",
+    eventType: reason === "pasted" ? "clipboard_multi_copy_pasted_cleared" : "clipboard_multi_copy_cleared",
+    status: "success",
+    source,
+    summary: reason === "pasted" ? "Multi-copy group pasted once and cleared." : "Multi-copy group cleared.",
+    metadataJson: { sessionId: session.id, itemCount, reason }
+  });
+}
+
+function startArmedPasteFallbackMonitor(armedText: string): void {
+  if (clipboardPasteFallbackTimer) {
+    clearInterval(clipboardPasteFallbackTimer);
+  }
+  clipboardPasteFallbackTimer = setInterval(() => {
+    const session = loadClipboardActiveMultiCopySession();
+    if (!session?.items.length || !session.armedForPasteAt) {
+      stopArmedMultiCopyPasteDetection();
+      return;
+    }
+    const currentText = clipboard.readText();
+    if (armedText && currentText && currentText !== armedText) {
+      clearActiveMultiCopyAfterPaste("clipboard_changed");
+    }
+  }, 1000);
+}
+
+function armActiveMultiCopyForPaste(session: ClipboardActiveMultiCopySession, combinedText: string): void {
+  stopArmedMultiCopyPasteDetection();
+  clipboardArmedPasteText = combinedText;
+  const armedAt = new Date().toISOString();
+  saveClipboardActiveMultiCopySession({
+    ...session,
+    armedForPasteAt: armedAt,
+    updatedAt: session.updatedAt || armedAt
+  });
+
+  clipboardPasteHotkeyRegistered = globalShortcut.register("CommandOrControl+V", () => {
+    if (clipboardPasteReplayBusy) {
+      return;
+    }
+    clipboardPasteReplayBusy = true;
+    if (clipboardPasteHotkeyRegistered) {
+      globalShortcut.unregister("CommandOrControl+V");
+      clipboardPasteHotkeyRegistered = false;
+    }
+    void sendWindowsPasteShortcut()
+      .then(() => delay(180))
+      .then(() => {
+        clearActiveMultiCopyAfterPaste("pasted");
+      })
+      .catch((error) => {
+        const errorMessage = error instanceof Error ? error.message : "Multi-copy paste replay failed.";
+        updateClipboardHotkeyStatus("failed", errorMessage);
+        notifyClipboardHotkey(errorMessage, "error");
+        startArmedPasteFallbackMonitor(clipboardArmedPasteText);
+      })
+      .finally(() => {
+        clipboardPasteReplayBusy = false;
+      });
+  });
+
+  if (!clipboardPasteHotkeyRegistered) {
+    startArmedPasteFallbackMonitor(combinedText);
+  }
+
+  localDb.appendActionEvent({
+    module: "clipboard",
+    actionId: "clipboard.copy_combined_group",
+    eventType: "clipboard_multi_copy_armed",
+    status: "success",
+    source: "system",
+    summary: "Multi-copy combined group armed for one paste.",
+    metadataJson: { sessionId: session.id, itemCount: session.items.length, pasteHotkeyRegistered: clipboardPasteHotkeyRegistered }
+  });
+}
+
+function scheduleActiveMultiCopyAutoClear(): void {
+  if (clipboardMultiCopyTimeoutTimer) {
+    clearTimeout(clipboardMultiCopyTimeoutTimer);
+    clipboardMultiCopyTimeoutTimer = null;
+  }
+
+  const session = readJsonFile<ClipboardActiveMultiCopySession | null>(clipboardActiveMultiCopyPath, null);
+  if (!session?.items?.length) {
+    return;
+  }
+
+  const settings = loadClipboardSettings();
+  const autoClearMinutes = Math.max(1, Number(settings.multiCopyAutoClearMinutes) || 15);
+  const updatedAtMs = new Date(session.updatedAt ?? session.startedAt).getTime();
+  const clearAtMs = updatedAtMs + autoClearMinutes * 60 * 1000;
+  const delayMs = Math.max(1000, clearAtMs - Date.now());
+
+  clipboardMultiCopyTimeoutTimer = setTimeout(() => {
+    const currentSession = loadClipboardActiveMultiCopySession();
+    if (!currentSession?.items.length) {
+      return;
+    }
+
+    const currentUpdatedAtMs = new Date(currentSession.updatedAt ?? currentSession.startedAt).getTime();
+    if (Date.now() - currentUpdatedAtMs < autoClearMinutes * 60 * 1000) {
+      scheduleActiveMultiCopyAutoClear();
+      return;
+    }
+
+    const combinedText = currentActiveCombinedText(currentSession);
+    if (combinedText && clipboard.readText() === combinedText) {
+      clipboard.clear();
+      lastClipboardListenerText = "";
+    }
+    writeJsonFile(clipboardActiveMultiCopyPath, null);
+    stopArmedMultiCopyPasteDetection();
+    updateClipboardHotkeyStatus("skipped", "Multi-copy group auto-cleared after inactivity.");
+    notifyClipboardHotkey("Multi-copy group auto-cleared after inactivity.", "success");
+    localDb.appendActionEvent({
+      module: "clipboard",
+      actionId: "clipboard.clear_multi_copy_session",
+      eventType: "clipboard_multi_copy_auto_clear",
+      status: "success",
+      source: "system",
+      summary: `Auto-cleared active multi-copy group after ${autoClearMinutes} minutes.`,
+      metadataJson: { itemCount: currentSession.items.length, autoClearMinutes }
+    });
+  }, delayMs);
+}
+
+function registerClipboardHotkey(): void {
+  unregisterClipboardHotkey();
+  const settings = loadClipboardSettings();
+  if (!settings.multiCopyHotkeyEnabled) {
+    saveClipboardSettings({
+      ...settings,
+      multiCopyHotkeyStatus: "disabled",
+      multiCopyHotkeyLastError: null
+    });
+    return;
+  }
+
+  const hotkey = normalizeClipboardHotkey(settings.multiCopyHotkey);
+  clipboardHotkeyRegistered = globalShortcut.register(hotkey, () => {
+    void captureSelectionToMultiCopyGroup();
+  });
+
+  registeredClipboardHotkey = clipboardHotkeyRegistered ? hotkey : "";
+  saveClipboardSettings({
+    ...settings,
+    multiCopyHotkey: hotkey,
+    multiCopyHotkeyStatus: clipboardHotkeyRegistered ? "active" : "failed",
+    multiCopyHotkeyLastError: clipboardHotkeyRegistered ? null : `Electron could not register ${hotkey}. Another app may already reserve it.`
+  });
+
+  localDb.appendActionEvent({
+    module: "clipboard",
+    actionId: "clipboard.update_settings",
+    eventType: "clipboard_multi_copy_hotkey_registration",
+    status: clipboardHotkeyRegistered ? "success" : "failed",
+    source: "system",
+    summary: clipboardHotkeyRegistered ? "Registered DexNest multi-copy hotkey." : "DexNest multi-copy hotkey registration failed.",
+    metadataJson: { hotkey, enabled: settings.multiCopyHotkeyEnabled },
+    errorMessage: clipboardHotkeyRegistered ? null : `Could not register ${hotkey}.`
+  });
+
+  if (!clipboardHotkeyRegistered) {
+    updateClipboardHotkeyStatus("failed", `${hotkey} multi-copy hotkey could not be registered.`);
+  }
+}
+
+function unregisterClipboardHotkey(): void {
+  if (clipboardHotkeyRegistered && registeredClipboardHotkey) {
+    globalShortcut.unregister(registeredClipboardHotkey);
+  }
+  clipboardHotkeyRegistered = false;
+  registeredClipboardHotkey = "";
+}
+
+async function captureSelectionToMultiCopyGroup(): Promise<void> {
+  if (clipboardHotkeyBusy) {
+    return;
+  }
+
+  clipboardHotkeyBusy = true;
+  const startedAt = Date.now();
+  localDb.appendActionEvent({
+    module: "clipboard",
+    actionId: "clipboard.copy_combined_group",
+    eventType: "clipboard_multi_copy_hotkey_pressed",
+    status: "pending",
+    source: "system",
+    summary: "DexNest multi-copy hotkey pressed.",
+    metadataJson: { hotkey: loadClipboardSettings().multiCopyHotkey }
+  });
+
+  const previousClipboardText = clipboard.readText();
+  const captureMarker = `__DEXNEST_MULTI_COPY_CAPTURE_${Date.now()}_${randomBytes(6).toString("hex")}__`;
+
+  try {
+    clipboard.writeText(captureMarker);
+    lastClipboardListenerText = captureMarker;
+    await sendWindowsCopyShortcut();
+    let selectedText = clipboard.readText();
+    for (let attempt = 0; attempt < 12 && selectedText === captureMarker; attempt += 1) {
+      await delay(100);
+      selectedText = clipboard.readText();
+    }
+
+    if (!selectedText.trim() || selectedText === captureMarker) {
+      clipboard.writeText(previousClipboardText);
+      lastClipboardListenerText = previousClipboardText;
+      updateClipboardHotkeyStatus("skipped", "No selected text captured. Try the fallback hotkey or verify the target app allows copy.");
+      notifyClipboardHotkey("No selected text captured. Try Ctrl+Alt+C fallback.", "error");
+      localDb.appendActionEvent({
+        module: "clipboard",
+        actionId: "clipboard.copy_combined_group",
+        eventType: "clipboard_multi_copy_item_skipped",
+        status: "skipped",
+        source: "system",
+        summary: "Multi-copy hotkey skipped because no selected text was copied by the target app.",
+        metadataJson: { byteLength: 0 },
+        durationMs: Date.now() - startedAt
+      });
+      return;
+    }
+
+    if (isProtectedClipboardText(selectedText)) {
+      clipboard.writeText(previousClipboardText);
+      lastClipboardListenerText = previousClipboardText;
+      updateClipboardHotkeyStatus("skipped", clipboardProtectedError());
+      notifyClipboardHotkey(clipboardProtectedError(), "error");
+      localDb.appendActionEvent({
+        module: "clipboard",
+        actionId: "clipboard.copy_combined_group",
+        eventType: "clipboard_multi_copy_protected_skipped",
+        status: "skipped",
+        source: "system",
+        summary: "Multi-copy hotkey skipped a Secure Vault protected value.",
+        metadataJson: { protectedSource: "secure_vault" },
+        durationMs: Date.now() - startedAt
+      });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const existingSession = loadClipboardActiveMultiCopySession();
+    const createdNewSession = !existingSession;
+    const session: ClipboardActiveMultiCopySession = existingSession ?? {
+      id: createId("multi-copy"),
+      startedAt: now,
+      updatedAt: now,
+      items: []
+    };
+
+    if (session.items.at(-1)?.text === selectedText) {
+      const combinedText = combinedClipboardText(session.items, loadClipboardSettings().combinedSeparator || "\n\n");
+      if (combinedText) {
+        clipboard.writeText(combinedText);
+        lastClipboardListenerText = combinedText;
+        armActiveMultiCopyForPaste(session, combinedText);
+      }
+      updateClipboardHotkeyStatus("skipped", "Duplicate multi-copy item skipped.");
+      notifyClipboardHotkey(`Duplicate skipped. Multi-copy group: ${session.items.length} items.`, "success");
+      localDb.appendActionEvent({
+        module: "clipboard",
+        actionId: "clipboard.copy_combined_group",
+        eventType: "clipboard_multi_copy_duplicate_skipped",
+        status: "skipped",
+        source: "system",
+        summary: "Multi-copy hotkey skipped duplicate selected text.",
+        metadataJson: { itemCount: session.items.length, byteLength: byteLength(selectedText) },
+        durationMs: Date.now() - startedAt
+      });
+      return;
+    }
+
+    const item = makeClipboardHistoryItem(selectedText, "multi_copy");
+    const updatedSession = saveClipboardActiveMultiCopySession({
+      ...session,
+      updatedAt: now,
+      armedForPasteAt: null,
+      items: [...session.items, item]
+    }) as ClipboardActiveMultiCopySession;
+    const combinedText = combinedClipboardText(updatedSession.items, loadClipboardSettings().combinedSeparator || "\n\n");
+    clipboard.writeText(combinedText);
+    lastClipboardListenerText = combinedText;
+    armActiveMultiCopyForPaste(updatedSession, combinedText);
+    saveClipboardSettings({
+      ...loadClipboardSettings(),
+      lastCaptureAt: item.createdAt,
+      lastCapturedPreview: item.preview,
+      lastReadError: null
+    });
+
+    const message = `Added to multi-copy group: ${updatedSession.items.length} items`;
+    updateClipboardHotkeyStatus("success", message);
+    notifyClipboardHotkey(message, "success");
+    if (createdNewSession) {
+      localDb.appendActionEvent({
+        module: "clipboard",
+        actionId: "clipboard.start_multi_copy",
+        eventType: "clipboard_multi_copy_started",
+        status: "success",
+        source: "system",
+        summary: "Started DexNest multi-copy group from hotkey.",
+        metadataJson: { sessionId: updatedSession.id }
+      });
+    }
+    localDb.appendActionEvent({
+      module: "clipboard",
+      actionId: "clipboard.copy_combined_group",
+      eventType: "clipboard_multi_copy_item_added",
+      status: "success",
+      source: "system",
+      summary: `Added selected text to multi-copy group, ${item.byteLength} bytes.`,
+      metadataJson: { sessionId: updatedSession.id, itemCount: updatedSession.items.length, byteLength: item.byteLength },
+      durationMs: Date.now() - startedAt
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "Multi-copy hotkey capture failed.";
+    updateClipboardHotkeyStatus("failed", errorMessage);
+    notifyClipboardHotkey(errorMessage, "error");
+    localDb.appendActionEvent({
+      module: "clipboard",
+      actionId: "clipboard.copy_combined_group",
+      eventType: "clipboard_multi_copy_hotkey_failed",
+      status: "failed",
+      source: "system",
+      summary: "Multi-copy hotkey capture failed.",
+      metadataJson: { hotkey: loadClipboardSettings().multiCopyHotkey },
+      errorMessage,
+      durationMs: Date.now() - startedAt
+    });
+  } finally {
+    clipboardHotkeyBusy = false;
+  }
+}
+
+function startClipboardListener(): void {
+  stopClipboardListener();
+  const settings = loadClipboardSettings();
+  if (!settings.listenerEnabled) {
+    return;
+  }
+
+  lastClipboardListenerText = clipboard.readText();
+  clipboardListenerTimer = setInterval(() => {
+    let text = "";
+    try {
+      text = clipboard.readText();
+      const settings = loadClipboardSettings();
+      saveClipboardSettings({
+        ...settings,
+        lastReadAt: new Date().toISOString(),
+        lastReadPreview: previewText(text),
+        lastReadError: null
+      });
+    } catch (error) {
+      const settings = loadClipboardSettings();
+      saveClipboardSettings({
+        ...settings,
+        lastReadAt: new Date().toISOString(),
+        lastReadError: error instanceof Error ? error.message : "Clipboard read failed."
+      });
+      return;
+    }
+    if (!text || text === lastClipboardListenerText) {
+      return;
+    }
+
+    if (clipboardHotkeyBusy) {
+      lastClipboardListenerText = text;
+      return;
+    }
+
+    lastClipboardListenerText = text;
+    const result = saveClipboardText(text, "listener");
+    if (result.ok && result.item) {
+      localDb.appendActionEvent({
+        module: "clipboard",
+        actionId: "clipboard.listener_capture",
+        eventType: "clipboard_listener_capture",
+        status: "success",
+        source: "system",
+        summary: `Clipboard listener saved text, ${result.item.byteLength} bytes.`,
+        metadataJson: { itemId: result.item.id, byteLength: result.item.byteLength }
+      });
+    } else if (result.reason === "secure_vault") {
+      localDb.appendActionEvent({
+        module: "clipboard",
+        actionId: "clipboard.listener_capture",
+        eventType: "clipboard_listener_skipped",
+        status: "skipped",
+        source: "system",
+        summary: "Clipboard listener skipped a Secure Vault protected value.",
+        metadataJson: { protectedSource: "secure_vault" }
+      });
+      const settings = loadClipboardSettings();
+      saveClipboardSettings({
+        ...settings,
+        lastReadError: clipboardProtectedError()
+      });
+    }
+  }, Math.max(1000, settings.listenerIntervalMs));
+}
+
+function stopClipboardListener(): void {
+  if (clipboardListenerTimer) {
+    clearInterval(clipboardListenerTimer);
+    clipboardListenerTimer = null;
+  }
 }
 
 function loadDropShelf(): DropShelfItem[] {
@@ -1752,7 +3012,14 @@ function loadSearchIndex(): SearchIndexRecord[] {
     return [];
   }
 
-  return JSON.parse(readFileSync(searchIndexPath, "utf8")) as SearchIndexRecord[];
+  try {
+    return JSON.parse(readFileSync(searchIndexPath, "utf8")) as SearchIndexRecord[];
+  } catch (error) {
+    // The search index is fully rebuildable, so a corrupt file can be safely reset.
+    console.error("DexNest: search index was corrupt and has been reset.", error);
+    writeFileSync(searchIndexPath, `${JSON.stringify([], null, 2)}\n`, "utf8");
+    return [];
+  }
 }
 
 function saveSearchIndex(items: SearchIndexRecord[]): SearchIndexRecord[] {
@@ -1783,6 +3050,32 @@ function loadCalendarEvents(): CalendarEvent[] {
 
 function saveCalendarEvents(items: CalendarEvent[]): CalendarEvent[] {
   return writeJsonFile(calendarEventsPath, items);
+}
+
+function defaultNudgeSettings(): NudgeSettings {
+  return {
+    enabled: true,
+    vaultExpiryReminderDays: [90, 30, 7],
+    returnReminderDays: [7, 3, 1],
+    dailyJournalReminderEnabled: true,
+    backupReminderAfterDays: 7
+  };
+}
+
+function loadNudgeSettings(): NudgeSettings {
+  return { ...defaultNudgeSettings(), ...readJsonFile<Partial<NudgeSettings>>(nudgeSettingsPath, {}) };
+}
+
+function saveNudgeSettings(settings: NudgeSettings): NudgeSettings {
+  return writeJsonFile(nudgeSettingsPath, settings);
+}
+
+function loadNudges(): Nudge[] {
+  return readJsonFile<Nudge[]>(nudgesPath, []);
+}
+
+function saveNudges(items: Nudge[]): Nudge[] {
+  return writeJsonFile(nudgesPath, items);
 }
 
 function loadFinderItems(): FinderItem[] {
@@ -2162,7 +3455,12 @@ function defaultToolsSettings(): ToolsSettings {
   return {
     outputFolderPath: null,
     ffmpegPath: null,
-    libreOfficePath: null
+    libreOfficePath: null,
+    tesseractPath: null,
+    pythonPath: null,
+    ocrEngine: "paddleocr",
+    ocrDevice: "gpu",
+    ocrLanguage: "eng"
   };
 }
 
@@ -2219,6 +3517,81 @@ function detectLibreOfficePath(): string | null {
   return candidates.find((candidate) => existsSync(candidate)) ?? null;
 }
 
+function detectTesseractPath(): string | null {
+  const candidates = [
+    "C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
+    "C:\\Program Files (x86)\\Tesseract-OCR\\tesseract.exe",
+    findOnPath("tesseract"),
+    findOnPath("tesseract.exe")
+  ].filter(Boolean) as string[];
+
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
+
+function detectPythonPath(): string | null {
+  const launcherCandidates = (() => {
+    try {
+      const output = execFileSync("py", ["-0p"], { encoding: "utf8", windowsHide: true });
+      return output
+        .split(/\r?\n/)
+        .map((line) => line.match(/-V:3\.(?:12|11)\s+\*?\s*(.+python\.exe)/i)?.[1]?.trim())
+        .filter(Boolean) as string[];
+    } catch {
+      return [];
+    }
+  })();
+
+  const candidates = [
+    ...launcherCandidates,
+    "C:\\Users\\aksha\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+    "C:\\Program Files\\Python312\\python.exe",
+    "C:\\Python312\\python.exe",
+    "C:\\Python311\\python.exe",
+    findOnPath("python"),
+    findOnPath("python.exe")
+  ].filter(Boolean) as string[];
+
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
+
+function getPythonVersion(pythonPath: string): { major: number; minor: number; raw: string } | null {
+  try {
+    const output = execFileSync(pythonPath, ["-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"], { encoding: "utf8", windowsHide: true, timeout: 5000 }).trim();
+    const [major, minor] = output.split(".").map((part) => Number(part));
+    return Number.isFinite(major) && Number.isFinite(minor) ? { major, minor, raw: output } : null;
+  } catch {
+    return null;
+  }
+}
+
+function getPaddleRuntimeInfo(pythonPath: string): { ok: boolean; cudaCompiled: boolean; deviceCount: number; paddleVersion: string | null; error?: string } {
+  const script = [
+    "import json, warnings",
+    "warnings.filterwarnings('ignore')",
+    "try:",
+    "    import paddle",
+    "    cuda = bool(paddle.device.is_compiled_with_cuda())",
+    "    count = int(paddle.device.cuda.device_count()) if cuda else 0",
+    "    print(json.dumps({'ok': True, 'cudaCompiled': cuda, 'deviceCount': count, 'paddleVersion': getattr(paddle, '__version__', None)}))",
+    "except Exception as exc:",
+    "    print(json.dumps({'ok': False, 'cudaCompiled': False, 'deviceCount': 0, 'paddleVersion': None, 'error': str(exc)}))"
+  ].join("\n");
+
+  try {
+    const output = execFileSync(pythonPath, ["-W", "ignore", "-c", script], { encoding: "utf8", windowsHide: true, timeout: 10000 });
+    const jsonStart = output.lastIndexOf("{");
+    return JSON.parse(jsonStart >= 0 ? output.slice(jsonStart) : output);
+  } catch (error) {
+    return {
+      ok: false,
+      cudaCompiled: false,
+      deviceCount: 0,
+      paddleVersion: null,
+      error: error instanceof Error ? error.message : "Unknown Paddle runtime check failure."
+    };
+  }
+}
+
 function resolveFfmpegPath(): string {
   const configuredPath = loadToolsSettings().ffmpegPath?.trim();
   const detectedPath = configuredPath && existsSync(configuredPath) ? configuredPath : detectFfmpegPath();
@@ -2233,6 +3606,28 @@ function resolveLibreOfficePath(): string {
   const detectedPath = configuredPath && existsSync(configuredPath) ? configuredPath : detectLibreOfficePath();
   if (!detectedPath) {
     throw new Error("LibreOffice is required for Office conversions. Install it and set the path in Settings.");
+  }
+  return detectedPath;
+}
+
+function resolveTesseractPath(): string {
+  const configuredPath = loadToolsSettings().tesseractPath?.trim();
+  const detectedPath = configuredPath && existsSync(configuredPath) ? configuredPath : detectTesseractPath();
+  if (!detectedPath) {
+    throw new Error("Tesseract OCR is required. Install it and set path in Tools Settings.");
+  }
+  return detectedPath;
+}
+
+function resolvePythonPath(): string {
+  const configuredPath = loadToolsSettings().pythonPath?.trim();
+  const detectedPath = configuredPath && existsSync(configuredPath) ? configuredPath : detectPythonPath();
+  if (!detectedPath) {
+    throw new Error("Python with PaddleOCR is required for PaddleOCR. Install Python, install paddleocr, or switch OCR engine to Tesseract.");
+  }
+  const version = getPythonVersion(detectedPath);
+  if (!version || version.major !== 3 || version.minor < 9 || version.minor >= 13) {
+    throw new Error(`PaddleOCR requires a compatible local Python 3.9-3.12 runtime. DexNest found ${version?.raw ?? "an unknown Python version"} at ${detectedPath}. Install PaddleOCR under Python 3.12 and set that python.exe path in Tools Settings.`);
   }
   return detectedPath;
 }
@@ -2857,11 +4252,25 @@ function payloadMetadata(payload: unknown): Record<string, unknown> {
 }
 
 function clipboardState() {
+  const settings = loadClipboardSettings();
+  const activeSession = loadClipboardActiveMultiCopySession();
   return {
     history: loadClipboardHistory(),
     snippets: loadClipboardSnippets(),
+    settings: {
+      ...settings,
+      listenerEnabled: settings.listenerEnabled && Boolean(clipboardListenerTimer),
+      activeMultiCopySession: activeSession,
+      multiCopyHotkeyRegistered: clipboardHotkeyRegistered
+    },
+    multiGroups: loadClipboardMultiGroups(),
+    slots: loadClipboardSlots(),
     snippetsPath: clipboardSnippetsPath,
-    historyPath: clipboardHistoryPath
+    historyPath: clipboardHistoryPath,
+    settingsPath: clipboardSettingsPath,
+    multiGroupsPath: clipboardMultiGroupsPath,
+    activeMultiCopyPath: clipboardActiveMultiCopyPath,
+    slotsPath: clipboardSlotsPath
   };
 }
 
@@ -2902,6 +4311,13 @@ function toolsState() {
     detectedFfmpegPath: detectFfmpegPath(),
     libreOfficePath: settings.libreOfficePath ?? null,
     detectedLibreOfficePath: detectLibreOfficePath(),
+    tesseractPath: settings.tesseractPath ?? null,
+    detectedTesseractPath: detectTesseractPath(),
+    pythonPath: settings.pythonPath ?? null,
+    detectedPythonPath: detectPythonPath(),
+    ocrEngine: settings.ocrEngine ?? "paddleocr",
+    ocrDevice: settings.ocrDevice ?? "gpu",
+    ocrLanguage: settings.ocrLanguage ?? "eng",
     tempFolderPath: toolsTempRoot,
     outputsPath: toolsOutputsPath
   };
@@ -2910,6 +4326,7 @@ function toolsState() {
 function searchState(query: SearchQueryInput = {}) {
   const index = loadSearchIndex();
   const savedSearches = loadSavedSearches();
+  const ocrTextFileCount = index.filter((item) => item.entityType === "tools_ocr_text" || item.entityType === "vault_document_ocr").length;
   return {
     index,
     savedSearches,
@@ -2917,6 +4334,7 @@ function searchState(query: SearchQueryInput = {}) {
     indexFolderPath: searchIndexRoot,
     savedSearchesPath,
     resultCount: runSearchQuery(query, index).length,
+    ocrTextFileCount,
     sources: [...new Set(index.map((item) => item.sourceModule))].sort(),
     fileTypes: [...new Set(index.map((item) => item.fileType).filter(Boolean) as string[])].sort()
   };
@@ -2949,6 +4367,28 @@ function textBucket(...values: Array<string | null | undefined>): string {
   return values.filter(Boolean).join(" ");
 }
 
+function readTextFileForSearch(filePath: string, maxBytes = 1024 * 1024): string {
+  if (!existsSync(filePath)) {
+    return "";
+  }
+  const stats = statSync(filePath);
+  if (stats.size > maxBytes) {
+    return readFileSync(filePath, "utf8").slice(0, maxBytes);
+  }
+  return readFileSync(filePath, "utf8");
+}
+
+function readOcrMetadataForSearch(metadataPath: string): Record<string, unknown> | null {
+  if ((!metadataPath.endsWith("-ocr-metadata.json") && !metadataPath.endsWith("-paddleocr-gpu-metadata.json")) || !existsSync(metadataPath)) {
+    return null;
+  }
+  try {
+    return JSON.parse(readFileSync(metadataPath, "utf8")) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 function fileTypeForPath(filePath?: string | null): string | null {
   if (!filePath) {
     return null;
@@ -2962,17 +4402,24 @@ function buildSearchIndexRecords(): SearchIndexRecord[] {
   const records: SearchIndexRecord[] = [];
 
   for (const document of loadVaultDocuments()) {
+    const ocrText = document.ocrTextPath && existsSync(document.ocrTextPath) && isPathInside(vaultOcrRoot, document.ocrTextPath)
+      ? readTextFileForSearch(document.ocrTextPath)
+      : "";
+    const ocrMetadata = document.ocrMetadataPath && existsSync(document.ocrMetadataPath) && isPathInside(vaultOcrRoot, document.ocrMetadataPath)
+      ? readOcrMetadataForSearch(document.ocrMetadataPath)
+      : null;
     records.push({
       id: `vault-${document.id}`,
       sourceModule: "vault",
-      entityType: "vault_document",
+      entityType: ocrText ? "vault_document_ocr" : "vault_document",
       entityId: document.id,
       title: document.title || document.originalFileName,
       filePath: document.filePath,
       fileType: document.fileType || fileTypeForPath(document.filePath),
       sizeBytes: document.sizeBytes,
-      textPreview: previewText(textBucket(document.originalFileName, document.notes)),
-      tags: document.tags,
+      textPreview: previewText(textBucket(document.originalFileName, document.notes, ocrText)),
+      searchableText: normalizeSearchText(textBucket(document.title, document.originalFileName, document.notes, document.category, document.tags.join(" "), ocrText, String(ocrMetadata?.engine ?? ""), String(ocrMetadata?.device ?? ""))),
+      tags: [...document.tags, document.ocrStatus ?? "", String(ocrMetadata?.engine ?? ""), String(ocrMetadata?.device ?? "")].filter(Boolean),
       category: document.category,
       createdAt: document.createdAt,
       updatedAt: document.updatedAt,
@@ -2981,17 +4428,47 @@ function buildSearchIndexRecords(): SearchIndexRecord[] {
   }
 
   for (const output of loadToolsOutputs()) {
+    const outputFileType = fileTypeForPath(output.path);
+    const isOcrTextOutput = outputFileType === ".txt" && /ocr/i.test(output.operation || output.fileName);
+    const textContent = outputFileType === ".txt" && existsSync(output.path)
+      ? readTextFileForSearch(output.path)
+      : "";
+    const sidecarPath = isOcrTextOutput
+      ? output.path.replace(/(?:-\d+)?\.txt$/i, (suffix) => suffix.replace(".txt", "-metadata.json"))
+      : "";
+    const sameNameSidecar = isOcrTextOutput && existsSync(sidecarPath) ? readOcrMetadataForSearch(sidecarPath) : null;
+    const siblingSidecar = isOcrTextOutput && !sameNameSidecar
+      ? loadToolsOutputs()
+        .map((item) => item.path)
+        .find((candidate) => candidate.endsWith("-ocr-metadata.json") && basename(candidate).startsWith(basename(output.path, ".txt").replace(/-\d+$/i, "")))
+      : null;
+    const ocrMetadata = sameNameSidecar ?? (siblingSidecar ? readOcrMetadataForSearch(siblingSidecar) : null);
+    const ocrSourceFileName = typeof ocrMetadata?.originalFileName === "string" ? ocrMetadata.originalFileName : "";
+    const metadataText = ocrMetadata
+      ? textBucket(
+        String(ocrMetadata.engine ?? ""),
+        String(ocrMetadata.device ?? ""),
+        String(ocrMetadata.originalFileName ?? ""),
+        String(ocrMetadata.textOutputPath ?? ""),
+        typeof ocrMetadata.averageConfidence === "number" ? `confidence ${ocrMetadata.averageConfidence}` : ""
+      )
+      : "";
+    const textPreview = textContent
+      ? previewText(textContent)
+      : previewText(textBucket(output.operation, metadataText));
+    const sourceModule = isOcrTextOutput || output.operation.includes("ocr") ? "tools_ocr" : "tools";
     records.push({
       id: `tools-${output.id}`,
-      sourceModule: "tools",
-      entityType: "tools_output",
+      sourceModule,
+      entityType: isOcrTextOutput ? "tools_ocr_text" : "tools_output",
       entityId: output.id,
-      title: output.fileName,
+      title: ocrSourceFileName ? `${output.fileName} (${ocrSourceFileName})` : output.fileName,
       filePath: output.path,
-      fileType: fileTypeForPath(output.path),
+      fileType: outputFileType,
       sizeBytes: output.byteLength,
-      textPreview: previewText(output.operation),
-      tags: [output.operation].filter(Boolean),
+      textPreview,
+      searchableText: normalizeSearchText(textBucket(output.fileName, output.operation, textContent, metadataText)),
+      tags: [output.operation, String(ocrMetadata?.engine ?? ""), String(ocrMetadata?.device ?? ""), ocrSourceFileName].filter(Boolean),
       category: output.operation,
       createdAt: output.createdAt,
       updatedAt: output.createdAt,
@@ -3160,10 +4637,11 @@ function searchMatchScore(record: SearchIndexRecord, query: string): { score: nu
     return { score: 1, reason: "filter match" };
   }
 
-  const normalizedQuery = query.toLowerCase();
-  const title = record.title.toLowerCase();
-  const tagsAndCategory = [...(record.tags ?? []), record.category ?? ""].join(" ").toLowerCase();
-  const preview = (record.textPreview ?? "").toLowerCase();
+  const normalizedQuery = normalizeSearchText(query);
+  const title = normalizeSearchText(record.title);
+  const tagsAndCategory = normalizeSearchText([...(record.tags ?? []), record.category ?? ""].join(" "));
+  const preview = normalizeSearchText(record.textPreview ?? "");
+  const searchableText = normalizeSearchText(record.searchableText ?? "");
 
   if (title.includes(normalizedQuery)) {
     return { score: 100, reason: "title" };
@@ -3175,6 +4653,10 @@ function searchMatchScore(record: SearchIndexRecord, query: string): { score: nu
 
   if (preview.includes(normalizedQuery)) {
     return { score: 30, reason: "preview" };
+  }
+
+  if (searchableText.includes(normalizedQuery)) {
+    return { score: 25, reason: record.entityType === "tools_ocr_text" ? "ocr text" : "content" };
   }
 
   return { score: 0, reason: "" };
@@ -3200,7 +4682,10 @@ function runSearchQuery(queryInput: SearchQueryInput = {}, records = loadSearchI
       if (record.score <= 0) {
         return false;
       }
-      if (sourceModule && record.sourceModule !== sourceModule) {
+      const sourceMatches = sourceModule === "tools"
+        ? record.sourceModule === "tools" || record.sourceModule === "tools_ocr"
+        : record.sourceModule === sourceModule;
+      if (sourceModule && !sourceMatches) {
         return false;
       }
       if (fileType && (record.fileType ?? "").toLowerCase() !== fileType) {
@@ -3216,6 +4701,205 @@ function runSearchQuery(queryInput: SearchQueryInput = {}, records = loadSearchI
       return true;
     })
     .sort((a, b) => b.score - a.score || Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+}
+
+function runSecureVaultSearch(input: SearchQueryInput): SecureSearchResult[] {
+  const file = loadSecureVaultFile();
+  if (!file) {
+    throw new Error("Secure Vault is not set up.");
+  }
+  const query = normalizeSearchText(input.query ?? "");
+  if (!query) {
+    return [];
+  }
+  const key = deriveSecureVaultKey(String(input.masterPassword ?? ""), file.kdf);
+  verifySecureVaultKey(file, key);
+  const includeSecrets = Boolean(input.includeSecretValues);
+
+  return file.items
+    .map((item): SecureSearchResult | null => {
+      const notes = decryptSecureValue(item.notes, key);
+      const secret = includeSecrets ? decryptSecureValue(item.secret, key) : "";
+      const fields: Array<[string, string]> = [
+        ["title", item.title],
+        ["type", item.type],
+        ["username", item.username ?? ""],
+        ["url", item.url ?? ""],
+        ["tags", item.tags.join(" ")],
+        ["notes", notes],
+        ["secret", secret]
+      ];
+      const matchedFields = fields
+        .filter(([, value]) => normalizeSearchText(value).includes(query))
+        .map(([field]) => field);
+      if (matchedFields.length === 0) {
+        return null;
+      }
+      return {
+        id: `secure-${item.id}`,
+        itemId: item.id,
+        title: item.title,
+        type: item.type,
+        username: item.username,
+        url: item.url,
+        matchedFields,
+        masked: true,
+        score: matchedFields.includes("title") ? 100 : matchedFields.includes("username") || matchedFields.includes("url") ? 70 : 40
+      };
+    })
+    .filter((item): item is SecureSearchResult => Boolean(item))
+    .sort((left, right) => right.score - left.score || left.title.localeCompare(right.title));
+}
+
+const sensitiveSmartFields = new Set(["sin", "passport_number", "permit_number", "health_card", "api_key", "token", "recovery_code"]);
+
+function maskSmartAnswer(value: string, fieldType: string): string {
+  if (!sensitiveSmartFields.has(fieldType)) {
+    return value;
+  }
+  const compact = value.trim();
+  if (compact.length <= 4) {
+    return "*".repeat(compact.length);
+  }
+  return `${"*".repeat(Math.max(4, compact.length - 4))}${compact.slice(-4)}`;
+}
+
+function requestedSmartFields(question: string): string[] {
+  const text = normalizeSearchText(question);
+  const fields: string[] = [];
+  if (/\bsin\b|social insurance/.test(text)) fields.push("sin");
+  if (/passport/.test(text)) fields.push("passport_number");
+  if (/work permit|permit|document number|document no/.test(text)) fields.push("permit_number");
+  if (/\buci\b|client id|unique client/.test(text)) fields.push("uci");
+  if (/health card|health number|ohip|phn/.test(text)) fields.push("health_card");
+  if (/expir|valid until|valid to|valid thru/.test(text)) fields.push("expiry_date");
+  if (/issue|issued|date of issue/.test(text)) fields.push("issue_date");
+  if (/email/.test(text)) fields.push("email");
+  if (/phone|mobile|telephone/.test(text)) fields.push("phone");
+  if (/address/.test(text)) fields.push("address");
+  return fields.length ? [...new Set(fields)] : ["permit_number", "passport_number", "uci", "expiry_date", "sin", "health_card"];
+}
+
+function smartLookupTextForRecord(record: SearchIndexRecord): { text: string; ocrTextPath: string | null } {
+  if (record.sourceModule === "vault") {
+    const document = findVaultDocument(record.entityId);
+    if (document?.ocrTextPath && existsSync(document.ocrTextPath) && isPathInside(vaultOcrRoot, document.ocrTextPath)) {
+      return { text: readTextFileForSearch(document.ocrTextPath, 5 * 1024 * 1024), ocrTextPath: document.ocrTextPath };
+    }
+  }
+  if ((record.entityType === "tools_ocr_text" || record.fileType === ".txt") && record.filePath && existsSync(record.filePath)) {
+    return { text: readTextFileForSearch(record.filePath, 5 * 1024 * 1024), ocrTextPath: record.filePath };
+  }
+  return { text: textBucket(record.title, record.textPreview, record.searchableText), ocrTextPath: null };
+}
+
+function contextAround(text: string, start: number, end: number, radius = 90): string {
+  return previewText(text.slice(Math.max(0, start - radius), Math.min(text.length, end + radius)).replace(/\s+/g, " "));
+}
+
+function confidenceForContext(fieldType: string, context: string, question: string): "high" | "medium" | "low" {
+  const normalized = normalizeSearchText(`${context} ${question}`);
+  const strongHints: Record<string, RegExp> = {
+    sin: /\bsin\b|social insurance/,
+    passport_number: /passport/,
+    permit_number: /work permit|permit|document number|document no/,
+    uci: /\buci\b|client id|unique client/,
+    expiry_date: /expir|valid until|valid to|valid thru/,
+    issue_date: /issue|issued|date of issue/,
+    health_card: /health card|ohip|phn/
+  };
+  if (strongHints[fieldType]?.test(normalized)) {
+    return "high";
+  }
+  return normalized.includes(fieldType.replace("_", " ")) ? "medium" : "low";
+}
+
+function smartPatternsForField(fieldType: string): RegExp[] {
+  switch (fieldType) {
+    case "sin":
+      return [/\b(?:sin|social insurance number)?\s*[:#-]?\s*(\d{3}[-\s]?\d{3}[-\s]?\d{3})\b/gi];
+    case "passport_number":
+      return [/\b(?:passport(?:\s*(?:no|number|#))?)\s*[:#-]?\s*([A-Z]{1,2}\d{6,8}|[A-Z0-9]{6,9})\b/gi];
+    case "permit_number":
+      return [/\b(?:document number|document no|permit number|permit no|work permit(?:\s*(?:no|number|#))?)\s*[:#-]?\s*([A-Z]{1,4}\d{6,10}|[A-Z0-9-]{7,14})\b/gi];
+    case "uci":
+      return [/\b(?:uci|client id|unique client identifier)\s*[:#-]?\s*(\d{4}[-\s]?\d{4}|\d{8,10})\b/gi];
+    case "expiry_date":
+      return [/\b(?:expiry date|expires|valid until|valid to|valid thru)\s*[:#-]?\s*([A-Z][a-z]{2,8}\s+\d{1,2},?\s+\d{4}|\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\b/gi];
+    case "issue_date":
+      return [/\b(?:issue date|issued|date of issue)\s*[:#-]?\s*([A-Z][a-z]{2,8}\s+\d{1,2},?\s+\d{4}|\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\b/gi];
+    case "health_card":
+      return [/\b(?:health card|health number|ohip|phn)\s*[:#-]?\s*([A-Z0-9 -]{8,16})\b/gi];
+    case "email":
+      return [/\b([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})\b/gi];
+    case "phone":
+      return [/\b(\+?1?[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4})\b/g];
+    case "address":
+      return [/\b(\d{1,6}\s+[A-Z][A-Za-z0-9 .'-]{3,80}\s+(?:street|st|road|rd|avenue|ave|drive|dr|lane|ln|court|ct|blvd|boulevard))\b/gi];
+    default:
+      return [];
+  }
+}
+
+function runSmartLookup(input: SearchQueryInput): SmartLookupResult[] {
+  const question = String(input.question ?? input.query ?? "").trim();
+  if (!question) {
+    throw new Error("Ask a Smart Lookup question first.");
+  }
+
+  const fields = requestedSmartFields(question);
+  const records = loadSearchIndex().filter((record) => (
+    record.sourceModule === "vault"
+    || record.sourceModule === "tools_ocr"
+    || record.entityType === "vault_document_ocr"
+    || record.entityType === "tools_ocr_text"
+  ));
+  const results: SmartLookupResult[] = [];
+  const seen = new Set<string>();
+
+  for (const record of records) {
+    const { text, ocrTextPath } = smartLookupTextForRecord(record);
+    if (!text.trim()) {
+      continue;
+    }
+    for (const fieldType of fields) {
+      for (const pattern of smartPatternsForField(fieldType)) {
+        pattern.lastIndex = 0;
+        let match: RegExpExecArray | null;
+        while ((match = pattern.exec(text)) !== null) {
+          const answer = String(match[1] ?? match[0]).trim().replace(/\s+/g, " ");
+          if (!answer || answer.length < 3) {
+            continue;
+          }
+          const key = `${fieldType}:${record.id}:${answer.toLowerCase()}`;
+          if (seen.has(key)) {
+            continue;
+          }
+          seen.add(key);
+          const preview = contextAround(text, match.index, match.index + match[0].length);
+          const confidence = confidenceForContext(fieldType, preview, question);
+          const score = (confidence === "high" ? 100 : confidence === "medium" ? 70 : 40) + (record.sourceModule === "vault" ? 10 : 0);
+          results.push({
+            id: createId("smart-lookup"),
+            fieldType,
+            answer,
+            maskedAnswer: maskSmartAnswer(answer, fieldType),
+            sensitive: sensitiveSmartFields.has(fieldType),
+            confidence,
+            sourceRecordId: record.id,
+            sourceModule: record.sourceModule,
+            sourceDocumentTitle: record.title,
+            sourceFilePath: record.filePath ?? null,
+            ocrTextPath,
+            preview,
+            score
+          });
+        }
+      }
+    }
+  }
+
+  return results.sort((left, right) => right.score - left.score).slice(0, 12);
 }
 
 function todayDateString(): string {
@@ -3302,15 +4986,225 @@ function journalState() {
 }
 
 function calendarState() {
+  refreshNudges("system", false);
   const events = loadCalendarEvents().sort((a, b) => a.date.localeCompare(b.date) || (a.startTime ?? "").localeCompare(b.startTime ?? ""));
   const today = todayDateString();
+  const nudges = currentNudges();
   return {
     events,
     today,
     todayEvents: events.filter((event) => event.date === today),
     upcomingEvents: events.filter((event) => event.date >= today).slice(0, 20),
-    eventsPath: calendarEventsPath
+    eventsPath: calendarEventsPath,
+    nudges,
+    todayNudges: nudges.filter((nudge) => nudge.date === today),
+    upcomingNudges: nudges.filter((nudge) => nudge.date >= today).slice(0, 30),
+    urgentNudges: nudges.filter((nudge) => nudge.priority === "urgent"),
+    nudgesPath,
+    nudgeSettingsPath,
+    nudgeSettings: loadNudgeSettings()
   };
+}
+
+function addLocalDays(dateString: string, days: number): string {
+  const date = parseLocalDateInput(dateString);
+  date.setDate(date.getDate() + days);
+  return toLocalDateInputValue(date);
+}
+
+function localDayDiff(fromDateString: string, toDateString: string): number {
+  const from = parseLocalDateInput(fromDateString);
+  const to = parseLocalDateInput(toDateString);
+  return Math.round((to.getTime() - from.getTime()) / 86_400_000);
+}
+
+function nudgePriorityForDays(daysUntil: number): NudgePriority {
+  if (daysUntil <= 1) {
+    return "urgent";
+  }
+  if (daysUntil <= 7) {
+    return "normal";
+  }
+  return "soft";
+}
+
+function currentNudges(): Nudge[] {
+  const now = Date.now();
+  return loadNudges()
+    .filter((nudge) => {
+      if (nudge.status === "dismissed" || nudge.status === "completed") {
+        return false;
+      }
+      if (nudge.status === "snoozed" && nudge.snoozeUntil && Date.parse(nudge.snoozeUntil) > now) {
+        return false;
+      }
+      return true;
+    })
+    .sort((a, b) => {
+      const priorityOrder: Record<NudgePriority, number> = { urgent: 0, normal: 1, soft: 2 };
+      return priorityOrder[a.priority] - priorityOrder[b.priority] || a.date.localeCompare(b.date) || (a.time ?? "").localeCompare(b.time ?? "");
+    });
+}
+
+function upsertGeneratedNudge(candidates: Nudge[], existingById: Map<string, Nudge>, candidate: Omit<Nudge, "status" | "createdAt" | "updatedAt">): void {
+  const now = new Date().toISOString();
+  const existing = existingById.get(candidate.id);
+  candidates.push({
+    ...candidate,
+    status: existing?.status ?? "active",
+    snoozeUntil: existing?.snoozeUntil ?? candidate.snoozeUntil ?? null,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now
+  });
+}
+
+function generatedNudgeCandidates(settings: NudgeSettings): Nudge[] {
+  if (!settings.enabled) {
+    return [];
+  }
+
+  const today = todayDateString();
+  const tomorrow = addLocalDays(today, 1);
+  const existingById = new Map(loadNudges().map((nudge) => [nudge.id, nudge]));
+  const candidates: Nudge[] = [];
+
+  for (const event of loadCalendarEvents()) {
+    if (event.date !== today && event.date !== tomorrow) {
+      continue;
+    }
+    upsertGeneratedNudge(candidates, existingById, {
+      id: `calendar-event-${event.id}-${event.date}`,
+      title: event.date === today ? "Calendar event today" : "Calendar event tomorrow",
+      message: `${event.title}${event.allDay ? "" : event.startTime ? ` at ${event.startTime}` : ""}`,
+      sourceModule: "calendar",
+      sourceId: event.id,
+      date: event.date,
+      time: event.startTime ?? null,
+      priority: event.reminderLevel,
+      snoozeUntil: null
+    });
+  }
+
+  for (const document of loadVaultDocuments()) {
+    if (!document.expiryDate) {
+      continue;
+    }
+    const daysUntil = localDayDiff(today, document.expiryDate);
+    if (daysUntil < 0 || !settings.vaultExpiryReminderDays.some((days) => daysUntil <= days)) {
+      continue;
+    }
+    upsertGeneratedNudge(candidates, existingById, {
+      id: `vault-expiry-${document.id}-${document.expiryDate}`,
+      title: "Vault document expiry",
+      message: `${document.title || document.originalFileName} expires in ${daysUntil} day${daysUntil === 1 ? "" : "s"}.`,
+      sourceModule: "vault",
+      sourceId: document.id,
+      date: today,
+      time: null,
+      priority: nudgePriorityForDays(daysUntil),
+      snoozeUntil: null
+    });
+  }
+
+  for (const transaction of loadFinanceTransactions()) {
+    for (const [kind, dateValue] of [["return", transaction.returnDeadline], ["warranty", transaction.warrantyUntil]] as const) {
+      if (!dateValue) {
+        continue;
+      }
+      const daysUntil = localDayDiff(today, dateValue);
+      const relevantDays = kind === "return" ? settings.returnReminderDays : [90, 30, 7];
+      if (daysUntil < 0 || !relevantDays.some((days) => daysUntil <= days)) {
+        continue;
+      }
+      upsertGeneratedNudge(candidates, existingById, {
+        id: `finance-${kind}-${transaction.id}-${dateValue}`,
+        title: kind === "return" ? "Return deadline" : "Warranty date",
+        message: `${transaction.store} ${kind === "return" ? "return deadline" : "warranty"} in ${daysUntil} day${daysUntil === 1 ? "" : "s"}.`,
+        sourceModule: "finance",
+        sourceId: transaction.id,
+        date: today,
+        time: null,
+        priority: nudgePriorityForDays(daysUntil),
+        snoozeUntil: null
+      });
+    }
+  }
+
+  for (const recurring of loadFinanceRecurring().filter((item) => item.active)) {
+    const daysUntil = localDayDiff(today, recurring.nextDueDate);
+    if (daysUntil < 0 || daysUntil > 7) {
+      continue;
+    }
+    upsertGeneratedNudge(candidates, existingById, {
+      id: `finance-recurring-${recurring.id}-${recurring.nextDueDate}`,
+      title: "Recurring expense due",
+      message: `${recurring.name} is due in ${daysUntil} day${daysUntil === 1 ? "" : "s"}.`,
+      sourceModule: "finance",
+      sourceId: recurring.id,
+      date: today,
+      time: null,
+      priority: nudgePriorityForDays(daysUntil),
+      snoozeUntil: null
+    });
+  }
+
+  if (settings.dailyJournalReminderEnabled && !loadJournalEntries().some((entry) => entry.date === today)) {
+    upsertGeneratedNudge(candidates, existingById, {
+      id: `journal-daily-${today}`,
+      title: "Journal reminder",
+      message: "Add today’s DexNest Journal entry.",
+      sourceModule: "journal",
+      sourceId: today,
+      date: today,
+      time: null,
+      priority: "soft",
+      snoozeUntil: null
+    });
+  }
+
+  const latestBackup = listBackups()[0] ?? null;
+  const daysSinceBackup = latestBackup ? localDayDiff(localDateStringFromTimestamp(latestBackup.createdAt), today) : Number.POSITIVE_INFINITY;
+  if (daysSinceBackup >= settings.backupReminderAfterDays) {
+    upsertGeneratedNudge(candidates, existingById, {
+      id: `backup-reminder-${today}`,
+      title: "Backup reminder",
+      message: latestBackup ? `Last backup was ${daysSinceBackup} days ago.` : "No DexNest backup found yet.",
+      sourceModule: "backup",
+      sourceId: latestBackup?.path ?? null,
+      date: today,
+      time: null,
+      priority: daysSinceBackup > settings.backupReminderAfterDays * 2 ? "urgent" : "normal",
+      snoozeUntil: null
+    });
+  }
+
+  return candidates;
+}
+
+function refreshNudges(source: DexNestActionTrigger | "system" = "system", writeAudit = true): Nudge[] {
+  const startedAt = Date.now();
+  const settings = loadNudgeSettings();
+  const existing = loadNudges();
+  const generated = generatedNudgeCandidates(settings);
+  const generatedIds = new Set(generated.map((nudge) => nudge.id));
+  const manualOrInactive = existing.filter((nudge) => !generatedIds.has(nudge.id));
+  const next = saveNudges([...generated, ...manualOrInactive].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)));
+  const newCount = generated.filter((nudge) => !existing.some((item) => item.id === nudge.id)).length;
+
+  if (writeAudit || newCount > 0) {
+    localDb.appendActionEvent({
+      module: "DexNest Calendar",
+      actionId: "calendar.nudge.refresh",
+      eventType: newCount > 0 ? "nudge_generated" : "nudge_refreshed",
+      status: "success",
+      source: source === "system" ? "system" : source,
+      summary: `Refreshed DexNest nudges with ${newCount} new nudge${newCount === 1 ? "" : "s"}.`,
+      metadataJson: { generatedCount: generated.length, newCount, activeCount: currentNudges().length },
+      durationMs: Date.now() - startedAt
+    });
+  }
+
+  return next;
 }
 
 function logJournalEvent(
@@ -3348,6 +5242,29 @@ function logCalendarEvent(
     module: "DexNest Calendar",
     actionId,
     eventType: "calendar_action",
+    status,
+    source,
+    summary,
+    metadataJson,
+    errorMessage,
+    durationMs: Date.now() - startedAt
+  });
+}
+
+function logNudgeEvent(
+  actionId: string,
+  eventType: string,
+  status: DexNestEventStatus,
+  source: DexNestActionTrigger,
+  summary: string,
+  metadataJson: Record<string, unknown>,
+  startedAt: number,
+  errorMessage: string | null = null
+): void {
+  localDb.appendActionEvent({
+    module: "DexNest Calendar",
+    actionId,
+    eventType,
     status,
     source,
     summary,
@@ -3612,9 +5529,13 @@ function commandStats() {
   const todayEvents = events.filter((event) => localDateStringFromTimestamp(event.timestamp) === today);
   const finance = financeState();
   const heatmap = heatmapState();
+  const nudges = currentNudges();
   return {
     journalEntriesThisWeek: loadJournalEntries().filter((entry) => entry.date >= weekStart && entry.date <= today).length,
     calendarUpcoming: calendarState().upcomingEvents.length,
+    todayNudges: nudges.filter((nudge) => nudge.date === today).length,
+    urgentNudges: nudges.filter((nudge) => nudge.priority === "urgent").length,
+    activeNudges: nudges.length,
     transactionsThisMonth: finance.summary.transactionCount,
     receiptsThisMonth: finance.transactions.filter((transaction) => transaction.receiptFilePath && transaction.date.slice(0, 7) === finance.summary.currentMonth).length,
     vaultDocuments: loadVaultDocuments().length,
@@ -4046,10 +5967,17 @@ function importVaultDocuments(input: VaultImportInput, source: DexNestActionTrig
     const existingDocuments = loadVaultDocuments();
     const imported = paths.map((filePath) => createVaultDocumentFromFile(filePath, input));
     saveVaultDocuments([...imported, ...existingDocuments]);
+    const queuedJobs = imported
+      .map((document) => queueVaultOcrJob(document))
+      .filter((job): job is VaultOcrJob => Boolean(job));
+    if (loadVaultOcrSettings().autoOcrOnImport && queuedJobs.length > 0) {
+      void processVaultOcrQueue(source);
+    }
     logVaultEvent(actionId, "success", source, `Imported ${imported.length} Vault document${imported.length === 1 ? "" : "s"}.`, {
       documentIds: imported.map((document) => document.id),
       category: input.category ?? "Other",
       fileCount: imported.length,
+      ocrQueuedCount: queuedJobs.length,
       outputSize: imported.reduce((total, document) => total + document.sizeBytes, 0)
     }, startedAt);
     return { ok: true, actionId, documents: imported };
@@ -4193,6 +6121,7 @@ function runSecureVaultAction(action: DexNestActionDefinition, source: DexNestAc
       }
       // TODO: When DexNest adds an automatic clipboard listener, mark Secure Vault writes as excluded from Clipboard history.
       clipboard.writeText(copiedValue);
+      lastClipboardListenerText = copiedValue;
       secureVaultProtectedClipboardValue = copiedValue;
       if (secureVaultClipboardTimer) {
         clearTimeout(secureVaultClipboardTimer);
@@ -4279,6 +6208,68 @@ function runVaultAction(action: DexNestActionDefinition, source: DexNestActionTr
         sizeBytes: updated.sizeBytes
       }, startedAt);
       return { ok: true, actionId: action.id, document: updated };
+    }
+
+    if (action.id === "vault.ocr.run_queue") {
+      vaultOcrQueuePaused = false;
+      void processVaultOcrQueue(source);
+      logVaultEvent(action.id, "success", source, "Started Vault GPU OCR queue.", { queuedCount: loadVaultOcrJobs().filter((job) => job.status === "queued").length, engine: "paddleocr", device: "gpu" }, startedAt);
+      return { ok: true, actionId: action.id, vaultState: vaultState() };
+    }
+
+    if (action.id === "vault.ocr.pause_queue") {
+      vaultOcrQueuePaused = true;
+      logVaultEvent(action.id, "success", source, "Paused Vault GPU OCR queue.", { running: vaultOcrQueueRunning }, startedAt);
+      return { ok: true, actionId: action.id, vaultState: vaultState() };
+    }
+
+    if (action.id === "vault.ocr.retry_failed") {
+      const now = new Date().toISOString();
+      const jobs = loadVaultOcrJobs();
+      const failed = jobs.filter((job) => job.status === "failed");
+      saveVaultOcrJobs(jobs.map((job) => job.status === "failed" ? { ...job, status: "queued", error: null, startedAt: null, completedAt: null, createdAt: now } : job));
+      for (const job of failed) {
+        updateVaultDocumentOcr(job.documentId, { ocrStatus: "queued", ocrError: null, ocrUpdatedAt: now });
+      }
+      vaultOcrQueuePaused = false;
+      void processVaultOcrQueue(source);
+      logVaultEvent(action.id, "success", source, "Retried failed Vault OCR jobs.", { retriedCount: failed.length, engine: "paddleocr", device: "gpu" }, startedAt);
+      return { ok: true, actionId: action.id, vaultState: vaultState() };
+    }
+
+    if (action.id === "vault.ocr.rerun_document") {
+      const document = verifiedVaultDocument(String(params.documentId ?? ""));
+      const job = queueVaultOcrJob(document, true);
+      if (job) {
+        vaultOcrQueuePaused = false;
+        void processVaultOcrQueue(source);
+      }
+      logVaultEvent(action.id, "success", source, "Queued Vault document for OCR rerun.", { documentId: document.id, fileType: document.fileType, engine: "paddleocr", device: "gpu", queued: Boolean(job) }, startedAt);
+      return { ok: true, actionId: action.id, vaultState: vaultState() };
+    }
+
+    if (action.id === "vault.ocr.update_settings") {
+      const next = saveVaultOcrSettings({
+        autoOcrOnImport: Boolean(params.autoOcrOnImport),
+        pythonPath: typeof params.pythonPath === "string" && params.pythonPath.trim() ? params.pythonPath.trim() : null
+      });
+      saveToolsSettings({ ...loadToolsSettings(), pythonPath: next.pythonPath ?? loadToolsSettings().pythonPath ?? null, ocrEngine: "paddleocr", ocrDevice: "gpu" });
+      logVaultEvent(action.id, "success", source, "Updated Vault OCR settings.", { autoOcrOnImport: next.autoOcrOnImport, engine: "paddleocr", device: "gpu", hasPythonPath: Boolean(next.pythonPath) }, startedAt);
+      return { ok: true, actionId: action.id, vaultState: vaultState() };
+    }
+
+    if (action.id === "vault.ocr.open_text" || action.id === "vault.ocr.copy_text") {
+      const document = verifiedVaultDocument(String(params.documentId ?? ""));
+      if (!document.ocrTextPath || !existsSync(document.ocrTextPath) || !isPathInside(vaultOcrRoot, document.ocrTextPath)) {
+        throw new Error("Vault OCR text is not available for this document.");
+      }
+      if (action.id === "vault.ocr.open_text") {
+        void shell.openPath(document.ocrTextPath);
+      } else {
+        clipboard.writeText(readFileSync(document.ocrTextPath, "utf8"));
+      }
+      logVaultEvent(action.id, "success", source, action.id === "vault.ocr.open_text" ? "Opened Vault OCR text file." : "Copied Vault OCR text.", { documentId: document.id, fileType: document.fileType, textBytes: statSync(document.ocrTextPath).size }, startedAt);
+      return { ok: true, actionId: action.id };
     }
 
     if (action.id === "vault.open_document" || action.id === "vault.open_document_folder" || action.id === "vault.send_document_to_drop") {
@@ -4608,6 +6599,606 @@ async function pdfToText(paths: string[]): Promise<ToolsOutputItem[]> {
   return outputs;
 }
 
+function safeOcrLanguage(value: unknown): string {
+  const language = String(value ?? loadToolsSettings().ocrLanguage ?? "eng").trim();
+  return /^[a-zA-Z0-9_+-]+$/.test(language) ? language : "eng";
+}
+
+function safeOcrEngine(value: unknown): "tesseract" | "paddleocr" | "easyocr_placeholder" {
+  return value === "tesseract" || value === "paddleocr" || value === "easyocr_placeholder"
+    ? value
+    : loadToolsSettings().ocrEngine ?? "paddleocr";
+}
+
+function safeOcrDevice(value: unknown): "gpu" | "cpu" {
+  return value === "cpu" || value === "gpu" ? value : loadToolsSettings().ocrDevice ?? "gpu";
+}
+
+function assertOcrImagePath(filePath: string): void {
+  const extension = extname(filePath).toLowerCase();
+  if (![".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"].includes(extension)) {
+    throw new Error(`Unsupported OCR image type: ${extension || "unknown"}. Use PNG, JPG, JPEG, or WebP where supported by local Tesseract.`);
+  }
+}
+
+async function runTesseractToText(inputPath: string, outputBasePath: string, language: string): Promise<string> {
+  const tesseractPath = resolveTesseractPath();
+  await execFileAsync(tesseractPath, [inputPath, outputBasePath, "-l", language, "txt"]);
+  const textPath = `${outputBasePath}.txt`;
+  if (!existsSync(textPath)) {
+    throw new Error("Tesseract did not create a text output.");
+  }
+  return readFileSync(textPath, "utf8");
+}
+
+interface OcrPreprocessOptions {
+  upscale: boolean;
+  grayscale: boolean;
+  contrast: boolean;
+  sharpen: boolean;
+  threshold: boolean;
+  rotateDegrees: number;
+}
+
+interface OcrEngineResult {
+  text: string;
+  averageConfidence: number | null;
+  engine: "tesseract" | "paddleocr";
+  deviceUsed?: "gpu" | "cpu" | null;
+  note?: string;
+}
+
+function ocrPreprocessOptions(params: Record<string, unknown>): OcrPreprocessOptions {
+  return {
+    upscale: Boolean(params.upscale),
+    grayscale: params.grayscale !== false,
+    contrast: Boolean(params.contrastBoost ?? params.contrast),
+    sharpen: params.sharpen !== false,
+    threshold: Boolean(params.threshold),
+    rotateDegrees: Number(params.rotateDegrees ?? 0)
+  };
+}
+
+async function prepareOcrImage(inputPath: string, options: OcrPreprocessOptions, tempFolder: string): Promise<string> {
+  const shouldProcess = options.upscale || options.grayscale || options.contrast || options.sharpen || options.threshold || Boolean(options.rotateDegrees);
+  if (!shouldProcess) {
+    return inputPath;
+  }
+
+  const image = await Jimp.read(inputPath);
+  if (options.upscale && typeof (image as unknown as { scale?: (value: number) => unknown }).scale === "function") {
+    (image as unknown as { scale: (value: number) => unknown }).scale(2);
+  }
+  if (options.grayscale) {
+    image.greyscale();
+  }
+  if (options.contrast) {
+    image.contrast(0.38);
+  }
+  if (options.sharpen) {
+    image.convolute([
+      [0, -1, 0],
+      [-1, 5, -1],
+      [0, -1, 0]
+    ]);
+  }
+  if (options.threshold && typeof (image as unknown as { threshold?: (options: { max: number }) => unknown }).threshold === "function") {
+    (image as unknown as { threshold: (options: { max: number }) => unknown }).threshold({ max: 180 });
+  }
+  if (options.rotateDegrees === 90 || options.rotateDegrees === -90 || options.rotateDegrees === 180 || options.rotateDegrees === 270) {
+    image.rotate(options.rotateDegrees);
+  }
+
+  const processedPath = join(tempFolder, `${basename(inputPath, extname(inputPath))}-ocr-preprocessed.png`);
+  await image.write(processedPath as `${string}.${string}`);
+  return processedPath;
+}
+
+function paddleOcrScript(): string {
+  return [
+    "import argparse, contextlib, io, json, os, pathlib, site, sys, warnings",
+    "os.environ.setdefault('FLAGS_enable_pir_api', '0')",
+    "os.environ.setdefault('FLAGS_use_mkldnn', '0')",
+    "os.environ.setdefault('FLAGS_use_onednn', '0')",
+    "warnings.filterwarnings('ignore')",
+    "def add_nvidia_dll_dirs():",
+    "    roots = []",
+    "    try: roots.extend(site.getsitepackages())",
+    "    except Exception: pass",
+    "    try: roots.append(site.getusersitepackages())",
+    "    except Exception: pass",
+    "    added = []",
+    "    seen = set()",
+    "    for root in roots:",
+    "        nvidia_root = pathlib.Path(root) / 'nvidia'",
+    "        if not nvidia_root.exists(): continue",
+    "        for dirpath, dirnames, filenames in os.walk(nvidia_root):",
+    "            if not any(name.lower().endswith('.dll') for name in filenames): continue",
+    "            path = str(dirpath)",
+    "            if path in seen: continue",
+    "            seen.add(path)",
+    "            os.environ['PATH'] = path + os.pathsep + os.environ.get('PATH', '')",
+    "            try: os.add_dll_directory(path)",
+    "            except Exception: pass",
+    "            added.append(path)",
+    "    return added",
+    "add_nvidia_dll_dirs()",
+    "parser = argparse.ArgumentParser()",
+    "parser.add_argument('--input', required=True)",
+    "parser.add_argument('--lang', default='en')",
+    "parser.add_argument('--device', choices=['gpu', 'cpu'], default='gpu')",
+    "parser.add_argument('--output-json', required=True)",
+    "args = parser.parse_args()",
+    "if args.device == 'cpu':",
+    "    os.environ['CUDA_VISIBLE_DEVICES'] = '-1'",
+    "    os.environ['FLAGS_use_gpu'] = '0'",
+    "def finish(payload, code=0):",
+    "    with open(args.output_json, 'w', encoding='utf-8') as handle:",
+    "        json.dump(payload, handle, ensure_ascii=False)",
+    "    sys.exit(code)",
+    "try:",
+    "    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):",
+    "        from paddleocr import PaddleOCR",
+    "except Exception as exc:",
+    "    finish({'ok': False, 'error': 'PaddleOCR is not installed. Install with: python -m pip install paddleocr paddlepaddle'}, 0)",
+    "try:",
+    "    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):",
+    "        paddle_device = 'gpu:0' if args.device == 'gpu' else 'cpu'",
+    "        paddle_kwargs = {'lang': args.lang, 'use_textline_orientation': True, 'device': paddle_device}",
+    "        if args.device == 'cpu':",
+    "            paddle_kwargs['enable_mkldnn'] = False",
+    "        try:",
+    "            ocr = PaddleOCR(**paddle_kwargs)",
+    "        except TypeError:",
+    "            try:",
+    "                legacy_kwargs = {'lang': args.lang, 'use_angle_cls': True, 'use_gpu': args.device == 'gpu'}",
+    "                if args.device == 'cpu': legacy_kwargs['enable_mkldnn'] = False",
+    "                ocr = PaddleOCR(**legacy_kwargs)",
+    "            except TypeError:",
+    "                ocr = PaddleOCR(lang=args.lang)",
+    "        if hasattr(ocr, 'predict'):",
+    "            result = ocr.predict(args.input)",
+    "        elif hasattr(ocr, 'ocr'):",
+    "            try:",
+    "                result = ocr.ocr(args.input)",
+    "            except TypeError:",
+    "                result = ocr.ocr(args.input, cls=True)",
+    "        else:",
+    "            raise RuntimeError('Installed PaddleOCR does not expose predict() or ocr().')",
+    "    lines = []",
+    "    confidences = []",
+    "    def walk(node):",
+    "        if hasattr(node, 'json'):",
+    "            try:",
+    "                walk(node.json)",
+    "                return",
+    "            except Exception: pass",
+    "        if hasattr(node, 'to_dict'):",
+    "            try:",
+    "                walk(node.to_dict())",
+    "                return",
+    "            except Exception: pass",
+    "        if isinstance(node, dict):",
+    "            texts = node.get('rec_texts')",
+    "            scores = node.get('rec_scores') or []",
+    "            if isinstance(texts, list):",
+    "                for index, value in enumerate(texts):",
+    "                    if isinstance(value, str) and value.strip():",
+    "                        lines.append(value)",
+    "                        try:",
+    "                            if index < len(scores): confidences.append(float(scores[index]))",
+    "                        except Exception: pass",
+    "            text = node.get('rec_text') or node.get('text')",
+    "            score = node.get('rec_score') or node.get('confidence') or node.get('score')",
+    "            if isinstance(text, str):",
+    "                lines.append(text)",
+    "                try:",
+    "                    if score is not None: confidences.append(float(score))",
+    "                except Exception: pass",
+    "            for value in node.values(): walk(value)",
+    "            return",
+    "        if isinstance(node, (list, tuple)):",
+    "            if len(node) >= 2 and isinstance(node[1], (list, tuple)) and len(node[1]) >= 2 and isinstance(node[1][0], str):",
+    "                lines.append(node[1][0])",
+    "                try: confidences.append(float(node[1][1]))",
+    "                except Exception: pass",
+    "            else:",
+    "                for child in node: walk(child)",
+    "    walk(result)",
+    "    lines = [line.strip() for line in lines if isinstance(line, str) and line.strip()]",
+    "    avg = sum(confidences) / len(confidences) if confidences else None",
+    "    finish({'ok': True, 'text': '\\n'.join(lines), 'averageConfidence': avg, 'lineCount': len(lines)}, 0)",
+    "except Exception as exc:",
+    "    finish({'ok': False, 'error': str(exc)}, 0)"
+  ].join("\n");
+}
+
+function writePaddleOcrSidecarScript(): string {
+  mkdirSync(toolsTempRoot, { recursive: true });
+  const scriptPath = join(toolsTempRoot, "dexnest-paddle-ocr-sidecar.py");
+  writeFileSync(scriptPath, paddleOcrScript(), "utf8");
+  return scriptPath;
+}
+
+async function runPaddleOcrToText(inputPath: string, language: string, device: "gpu" | "cpu"): Promise<OcrEngineResult> {
+  const pythonPath = resolvePythonPath();
+  if (device === "gpu") {
+    const runtime = getPaddleRuntimeInfo(pythonPath);
+    if (!runtime.ok) {
+      throw new Error(`PaddleOCR GPU cannot start because DexNest could not inspect the local Paddle runtime. ${runtime.error ?? ""}`.trim());
+    }
+    if (!runtime.cudaCompiled || runtime.deviceCount < 1) {
+      throw new Error(`PaddleOCR GPU is selected, but the installed PaddlePaddle runtime is CPU-only. Install a GPU-enabled PaddlePaddle build for Python 3.12, then retry. Current PaddlePaddle: ${runtime.paddleVersion ?? "unknown"}.`);
+    }
+  }
+  const scriptPath = writePaddleOcrSidecarScript();
+  const paddleLanguage = language === "eng" ? "en" : language;
+  const resultPath = join(toolsTempRoot, `paddle-ocr-result-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`);
+  await execFileAsync(pythonPath, [scriptPath, "--input", inputPath, "--lang", paddleLanguage, "--device", device, "--output-json", resultPath], toolsTempRoot);
+  if (!existsSync(resultPath)) {
+    throw new Error("PaddleOCR did not return a result file. Verify the local Python/PaddleOCR installation.");
+  }
+  const parsed = JSON.parse(readFileSync(resultPath, "utf8")) as { ok?: boolean; text?: string; averageConfidence?: number | null; error?: string; lineCount?: number };
+  if (!parsed.ok) {
+    const rawError = parsed.error ?? "";
+    const isPaddleExecutorError = rawError.includes("ConvertPirAttribute2RuntimeAttribute") || rawError.includes("new_executor");
+    const setupHint = device === "gpu"
+      ? "PaddleOCR GPU failed. Verify a GPU-enabled local PaddlePaddle install, CUDA compatibility, and GPU drivers, or switch OCR device to CPU in Tools Settings."
+      : "PaddleOCR CPU failed. Verify the local PaddleOCR/PaddlePaddle install.";
+    throw new Error(isPaddleExecutorError ? setupHint : (rawError ? `${setupHint} ${rawError}` : setupHint));
+  }
+  return {
+    text: parsed.text ?? "",
+    averageConfidence: typeof parsed.averageConfidence === "number" ? parsed.averageConfidence : null,
+    engine: "paddleocr",
+    deviceUsed: device
+  };
+}
+
+async function runOcrEngine(inputPath: string, outputBasePath: string, engine: "tesseract" | "paddleocr", language: string, device: "gpu" | "cpu"): Promise<OcrEngineResult> {
+  if (engine === "paddleocr") {
+    return runPaddleOcrToText(inputPath, language, device);
+  }
+
+  return {
+    text: await runTesseractToText(inputPath, outputBasePath, language),
+    averageConfidence: null,
+    engine: "tesseract"
+  };
+}
+
+function writeOcrOutputFiles(baseFileName: string, operation: "ocr_image" | "ocr_pdf", engine: string, text: string, metadata: Record<string, unknown>): ToolsOutputItem[] {
+  const textOutput = createToolsOutput(`${baseFileName}-${engine}-ocr.txt`, operation);
+  writeFileSync(textOutput.path, text, "utf8");
+  const textRecord = recordToolsOutput(textOutput.path, operation);
+  const metadataOutput = createToolsOutput(`${baseFileName}-${engine}-ocr-metadata.json`, `${operation}_metadata`);
+  writeFileSync(metadataOutput.path, JSON.stringify({ ...metadata, textOutputPath: textOutput.path }, null, 2), "utf8");
+  const metadataRecord = recordToolsOutput(metadataOutput.path, `${operation}_metadata`);
+  return [textRecord, metadataRecord];
+}
+
+async function ocrImages(paths: string[], params: Record<string, unknown>): Promise<{ outputs: ToolsOutputItem[]; preview: string; averageConfidence: number | null; engine: string }> {
+  if (paths.length === 0) {
+    throw new Error("Select one or more image files for OCR.");
+  }
+
+  const settings = loadToolsSettings();
+  const requestedEngine = safeOcrEngine(params.engine ?? settings.ocrEngine);
+  const requestedDevice = safeOcrDevice(params.device ?? settings.ocrDevice);
+  if (requestedEngine === "easyocr_placeholder") {
+    throw new Error("EasyOCR is a placeholder for later. Use PaddleOCR or Tesseract.");
+  }
+  const engine = requestedEngine;
+  const language = safeOcrLanguage(params.language);
+  const preprocess = ocrPreprocessOptions(params);
+  const outputs: ToolsOutputItem[] = [];
+  const previews: string[] = [];
+  const confidences: number[] = [];
+  for (const filePath of paths) {
+    assertOcrImagePath(filePath);
+    const tempFolder = createToolsTempFolder("ocr_image");
+    try {
+      const inputPath = await prepareOcrImage(filePath, preprocess, tempFolder);
+      const outputBase = join(tempFolder, "ocr-output");
+      const result = await runOcrEngine(inputPath, outputBase, engine, language, requestedDevice);
+      outputs.push(...writeOcrOutputFiles(basename(filePath, extname(filePath)), "ocr_image", result.engine, result.text, {
+        engine: result.engine,
+        device: result.engine === "paddleocr" ? (result.deviceUsed ?? requestedDevice) : null,
+        averageConfidence: result.averageConfidence,
+        language,
+        originalFileName: basename(filePath),
+        preprocessing: preprocess,
+        ...(result.note ? { note: result.note } : {}),
+        createdAt: new Date().toISOString()
+      }));
+      previews.push(result.text);
+      if (typeof result.averageConfidence === "number") {
+        confidences.push(result.averageConfidence);
+      }
+    } finally {
+      rmSync(tempFolder, { recursive: true, force: true });
+    }
+  }
+
+  return {
+    outputs,
+    preview: previewText(previews.join("\n\n")),
+    averageConfidence: confidences.length ? confidences.reduce((sum, item) => sum + item, 0) / confidences.length : null,
+    engine
+  };
+}
+
+async function ocrPdfs(paths: string[], params: Record<string, unknown>): Promise<{ outputs: ToolsOutputItem[]; preview: string; averageConfidence: number | null; engine: string }> {
+  if (paths.length === 0) {
+    throw new Error("Select one or more PDF files for OCR.");
+  }
+
+  const settings = loadToolsSettings();
+  const requestedEngine = safeOcrEngine(params.engine ?? settings.ocrEngine);
+  const requestedDevice = safeOcrDevice(params.device ?? settings.ocrDevice);
+  if (requestedEngine === "easyocr_placeholder") {
+    throw new Error("EasyOCR is a placeholder for later. Use PaddleOCR or Tesseract.");
+  }
+  const engine = requestedEngine;
+  const language = safeOcrLanguage(params.language);
+  const preprocess = ocrPreprocessOptions(params);
+  const pdftoppmPath = resolveCommandPath("pdftoppm", "Poppler is required for PDF OCR image export. Install it and add pdftoppm to PATH.");
+  const outputs: ToolsOutputItem[] = [];
+  const previews: string[] = [];
+  const confidences: number[] = [];
+
+  for (const filePath of paths) {
+    if (extname(filePath).toLowerCase() !== ".pdf") {
+      throw new Error("PDF OCR only accepts PDF files.");
+    }
+
+    const tempFolder = createToolsTempFolder("ocr_pdf");
+    try {
+      const prefix = join(tempFolder, basename(filePath, extname(filePath)));
+      await execFileAsync(pdftoppmPath, ["-png", filePath, prefix]);
+      const producedImages = readdirSync(tempFolder)
+        .filter((fileName) => extname(fileName).toLowerCase() === ".png")
+        .map((fileName) => join(tempFolder, fileName))
+        .sort();
+      if (producedImages.length === 0) {
+        throw new Error("No PDF page images were created for OCR.");
+      }
+
+      const pageTexts: string[] = [];
+      let deviceUsed: "gpu" | "cpu" | null = engine === "paddleocr" ? requestedDevice : null;
+      let fallbackNote: string | undefined;
+      for (const [index, imagePath] of producedImages.entries()) {
+        const inputPath = await prepareOcrImage(imagePath, preprocess, tempFolder);
+        const pageBase = join(tempFolder, `ocr-page-${index + 1}`);
+        const result = await runOcrEngine(inputPath, pageBase, engine, language, requestedDevice);
+        pageTexts.push(result.text);
+        if (engine === "paddleocr" && result.deviceUsed) {
+          deviceUsed = result.deviceUsed;
+        }
+        if (result.note) {
+          fallbackNote = result.note;
+        }
+        if (typeof result.averageConfidence === "number") {
+          confidences.push(result.averageConfidence);
+        }
+      }
+
+      const combinedText = pageTexts.join("\n\n");
+      outputs.push(...writeOcrOutputFiles(basename(filePath, extname(filePath)), "ocr_pdf", engine, combinedText, {
+        engine,
+        device: deviceUsed,
+        averageConfidence: confidences.length ? confidences.reduce((sum, item) => sum + item, 0) / confidences.length : null,
+        language,
+        originalFileName: basename(filePath),
+        pageCount: producedImages.length,
+        preprocessing: preprocess,
+        ...(fallbackNote ? { note: fallbackNote } : {}),
+        createdAt: new Date().toISOString()
+      }));
+      previews.push(combinedText);
+    } finally {
+      rmSync(tempFolder, { recursive: true, force: true });
+    }
+  }
+
+  return {
+    outputs,
+    preview: previewText(previews.join("\n\n")),
+    averageConfidence: confidences.length ? confidences.reduce((sum, item) => sum + item, 0) / confidences.length : null,
+    engine
+  };
+}
+
+async function runVaultOcrForDocument(document: VaultDocumentRecord): Promise<{ textPath: string; metadataPath: string; textLength: number; averageConfidence: number | null }> {
+  if (!existsSync(document.filePath)) {
+    throw new Error("Vault document file is missing.");
+  }
+  if (!isVaultOcrSupported(document.fileType)) {
+    throw new Error("Unsupported Vault OCR file type.");
+  }
+
+  const settings = loadToolsSettings();
+  const language = safeOcrLanguage(settings.ocrLanguage);
+  const preprocess = ocrPreprocessOptions({
+    upscale: true,
+    grayscale: true,
+    contrastBoost: true,
+    sharpen: true,
+    threshold: false
+  });
+  const tempFolder = createToolsTempFolder("vault_ocr");
+  const confidences: number[] = [];
+  const texts: string[] = [];
+
+  try {
+    if (document.fileType.toLowerCase() === ".pdf") {
+      const pdftoppmPath = resolveCommandPath("pdftoppm", "Poppler is required for Vault PDF OCR. Install it and add pdftoppm to PATH.");
+      const prefix = join(tempFolder, basename(document.filePath, extname(document.filePath)));
+      await execFileAsync(pdftoppmPath, ["-png", document.filePath, prefix]);
+      const producedImages = readdirSync(tempFolder)
+        .filter((fileName) => extname(fileName).toLowerCase() === ".png")
+        .map((fileName) => join(tempFolder, fileName))
+        .sort();
+      if (producedImages.length === 0) {
+        throw new Error("No PDF page images were created for Vault OCR.");
+      }
+      for (const imagePath of producedImages) {
+        const inputPath = await prepareOcrImage(imagePath, preprocess, tempFolder);
+        const result = await runPaddleOcrToText(inputPath, language, "gpu");
+        texts.push(result.text);
+        if (typeof result.averageConfidence === "number") {
+          confidences.push(result.averageConfidence);
+        }
+      }
+    } else {
+      assertOcrImagePath(document.filePath);
+      const inputPath = await prepareOcrImage(document.filePath, preprocess, tempFolder);
+      const result = await runPaddleOcrToText(inputPath, language, "gpu");
+      texts.push(result.text);
+      if (typeof result.averageConfidence === "number") {
+        confidences.push(result.averageConfidence);
+      }
+    }
+
+    const text = texts.join("\n\n").trim();
+    if (!text) {
+      throw new Error("PaddleOCR GPU completed but returned empty text.");
+    }
+    const averageConfidence = confidences.length ? confidences.reduce((sum, item) => sum + item, 0) / confidences.length : null;
+    const output = saveVaultOcrOutput(document, text, {
+      documentId: document.id,
+      originalFileName: document.originalFileName,
+      storedFileName: document.storedFileName,
+      sourceFilePath: document.filePath,
+      engine: "paddleocr",
+      device: "gpu",
+      language,
+      averageConfidence,
+      textLength: text.length,
+      preprocessing: preprocess,
+      createdAt: new Date().toISOString()
+    });
+    return { textPath: output.textPath, metadataPath: output.metadataPath, textLength: text.length, averageConfidence };
+  } finally {
+    rmSync(tempFolder, { recursive: true, force: true });
+  }
+}
+
+async function processVaultOcrQueue(source: DexNestActionTrigger | "system" = "system"): Promise<void> {
+  if (vaultOcrQueueRunning || vaultOcrQueuePaused) {
+    return;
+  }
+  if (loadCommandSettings().performanceModePlaceholder) {
+    vaultOcrQueuePaused = true;
+    return;
+  }
+
+  vaultOcrQueueRunning = true;
+  try {
+    while (!vaultOcrQueuePaused) {
+      const job = loadVaultOcrJobs().find((item) => item.status === "queued");
+      if (!job) {
+        break;
+      }
+      const startedAt = Date.now();
+      const startedIso = new Date().toISOString();
+      setVaultOcrJob(job.id, { status: "running", startedAt: startedIso, error: null });
+      updateVaultDocumentOcr(job.documentId, { ocrStatus: "running", ocrError: null, ocrUpdatedAt: startedIso });
+      const document = findVaultDocument(job.documentId);
+      if (!document) {
+        const errorMessage = "Vault document metadata not found for OCR job.";
+        setVaultOcrJob(job.id, { status: "failed", completedAt: new Date().toISOString(), error: errorMessage });
+        continue;
+      }
+      try {
+        const result = await runVaultOcrForDocument(document);
+        const completedAt = new Date().toISOString();
+        setVaultOcrJob(job.id, {
+          status: "completed",
+          completedAt,
+          error: null,
+          outputTextPath: result.textPath,
+          outputMetadataPath: result.metadataPath
+        });
+        updateVaultDocumentOcr(document.id, {
+          ocrStatus: "completed",
+          ocrTextPath: result.textPath,
+          ocrMetadataPath: result.metadataPath,
+          ocrError: null,
+          ocrUpdatedAt: completedAt
+        });
+        localDb.appendActionEvent({
+          module: "DexNest Vault",
+          actionId: "vault.ocr.run_queue",
+          eventType: "vault_ocr_completed",
+          status: "success",
+          source: source === "system" ? "system" : source,
+          summary: "Completed Vault document GPU OCR.",
+          metadataJson: { jobId: job.id, documentId: document.id, fileType: document.fileType, engine: "paddleocr", device: "gpu", textLength: result.textLength, averageConfidence: result.averageConfidence },
+          durationMs: Date.now() - startedAt
+        });
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : "Vault OCR failed.";
+        const completedAt = new Date().toISOString();
+        setVaultOcrJob(job.id, { status: "failed", completedAt, error: errorMessage });
+        updateVaultDocumentOcr(document.id, { ocrStatus: "failed", ocrError: errorMessage, ocrUpdatedAt: completedAt });
+        localDb.appendActionEvent({
+          module: "DexNest Vault",
+          actionId: "vault.ocr.run_queue",
+          eventType: "vault_ocr_failed",
+          status: "failed",
+          source: source === "system" ? "system" : source,
+          summary: "Vault document GPU OCR failed.",
+          metadataJson: { jobId: job.id, documentId: document.id, fileType: document.fileType, engine: "paddleocr", device: "gpu" },
+          errorMessage,
+          durationMs: Date.now() - startedAt
+        });
+      }
+    }
+  } finally {
+    vaultOcrQueueRunning = false;
+  }
+}
+
+async function cleanScanImages(paths: string[], options: Record<string, unknown>, operation: "clean_scan" | "cleaned_image_to_pdf" = "clean_scan"): Promise<ToolsOutputItem[]> {
+  if (paths.length === 0) {
+    throw new Error("Select one or more scan images.");
+  }
+
+  const outputs: ToolsOutputItem[] = [];
+  const rotateDegrees = Number(options.rotateDegrees ?? 0);
+  const shouldGrayscale = options.grayscale !== false;
+  const contrastValue = Math.max(-1, Math.min(1, Number(options.contrast ?? 0.28)));
+  const shouldSharpen = options.sharpen !== false;
+
+  for (const filePath of paths) {
+    assertOcrImagePath(filePath);
+    const image = await Jimp.read(filePath);
+    if (shouldGrayscale) {
+      image.greyscale();
+    }
+    if (contrastValue !== 0) {
+      image.contrast(contrastValue);
+    }
+    if (shouldSharpen) {
+      image.convolute([
+        [0, -1, 0],
+        [-1, 5, -1],
+        [0, -1, 0]
+      ]);
+    }
+    if (rotateDegrees === 90 || rotateDegrees === -90 || rotateDegrees === 180 || rotateDegrees === 270) {
+      image.rotate(rotateDegrees);
+    }
+
+    const output = createToolsOutput(`${basename(filePath, extname(filePath))}-cleaned.png`, operation);
+    await image.write(output.path as `${string}.${string}`);
+    outputs.push(recordToolsOutput(output.path, operation));
+  }
+
+  return outputs;
+}
+
 async function pptxToImages(paths: string[]): Promise<ToolsOutputItem[]> {
   if (paths.length === 0) {
     throw new Error("Select one or more PPTX files.");
@@ -4798,8 +7389,60 @@ async function runToolsAction(action: DexNestActionDefinition, source: DexNestAc
       return { ok: true, actionId: action.id, outputs, output: outputs[0] };
     }
 
-    if (action.id === "tools.open_tools_settings") {
-      logToolsEvent(action.id, "success", source, "Opened DexNest Tools settings.", { view: "tools_settings" }, startedAt);
+    if (action.id === "tools.ocr_image") {
+      const result = await ocrImages(paths, params);
+      logToolsEvent(action.id, "success", source, `OCR completed for ${paths.length} image file${paths.length === 1 ? "" : "s"}.`, {
+        fileCount: paths.length,
+        outputCount: result.outputs.length,
+        outputSize: result.outputs.reduce((total, item) => total + item.byteLength, 0),
+        operation: "ocr_image",
+        engine: result.engine,
+        averageConfidence: result.averageConfidence,
+        language: safeOcrLanguage(params.language)
+      }, startedAt);
+      return { ok: true, actionId: action.id, outputs: result.outputs, output: result.outputs[0], ocrPreview: result.preview, ocrMetadata: { engine: result.engine, averageConfidence: result.averageConfidence } };
+    }
+
+    if (action.id === "tools.ocr_pdf") {
+      const result = await ocrPdfs(paths, params);
+      logToolsEvent(action.id, "success", source, `OCR completed for ${paths.length} PDF file${paths.length === 1 ? "" : "s"}.`, {
+        fileCount: paths.length,
+        outputCount: result.outputs.length,
+        outputSize: result.outputs.reduce((total, item) => total + item.byteLength, 0),
+        operation: "ocr_pdf",
+        engine: result.engine,
+        averageConfidence: result.averageConfidence,
+        language: safeOcrLanguage(params.language)
+      }, startedAt);
+      return { ok: true, actionId: action.id, outputs: result.outputs, output: result.outputs[0], ocrPreview: result.preview, ocrMetadata: { engine: result.engine, averageConfidence: result.averageConfidence } };
+    }
+
+    if (action.id === "tools.clean_scan") {
+      const outputs = await cleanScanImages(paths, params, "clean_scan");
+      logToolsEvent(action.id, "success", source, `Cleaned ${outputs.length} scan image${outputs.length === 1 ? "" : "s"}.`, {
+        fileCount: paths.length,
+        outputCount: outputs.length,
+        outputSize: outputs.reduce((total, item) => total + item.byteLength, 0),
+        operation: "clean_scan"
+      }, startedAt);
+      return { ok: true, actionId: action.id, outputs, output: outputs[0] };
+    }
+
+    if (action.id === "tools.cleaned_image_to_pdf") {
+      const cleanedOutputs = await cleanScanImages(paths, params, "cleaned_image_to_pdf");
+      const pdfOutput = await imagesToPdf(cleanedOutputs.map((output) => output.path));
+      const outputs = [...cleanedOutputs, pdfOutput];
+      logToolsEvent(action.id, "success", source, `Created cleaned PDF from ${paths.length} scan image${paths.length === 1 ? "" : "s"}.`, {
+        fileCount: paths.length,
+        outputCount: outputs.length,
+        outputSize: outputs.reduce((total, item) => total + item.byteLength, 0),
+        operation: "cleaned_image_to_pdf"
+      }, startedAt);
+      return { ok: true, actionId: action.id, outputs, output: pdfOutput };
+    }
+
+    if (action.id === "tools.open_tools_settings" || action.id === "tools.open_ocr_settings") {
+      logToolsEvent(action.id, "success", source, "Opened DexNest Tools settings.", { view: action.id === "tools.open_ocr_settings" ? "ocr_settings" : "tools_settings" }, startedAt);
       return { ok: true, actionId: action.id };
     }
 
@@ -4825,23 +7468,21 @@ function runClipboardAction(action: DexNestActionDefinition, source: DexNestActi
 
   if (action.id === "clipboard.save_current") {
     const text = clipboard.readText();
-    if (!text.trim()) {
+    const result = saveClipboardText(text, "manual");
+    if (result.reason === "empty") {
       logActionEvent(action, "skipped", source, "Clipboard save skipped because clipboard text was empty.", { byteLength: 0 });
       return { ok: false, actionId: action.id, error: "Clipboard text is empty." };
     }
-    if (secureVaultProtectedClipboardValue && text === secureVaultProtectedClipboardValue) {
+    if (result.reason === "secure_vault") {
       logActionEvent(action, "skipped", source, "Clipboard save skipped because the current clipboard value came from DexNest Secure Vault.", { protectedSource: "secure_vault" });
-      return { ok: false, actionId: action.id, error: "Secure Vault clipboard values are excluded from Clipboard history." };
+      return { ok: false, actionId: action.id, error: clipboardProtectedError() };
+    }
+    if (result.reason === "duplicate") {
+      logActionEvent(action, "skipped", source, "Clipboard save skipped because it matched the latest history item.", { duplicate: true });
+      return { ok: false, actionId: action.id, error: "Clipboard text is already the latest history item." };
     }
 
-    const item: ClipboardHistoryItem = {
-      id: createId("clip"),
-      text,
-      preview: previewText(text),
-      byteLength: byteLength(text),
-      createdAt: now
-    };
-    saveClipboardHistory([item, ...loadClipboardHistory()]);
+    const item = result.item as ClipboardHistoryItem;
     logActionEvent(action, "success", source, `Saved clipboard text, ${item.byteLength} bytes.`, {
       itemId: item.id,
       byteLength: item.byteLength
@@ -4856,6 +7497,271 @@ function runClipboardAction(action: DexNestActionDefinition, source: DexNestActi
       byteLength: byteLength(text)
     });
     return { ok: true, actionId: action.id, byteLength: byteLength(text) };
+  }
+
+  if (action.id === "clipboard.toggle_listener") {
+    const enabled = Boolean(params.enabled);
+    const settings = saveClipboardSettings({ ...loadClipboardSettings(), listenerEnabled: enabled });
+    if (enabled) {
+      startClipboardListener();
+    } else {
+      stopClipboardListener();
+    }
+    logActionEvent(action, "success", source, `Clipboard listener ${enabled ? "enabled" : "disabled"}.`, {
+      enabled,
+      intervalMs: settings.listenerIntervalMs
+    });
+    return { ok: true, actionId: action.id, settings: loadClipboardSettings() };
+  }
+
+  if (action.id === "clipboard.test_read_current") {
+    try {
+      const text = clipboard.readText();
+      const settings = loadClipboardSettings();
+      saveClipboardSettings({
+        ...settings,
+        lastReadAt: now,
+        lastReadPreview: previewText(text),
+        lastReadError: null
+      });
+      logActionEvent(action, "success", source, `Read current Clipboard preview, ${byteLength(text)} bytes.`, {
+        byteLength: byteLength(text),
+        hasText: Boolean(text.trim())
+      });
+      return { ok: true, actionId: action.id, preview: previewText(text), byteLength: byteLength(text) };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Clipboard read failed.";
+      saveClipboardSettings({ ...loadClipboardSettings(), lastReadAt: now, lastReadError: errorMessage });
+      logActionEvent(action, "failed", source, "Clipboard test read failed.", {}, errorMessage);
+      return { ok: false, actionId: action.id, error: errorMessage };
+    }
+  }
+
+  if (action.id === "clipboard.start_multi_copy") {
+    const existingSession = loadClipboardActiveMultiCopySession();
+    if (existingSession) {
+      logActionEvent(action, "skipped", source, "Multi-copy session is already active.", { sessionId: existingSession.id });
+      return { ok: false, actionId: action.id, error: "Multi-copy is already running." };
+    }
+    const session = saveClipboardActiveMultiCopySession({
+      id: createId("multi-copy"),
+      startedAt: now,
+      updatedAt: now,
+      items: []
+    });
+    logActionEvent(action, "success", source, "Started DexNest multi-copy session.", { sessionId: session?.id });
+    return { ok: true, actionId: action.id, session };
+  }
+
+  if (action.id === "clipboard.stop_multi_copy") {
+    const session = loadClipboardActiveMultiCopySession();
+    if (!session) {
+      logActionEvent(action, "skipped", source, "No active multi-copy session to stop.");
+      return { ok: false, actionId: action.id, error: "No active multi-copy session." };
+    }
+    saveClipboardActiveMultiCopySession(null);
+    logActionEvent(action, "success", source, `Stopped DexNest multi-copy session with ${session.items.length} temporary items.`, {
+      sessionId: session.id,
+      itemCount: session.items.length
+    });
+    return { ok: true, actionId: action.id, itemCount: session.items.length };
+  }
+
+  if (action.id === "clipboard.save_multi_copy_group") {
+    const session = loadClipboardActiveMultiCopySession();
+    if (!session) {
+      logActionEvent(action, "skipped", source, "No active multi-copy session to save.");
+      return { ok: false, actionId: action.id, error: "No active multi-copy session." };
+    }
+    const name = String(params.name ?? "").trim() || `Multi-copy ${formatLocalDateTime(now)}`;
+    const group: ClipboardMultiGroup = {
+      id: createId("multi-group"),
+      name,
+      items: session.items,
+      createdAt: session.startedAt,
+      updatedAt: now
+    };
+    saveClipboardMultiGroups([group, ...loadClipboardMultiGroups()]);
+    logActionEvent(action, "success", source, `Saved DexNest multi-copy group with ${group.items.length} items.`, {
+      groupId: group.id,
+      itemCount: group.items.length
+    });
+    return { ok: true, actionId: action.id, group };
+  }
+
+  if (action.id === "clipboard.clear_multi_copy_session") {
+    if (!params.confirmedDangerous) {
+      logActionEvent(action, "cancelled", source, "Multi-copy session clear cancelled because confirmation was missing.");
+      return { ok: false, actionId: action.id, error: "Confirmation required." };
+    }
+    const session = loadClipboardActiveMultiCopySession();
+    if (!session) {
+      logActionEvent(action, "skipped", source, "No active multi-copy session to clear.");
+      return { ok: false, actionId: action.id, error: "No active multi-copy session." };
+    }
+    clearActiveMultiCopyAfterPaste("manual", source);
+    return { ok: true, actionId: action.id };
+  }
+
+  if (action.id === "clipboard.copy_combined_group") {
+    const settings = loadClipboardSettings();
+    const groupId = typeof params.groupId === "string" ? params.groupId : "";
+    const group = groupId ? loadClipboardMultiGroups().find((item) => item.id === groupId) : null;
+    const activeSession = loadClipboardActiveMultiCopySession();
+    const items = group?.items ?? activeSession?.items ?? [];
+    if (items.length === 0) {
+      logActionEvent(action, "failed", source, "Combined Clipboard group copy failed because there were no items.", { groupId: groupId || null });
+      return { ok: false, actionId: action.id, error: "No Clipboard group items to copy." };
+    }
+    const combinedText = combinedClipboardText(items, String(params.separator ?? settings.combinedSeparator ?? "\n\n"));
+    if (!combinedText.trim()) {
+      logActionEvent(action, "failed", source, "Combined Clipboard group copy failed because text was empty.", { groupId: groupId || null, itemCount: items.length });
+      return { ok: false, actionId: action.id, error: "Combined Clipboard text is empty." };
+    }
+    clipboard.writeText(combinedText);
+    lastClipboardListenerText = combinedText;
+    if (!groupId && activeSession) {
+      armActiveMultiCopyForPaste(activeSession, combinedText);
+    }
+    logActionEvent(action, "success", source, `Copied combined Clipboard group with ${items.length} items.`, {
+      groupId: groupId || (activeSession?.id ?? null),
+      itemCount: items.length,
+      byteLength: byteLength(combinedText)
+    });
+    return { ok: true, actionId: action.id, itemCount: items.length, byteLength: byteLength(combinedText) };
+  }
+
+  if (action.id === "clipboard.update_settings") {
+    const currentSettings = loadClipboardSettings();
+    const retentionValue = params.historyRetentionDays === "never" ? "never" : Number(params.historyRetentionDays);
+    const nextRetention = retentionValue === "never" || retentionValue === 1 || retentionValue === 3 || retentionValue === 7 || retentionValue === 30
+      ? retentionValue
+      : currentSettings.historyRetentionDays;
+    const nextSettings: ClipboardSettings = {
+      ...currentSettings,
+      multiCopyHotkeyEnabled: typeof params.multiCopyHotkeyEnabled === "boolean" ? params.multiCopyHotkeyEnabled : currentSettings.multiCopyHotkeyEnabled,
+      multiCopyHotkey: typeof params.multiCopyHotkey === "string" ? normalizeClipboardHotkey(params.multiCopyHotkey) : currentSettings.multiCopyHotkey,
+      multiCopyAutoClearMinutes: Number.isFinite(Number(params.multiCopyAutoClearMinutes))
+        ? Math.max(1, Math.min(240, Number(params.multiCopyAutoClearMinutes)))
+        : currentSettings.multiCopyAutoClearMinutes,
+      historyRetentionDays: nextRetention,
+      combinedSeparator: typeof params.combinedSeparator === "string" ? params.combinedSeparator : currentSettings.combinedSeparator
+    };
+    saveClipboardSettings(nextSettings);
+    registerClipboardHotkey();
+    if (!nextSettings.multiCopyHotkeyEnabled) {
+      stopArmedMultiCopyPasteDetection();
+    }
+    scheduleActiveMultiCopyAutoClear();
+    logActionEvent(action, "success", source, "Updated DexNest Clipboard settings.", {
+      multiCopyHotkeyEnabled: nextSettings.multiCopyHotkeyEnabled,
+      multiCopyHotkey: nextSettings.multiCopyHotkey,
+      multiCopyHotkeyStatus: loadClipboardSettings().multiCopyHotkeyStatus,
+      multiCopyAutoClearMinutes: nextSettings.multiCopyAutoClearMinutes,
+      historyRetentionDays: nextSettings.historyRetentionDays,
+      separatorLength: nextSettings.combinedSeparator.length
+    });
+    return { ok: true, actionId: action.id, settings: nextSettings };
+  }
+
+  if (action.id === "clipboard.delete_multi_copy_group") {
+    if (!params.confirmedDangerous) {
+      logActionEvent(action, "cancelled", source, "Multi-copy group delete cancelled because confirmation was missing.");
+      return { ok: false, actionId: action.id, error: "Confirmation required." };
+    }
+    const groupId = String(params.groupId ?? "");
+    const groups = loadClipboardMultiGroups();
+    const group = groups.find((item) => item.id === groupId);
+    if (!group) {
+      logActionEvent(action, "failed", source, "Multi-copy group delete failed because the group was not found.", { groupId });
+      return { ok: false, actionId: action.id, error: "Multi-copy group not found." };
+    }
+    saveClipboardMultiGroups(groups.filter((item) => item.id !== groupId));
+    logActionEvent(action, "success", source, `Deleted multi-copy group with ${group.items.length} items.`, {
+      groupId,
+      itemCount: group.items.length
+    });
+    return { ok: true, actionId: action.id };
+  }
+
+  if (action.id === "clipboard.copy_history_item") {
+    const itemId = String(params.id ?? "");
+    const items = [...loadClipboardHistory(), ...(loadClipboardActiveMultiCopySession()?.items ?? []), ...loadClipboardMultiGroups().flatMap((group) => group.items)];
+    const item = items.find((historyItem) => historyItem.id === itemId);
+    if (!item) {
+      logActionEvent(action, "failed", source, "Clipboard history copy failed because the item was not found.", { itemId });
+      return { ok: false, actionId: action.id, error: "Clipboard item not found." };
+    }
+    clipboard.writeText(item.text);
+    lastClipboardListenerText = item.text;
+    logActionEvent(action, "success", source, `Copied Clipboard history item, ${item.byteLength} bytes.`, {
+      itemId,
+      byteLength: item.byteLength
+    });
+    return { ok: true, actionId: action.id };
+  }
+
+  if (action.id === "clipboard.assign_slot") {
+    const slotNumber = Number(params.slot);
+    const text = clipboard.readText();
+    if (!Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > 5) {
+      logActionEvent(action, "failed", source, "Clipboard slot assignment failed because the slot was invalid.", { slot: params.slot });
+      return { ok: false, actionId: action.id, error: "Slot must be 1 through 5." };
+    }
+    if (!text.trim()) {
+      logActionEvent(action, "skipped", source, "Clipboard slot assignment skipped because clipboard text was empty.", { slot: slotNumber });
+      return { ok: false, actionId: action.id, error: "Clipboard text is empty." };
+    }
+    if (isProtectedClipboardText(text)) {
+      logActionEvent(action, "skipped", source, "Clipboard slot assignment skipped for a Secure Vault protected value.", { slot: slotNumber, protectedSource: "secure_vault" });
+      return { ok: false, actionId: action.id, error: clipboardProtectedError() };
+    }
+    const slots = loadClipboardSlots();
+    const nextSlot: ClipboardSlot = {
+      slot: slotNumber,
+      text,
+      preview: previewText(text),
+      byteLength: byteLength(text),
+      updatedAt: now
+    };
+    saveClipboardSlots(slots.map((slot) => slot.slot === slotNumber ? nextSlot : slot));
+    logActionEvent(action, "success", source, `Assigned current clipboard to slot ${slotNumber}, ${nextSlot.byteLength} bytes.`, {
+      slot: slotNumber,
+      byteLength: nextSlot.byteLength
+    });
+    return { ok: true, actionId: action.id, slot: nextSlot };
+  }
+
+  if (action.id === "clipboard.copy_slot") {
+    const slotNumber = Number(params.slot);
+    const slot = loadClipboardSlots().find((item) => item.slot === slotNumber);
+    if (!slot?.text) {
+      logActionEvent(action, "failed", source, "Clipboard slot copy failed because the slot was empty.", { slot: slotNumber });
+      return { ok: false, actionId: action.id, error: "Clipboard slot is empty." };
+    }
+    clipboard.writeText(slot.text);
+    lastClipboardListenerText = slot.text;
+    logActionEvent(action, "success", source, `Copied Clipboard slot ${slotNumber}, ${slot.byteLength} bytes.`, {
+      slot: slotNumber,
+      byteLength: slot.byteLength
+    });
+    return { ok: true, actionId: action.id };
+  }
+
+  if (action.id === "clipboard.clear_history") {
+    if (!params.confirmedDangerous) {
+      logActionEvent(action, "cancelled", source, "Clipboard history clear cancelled because confirmation was missing.");
+      return { ok: false, actionId: action.id, error: "Confirmation required." };
+    }
+    const count = loadClipboardHistory().length;
+    saveClipboardHistory([]);
+    logActionEvent(action, "success", source, `Cleared ${count} Clipboard history items.`, { count });
+    return { ok: true, actionId: action.id };
+  }
+
+  if (action.id === "clipboard.cleanup_history") {
+    const result = cleanupClipboardHistory(Boolean(params.force), source);
+    return { ok: true, actionId: action.id, removedCount: result.removedCount, skipped: result.skipped };
   }
 
   if (action.id === "clipboard.create_snippet") {
@@ -5373,8 +8279,14 @@ function renderDropPhonePage(): string {
     }
     async function loadDrop() {
       if (uploadActive) return;
-      const response = await fetch('/drop/api/state');
-      const state = await response.json();
+      let state;
+      try {
+        const response = await fetch('/drop/api/state');
+        state = await response.json();
+      } catch (error) {
+        toast('Refresh failed', 'error');
+        return;
+      }
       document.getElementById('receivePath').textContent = state.receiveFolderPath;
       const texts = document.getElementById('texts');
       texts.innerHTML = state.outgoingText.length ? '' : '<p class="empty">No outgoing text drops from the PC yet.</p>';
@@ -5485,9 +8397,19 @@ function renderDropPhonePage(): string {
         refreshTimer = setInterval(loadDrop, 3000);
         return;
       }
-      dropEvents = new EventSource('/drop/api/events');
+      try {
+        dropEvents = new EventSource('/drop/api/events');
+      } catch (error) {
+        if (!refreshTimer) refreshTimer = setInterval(loadDrop, 3000);
+        return;
+      }
       dropEvents.onmessage = (event) => {
-        const payload = JSON.parse(event.data);
+        let payload = {};
+        try {
+          payload = JSON.parse(event.data);
+        } catch (error) {
+          return;
+        }
         void loadDrop();
         if (payload.eventType && payload.eventType.indexOf('drop.outgoing') === 0 && payload.message) {
           toast(payload.message);
@@ -5834,12 +8756,80 @@ function normalizeCalendarInput(input: CalendarEventInput, existing?: CalendarEv
 
 function runCalendarAction(action: DexNestActionDefinition, source: DexNestActionTrigger, payload: unknown = {}) {
   const startedAt = Date.now();
-  const input = typeof payload === "object" && payload !== null ? (payload as CalendarEventInput & { eventId?: string }) : {};
+  const input = typeof payload === "object" && payload !== null ? (payload as CalendarEventInput & { eventId?: string; nudgeId?: string; snoozeMinutes?: number; nudgeSettings?: Partial<NudgeSettings> }) : {};
 
   try {
     if (action.id === "calendar.open" || action.id === "calendar.show_today" || action.id === "calendar.show_upcoming") {
+      refreshNudges(source, false);
       logCalendarEvent(action.id, "success", source, "Opened DexNest Calendar.", {}, startedAt);
       return { ok: true, actionId: action.id, calendarState: calendarState() };
+    }
+
+    if (action.id === "calendar.nudge.refresh") {
+      const next = refreshNudges(source, true);
+      return { ok: true, actionId: action.id, nudges: next, calendarState: calendarState() };
+    }
+
+    if (action.id === "calendar.nudge.dismiss" || action.id === "calendar.nudge.complete" || action.id === "calendar.nudge.snooze") {
+      const nudgeId = input.nudgeId ?? input.id ?? "";
+      const nudges = loadNudges();
+      const existing = nudges.find((nudge) => nudge.id === nudgeId);
+      if (!existing) {
+        throw new Error("Nudge not found.");
+      }
+      const nextStatus: NudgeStatus = action.id === "calendar.nudge.dismiss" ? "dismissed" : action.id === "calendar.nudge.complete" ? "completed" : "snoozed";
+      const snoozeMinutes = Math.max(5, Number(input.snoozeMinutes ?? 60));
+      const updated: Nudge = {
+        ...existing,
+        status: nextStatus,
+        snoozeUntil: nextStatus === "snoozed" ? new Date(Date.now() + snoozeMinutes * 60_000).toISOString() : null,
+        updatedAt: new Date().toISOString()
+      };
+      saveNudges([updated, ...nudges.filter((nudge) => nudge.id !== nudgeId)]);
+      logNudgeEvent(
+        action.id,
+        nextStatus === "dismissed" ? "nudge_dismissed" : nextStatus === "completed" ? "nudge_completed" : "nudge_snoozed",
+        "success",
+        source,
+        nextStatus === "dismissed" ? "Dismissed DexNest nudge." : nextStatus === "completed" ? "Completed DexNest nudge." : "Snoozed DexNest nudge.",
+        { nudgeId, sourceModule: existing.sourceModule, sourceId: existing.sourceId ?? null, priority: existing.priority, snoozeMinutes: nextStatus === "snoozed" ? snoozeMinutes : null },
+        startedAt
+      );
+      createDexNestTray();
+      return { ok: true, actionId: action.id, nudge: updated, calendarState: calendarState() };
+    }
+
+    if (action.id === "calendar.nudge.open_source") {
+      const nudgeId = input.nudgeId ?? input.id ?? "";
+      const nudge = loadNudges().find((item) => item.id === nudgeId);
+      if (!nudge) {
+        throw new Error("Nudge not found.");
+      }
+      const viewMap: Record<string, string> = {
+        backup: "settings",
+        calendar: "calendar",
+        finance: "finance",
+        journal: "journal",
+        vault: "vault"
+      };
+      const view = viewMap[nudge.sourceModule] ?? "calendar";
+      focusDexNestWindow(view, "system");
+      logNudgeEvent(action.id, "nudge_source_opened", "success", source, "Opened DexNest nudge source.", { nudgeId, sourceModule: nudge.sourceModule, sourceId: nudge.sourceId ?? null }, startedAt);
+      return { ok: true, actionId: action.id, calendarState: calendarState() };
+    }
+
+    if (action.id === "calendar.nudge.update_settings") {
+      const current = loadNudgeSettings();
+      const next = saveNudgeSettings({
+        enabled: input.nudgeSettings?.enabled ?? current.enabled,
+        vaultExpiryReminderDays: Array.isArray(input.nudgeSettings?.vaultExpiryReminderDays) ? input.nudgeSettings.vaultExpiryReminderDays.map(Number).filter((item) => item > 0) : current.vaultExpiryReminderDays,
+        returnReminderDays: Array.isArray(input.nudgeSettings?.returnReminderDays) ? input.nudgeSettings.returnReminderDays.map(Number).filter((item) => item > 0) : current.returnReminderDays,
+        dailyJournalReminderEnabled: input.nudgeSettings?.dailyJournalReminderEnabled ?? current.dailyJournalReminderEnabled,
+        backupReminderAfterDays: Math.max(1, Number(input.nudgeSettings?.backupReminderAfterDays ?? current.backupReminderAfterDays))
+      });
+      refreshNudges(source, true);
+      logNudgeEvent(action.id, "nudge_settings_updated", "success", source, "Updated DexNest nudge settings.", { enabled: next.enabled, backupReminderAfterDays: next.backupReminderAfterDays }, startedAt);
+      return { ok: true, actionId: action.id, nudgeSettings: next, calendarState: calendarState() };
     }
 
     if (action.id === "calendar.create_event" || action.id === "calendar.update_event") {
@@ -6426,14 +9416,16 @@ async function runSearchAction(action: DexNestActionDefinition, source: DexNestA
 
     if (action.id === "search.rebuild_index") {
       const records = saveSearchIndex(buildSearchIndexRecords());
+      const ocrTextFileCount = records.filter((record) => record.entityType === "tools_ocr_text").length;
       logSearchEvent(
         action.id,
         "search_index_rebuilt",
         "success",
         source,
-        `Rebuilt DexNest Search index with ${records.length} records.`,
+        `Rebuilt DexNest Search index with ${records.length} records and ${ocrTextFileCount} OCR text files.`,
         {
           recordCount: records.length,
+          ocrTextFileCount,
           sources: [...new Set(records.map((record) => record.sourceModule))]
         },
         startedAt
@@ -6466,6 +9458,90 @@ async function runSearchAction(action: DexNestActionDefinition, source: DexNestA
         startedAt
       );
       return { ok: true, actionId: action.id, results, resultCount: results.length };
+    }
+
+    if (action.id === "search.secure.run") {
+      const results = runSecureVaultSearch(input);
+      logSearchEvent(
+        action.id,
+        "secure_search_run",
+        "success",
+        source,
+        `Ran DexNest Secure Vault search with ${results.length} result${results.length === 1 ? "" : "s"}.`,
+        {
+          resultCount: results.length,
+          includeSecretValues: Boolean(input.includeSecretValues)
+        },
+        startedAt
+      );
+      return { ok: true, actionId: action.id, secureResults: results, resultCount: results.length };
+    }
+
+    if (action.id === "search.smart_lookup") {
+      const smartResults = runSmartLookup(input);
+      const fieldTypes = [...new Set(smartResults.map((result) => result.fieldType))];
+      logSearchEvent(
+        action.id,
+        "smart_lookup_run",
+        "success",
+        source,
+        `Ran DexNest Smart Lookup with ${smartResults.length} result${smartResults.length === 1 ? "" : "s"}.`,
+        {
+          requestedFieldTypes: requestedSmartFields(String(input.question ?? input.query ?? "")),
+          resultFieldTypes: fieldTypes,
+          resultCount: smartResults.length,
+          sourceModules: [...new Set(smartResults.map((result) => result.sourceModule))]
+        },
+        startedAt
+      );
+      return { ok: true, actionId: action.id, smartResults, resultCount: smartResults.length };
+    }
+
+    if (action.id === "search.smart_lookup_reveal") {
+      const fieldType = String(input.fieldType ?? "unknown");
+      if (sensitiveSmartFields.has(fieldType) && input.confirmedDangerous !== true) {
+        throw new Error("Confirm reveal before showing a sensitive Smart Lookup answer.");
+      }
+      logSearchEvent(action.id, "smart_lookup_revealed", "success", source, "Revealed a Smart Lookup answer.", { fieldType, sensitive: sensitiveSmartFields.has(fieldType) }, startedAt);
+      return { ok: true, actionId: action.id };
+    }
+
+    if (action.id === "search.smart_lookup_copy_answer") {
+      const answerValue = String(input.answerValue ?? "");
+      const fieldType = String(input.fieldType ?? "unknown");
+      if (!answerValue) {
+        throw new Error("No Smart Lookup answer was provided to copy.");
+      }
+      if (sensitiveSmartFields.has(fieldType) && input.confirmedDangerous !== true) {
+        throw new Error("Confirm copy before copying a sensitive Smart Lookup answer.");
+      }
+      clipboard.writeText(answerValue);
+      lastClipboardListenerText = answerValue;
+      secureVaultProtectedClipboardValue = answerValue;
+      if (secureVaultClipboardTimer) {
+        clearTimeout(secureVaultClipboardTimer);
+      }
+      secureVaultClipboardTimer = setTimeout(() => {
+        if (clipboard.readText() === answerValue) {
+          clipboard.clear();
+        }
+        if (secureVaultProtectedClipboardValue === answerValue) {
+          secureVaultProtectedClipboardValue = null;
+        }
+      }, 30000);
+      logSearchEvent(action.id, "smart_lookup_answer_copied", "success", source, "Copied a Smart Lookup answer with auto-clear.", { fieldType, sensitive: sensitiveSmartFields.has(fieldType), valueLength: answerValue.length }, startedAt);
+      return { ok: true, actionId: action.id };
+    }
+
+    if (action.id === "search.smart_lookup_open_source") {
+      const sourceId = String(input.sourceId ?? input.resultId ?? "");
+      const record = loadSearchIndex().find((item) => item.id === sourceId);
+      if (!record?.filePath) {
+        throw new Error("Smart Lookup source file was not found in the current index.");
+      }
+      void shell.openPath(record.filePath);
+      logSearchEvent(action.id, "smart_lookup_source_opened", "success", source, "Opened Smart Lookup source document.", { sourceRecordId: record.id, sourceModule: record.sourceModule, entityType: record.entityType }, startedAt);
+      return { ok: true, actionId: action.id };
     }
 
     if (action.id === "search.save_query") {
@@ -6652,7 +9728,45 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
     }
   }
 
-  if (action.module === "command" && (action.id === "command.refresh_stats" || action.id === "command.open_recent_activity")) {
+  if (action.module === "command" && action.id === "command.update_settings") {
+    const settings = loadCommandSettings();
+    const input = typeof payload === "object" && payload !== null ? payload as Record<string, unknown> : {};
+    const nextSettings = saveCommandSettings({
+      ...settings,
+      globalShortcutEnabled: typeof input.globalShortcutEnabled === "boolean" ? input.globalShortcutEnabled : settings.globalShortcutEnabled,
+      globalShortcut: typeof input.globalShortcut === "string" ? normalizeCommandShortcut(input.globalShortcut) : settings.globalShortcut
+    });
+    registerCommandShortcut();
+    const refreshedSettings = loadCommandSettings();
+    localDb.appendActionEvent({
+      module: "DexNest Command",
+      actionId,
+      eventType: "command_settings_updated",
+      status: "success",
+      source,
+      summary: "Updated DexNest Command access settings.",
+      metadataJson: {
+        globalShortcutEnabled: nextSettings.globalShortcutEnabled,
+        globalShortcut: refreshedSettings.globalShortcut,
+        globalShortcutStatus: refreshedSettings.globalShortcutStatus
+      }
+    });
+    return { ok: true, actionId, settings: refreshedSettings };
+  }
+
+  if (action.module === "command" && (action.id === "command.open_home" || action.id === "command.open_palette" || action.id === "command.refresh_stats" || action.id === "command.open_recent_activity")) {
+    if (action.id === "command.open_home" || action.id === "command.open_palette") {
+      localDb.appendActionEvent({
+        module: "DexNest Command",
+        actionId,
+        eventType: action.id === "command.open_palette" ? "command_palette_opened" : "command_home_opened",
+        status: "success",
+        source,
+        summary: action.id === "command.open_palette" ? "Opened DexNest Command palette." : "Opened DexNest Command home.",
+        metadataJson: {}
+      });
+      return { ok: true, actionId };
+    }
     localDb.appendActionEvent({
       module: "DexNest Command",
       actionId,
@@ -7094,7 +10208,12 @@ function updateToolsSettings(input: Partial<ToolsSettings>): ToolsSettings {
   const nextSettings = saveToolsSettings({
     ...loadToolsSettings(),
     ffmpegPath: typeof input.ffmpegPath === "string" && input.ffmpegPath.trim() ? input.ffmpegPath.trim() : null,
-    libreOfficePath: typeof input.libreOfficePath === "string" && input.libreOfficePath.trim() ? input.libreOfficePath.trim() : null
+    libreOfficePath: typeof input.libreOfficePath === "string" && input.libreOfficePath.trim() ? input.libreOfficePath.trim() : null,
+    tesseractPath: typeof input.tesseractPath === "string" && input.tesseractPath.trim() ? input.tesseractPath.trim() : null,
+    pythonPath: typeof input.pythonPath === "string" && input.pythonPath.trim() ? input.pythonPath.trim() : null,
+    ocrEngine: safeOcrEngine(input.ocrEngine),
+    ocrDevice: safeOcrDevice(input.ocrDevice),
+    ocrLanguage: safeOcrLanguage(input.ocrLanguage)
   });
 
   localDb.appendActionEvent({
@@ -7106,7 +10225,12 @@ function updateToolsSettings(input: Partial<ToolsSettings>): ToolsSettings {
     summary: "Updated DexNest Tools dependency settings.",
     metadataJson: {
       hasFfmpegPath: Boolean(nextSettings.ffmpegPath),
-      hasLibreOfficePath: Boolean(nextSettings.libreOfficePath)
+      hasLibreOfficePath: Boolean(nextSettings.libreOfficePath),
+      hasTesseractPath: Boolean(nextSettings.tesseractPath),
+      hasPythonPath: Boolean(nextSettings.pythonPath),
+      ocrEngine: nextSettings.ocrEngine,
+      ocrDevice: nextSettings.ocrDevice,
+      ocrLanguage: nextSettings.ocrLanguage
     }
   });
 
@@ -7123,16 +10247,28 @@ function openToolsFile(filePath: string): { ok: boolean; error?: string } {
 }
 
 function registerIpcHandlers(): void {
-  ipcMain.handle("dexnest:get-app-info", () => ({
+  ipcMain.handle("dexnest:get-app-info", () => {
+    const commandSettings = loadCommandSettings();
+    return {
     appName: "DexNest",
     dataRoot: localDataRoot,
     dbPath: localDb.dbPath,
     actionEndpoint: `http://127.0.0.1:${actionPort}`,
     projectsConfigPath,
+    commandSettingsPath,
+    commandShortcutEnabled: commandSettings.globalShortcutEnabled,
+    commandShortcut: commandSettings.globalShortcut,
+    commandShortcutStatus: commandSettings.globalShortcutStatus,
+    commandShortcutLastError: commandSettings.globalShortcutLastError,
+    trayStatus: commandSettings.trayStatus,
     commandResultsPath,
     pinnedActionsPath,
     clipboardHistoryPath,
     clipboardSnippetsPath,
+    clipboardSettingsPath,
+    clipboardMultiGroupsPath,
+    clipboardActiveMultiCopyPath,
+    clipboardSlotsPath,
     dropShelfPath,
     dropIncomingPath,
     dropReceiveFolderPath: dropIncomingRoot,
@@ -7146,12 +10282,17 @@ function registerIpcHandlers(): void {
     vaultDocumentsPath: vaultDocumentsRoot,
     vaultImportsPath: vaultImportsRoot,
     vaultVersionsPath: vaultVersionsRoot,
+    vaultOcrOutputPath: vaultOcrRoot,
+    vaultOcrJobsPath,
+    vaultOcrSettingsPath,
     vaultMetadataPath: vaultDocumentsPath,
     searchIndexPath,
     searchIndexFolderPath: searchIndexRoot,
     savedSearchesPath,
     journalEntriesPath,
     calendarEventsPath,
+    nudgesPath,
+    nudgeSettingsPath,
     finderItemsPath,
     financeTransactionsPath,
     financeRecurringPath,
@@ -7174,8 +10315,9 @@ function registerIpcHandlers(): void {
     dropPhoneUrl: dropPhoneUrl(),
     lanIp: getLanIp(),
     projectCount: loadProjects().length,
-    performanceMode: "Not enabled"
-  }));
+    performanceMode: commandSettings.performanceModePlaceholder ? "Enabled placeholder" : "Not enabled"
+    };
+  });
 
   ipcMain.handle("dexnest:list-actions", () => [...actionRegistry.list(), ...getProjectActionDefinitions()]);
 
@@ -7349,6 +10491,10 @@ function createWindow(): void {
   mainWindow.webContents.on("render-process-gone", (_event, details) => {
     console.error("[DexNest renderer gone]", details);
   });
+
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+  });
 }
 
 app.whenReady().then(() => {
@@ -7361,9 +10507,16 @@ app.whenReady().then(() => {
   ensureSearchRoot();
   ensureBackupRoot();
   registerIpcHandlers();
+  cleanupClipboardHistory(false, "system");
   startActionEndpoint();
+  refreshNudges("system", false);
   startHeatmapTimer();
+  startClipboardListener();
+  registerClipboardHotkey();
+  scheduleActiveMultiCopyAutoClear();
   createWindow();
+  registerCommandShortcut();
+  createDexNestTray();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -7380,7 +10533,18 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   stopHeatmapTimer();
+  stopClipboardListener();
+  unregisterClipboardHotkey();
+  unregisterCommandShortcut();
+  stopArmedMultiCopyPasteDetection();
+  if (tray) {
+    tray.destroy();
+    tray = null;
+  }
+  if (clipboardMultiCopyTimeoutTimer) {
+    clearTimeout(clipboardMultiCopyTimeoutTimer);
+    clipboardMultiCopyTimeoutTimer = null;
+  }
   actionServer?.close();
   localDb.close();
 });
-

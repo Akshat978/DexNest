@@ -21,10 +21,20 @@ interface AppInfo {
   dbPath: string;
   actionEndpoint: string;
   projectsConfigPath: string;
+  commandSettingsPath: string;
+  commandShortcutEnabled: boolean;
+  commandShortcut: string;
+  commandShortcutStatus: "active" | "disabled" | "failed";
+  commandShortcutLastError: string | null;
+  trayStatus: "active" | "failed";
   commandResultsPath: string;
   pinnedActionsPath: string;
   clipboardHistoryPath: string;
   clipboardSnippetsPath: string;
+  clipboardSettingsPath: string;
+  clipboardMultiGroupsPath: string;
+  clipboardActiveMultiCopyPath: string;
+  clipboardSlotsPath: string;
   dropShelfPath: string;
   dropIncomingPath: string;
   dropReceiveFolderPath: string;
@@ -38,12 +48,17 @@ interface AppInfo {
   vaultDocumentsPath: string;
   vaultImportsPath: string;
   vaultVersionsPath: string;
+  vaultOcrOutputPath: string;
+  vaultOcrJobsPath: string;
+  vaultOcrSettingsPath: string;
   vaultMetadataPath: string;
   searchIndexPath: string;
   searchIndexFolderPath: string;
   savedSearchesPath: string;
   journalEntriesPath: string;
   calendarEventsPath: string;
+  nudgesPath: string;
+  nudgeSettingsPath: string;
   finderItemsPath: string;
   financeTransactionsPath: string;
   financeRecurringPath: string;
@@ -156,6 +171,7 @@ interface ClipboardHistoryItem {
   preview: string;
   byteLength: number;
   createdAt: string;
+  source?: "manual" | "listener" | "multi_copy" | "slot" | "snippet";
 }
 
 interface ClipboardSnippet {
@@ -169,8 +185,57 @@ interface ClipboardSnippet {
 interface ClipboardState {
   history: ClipboardHistoryItem[];
   snippets: ClipboardSnippet[];
+  settings: {
+    listenerEnabled: boolean;
+    listenerIntervalMs: number;
+    historyRetentionDays: 1 | 3 | 7 | 30 | "never";
+    lastHistoryCleanupAt: string | null;
+    multiCopyHotkeyEnabled: boolean;
+    multiCopyHotkey: string;
+    multiCopyHotkeyStatus: "active" | "disabled" | "failed";
+    multiCopyHotkeyLastError: string | null;
+    multiCopyHotkeyRegistered: boolean;
+    multiCopyAutoClearMinutes: number;
+    multiCopyLastHotkeyAt: string | null;
+    multiCopyLastHotkeyStatus: "idle" | "success" | "failed" | "skipped";
+    multiCopyLastHotkeyMessage: string;
+    lastCaptureAt: string | null;
+    lastCapturedPreview: string;
+    lastReadAt: string | null;
+    lastReadPreview: string;
+    lastReadError: string | null;
+    combinedSeparator: string;
+    activeMultiCopySession: {
+      id: string;
+      startedAt: string;
+      updatedAt: string;
+      armedForPasteAt?: string | null;
+      completedAt?: string | null;
+      items: ClipboardHistoryItem[];
+    } | null;
+    appExclusionRules: string[];
+    secretProtectionEnabled: boolean;
+  };
+  multiGroups: Array<{
+    id: string;
+    name: string;
+    items: ClipboardHistoryItem[];
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  slots: Array<{
+    slot: number;
+    text: string;
+    preview: string;
+    byteLength: number;
+    updatedAt: string;
+  }>;
   snippetsPath: string;
   historyPath: string;
+  settingsPath: string;
+  multiGroupsPath: string;
+  activeMultiCopyPath: string;
+  slotsPath: string;
 }
 
 interface DropShelfItem {
@@ -233,6 +298,13 @@ interface ToolsState {
   detectedFfmpegPath: string | null;
   libreOfficePath: string | null;
   detectedLibreOfficePath: string | null;
+  tesseractPath: string | null;
+  detectedTesseractPath: string | null;
+  pythonPath: string | null;
+  detectedPythonPath: string | null;
+  ocrEngine: "tesseract" | "paddleocr" | "easyocr_placeholder";
+  ocrDevice: "gpu" | "cpu";
+  ocrLanguage: string;
   tempFolderPath: string;
   outputsPath: string;
 }
@@ -254,6 +326,34 @@ interface VaultDocumentRecord {
   updatedAt: string;
   versionGroupId?: string | null;
   versionNumber?: number | null;
+  ocrStatus?: "not_ocred" | "queued" | "running" | "completed" | "failed" | "skipped" | "unsupported";
+  ocrTextPath?: string | null;
+  ocrMetadataPath?: string | null;
+  ocrError?: string | null;
+  ocrUpdatedAt?: string | null;
+}
+
+interface VaultOcrJob {
+  id: string;
+  documentId: string;
+  filePath: string;
+  fileType: string;
+  status: "queued" | "running" | "completed" | "failed" | "skipped";
+  engine: "paddleocr";
+  device: "gpu";
+  createdAt: string;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  error?: string | null;
+  outputTextPath?: string | null;
+  outputMetadataPath?: string | null;
+}
+
+interface VaultOcrSettings {
+  autoOcrOnImport: boolean;
+  engine: "paddleocr";
+  device: "gpu";
+  pythonPath?: string | null;
 }
 
 type SecureVaultItemType = "password" | "api_key" | "token" | "recovery_code" | "private_note" | "server" | "other";
@@ -292,6 +392,19 @@ interface VaultState {
   metadataPath: string;
   documentCount: number;
   totalSizeBytes: number;
+  ocrJobs: VaultOcrJob[];
+  ocrSettings: VaultOcrSettings;
+  ocrOutputPath: string;
+  ocrJobsPath: string;
+  ocrQueueRunning: boolean;
+  ocrQueuePaused: boolean;
+  paddleGpuStatus: {
+    ok: boolean;
+    message: string;
+    pythonPath: string | null;
+    paddleVersion?: string | null;
+    deviceCount?: number;
+  };
   secure: SecureVaultState;
 }
 
@@ -305,6 +418,7 @@ interface SearchIndexRecord {
   fileType?: string | null;
   sizeBytes?: number | null;
   textPreview?: string;
+  searchableText?: string;
   tags?: string[];
   category?: string | null;
   createdAt: string;
@@ -315,6 +429,34 @@ interface SearchIndexRecord {
 interface SearchResult extends SearchIndexRecord {
   score: number;
   matchReason: string;
+}
+
+interface SecureSearchResult {
+  id: string;
+  itemId: string;
+  title: string;
+  type: SecureVaultItemType;
+  username?: string;
+  url?: string;
+  matchedFields: string[];
+  masked: true;
+  score: number;
+}
+
+interface SmartLookupResult {
+  id: string;
+  fieldType: string;
+  answer: string;
+  maskedAnswer: string;
+  sensitive: boolean;
+  confidence: "high" | "medium" | "low";
+  sourceRecordId: string;
+  sourceModule: string;
+  sourceDocumentTitle: string;
+  sourceFilePath?: string | null;
+  ocrTextPath?: string | null;
+  preview: string;
+  score: number;
 }
 
 interface SavedSearch {
@@ -336,6 +478,7 @@ interface SearchState {
   indexFolderPath: string;
   savedSearchesPath: string;
   resultCount: number;
+  ocrTextFileCount: number;
   sources: string[];
   fileTypes: string[];
 }
@@ -388,12 +531,45 @@ interface CalendarEvent {
   updatedAt: string;
 }
 
+type NudgePriority = "soft" | "normal" | "urgent";
+type NudgeStatus = "active" | "dismissed" | "snoozed" | "completed";
+
+interface Nudge {
+  id: string;
+  title: string;
+  message: string;
+  sourceModule: string;
+  sourceId?: string | null;
+  date: string;
+  time?: string | null;
+  priority: NudgePriority;
+  status: NudgeStatus;
+  snoozeUntil?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface NudgeSettings {
+  enabled: boolean;
+  vaultExpiryReminderDays: number[];
+  returnReminderDays: number[];
+  dailyJournalReminderEnabled: boolean;
+  backupReminderAfterDays: number;
+}
+
 interface CalendarState {
   events: CalendarEvent[];
   today: string;
   todayEvents: CalendarEvent[];
   upcomingEvents: CalendarEvent[];
   eventsPath: string;
+  nudges: Nudge[];
+  todayNudges: Nudge[];
+  upcomingNudges: Nudge[];
+  urgentNudges: Nudge[];
+  nudgesPath: string;
+  nudgeSettingsPath: string;
+  nudgeSettings: NudgeSettings;
 }
 
 type FinderItemStatus = "at_home" | "lent_out" | "missing" | "archived";
@@ -581,6 +757,9 @@ interface HeatmapState {
 interface CommandStats {
   journalEntriesThisWeek: number;
   calendarUpcoming: number;
+  todayNudges: number;
+  urgentNudges: number;
+  activeNudges: number;
   transactionsThisMonth: number;
   receiptsThisMonth: number;
   vaultDocuments: number;
@@ -625,6 +804,9 @@ interface RoutinesState {
 const emptyCommandStats: CommandStats = {
   journalEntriesThisWeek: 0,
   calendarUpcoming: 0,
+  todayNudges: 0,
+  urgentNudges: 0,
+  activeNudges: 0,
   transactionsThisMonth: 0,
   receiptsThisMonth: 0,
   vaultDocuments: 0,
@@ -738,7 +920,7 @@ interface DexNestBridge {
   getPdfInfo: (paths: string[]) => Promise<PdfInfoItem[]>;
   chooseToolsOutputFolder: () => Promise<{ ok: boolean; path?: string; error?: string }>;
   resetToolsOutputFolder: () => Promise<{ ok: boolean; path: string }>;
-  saveToolsSettings: (payload: { ffmpegPath?: string | null; libreOfficePath?: string | null }) => Promise<unknown>;
+  saveToolsSettings: (payload: { ffmpegPath?: string | null; libreOfficePath?: string | null; tesseractPath?: string | null; pythonPath?: string | null; ocrEngine?: string; ocrDevice?: string; ocrLanguage?: string }) => Promise<unknown>;
   openToolsFile: (filePath: string) => Promise<{ ok: boolean; error?: string }>;
   copyDropIncomingText: (itemId: string) => Promise<{ ok: boolean; error?: string }>;
   chooseDropReceiveFolder: () => Promise<{ ok: boolean; path?: string; error?: string }>;
@@ -797,6 +979,8 @@ interface DexNestBridge {
   }) => Promise<void>;
   logUiEvent: (payload: { view: string; target: string; summary: string }) => Promise<void>;
   selectBackupZip: () => Promise<string | null>;
+  onClipboardHotkeyResult?: (callback: (payload: { message: string; tone: ToastTone }) => void) => () => void;
+  onOpenView?: (callback: (payload: { view: string }) => void) => () => void;
 }
 
 declare global {
@@ -812,10 +996,20 @@ const fallbackBridge: DexNestBridge = {
     dbPath: "./local-data/data/dexnest.sqlite",
     actionEndpoint: "http://127.0.0.1:43217",
     projectsConfigPath: "./local-data/settings/projects.json",
+    commandSettingsPath: "./local-data/settings/command-settings.json",
+    commandShortcutEnabled: true,
+    commandShortcut: "CommandOrControl+Space",
+    commandShortcutStatus: "disabled",
+    commandShortcutLastError: null,
+    trayStatus: "failed",
     commandResultsPath: "./local-data/settings/project-command-results.json",
     pinnedActionsPath: "./local-data/settings/pinned-actions.json",
     clipboardHistoryPath: "./local-data/settings/clipboard-history.json",
     clipboardSnippetsPath: "./local-data/settings/clipboard-snippets.json",
+    clipboardSettingsPath: "./local-data/settings/clipboard-settings.json",
+    clipboardMultiGroupsPath: "./local-data/settings/clipboard-multi-groups.json",
+    clipboardActiveMultiCopyPath: "./local-data/settings/clipboard-active-multicopy.json",
+    clipboardSlotsPath: "./local-data/settings/clipboard-slots.json",
     dropShelfPath: "./local-data/settings/drop-shelf.json",
     dropIncomingPath: "./local-data/settings/drop-incoming.json",
     dropReceiveFolderPath: "./local-data/files/drop/incoming",
@@ -831,12 +1025,17 @@ const fallbackBridge: DexNestBridge = {
     vaultDocumentsPath: "./local-data/files/vault/documents",
     vaultImportsPath: "./local-data/files/vault/imports",
     vaultVersionsPath: "./local-data/files/vault/versions",
+    vaultOcrOutputPath: "./local-data/files/vault/ocr",
+    vaultOcrJobsPath: "./local-data/settings/vault-ocr-jobs.json",
+    vaultOcrSettingsPath: "./local-data/settings/vault-ocr-settings.json",
     vaultMetadataPath: "./local-data/settings/vault-documents.json",
     searchIndexPath: "./local-data/index/search-index.json",
     searchIndexFolderPath: "./local-data/index",
     savedSearchesPath: "./local-data/settings/saved-searches.json",
     journalEntriesPath: "./local-data/settings/journal-entries.json",
     calendarEventsPath: "./local-data/settings/calendar-events.json",
+    nudgesPath: "./local-data/settings/nudges.json",
+    nudgeSettingsPath: "./local-data/settings/nudge-settings.json",
     finderItemsPath: "./local-data/settings/finder-items.json",
     financeTransactionsPath: "./local-data/settings/finance-transactions.json",
     financeRecurringPath: "./local-data/settings/finance-recurring.json",
@@ -867,7 +1066,42 @@ const fallbackBridge: DexNestBridge = {
   clearCommandResult: async () => undefined,
   listPinnedActions: async () => ["command.open_home", "dev.open_dashboard", "deck.test_endpoint"],
   savePinnedActions: async (actionIds) => actionIds,
-  getClipboardState: async () => ({ history: [], snippets: [], snippetsPath: "./local-data/settings/clipboard-snippets.json", historyPath: "./local-data/settings/clipboard-history.json" }),
+  getClipboardState: async () => ({
+    history: [],
+    snippets: [],
+    settings: {
+      listenerEnabled: false,
+      listenerIntervalMs: 2000,
+      historyRetentionDays: 1,
+      lastHistoryCleanupAt: null,
+      multiCopyHotkeyEnabled: true,
+      multiCopyHotkey: "CommandOrControl+Shift+C",
+      multiCopyHotkeyStatus: "disabled",
+      multiCopyHotkeyLastError: null,
+      multiCopyHotkeyRegistered: false,
+      multiCopyAutoClearMinutes: 15,
+      multiCopyLastHotkeyAt: null,
+      multiCopyLastHotkeyStatus: "idle",
+      multiCopyLastHotkeyMessage: "",
+      lastCaptureAt: null,
+      lastCapturedPreview: "",
+      lastReadAt: null,
+      lastReadPreview: "",
+      lastReadError: null,
+      combinedSeparator: "\n\n",
+      activeMultiCopySession: null,
+      appExclusionRules: [],
+      secretProtectionEnabled: true
+    },
+    multiGroups: [],
+    slots: Array.from({ length: 5 }, (_item, index) => ({ slot: index + 1, text: "", preview: "", byteLength: 0, updatedAt: "" })),
+    snippetsPath: "./local-data/settings/clipboard-snippets.json",
+    historyPath: "./local-data/settings/clipboard-history.json",
+    settingsPath: "./local-data/settings/clipboard-settings.json",
+    multiGroupsPath: "./local-data/settings/clipboard-multi-groups.json",
+    activeMultiCopyPath: "./local-data/settings/clipboard-active-multicopy.json",
+    slotsPath: "./local-data/settings/clipboard-slots.json"
+  }),
   getDropState: async () => ({
     shelf: [],
     outgoing: [],
@@ -896,6 +1130,13 @@ const fallbackBridge: DexNestBridge = {
     detectedFfmpegPath: null,
     libreOfficePath: null,
     detectedLibreOfficePath: null,
+    tesseractPath: null,
+    detectedTesseractPath: null,
+    pythonPath: null,
+    detectedPythonPath: null,
+    ocrEngine: "paddleocr",
+    ocrDevice: "gpu",
+    ocrLanguage: "eng",
     tempFolderPath: "./local-data/files/tools/temp",
     outputsPath: "./local-data/settings/tools-outputs.json"
   }),
@@ -909,6 +1150,13 @@ const fallbackBridge: DexNestBridge = {
     metadataPath: "./local-data/settings/vault-documents.json",
     documentCount: 0,
     totalSizeBytes: 0,
+    ocrJobs: [],
+    ocrSettings: { autoOcrOnImport: true, engine: "paddleocr", device: "gpu", pythonPath: null },
+    ocrOutputPath: "./local-data/files/vault/ocr",
+    ocrJobsPath: "./local-data/settings/vault-ocr-jobs.json",
+    ocrQueueRunning: false,
+    ocrQueuePaused: false,
+    paddleGpuStatus: { ok: false, message: "Bridge unavailable.", pythonPath: null, paddleVersion: null, deviceCount: 0 },
     secure: {
       isSetup: false,
       isUnlocked: false,
@@ -925,6 +1173,7 @@ const fallbackBridge: DexNestBridge = {
     indexFolderPath: "./local-data/index",
     savedSearchesPath: "./local-data/settings/saved-searches.json",
     resultCount: 0,
+    ocrTextFileCount: 0,
     sources: [],
     fileTypes: []
   }),
@@ -939,7 +1188,20 @@ const fallbackBridge: DexNestBridge = {
     today: getLocalTodayDateString(),
     todayEvents: [],
     upcomingEvents: [],
-    eventsPath: "./local-data/settings/calendar-events.json"
+    eventsPath: "./local-data/settings/calendar-events.json",
+    nudges: [],
+    todayNudges: [],
+    upcomingNudges: [],
+    urgentNudges: [],
+    nudgesPath: "./local-data/settings/nudges.json",
+    nudgeSettingsPath: "./local-data/settings/nudge-settings.json",
+    nudgeSettings: {
+      enabled: true,
+      vaultExpiryReminderDays: [90, 30, 7],
+      returnReminderDays: [7, 3, 1],
+      dailyJournalReminderEnabled: true,
+      backupReminderAfterDays: 7
+    }
   }),
   getFinderState: async () => ({
     items: [],
@@ -1120,7 +1382,42 @@ function DexNestApp() {
   const [projects, setProjects] = useState<DexNestProject[]>([]);
   const [commandResults, setCommandResults] = useState<Record<string, ProjectCommandResult>>({});
   const [pinnedActionIds, setPinnedActionIds] = useState<string[]>([]);
-  const [clipboardState, setClipboardState] = useState<ClipboardState>({ history: [], snippets: [], snippetsPath: "", historyPath: "" });
+  const [clipboardState, setClipboardState] = useState<ClipboardState>({
+    history: [],
+    snippets: [],
+    settings: {
+      listenerEnabled: false,
+      listenerIntervalMs: 2000,
+      historyRetentionDays: 1,
+      lastHistoryCleanupAt: null,
+      multiCopyHotkeyEnabled: true,
+      multiCopyHotkey: "CommandOrControl+Shift+C",
+      multiCopyHotkeyStatus: "disabled",
+      multiCopyHotkeyLastError: null,
+      multiCopyHotkeyRegistered: false,
+      multiCopyAutoClearMinutes: 15,
+      multiCopyLastHotkeyAt: null,
+      multiCopyLastHotkeyStatus: "idle",
+      multiCopyLastHotkeyMessage: "",
+      lastCaptureAt: null,
+      lastCapturedPreview: "",
+      lastReadAt: null,
+      lastReadPreview: "",
+      lastReadError: null,
+      combinedSeparator: "\n\n",
+      activeMultiCopySession: null,
+      appExclusionRules: [],
+      secretProtectionEnabled: true
+    },
+    multiGroups: [],
+    slots: Array.from({ length: 5 }, (_item, index) => ({ slot: index + 1, text: "", preview: "", byteLength: 0, updatedAt: "" })),
+    snippetsPath: "",
+    historyPath: "",
+    settingsPath: "",
+    multiGroupsPath: "",
+    activeMultiCopyPath: "",
+    slotsPath: ""
+  });
   const [dropState, setDropState] = useState<DropState>({
     shelf: [],
     outgoing: [],
@@ -1149,6 +1446,13 @@ function DexNestApp() {
     detectedFfmpegPath: null,
     libreOfficePath: null,
     detectedLibreOfficePath: null,
+    tesseractPath: null,
+    detectedTesseractPath: null,
+    pythonPath: null,
+    detectedPythonPath: null,
+    ocrEngine: "paddleocr",
+    ocrDevice: "gpu",
+    ocrLanguage: "eng",
     tempFolderPath: "",
     outputsPath: ""
   });
@@ -1162,6 +1466,13 @@ function DexNestApp() {
     metadataPath: "",
     documentCount: 0,
     totalSizeBytes: 0,
+    ocrJobs: [],
+    ocrSettings: { autoOcrOnImport: true, engine: "paddleocr", device: "gpu", pythonPath: null },
+    ocrOutputPath: "",
+    ocrJobsPath: "",
+    ocrQueueRunning: false,
+    ocrQueuePaused: false,
+    paddleGpuStatus: { ok: false, message: "Loading.", pythonPath: null, paddleVersion: null, deviceCount: 0 },
     secure: {
       isSetup: false,
       isUnlocked: false,
@@ -1178,6 +1489,7 @@ function DexNestApp() {
     indexFolderPath: "",
     savedSearchesPath: "",
     resultCount: 0,
+    ocrTextFileCount: 0,
     sources: [],
     fileTypes: []
   });
@@ -1192,7 +1504,20 @@ function DexNestApp() {
     today: getLocalTodayDateString(),
     todayEvents: [],
     upcomingEvents: [],
-    eventsPath: ""
+    eventsPath: "",
+    nudges: [],
+    todayNudges: [],
+    upcomingNudges: [],
+    urgentNudges: [],
+    nudgesPath: "",
+    nudgeSettingsPath: "",
+    nudgeSettings: {
+      enabled: true,
+      vaultExpiryReminderDays: [90, 30, 7],
+      returnReminderDays: [7, 3, 1],
+      dailyJournalReminderEnabled: true,
+      backupReminderAfterDays: 7
+    }
   });
   const [finderState, setFinderState] = useState<FinderState>({
     items: [],
@@ -1285,6 +1610,21 @@ function DexNestApp() {
 
   useEffect(() => {
     void refreshShellData();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = getBridge().onOpenView?.((payload) => {
+      const view = payload.view as ViewId;
+      if (!views.some((item) => item.id === view)) {
+        return;
+      }
+      setActiveView(view);
+      void refreshShellData();
+    });
+
+    return () => {
+      unsubscribe?.();
+    };
   }, []);
 
   async function refreshShellData(): Promise<void> {
@@ -1467,7 +1807,9 @@ function DexNestApp() {
         <main className="content">
           {activeView === "command" && (
             <CommandView
+              appInfo={appInfo}
               actions={actions}
+              clipboardState={clipboardState}
               pinnedActionIds={pinnedActionIds}
               calendarState={calendarState}
               commandStats={commandStats}
@@ -1499,6 +1841,7 @@ function DexNestApp() {
             <ClipboardView
               clipboardState={clipboardState}
               onAction={runAction}
+              onRefresh={refreshShellData}
             />
           )}
           {activeView === "drop" && (
@@ -1578,6 +1921,7 @@ function DexNestApp() {
             <SettingsView
               appInfo={appInfo}
               backupState={backupState}
+              calendarState={calendarState}
               onAction={runUiAction}
               onRefresh={refreshShellData}
             />
@@ -1589,7 +1933,9 @@ function DexNestApp() {
 }
 
 function CommandView({
+  appInfo,
   actions,
+  clipboardState,
   pinnedActionIds,
   calendarState,
   commandStats,
@@ -1597,7 +1943,9 @@ function CommandView({
   onAction,
   onPinnedActionsChange
 }: {
+  appInfo: AppInfo | null;
   actions: ActionDefinition[];
+  clipboardState: ClipboardState;
   pinnedActionIds: string[];
   calendarState: CalendarState;
   commandStats: CommandStats;
@@ -1607,6 +1955,9 @@ function CommandView({
 }) {
   const [moduleFilter, setModuleFilter] = useState("all");
   const [actionSearch, setActionSearch] = useState("");
+  const [paletteQuery, setPaletteQuery] = useState("");
+  const [paletteIndex, setPaletteIndex] = useState(0);
+  const [paletteMessage, setPaletteMessage] = useState("");
   const modules = [...new Set(actions.map((action) => action.module).filter(Boolean))].sort();
   const pinnedActions = pinnedActionIds
     .map((actionId) => actions.find((action) => action.id === actionId))
@@ -1617,12 +1968,53 @@ function CommandView({
     const matchesSearch = !query || action.id.toLowerCase().includes(query) || action.title.toLowerCase().includes(query);
     return matchesModule && matchesSearch;
   });
+  const recentActionIds = events
+    .map((event) => event.actionId)
+    .filter((actionId): actionId is string => Boolean(actionId));
+  const paletteQueryText = paletteQuery.trim().toLowerCase();
+  const paletteActions = actions
+    .filter((action) => {
+      if (!paletteQueryText) {
+        return true;
+      }
+      return action.id.toLowerCase().includes(paletteQueryText)
+        || action.title.toLowerCase().includes(paletteQueryText)
+        || action.module.toLowerCase().includes(paletteQueryText);
+    })
+    .sort((left, right) => {
+      const leftPinned = pinnedActionIds.includes(left.id) ? 0 : 1;
+      const rightPinned = pinnedActionIds.includes(right.id) ? 0 : 1;
+      if (leftPinned !== rightPinned) {
+        return leftPinned - rightPinned;
+      }
+      const leftRecent = recentActionIds.indexOf(left.id);
+      const rightRecent = recentActionIds.indexOf(right.id);
+      if (leftRecent !== rightRecent) {
+        return (leftRecent === -1 ? Number.MAX_SAFE_INTEGER : leftRecent) - (rightRecent === -1 ? Number.MAX_SAFE_INTEGER : rightRecent);
+      }
+      return left.title.localeCompare(right.title);
+    })
+    .slice(0, 12);
+  const commandChainRequested = paletteQuery.includes("->");
+  const topNudges = [
+    ...calendarState.urgentNudges,
+    ...calendarState.todayNudges.filter((nudge) => !calendarState.urgentNudges.some((urgent) => urgent.id === nudge.id))
+  ].slice(0, 5);
 
   function canRunWithoutConfirmation(action: ActionDefinition): boolean {
     return action.dangerLevel === "safe" || action.dangerLevel === "caution";
   }
 
-  async function runRegistryAction(action: ActionDefinition): Promise<void> {
+  async function runPaletteAction(action: ActionDefinition | undefined): Promise<void> {
+    if (!action) {
+      return;
+    }
+
+    await runRegistryActionFromSource(action, "command");
+    setPaletteMessage(`${viewFromAction(action) ? "Opened" : "Ran"} ${action.title}.`);
+  }
+
+  async function runRegistryActionFromSource(action: ActionDefinition, source: string): Promise<void> {
     if (!canRunWithoutConfirmation(action)) {
       const confirmed = window.confirm(`Run ${action.title}? Danger level: ${action.dangerLevel}.`);
       if (!confirmed) {
@@ -1630,7 +2022,34 @@ function CommandView({
       }
     }
 
-    await onAction(action.id, "module_ui", { confirmedDangerous: !canRunWithoutConfirmation(action) });
+    await onAction(action.id, source, { confirmedDangerous: !canRunWithoutConfirmation(action) });
+  }
+
+  function handlePaletteKeyDown(event: React.KeyboardEvent<HTMLInputElement>): void {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setPaletteIndex((current) => Math.min(current + 1, Math.max(0, paletteActions.length - 1)));
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setPaletteIndex((current) => Math.max(0, current - 1));
+      return;
+    }
+    if (event.key === "Escape") {
+      setPaletteQuery("");
+      setPaletteIndex(0);
+      setPaletteMessage("");
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      if (commandChainRequested) {
+        setPaletteMessage("Command chaining coming soon.");
+        return;
+      }
+      void runPaletteAction(paletteActions[paletteIndex] ?? paletteActions[0]);
+    }
   }
 
   async function togglePinnedAction(actionId: string): Promise<void> {
@@ -1656,6 +2075,9 @@ function CommandView({
   const statCards = [
     ["Journal week", commandStats.journalEntriesThisWeek],
     ["Calendar upcoming", commandStats.calendarUpcoming],
+    ["Nudges today", commandStats.todayNudges],
+    ["Urgent nudges", commandStats.urgentNudges],
+    ["Active nudges", commandStats.activeNudges],
     ["Transactions month", commandStats.transactionsThisMonth],
     ["Receipts month", commandStats.receiptsThisMonth],
     ["Vault documents", commandStats.vaultDocuments],
@@ -1674,6 +2096,77 @@ function CommandView({
   return (
     <section className="view-stack" aria-labelledby="command-title">
       <PageHeader eyebrow="Offline-first spine" title="Command Home" titleId="command-title" />
+
+      <Panel title="Command Palette">
+        <div className="command-palette">
+          <label>
+            Search and run
+            <input
+              autoComplete="off"
+              value={paletteQuery}
+              onChange={(event) => {
+                setPaletteQuery(event.target.value);
+                setPaletteIndex(0);
+                setPaletteMessage("");
+              }}
+              onKeyDown={handlePaletteKeyDown}
+              placeholder="Search action title, ID, or module"
+            />
+          </label>
+          <p>Select an action with Up/Down, press Enter to run. Type <span className="technical">compress PDF -&gt; send to phone</span> to see the chaining placeholder.</p>
+          {commandChainRequested && <StatusBadge tone="info">Command chaining coming soon</StatusBadge>}
+          <div className="command-palette__results" role="listbox" aria-label="Command palette actions">
+            {paletteActions.length === 0 ? (
+              <EmptyState>No actions match this command.</EmptyState>
+            ) : (
+              paletteActions.map((action, index) => (
+                <button
+                  className={`command-palette__row accent-${action.moduleId}`}
+                  data-active={index === paletteIndex}
+                  key={action.id}
+                  type="button"
+                  onMouseEnter={() => setPaletteIndex(index)}
+                  onClick={() => void runPaletteAction(action)}
+                >
+                  <span className="command-palette__label">
+                    <strong>{action.title}</strong>
+                    <span className="technical">{action.id}</span>
+                  </span>
+                  <span className="command-palette__meta">
+                    {pinnedActionIds.includes(action.id) && <StatusBadge tone="success">pinned</StatusBadge>}
+                    <StatusBadge tone={action.dangerLevel === "safe" ? "success" : action.dangerLevel === "caution" ? "warning" : "error"}>{action.dangerLevel}</StatusBadge>
+                    <span className="technical">{action.module}</span>
+                  </span>
+                </button>
+              ))
+            )}
+          </div>
+          {paletteMessage && <p className="inline-status">{paletteMessage}</p>}
+        </div>
+      </Panel>
+
+      <Panel title="Nudges">
+        <div className="section-heading section-heading--row">
+          <p>Urgent and today nudges from local DexNest data.</p>
+          <button type="button" onClick={() => void onAction("calendar.nudge.refresh", "module_ui")}>Refresh nudges</button>
+        </div>
+        <div className="action-list action-list--compact">
+          {topNudges.length === 0 ? (
+            <EmptyState>No active nudges for today.</EmptyState>
+          ) : (
+            topNudges.map((nudge) => (
+              <article className="data-item data-item--stacked accent-calendar" key={nudge.id}>
+                <div className="section-heading section-heading--row">
+                  <strong>{nudge.title}</strong>
+                  <StatusBadge tone={nudge.priority === "urgent" ? "error" : nudge.priority === "normal" ? "warning" : "info"}>{nudge.priority}</StatusBadge>
+                </div>
+                <span>{nudge.message}</span>
+                <span className="technical">{formatLocalDate(nudge.date)} / {nudge.sourceModule}</span>
+              </article>
+            ))
+          )}
+        </div>
+      </Panel>
 
       <div className="module-grid">
         {moduleCards.map(([id, title, description, status]) => (
@@ -1715,7 +2208,7 @@ function CommandView({
                     <button type="button" onClick={() => void movePinnedAction(action.id, 1)}>
                       Down
                     </button>
-                    <button type="button" onClick={() => void runRegistryAction(action)}>
+                    <button type="button" onClick={() => void runRegistryActionFromSource(action, "module_ui")}>
                       {viewFromAction(action) ? "Open" : "Run"}
                     </button>
                     <button type="button" onClick={() => void togglePinnedAction(action.id)}>
@@ -1755,6 +2248,38 @@ function CommandView({
                 </article>
               ))
             )}
+          </div>
+        </Panel>
+        <Panel title="Shortcuts">
+          <div className="shortcut-list">
+            <article>
+              <div>
+                <strong>Open Command</strong>
+                <span>{appInfo?.commandShortcutStatus ?? "loading"}</span>
+              </div>
+              <kbd>{shortcutLabel(appInfo?.commandShortcut ?? "CommandOrControl+Space")}</kbd>
+            </article>
+            <article>
+              <div>
+                <strong>Multi-copy</strong>
+                <span>{clipboardState.settings.multiCopyHotkeyStatus}</span>
+              </div>
+              <kbd>{shortcutLabel(clipboardState.settings.multiCopyHotkey)}</kbd>
+            </article>
+            <article>
+              <div>
+                <strong>Voice dictation</strong>
+                <span>Windows fallback</span>
+              </div>
+              <kbd>Win + H</kbd>
+            </article>
+            <article>
+              <div>
+                <strong>Tray access</strong>
+                <span>{appInfo?.trayStatus ?? "loading"}</span>
+              </div>
+              <kbd>Tray</kbd>
+            </article>
           </div>
         </Panel>
       </div>
@@ -1812,7 +2337,7 @@ function CommandView({
                     <span>{action.module}</span>
                     <span>{action.dangerLevel}</span>
                     <span>{action.reversible ? "reversible" : "not reversible"}</span>
-                    <button type="button" onClick={() => void runRegistryAction(action)}>
+                    <button type="button" onClick={() => void runRegistryActionFromSource(action, "module_ui")}>
                       {viewFromAction(action) ? "Open" : "Run"}
                     </button>
                     <button type="button" onClick={() => void togglePinnedAction(action.id)}>
@@ -2229,25 +2754,88 @@ const emptySnippetForm = {
 
 function ClipboardView({
   clipboardState,
-  onAction
+  onAction,
+  onRefresh
 }: {
   clipboardState: ClipboardState;
   onAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>;
+  onRefresh: () => Promise<void>;
 }) {
-  const [activeTab, setActiveTab] = useState<"history" | "snippets" | "rules">("history");
+  const [activeTab, setActiveTab] = useState<"history" | "multi" | "slots" | "snippets" | "settings">("history");
   const [snippetForm, setSnippetForm] = useState(emptySnippetForm);
+  const [historyQuery, setHistoryQuery] = useState("");
+  const [historySource, setHistorySource] = useState("all");
+  const [groupName, setGroupName] = useState("");
+  const [separatorMode, setSeparatorMode] = useState<"blank" | "newline" | "comma" | "custom">("blank");
+  const [customSeparator, setCustomSeparator] = useState("");
+  const [autoClearMinutes, setAutoClearMinutes] = useState(String(clipboardState.settings.multiCopyAutoClearMinutes));
+  const [status, setStatus] = useState<{ tone: "success" | "error"; message: string } | null>(null);
+
+  useEffect(() => {
+    if (!clipboardState.settings.listenerEnabled) {
+      return;
+    }
+
+    const refreshTimer = window.setInterval(() => {
+      void onRefresh();
+    }, Math.max(1000, clipboardState.settings.listenerIntervalMs));
+
+    return () => window.clearInterval(refreshTimer);
+  }, [clipboardState.settings.listenerEnabled, clipboardState.settings.listenerIntervalMs, onRefresh]);
+
+  useEffect(() => {
+    const unsubscribe = window.dexNest?.onClipboardHotkeyResult?.((payload) => {
+      showStatus(payload.message, payload.tone);
+      void onRefresh();
+    });
+
+    return () => {
+      unsubscribe?.();
+    };
+  }, [onRefresh]);
+
+  useEffect(() => {
+    const separator = clipboardState.settings.combinedSeparator;
+    if (separator === "\n\n") {
+      setSeparatorMode("blank");
+      setCustomSeparator("");
+    } else if (separator === "\n") {
+      setSeparatorMode("newline");
+      setCustomSeparator("");
+    } else if (separator === ", ") {
+      setSeparatorMode("comma");
+      setCustomSeparator("");
+    } else {
+      setSeparatorMode("custom");
+      setCustomSeparator(separator);
+    }
+    setAutoClearMinutes(String(clipboardState.settings.multiCopyAutoClearMinutes));
+  }, [clipboardState.settings.combinedSeparator, clipboardState.settings.multiCopyAutoClearMinutes]);
+
+  function showStatus(message: string, tone: "success" | "error" = "success"): void {
+    setStatus({ tone, message });
+    window.setTimeout(() => setStatus((current) => current?.message === message ? null : current), 3000);
+  }
 
   async function saveCurrentClipboard(): Promise<void> {
-    await onAction("clipboard.save_current");
+    const result = await onAction("clipboard.save_current") as { ok?: boolean; error?: string };
+    showStatus(result.ok ? "Clipboard saved." : result.error ?? "Clipboard save failed.", result.ok ? "success" : "error");
+    await onRefresh();
   }
 
   async function pasteAsPlainText(): Promise<void> {
-    await onAction("clipboard.copy_plain_text");
+    const result = await onAction("clipboard.copy_plain_text") as { ok?: boolean; error?: string };
+    showStatus(result.ok ? "Clipboard normalized as plain text." : result.error ?? "Plain text copy failed.", result.ok ? "success" : "error");
+    await onRefresh();
   }
 
   async function saveSnippet(): Promise<void> {
-    await onAction("clipboard.create_snippet", "module_ui", snippetForm);
-    setSnippetForm(emptySnippetForm);
+    const result = await onAction("clipboard.create_snippet", "module_ui", snippetForm) as { ok?: boolean; error?: string };
+    showStatus(result.ok ? "Snippet saved." : result.error ?? "Snippet save failed.", result.ok ? "success" : "error");
+    if (result.ok) {
+      setSnippetForm(emptySnippetForm);
+      await onRefresh();
+    }
   }
 
   async function deleteSnippet(snippetId: string): Promise<void> {
@@ -2256,56 +2844,399 @@ function ClipboardView({
       return;
     }
 
-    await onAction("clipboard.delete_snippet", "module_ui", { id: snippetId, confirmedDangerous: true });
+    const result = await onAction("clipboard.delete_snippet", "module_ui", { id: snippetId, confirmedDangerous: true }) as { ok?: boolean; error?: string };
+    showStatus(result.ok ? "Snippet deleted." : result.error ?? "Snippet delete failed.", result.ok ? "success" : "error");
+    await onRefresh();
   }
 
-  return (
-    <section className="view-stack" aria-labelledby="clipboard-title">
-      <PageHeader eyebrow="Manual local clipboard" title="Clipboard" titleId="clipboard-title" />
+  async function toggleListener(): Promise<void> {
+    const enabled = !clipboardState.settings.listenerEnabled;
+    const result = await onAction("clipboard.toggle_listener", "module_ui", { enabled }) as { ok?: boolean; error?: string };
+    showStatus(result.ok ? `Clipboard listener ${enabled ? "enabled" : "disabled"}.` : result.error ?? "Listener toggle failed.", result.ok ? "success" : "error");
+    await onRefresh();
+  }
 
-      <Panel title="Manual Clipboard Actions">
+  async function testReadClipboard(): Promise<void> {
+    const result = await onAction("clipboard.test_read_current", "module_ui", {}) as { ok?: boolean; error?: string; preview?: string; byteLength?: number };
+    showStatus(result.ok ? `Current clipboard: ${result.preview || "empty"} (${formatBytes(result.byteLength ?? 0)})` : result.error ?? "Clipboard read failed.", result.ok ? "success" : "error");
+    await onRefresh();
+  }
+
+  async function startMultiCopy(): Promise<void> {
+    const result = await onAction("clipboard.start_multi_copy", "module_ui", {}) as { ok?: boolean; error?: string };
+    showStatus(result.ok ? "Multi-copy started." : result.error ?? "Multi-copy start failed.", result.ok ? "success" : "error");
+    await onRefresh();
+  }
+
+  async function stopMultiCopy(): Promise<void> {
+    const result = await onAction("clipboard.stop_multi_copy", "module_ui", { name: groupName }) as { ok?: boolean; error?: string };
+    showStatus(result.ok ? "Multi-copy stopped." : result.error ?? "Multi-copy stop failed.", result.ok ? "success" : "error");
+    await onRefresh();
+  }
+
+  async function saveMultiCopyGroup(): Promise<void> {
+    const result = await onAction("clipboard.save_multi_copy_group", "module_ui", { name: groupName }) as { ok?: boolean; error?: string };
+    showStatus(result.ok ? "Multi-copy group saved." : result.error ?? "Multi-copy save failed.", result.ok ? "success" : "error");
+    if (result.ok) {
+      setGroupName("");
+    }
+    await onRefresh();
+  }
+
+  async function clearMultiCopySession(): Promise<void> {
+    if (!window.confirm("Clear the active multi-copy session?")) {
+      return;
+    }
+    const result = await onAction("clipboard.clear_multi_copy_session", "module_ui", { confirmedDangerous: true }) as { ok?: boolean; error?: string };
+    showStatus(result.ok ? "Multi-copy session cleared." : result.error ?? "Multi-copy clear failed.", result.ok ? "success" : "error");
+    await onRefresh();
+  }
+
+  async function copyCombinedGroup(groupId?: string): Promise<void> {
+    const result = await onAction("clipboard.copy_combined_group", "module_ui", { groupId }) as { ok?: boolean; error?: string; itemCount?: number };
+    showStatus(result.ok ? `Combined ${result.itemCount ?? 0} items onto Clipboard.` : result.error ?? "Combined copy failed.", result.ok ? "success" : "error");
+    await onRefresh();
+  }
+
+  async function deleteMultiCopyGroup(groupId: string): Promise<void> {
+    if (!window.confirm("Delete this saved multi-copy group?")) {
+      return;
+    }
+    const result = await onAction("clipboard.delete_multi_copy_group", "module_ui", { groupId, confirmedDangerous: true }) as { ok?: boolean; error?: string };
+    showStatus(result.ok ? "Multi-copy group deleted." : result.error ?? "Multi-copy group delete failed.", result.ok ? "success" : "error");
+    await onRefresh();
+  }
+
+  async function copyHistoryItem(itemId: string): Promise<void> {
+    const result = await onAction("clipboard.copy_history_item", "module_ui", { id: itemId }) as { ok?: boolean; error?: string };
+    showStatus(result.ok ? "Copied item to clipboard." : result.error ?? "Copy failed.", result.ok ? "success" : "error");
+    await onRefresh();
+  }
+
+  async function assignSlot(slot: number): Promise<void> {
+    const result = await onAction("clipboard.assign_slot", "module_ui", { slot }) as { ok?: boolean; error?: string };
+    showStatus(result.ok ? `Assigned slot ${slot}.` : result.error ?? "Slot assignment failed.", result.ok ? "success" : "error");
+    await onRefresh();
+  }
+
+  async function copySlot(slot: number): Promise<void> {
+    const result = await onAction("clipboard.copy_slot", "module_ui", { slot }) as { ok?: boolean; error?: string };
+    showStatus(result.ok ? `Copied slot ${slot}.` : result.error ?? "Slot copy failed.", result.ok ? "success" : "error");
+    await onRefresh();
+  }
+
+  async function clearHistory(): Promise<void> {
+    if (!window.confirm("Clear DexNest Clipboard history? Snippets, slots, and multi-copy groups stay.")) {
+      return;
+    }
+    const result = await onAction("clipboard.clear_history", "module_ui", { confirmedDangerous: true }) as { ok?: boolean; error?: string };
+    showStatus(result.ok ? "Clipboard history cleared." : result.error ?? "Clear history failed.", result.ok ? "success" : "error");
+    await onRefresh();
+  }
+
+  async function cleanupHistoryNow(): Promise<void> {
+    const result = await onAction("clipboard.cleanup_history", "module_ui", { force: true }) as { ok?: boolean; error?: string; removedCount?: number };
+    showStatus(result.ok ? `Clipboard cleanup removed ${result.removedCount ?? 0} item${result.removedCount === 1 ? "" : "s"}.` : result.error ?? "Clipboard cleanup failed.", result.ok ? "success" : "error");
+    await onRefresh();
+  }
+
+  async function updateClipboardSettings(params: Record<string, unknown>, successMessage: string): Promise<void> {
+    const result = await onAction("clipboard.update_settings", "module_ui", params) as { ok?: boolean; error?: string };
+    showStatus(result.ok ? successMessage : result.error ?? "Clipboard settings update failed.", result.ok ? "success" : "error");
+    await onRefresh();
+  }
+
+  function separatorFromMode(mode: typeof separatorMode, customValue = customSeparator): string {
+    if (mode === "newline") {
+      return "\n";
+    }
+    if (mode === "comma") {
+      return ", ";
+    }
+    if (mode === "custom") {
+      return customValue;
+    }
+    return "\n\n";
+  }
+
+  const activeSession = clipboardState.settings.activeMultiCopySession;
+  const activeCombinedPreview = activeSession ? activeSession.items.map((item) => item.preview).join(" / ") : "";
+  const activeArmedForPaste = Boolean(activeSession?.items.length && activeSession.armedForPasteAt);
+  const activeTimeoutAt = activeSession
+    ? new Date(new Date(activeSession.updatedAt).getTime() + clipboardState.settings.multiCopyAutoClearMinutes * 60 * 1000)
+    : null;
+  const normalizedHistoryQuery = historyQuery.trim().toLowerCase();
+  const filteredHistory = clipboardState.history.filter((item) => {
+    const matchesQuery = !normalizedHistoryQuery || item.preview.toLowerCase().includes(normalizedHistoryQuery) || item.id.toLowerCase().includes(normalizedHistoryQuery);
+    const matchesSource = historySource === "all" || (item.source ?? "manual") === historySource;
+    return matchesQuery && matchesSource;
+  });
+
+  return (
+    <section className="view-stack accent-clipboard" aria-labelledby="clipboard-title">
+      {status && <ToastStack toasts={[{ id: status.message, message: status.message, tone: status.tone }]} />}
+      <PageHeader eyebrow="Local clipboard history" title="Clipboard" titleId="clipboard-title" />
+
+      <Panel title="Clipboard Listener and Multi-Copy">
+        <div className="stats-grid">
+          <article><span>Listener</span><strong>{clipboardState.settings.listenerEnabled ? "ON" : "OFF"}</strong><p>Default off. Runs only when enabled.</p></article>
+          <article><span>Interval</span><strong>{clipboardState.settings.listenerIntervalMs}ms</strong><p>Light text checks.</p></article>
+          <article><span>Hotkey</span><strong>{clipboardState.settings.multiCopyHotkeyStatus}</strong><p className="technical">{clipboardState.settings.multiCopyHotkey}</p></article>
+          <article><span>Secret protection</span><strong>{clipboardState.settings.secretProtectionEnabled ? "ON" : "ON"}</strong><p>Secure Vault values skipped.</p></article>
+          <article><span>Multi-copy</span><strong>{activeArmedForPaste ? "armed" : activeSession?.items.length ? "active" : "idle"}</strong><p>{activeArmedForPaste ? `${activeSession?.items.length ?? 0} items armed for paste` : activeSession?.items.length ? `${activeSession.items.length} captured` : "Select text, then press Ctrl+Shift+C."}</p></article>
+          <article><span>Last capture</span><strong>{clipboardState.settings.lastCaptureAt ? formatLocalDateTime(clipboardState.settings.lastCaptureAt) : "none"}</strong><p>{clipboardState.settings.lastCapturedPreview || "No captured preview."}</p></article>
+          <article><span>Last read</span><strong>{clipboardState.settings.lastReadAt ? formatLocalDateTime(clipboardState.settings.lastReadAt) : "none"}</strong><p>{clipboardState.settings.lastReadError || clipboardState.settings.lastReadPreview || "No read preview."}</p></article>
+        </div>
+        <div className="data-item data-item--stacked accent-clipboard">
+          <div className="section-heading">
+            <div>
+              <strong>{"Ctrl+Shift+C adds. Ctrl+V pastes and clears."}</strong>
+              <p>Normal Ctrl+C stays unchanged. The first Ctrl+Shift+C creates the current group automatically.</p>
+            </div>
+            <StatusBadge tone={activeArmedForPaste ? "success" : "neutral"}>{activeArmedForPaste ? `${activeSession?.items.length ?? 0} items armed for paste` : "No active multi-copy group"}</StatusBadge>
+          </div>
+          {activeSession?.items.length ? (
+            <>
+              <p className="clipboard-combined-preview">{activeCombinedPreview || "Combined text ready on the Windows clipboard."}</p>
+              <p className="technical">
+                {activeSession.id} / updated {formatLocalDateTime(activeSession.updatedAt)}
+                {activeSession.armedForPasteAt ? ` / armed ${formatLocalDateTime(activeSession.armedForPasteAt)}` : ""}
+                {activeTimeoutAt ? ` / clears after ${formatLocalDateTime(activeTimeoutAt)}` : ""}
+              </p>
+            </>
+          ) : (
+            <p className="technical">{clipboardState.activeMultiCopyPath}</p>
+          )}
+        </div>
         <div className="button-row">
+          <button
+            className={clipboardState.settings.multiCopyHotkeyEnabled ? "button-danger" : "button-primary"}
+            type="button"
+            onClick={() => void updateClipboardSettings({ multiCopyHotkeyEnabled: !clipboardState.settings.multiCopyHotkeyEnabled }, clipboardState.settings.multiCopyHotkeyEnabled ? "Multi-copy hotkey disabled." : "Multi-copy hotkey enabled.")}
+          >
+            {clipboardState.settings.multiCopyHotkeyEnabled ? "Disable multi-copy hotkey" : "Enable multi-copy hotkey"}
+          </button>
+          <button className={clipboardState.settings.listenerEnabled ? "button-danger" : "button-primary"} type="button" onClick={() => void toggleListener()}>
+            {clipboardState.settings.listenerEnabled ? "Disable listener" : "Enable listener"}
+          </button>
           <button type="button" onClick={() => void saveCurrentClipboard()}>
             Save current clipboard
           </button>
           <button type="button" onClick={() => void pasteAsPlainText()}>
             Paste as plain text
           </button>
+          <button type="button" onClick={() => void testReadClipboard()}>
+            Test read clipboard
+          </button>
+          <button className="danger-button" type="button" onClick={() => void clearHistory()}>
+            Clear history
+          </button>
         </div>
-        <p>No listener is running. Clipboard entries are saved only when you click.</p>
+        <div className="registry-controls">
+          <label>
+            Separator
+            <select
+              value={separatorMode}
+              onChange={(event) => {
+                const nextMode = event.target.value as typeof separatorMode;
+                setSeparatorMode(nextMode);
+                void updateClipboardSettings({ combinedSeparator: separatorFromMode(nextMode) }, "Multi-copy separator updated.");
+              }}
+            >
+              <option value="blank">Blank line</option>
+              <option value="newline">Single newline</option>
+              <option value="comma">Comma</option>
+              <option value="custom">Custom</option>
+            </select>
+          </label>
+          {separatorMode === "custom" && (
+            <label>
+              Custom separator
+              <input
+                value={customSeparator}
+                onChange={(event) => setCustomSeparator(event.target.value)}
+                onBlur={() => void updateClipboardSettings({ combinedSeparator: customSeparator }, "Custom separator saved.")}
+                placeholder="Separator text"
+              />
+            </label>
+          )}
+          <label>
+            Auto-clear minutes
+            <input
+              type="number"
+              min="1"
+              max="240"
+              value={autoClearMinutes}
+              onChange={(event) => setAutoClearMinutes(event.target.value)}
+              onBlur={() => void updateClipboardSettings({ multiCopyAutoClearMinutes: Number(autoClearMinutes) }, "Multi-copy auto-clear updated.")}
+            />
+          </label>
+        </div>
+        <p>Automatic history captures text only and excludes current Secure Vault copied secrets. Audit records metadata only.</p>
+        {clipboardState.settings.multiCopyLastHotkeyMessage && (
+          <p className="technical">
+            Last hotkey: {clipboardState.settings.multiCopyLastHotkeyStatus} / {clipboardState.settings.multiCopyLastHotkeyMessage}
+            {clipboardState.settings.multiCopyLastHotkeyAt ? ` / ${formatLocalDateTime(clipboardState.settings.multiCopyLastHotkeyAt)}` : ""}
+          </p>
+        )}
+        <p className="technical">{clipboardState.settingsPath}</p>
       </Panel>
 
       <div className="tabs" role="tablist" aria-label="Clipboard sections">
         <button type="button" data-active={activeTab === "history"} onClick={() => setActiveTab("history")}>
-          History
+          Normal History
+        </button>
+        <button type="button" data-active={activeTab === "multi"} onClick={() => setActiveTab("multi")}>
+          Active Multi-Copy Group
+        </button>
+        <button type="button" data-active={activeTab === "slots"} onClick={() => setActiveTab("slots")}>
+          Slots
         </button>
         <button type="button" data-active={activeTab === "snippets"} onClick={() => setActiveTab("snippets")}>
           Snippets
         </button>
-        <button type="button" data-active={activeTab === "rules"} onClick={() => setActiveTab("rules")}>
-          Rules
+        <button type="button" data-active={activeTab === "settings"} onClick={() => setActiveTab("settings")}>
+          Settings
         </button>
       </div>
 
       {activeTab === "history" && (
-        <Panel title="Clipboard History">
+        <Panel title="Normal Clipboard History">
+          <div className="registry-controls">
+            <label>
+              Search timeline
+              <input value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} placeholder="Preview or history ID" />
+            </label>
+            <label>
+              Source
+              <select value={historySource} onChange={(event) => setHistorySource(event.target.value)}>
+                <option value="all">All sources</option>
+                <option value="manual">Manual</option>
+                <option value="listener">Listener</option>
+              </select>
+            </label>
+          </div>
+          <p>{filteredHistory.length} matching item{filteredHistory.length === 1 ? "" : "s"}. Normal history is independent from active and saved multi-copy groups.</p>
           <p className="technical">{clipboardState.historyPath}</p>
-          <div className="item-list">
-            {clipboardState.history.length === 0 ? (
-              <p>No clipboard history yet.</p>
+          <div className="clipboard-history-list">
+            {filteredHistory.length === 0 ? (
+              <EmptyState>No Clipboard history matches this filter.</EmptyState>
             ) : (
-              clipboardState.history.map((item) => (
+              filteredHistory.map((item) => (
+                <article
+                  className="clipboard-history-row accent-clipboard"
+                  key={item.id}
+                  title={`${item.source ?? "manual"} / ${formatBytes(item.byteLength)} / ${formatLocalDateTime(item.createdAt)}`}
+                >
+                  <strong className="clipboard-history-text">{item.preview || "Saved clipboard text"}</strong>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="Copy clipboard item"
+                    title="Copy"
+                    onClick={() => void copyHistoryItem(item.id)}
+                  >
+                    <span className="copy-icon" aria-hidden="true" />
+                    <span className="sr-only">Copy</span>
+                  </button>
+                </article>
+              ))
+            )}
+          </div>
+        </Panel>
+      )}
+
+      {activeTab === "multi" && (
+        <Panel title="Active Temporary Multi-Copy Group">
+          <div className="button-row">
+            <button type="button" disabled={Boolean(activeSession)} onClick={() => void startMultiCopy()}>
+              Start empty group
+            </button>
+            <input value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="Saved group name" />
+            <button type="button" disabled={!activeSession?.items.length} onClick={() => void copyCombinedGroup()}>
+              Copy combined
+            </button>
+            <button type="button" disabled={!activeSession?.items.length} onClick={() => void saveMultiCopyGroup()}>
+              Save group
+            </button>
+            <button className="danger-button" type="button" disabled={!activeSession?.items.length} onClick={() => void clearMultiCopySession()}>
+              Clear current group
+            </button>
+            <button type="button" disabled={!activeSession} onClick={() => void stopMultiCopy()}>
+              Stop/Reset group
+            </button>
+          </div>
+          <p>Select text anywhere and press Ctrl+Shift+C. DexNest appends the text here and keeps the combined group on the Windows clipboard for normal Ctrl+V.</p>
+          <p className="technical">Separator: {JSON.stringify(clipboardState.settings.combinedSeparator)}</p>
+          {activeSession && (
+            <div className="action-list action-list--compact">
+              <p className="technical">{activeSession.id} / started {formatLocalDateTime(activeSession.startedAt)} / updated {formatLocalDateTime(activeSession.updatedAt)}</p>
+              {activeSession.items.length === 0 ? (
+                <EmptyState>Press Ctrl+Shift+C after selecting text anywhere in Windows.</EmptyState>
+              ) : (
+                activeSession.items.map((item) => (
+                  <article className="data-item data-item--compact accent-clipboard" key={item.id}>
+                    <strong>{item.preview || "Clipboard item"}</strong>
+                    <span>{formatBytes(item.byteLength)} / {formatLocalDateTime(item.createdAt)}</span>
+                    <button type="button" onClick={() => void copyHistoryItem(item.id)}>Copy</button>
+                  </article>
+                ))
+              )}
+            </div>
+          )}
+          <h3>Saved Multi-Copy Groups</h3>
+          <div className="action-list action-list--compact">
+            {clipboardState.multiGroups.length === 0 ? (
+              <EmptyState>No saved multi-copy groups yet.</EmptyState>
+            ) : (
+              clipboardState.multiGroups.map((group) => (
                 <CollapsibleListItem
                   accentClass="accent-clipboard"
-                  key={item.id}
-                  title={item.preview || "Saved clipboard text"}
-                  meta={`${item.byteLength} bytes / ${formatLocalDateTime(item.createdAt)}`}
+                  key={group.id}
+                  title={group.name}
+                  meta={`${group.items.length} items / ${formatLocalDateTime(group.updatedAt)}`}
+                  actions={(
+                    <>
+                    <button type="button" onClick={() => void copyCombinedGroup(group.id)}>Copy combined group</button>
+                    <button className="danger-button" type="button" onClick={() => void deleteMultiCopyGroup(group.id)}>Delete group</button>
+                    </>
+                  )}
                 >
-                  <p className="technical">{item.id}</p>
+                  <div className="action-list action-list--compact">
+                    {group.items.map((item) => (
+                      <article className="data-item data-item--compact accent-clipboard" key={item.id}>
+                        <strong>{item.preview || "Clipboard item"}</strong>
+                        <span>{formatBytes(item.byteLength)}</span>
+                        <button type="button" onClick={() => void copyHistoryItem(item.id)}>Copy</button>
+                      </article>
+                    ))}
+                  </div>
                 </CollapsibleListItem>
               ))
             )}
           </div>
+          <p className="technical">{clipboardState.multiGroupsPath}</p>
+        </Panel>
+      )}
+
+      {activeTab === "slots" && (
+        <Panel title="Clipboard Slots">
+          <div className="clipboard-slot-grid">
+            {clipboardState.slots.map((slot) => (
+              <article className="clipboard-slot accent-clipboard" key={slot.slot}>
+                <div>
+                  <strong>Slot {slot.slot}</strong>
+                  <p>{slot.preview || "Empty slot"}</p>
+                  {slot.updatedAt && <p className="technical">{formatLocalDateTime(slot.updatedAt)} / {formatBytes(slot.byteLength)}</p>}
+                </div>
+                <div className="button-row">
+                  <button type="button" onClick={() => void assignSlot(slot.slot)}>Assign current</button>
+                  <button type="button" disabled={!slot.text} onClick={() => void copySlot(slot.slot)}>Copy slot</button>
+                </div>
+              </article>
+            ))}
+          </div>
+          <p className="technical">{clipboardState.slotsPath}</p>
         </Panel>
       )}
 
@@ -2361,13 +3292,106 @@ function ClipboardView({
         </Panel>
       )}
 
-      {activeTab === "rules" && (
+      {activeTab === "settings" && (
         <div className="dashboard-grid">
+          <Panel title="Clipboard Settings">
+            <div className="stats-grid">
+              <article><span>Listener</span><strong>{clipboardState.settings.listenerEnabled ? "ON" : "OFF"}</strong><p>Normal Ctrl+C history capture when enabled.</p></article>
+              <article><span>Multi-copy hotkey</span><strong>{clipboardState.settings.multiCopyHotkeyEnabled ? "ON" : "OFF"}</strong><p className="technical">{clipboardState.settings.multiCopyHotkey}</p></article>
+              <article><span>Registration</span><strong>{clipboardState.settings.multiCopyHotkeyStatus}</strong><p>{clipboardState.settings.multiCopyHotkeyLastError || "Ready for multi-copy capture."}</p></article>
+              <article><span>Retention</span><strong>{clipboardState.settings.historyRetentionDays === "never" ? "never" : `${clipboardState.settings.historyRetentionDays} day${clipboardState.settings.historyRetentionDays === 1 ? "" : "s"}`}</strong><p>Normal history only.</p></article>
+              <article><span>Last cleanup</span><strong>{clipboardState.settings.lastHistoryCleanupAt ? formatLocalDateTime(clipboardState.settings.lastHistoryCleanupAt) : "never"}</strong><p>Runs once per app start and at most once per day.</p></article>
+            </div>
+            <div className="registry-controls">
+              <label>
+                Multi-copy hotkey
+                <select
+                  value={clipboardState.settings.multiCopyHotkey}
+                  onChange={(event) => void updateClipboardSettings({ multiCopyHotkey: event.target.value }, "Multi-copy hotkey updated.")}
+                >
+                  <option value="CommandOrControl+Shift+C">Ctrl+Shift+C</option>
+                  <option value="CommandOrControl+Alt+C">Ctrl+Alt+C</option>
+                  <option value="CommandOrControl+Shift+X">Ctrl+Shift+X</option>
+                </select>
+              </label>
+              <label>
+                History retention
+                <select
+                  value={String(clipboardState.settings.historyRetentionDays)}
+                  onChange={(event) => void updateClipboardSettings({ historyRetentionDays: event.target.value === "never" ? "never" : Number(event.target.value) }, "Clipboard history retention updated.")}
+                >
+                  <option value="1">1 day</option>
+                  <option value="3">3 days</option>
+                  <option value="7">7 days</option>
+                  <option value="30">30 days</option>
+                  <option value="never">Never</option>
+                </select>
+              </label>
+              <label>
+                Separator
+                <select
+                  value={separatorMode}
+                  onChange={(event) => {
+                    const nextMode = event.target.value as typeof separatorMode;
+                    setSeparatorMode(nextMode);
+                    void updateClipboardSettings({ combinedSeparator: separatorFromMode(nextMode) }, "Multi-copy separator updated.");
+                  }}
+                >
+                  <option value="blank">Blank line</option>
+                  <option value="newline">Single newline</option>
+                  <option value="comma">Comma</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </label>
+              {separatorMode === "custom" && (
+                <label>
+                  Custom separator
+                  <input
+                    value={customSeparator}
+                    onChange={(event) => setCustomSeparator(event.target.value)}
+                    onBlur={() => void updateClipboardSettings({ combinedSeparator: customSeparator }, "Custom separator saved.")}
+                    placeholder="Separator text"
+                  />
+                </label>
+              )}
+              <label>
+                Active group auto-clear minutes
+                <input
+                  type="number"
+                  min="1"
+                  max="240"
+                  value={autoClearMinutes}
+                  onChange={(event) => setAutoClearMinutes(event.target.value)}
+                  onBlur={() => void updateClipboardSettings({ multiCopyAutoClearMinutes: Number(autoClearMinutes) }, "Multi-copy auto-clear updated.")}
+                />
+              </label>
+            </div>
+            <div className="button-row">
+              <button className={clipboardState.settings.listenerEnabled ? "button-danger" : "button-primary"} type="button" onClick={() => void toggleListener()}>
+                {clipboardState.settings.listenerEnabled ? "Disable listener" : "Enable listener"}
+              </button>
+              <button
+                className={clipboardState.settings.multiCopyHotkeyEnabled ? "button-danger" : "button-primary"}
+                type="button"
+                onClick={() => void updateClipboardSettings({ multiCopyHotkeyEnabled: !clipboardState.settings.multiCopyHotkeyEnabled }, clipboardState.settings.multiCopyHotkeyEnabled ? "Multi-copy hotkey disabled." : "Multi-copy hotkey enabled.")}
+              >
+                {clipboardState.settings.multiCopyHotkeyEnabled ? "Disable multi-copy hotkey" : "Enable multi-copy hotkey"}
+              </button>
+              <button type="button" onClick={() => void cleanupHistoryNow()}>
+                Cleanup history now
+              </button>
+            </div>
+            <p>Some apps may reserve shortcuts. Use Ctrl+Alt+C or Ctrl+Shift+X if Ctrl+Shift+C is intercepted.</p>
+            <p className="technical">Manual custom shortcut string placeholder: future DexNest setting.</p>
+            <p className="technical">{clipboardState.settingsPath}</p>
+          </Panel>
           <Panel title="Per-App Rules">
-            <p>Placeholder only. No app monitoring or clipboard listener is active yet.</p>
+            <p>Placeholder. DexNest does not yet attach active-app detection to Clipboard, so per-app exclusions are not enforced.</p>
+            <p className="technical">{clipboardState.settings.appExclusionRules.length} configured rules</p>
           </Panel>
           <Panel title="Secret Protection">
-            <p>Placeholder only. Future rules can flag passwords, tokens, and sensitive snippets before saving.</p>
+            <p>Secure Vault copy actions mark copied secrets as protected. The listener, manual history save, multi-copy, and slots skip that protected value.</p>
+            <p>Audit stores byte counts and IDs only, never full clipboard text.</p>
           </Panel>
         </div>
       )}
@@ -2387,6 +3411,8 @@ function ToolsView({
     outputs?: ToolsOutputItem[];
     output?: string | ToolsOutputItem;
     info?: PdfInfoItem[];
+    ocrPreview?: string;
+    ocrMetadata?: { engine: string; averageConfidence: number | null };
   }>;
   onRefresh: () => Promise<void>;
 }) {
@@ -2398,9 +3424,22 @@ function ToolsView({
   const [audioFormat, setAudioFormat] = useState("mp3");
   const [resizeWidth, setResizeWidth] = useState("");
   const [resizeHeight, setResizeHeight] = useState("");
-  const [activeTab, setActiveTab] = useState<"pdf" | "images" | "media" | "office" | "outputs" | "settings">("pdf");
+  const [activeTab, setActiveTab] = useState<"pdf" | "images" | "ocr" | "media" | "office" | "outputs" | "settings">("pdf");
   const [ffmpegPath, setFfmpegPath] = useState(toolsState.ffmpegPath ?? "");
   const [libreOfficePath, setLibreOfficePath] = useState(toolsState.libreOfficePath ?? "");
+  const [tesseractPath, setTesseractPath] = useState(toolsState.tesseractPath ?? "");
+  const [pythonPath, setPythonPath] = useState(toolsState.pythonPath ?? "");
+  const [ocrEngine, setOcrEngine] = useState<"tesseract" | "paddleocr" | "easyocr_placeholder">(toolsState.ocrEngine ?? "paddleocr");
+  const [ocrDevice, setOcrDevice] = useState<"gpu" | "cpu">(toolsState.ocrDevice ?? "gpu");
+  const [ocrLanguage, setOcrLanguage] = useState(toolsState.ocrLanguage ?? "eng");
+  const [ocrPreview, setOcrPreview] = useState("");
+  const [ocrMetadata, setOcrMetadata] = useState<{ engine: string; averageConfidence: number | null } | null>(null);
+  const [ocrUpscale, setOcrUpscale] = useState(true);
+  const [ocrThreshold, setOcrThreshold] = useState(false);
+  const [scanGrayscale, setScanGrayscale] = useState(true);
+  const [scanSharpen, setScanSharpen] = useState(true);
+  const [scanContrast, setScanContrast] = useState("0.28");
+  const [scanRotate, setScanRotate] = useState("0");
   const [status, setStatus] = useState<{ tone: "success" | "error"; message: string } | null>(null);
   const [runningActionId, setRunningActionId] = useState<string | null>(null);
   const [draggedFileIndex, setDraggedFileIndex] = useState<number | null>(null);
@@ -2410,7 +3449,12 @@ function ToolsView({
   useEffect(() => {
     setFfmpegPath(toolsState.ffmpegPath ?? "");
     setLibreOfficePath(toolsState.libreOfficePath ?? "");
-  }, [toolsState.ffmpegPath, toolsState.libreOfficePath]);
+    setTesseractPath(toolsState.tesseractPath ?? "");
+    setPythonPath(toolsState.pythonPath ?? "");
+    setOcrEngine(toolsState.ocrEngine ?? "paddleocr");
+    setOcrDevice(toolsState.ocrDevice ?? "gpu");
+    setOcrLanguage(toolsState.ocrLanguage ?? "eng");
+  }, [toolsState.ffmpegPath, toolsState.libreOfficePath, toolsState.tesseractPath, toolsState.pythonPath, toolsState.ocrEngine, toolsState.ocrDevice, toolsState.ocrLanguage]);
 
   function showStatus(message: string, tone: "success" | "error" = "success"): void {
     setStatus({ tone, message });
@@ -2472,6 +3516,10 @@ function ToolsView({
 
     if (result.ok) {
       const count = result.outputs?.length ?? (result.output ? 1 : 0);
+      if (result.ocrPreview !== undefined) {
+        setOcrPreview(result.ocrPreview || "OCR completed but no preview text was extracted.");
+        setOcrMetadata(result.ocrMetadata ?? null);
+      }
       showStatus(count ? `Created ${count} output file${count === 1 ? "" : "s"}.` : "Tools action completed.");
       await onRefresh();
     } else {
@@ -2499,7 +3547,12 @@ function ToolsView({
     try {
       await getBridge().saveToolsSettings({
         ffmpegPath,
-        libreOfficePath
+        libreOfficePath,
+        tesseractPath,
+        pythonPath,
+        ocrEngine,
+        ocrDevice,
+        ocrLanguage
       });
       showStatus("Tools dependency settings saved.");
       await onRefresh();
@@ -2597,6 +3650,7 @@ function ToolsView({
         {[
           ["pdf", "PDF"],
           ["images", "Images"],
+          ["ocr", "OCR / Scan Cleanup"],
           ["media", "Media"],
           ["office", "Office"],
           ["outputs", "Recent Outputs"],
@@ -2683,6 +3737,106 @@ function ToolsView({
         </Panel>
       )}
 
+      {activeTab === "ocr" && (
+        <div className="tools-grid">
+          <Panel title="OCR">
+            <p>PaddleOCR is the advanced local engine. Tesseract remains available as a fallback. EasyOCR is a placeholder for later.</p>
+            <div className="tools-form-grid">
+              <label>
+                OCR engine
+                <select value={ocrEngine} onChange={(event) => setOcrEngine(event.target.value as typeof ocrEngine)}>
+                  <option value="paddleocr">PaddleOCR</option>
+                  <option value="tesseract">Tesseract</option>
+                  <option value="easyocr_placeholder">EasyOCR placeholder</option>
+                </select>
+              </label>
+              <label>
+                PaddleOCR device
+                <select value={ocrDevice} onChange={(event) => setOcrDevice(event.target.value as typeof ocrDevice)} disabled={ocrEngine !== "paddleocr"}>
+                  <option value="gpu">GPU</option>
+                  <option value="cpu">CPU</option>
+                </select>
+              </label>
+              <label>
+                OCR language
+                <input className="technical" value={ocrLanguage} onChange={(event) => setOcrLanguage(event.target.value)} placeholder="eng" />
+              </label>
+              <label className="checkbox-row">
+                <input type="checkbox" checked={ocrUpscale} onChange={(event) => setOcrUpscale(event.target.checked)} />
+                <span>Upscale 2x before OCR</span>
+              </label>
+              <label className="checkbox-row">
+                <input type="checkbox" checked={scanGrayscale} onChange={(event) => setScanGrayscale(event.target.checked)} />
+                <span>Grayscale before OCR</span>
+              </label>
+              <label className="checkbox-row">
+                <input type="checkbox" checked={scanSharpen} onChange={(event) => setScanSharpen(event.target.checked)} />
+                <span>Sharpen before OCR</span>
+              </label>
+              <label className="checkbox-row">
+                <input type="checkbox" checked={ocrThreshold} onChange={(event) => setOcrThreshold(event.target.checked)} />
+                <span>Threshold/binarize before OCR</span>
+              </label>
+            </div>
+            <div className="button-row">
+              <button type="button" disabled={runningActionId === "tools.ocr_image"} onClick={() => void runTool("tools.ocr_image", { engine: ocrEngine, device: ocrDevice, language: ocrLanguage, upscale: ocrUpscale, grayscale: scanGrayscale, contrastBoost: true, sharpen: scanSharpen, threshold: ocrThreshold, rotateDegrees: scanRotate })}>OCR images</button>
+              <button type="button" disabled={runningActionId === "tools.ocr_pdf"} onClick={() => void runTool("tools.ocr_pdf", { engine: ocrEngine, device: ocrDevice, language: ocrLanguage, upscale: ocrUpscale, grayscale: scanGrayscale, contrastBoost: true, sharpen: scanSharpen, threshold: ocrThreshold, rotateDegrees: scanRotate })}>OCR PDFs</button>
+              <button type="button" onClick={() => setActiveTab("settings")}>OCR settings</button>
+            </div>
+            {ocrEngine === "paddleocr" && <p>GPU is the DexNest default for PaddleOCR, but it requires a GPU-enabled PaddlePaddle install. A CPU-only PaddlePaddle package cannot use GPU OCR.</p>}
+            {ocrEngine === "tesseract" && <p>Tesseract OCR is required. Install it and set <span className="technical">tesseract.exe</span> in Tools Settings if auto-detect fails.</p>}
+            {ocrMetadata && <p className="technical">Engine: {ocrMetadata.engine} / confidence: {ocrMetadata.averageConfidence === null ? "not available" : `${Math.round(ocrMetadata.averageConfidence * 100)}%`}</p>}
+            <label>
+              OCR preview
+              <textarea readOnly value={ocrPreview} placeholder="Extracted text preview appears here after OCR runs." />
+            </label>
+          </Panel>
+
+          <Panel title="Scan Cleanup">
+            <div className="tools-form-grid">
+              <label className="checkbox-row">
+                <input type="checkbox" checked={scanGrayscale} onChange={(event) => setScanGrayscale(event.target.checked)} />
+                <span>Grayscale</span>
+              </label>
+              <label className="checkbox-row">
+                <input type="checkbox" checked={scanSharpen} onChange={(event) => setScanSharpen(event.target.checked)} />
+                <span>Sharpen text</span>
+              </label>
+              <label>
+                Contrast
+                <input className="technical" value={scanContrast} onChange={(event) => setScanContrast(event.target.value)} placeholder="0.28" />
+              </label>
+              <label>
+                Rotate
+                <select value={scanRotate} onChange={(event) => setScanRotate(event.target.value)}>
+                  <option value="0">No rotation</option>
+                  <option value="90">Rotate right</option>
+                  <option value="-90">Rotate left</option>
+                  <option value="180">Rotate 180</option>
+                </select>
+              </label>
+            </div>
+            <div className="button-row">
+              <button
+                type="button"
+                disabled={runningActionId === "tools.clean_scan"}
+                onClick={() => void runTool("tools.clean_scan", { grayscale: scanGrayscale, sharpen: scanSharpen, contrast: scanContrast, rotateDegrees: scanRotate })}
+              >
+                Clean scan images
+              </button>
+              <button
+                type="button"
+                disabled={runningActionId === "tools.cleaned_image_to_pdf"}
+                onClick={() => void runTool("tools.cleaned_image_to_pdf", { grayscale: scanGrayscale, sharpen: scanSharpen, contrast: scanContrast, rotateDegrees: scanRotate })}
+              >
+                Cleaned images to PDF
+              </button>
+            </div>
+            <p>Crop is a placeholder for a later visual crop tool. This MVP applies non-destructive copied outputs only.</p>
+          </Panel>
+        </div>
+      )}
+
       {activeTab === "media" && (
         <Panel title="Media Converters">
           <div className="tools-form-grid">
@@ -2740,10 +3894,40 @@ function ToolsView({
               <input className="technical" value={libreOfficePath} onChange={(event) => setLibreOfficePath(event.target.value)} placeholder={toolsState.detectedLibreOfficePath ?? "LibreOffice soffice.exe"} />
             </label>
             <p>Detected: <span className="technical">{toolsState.detectedLibreOfficePath ?? "not found"}</span></p>
+            <label>
+              Tesseract OCR path
+              <input className="technical" value={tesseractPath} onChange={(event) => setTesseractPath(event.target.value)} placeholder={toolsState.detectedTesseractPath ?? "Tesseract tesseract.exe"} />
+            </label>
+            <p>Detected: <span className="technical">{toolsState.detectedTesseractPath ?? "not found"}</span></p>
+            <label>
+              Python path for PaddleOCR
+              <input className="technical" value={pythonPath} onChange={(event) => setPythonPath(event.target.value)} placeholder={toolsState.detectedPythonPath ?? "python from PATH"} />
+            </label>
+            <p>Detected: <span className="technical">{toolsState.detectedPythonPath ?? "not found"}</span></p>
+            <label>
+              Default OCR engine
+              <select value={ocrEngine} onChange={(event) => setOcrEngine(event.target.value as typeof ocrEngine)}>
+                <option value="paddleocr">PaddleOCR</option>
+                <option value="tesseract">Tesseract</option>
+                <option value="easyocr_placeholder">EasyOCR placeholder</option>
+              </select>
+            </label>
+            <label>
+              Default PaddleOCR device
+              <select value={ocrDevice} onChange={(event) => setOcrDevice(event.target.value as typeof ocrDevice)}>
+                <option value="gpu">GPU</option>
+                <option value="cpu">CPU</option>
+              </select>
+            </label>
+            <label>
+              OCR language
+              <input className="technical" value={ocrLanguage} onChange={(event) => setOcrLanguage(event.target.value)} placeholder="eng" />
+            </label>
             <div className="button-row">
               <button type="button" onClick={() => void saveDependencySettings()}>Save paths</button>
-              <button type="button" onClick={() => { setFfmpegPath(""); setLibreOfficePath(""); }}>Clear fields</button>
+              <button type="button" onClick={() => { setFfmpegPath(""); setLibreOfficePath(""); setTesseractPath(""); setPythonPath(""); setOcrEngine("paddleocr"); setOcrDevice("gpu"); setOcrLanguage("eng"); }}>Clear fields</button>
             </div>
+            <p>PaddleOCR setup: GPU mode requires a GPU-enabled local PaddlePaddle install for Python 3.12. CPU-only PaddlePaddle will be blocked before OCR starts.</p>
             <p className="technical">local-data/settings/tools-settings.json</p>
           </Panel>
         </div>
@@ -2806,7 +3990,14 @@ function VaultView({
   const [editExpiryDate, setEditExpiryDate] = useState("");
   const [expandedDocumentIds, setExpandedDocumentIds] = useState<string[]>([]);
   const [activeVaultTab, setActiveVaultTab] = useState<"documents" | "secure">("documents");
+  const [autoOcrOnImport, setAutoOcrOnImport] = useState(vaultState.ocrSettings.autoOcrOnImport);
+  const [vaultOcrPythonPath, setVaultOcrPythonPath] = useState(vaultState.ocrSettings.pythonPath ?? "");
   const [status, setStatus] = useState<{ tone: "success" | "error"; message: string } | null>(null);
+
+  useEffect(() => {
+    setAutoOcrOnImport(vaultState.ocrSettings.autoOcrOnImport);
+    setVaultOcrPythonPath(vaultState.ocrSettings.pythonPath ?? "");
+  }, [vaultState.ocrSettings.autoOcrOnImport, vaultState.ocrSettings.pythonPath]);
 
   const recentImports = vaultState.documents.slice(0, 5);
   const categoryCounts = vaultState.categories.map((item) => ({
@@ -2936,6 +4127,25 @@ function VaultView({
     await onRefresh();
   }
 
+  async function runVaultOcrAction(actionId: string, params: Record<string, unknown> = {}): Promise<void> {
+    const result = await onAction(actionId, "module_ui", params);
+    showStatus(result.ok ? "Vault OCR action queued." : result.error ?? "Vault OCR action failed.", result.ok ? "success" : "error");
+    await onRefresh();
+  }
+
+  async function saveVaultOcrSettings(): Promise<void> {
+    const result = await onAction("vault.ocr.update_settings", "module_ui", {
+      autoOcrOnImport,
+      pythonPath: vaultOcrPythonPath || null
+    });
+    showStatus(result.ok ? "Vault OCR settings saved." : result.error ?? "Vault OCR settings failed.", result.ok ? "success" : "error");
+    await onRefresh();
+  }
+
+  function documentOcrStatus(document: VaultDocumentRecord): string {
+    return document.ocrStatus ?? ([".png", ".jpg", ".jpeg", ".webp", ".pdf"].includes(document.fileType) ? "not_ocred" : "unsupported");
+  }
+
   return (
     <section className="view-stack accent-vault" aria-labelledby="vault-title">
       {status && (
@@ -3001,12 +4211,61 @@ function VaultView({
           <p className="technical">{vaultState.importsPath}</p>
           <p>Versions path</p>
           <p className="technical">{vaultState.versionsPath}</p>
+          <p>OCR output path</p>
+          <p className="technical">{vaultState.ocrOutputPath}</p>
+          <p>OCR jobs</p>
+          <p className="technical">{vaultState.ocrJobsPath}</p>
           <p>Metadata path</p>
           <p className="technical">{vaultState.metadataPath}</p>
           <p>{vaultState.documentCount} documents / {formatBytes(vaultState.totalSizeBytes)}</p>
-          <p>Sensitive encrypted Vault is a future layer. Encryption is not enabled yet.</p>
+          <p>Secure Vault is encrypted separately. Document Vault OCR is local PaddleOCR GPU only.</p>
         </Panel>
       </div>
+
+      <Panel title="GPU OCR Queue">
+        <div className="settings-grid">
+          <article>
+            <span>Queue</span>
+            <strong>{vaultState.ocrQueueRunning ? "Running" : vaultState.ocrQueuePaused ? "Paused" : "Idle"}</strong>
+            <p>{vaultState.ocrJobs.filter((job) => job.status === "queued").length} queued / {vaultState.ocrJobs.filter((job) => job.status === "failed").length} failed</p>
+          </article>
+          <article>
+            <span>PaddleOCR GPU</span>
+            <strong>{vaultState.paddleGpuStatus.ok ? "Ready" : "Needs setup"}</strong>
+            <p>{vaultState.paddleGpuStatus.message}</p>
+          </article>
+          <article>
+            <span>Runtime</span>
+            <strong>{vaultState.paddleGpuStatus.paddleVersion ?? "unknown"}</strong>
+            <p className="technical">{vaultState.paddleGpuStatus.pythonPath ?? "No Python path"}</p>
+          </article>
+        </div>
+        <div className="registry-controls">
+          <label className="checkbox-row">
+            <input type="checkbox" checked={autoOcrOnImport} onChange={(event) => setAutoOcrOnImport(event.target.checked)} />
+            <span>Auto OCR supported Vault imports</span>
+          </label>
+          <label>
+            Python path
+            <input className="technical" value={vaultOcrPythonPath} onChange={(event) => setVaultOcrPythonPath(event.target.value)} placeholder="Use detected Tools Python if empty" />
+          </label>
+        </div>
+        <div className="button-row">
+          <button type="button" onClick={() => void runVaultOcrAction("vault.ocr.run_queue")}>Run OCR queue now</button>
+          <button type="button" onClick={() => void runVaultOcrAction("vault.ocr.pause_queue")}>Pause OCR queue</button>
+          <button type="button" onClick={() => void runVaultOcrAction("vault.ocr.retry_failed")}>Retry failed OCR</button>
+          <button type="button" onClick={() => void saveVaultOcrSettings()}>Save OCR settings</button>
+        </div>
+        <div className="action-list action-list--compact">
+          {vaultState.ocrJobs.slice(0, 8).map((job) => (
+            <article className="data-item data-item--stacked accent-vault" key={job.id}>
+              <strong>{job.status} / {job.fileType} / {job.engine} {job.device}</strong>
+              <span className="technical">{job.documentId}</span>
+              {job.error && <span>{job.error}</span>}
+            </article>
+          ))}
+        </div>
+      </Panel>
 
       <div className="tools-grid">
         <Panel title="Categories">
@@ -3074,26 +4333,32 @@ function VaultView({
                     aria-expanded={expanded}
                     onClick={() => toggleDocument(document.id)}
                   >
-                    <span className="vault-document__chevron" aria-hidden="true" />
-                    <span>
-                      <strong>{document.title}</strong>
-                      <small>{document.category} / {document.fileType} / {formatBytes(document.sizeBytes)} / Version {document.versionNumber ?? 1}</small>
-                    </span>
-                    <span className="status-pill">{document.tags.length ? document.tags[0] : "No tags"}</span>
+                      <span className="vault-document__chevron" aria-hidden="true" />
+                      <span>
+                        <strong>{document.title}</strong>
+                        <small>{document.category} / {document.fileType} / {formatBytes(document.sizeBytes)} / Version {document.versionNumber ?? 1}</small>
+                      </span>
+                    <span className="status-pill">{documentOcrStatus(document)}</span>
                   </button>
                   {expanded && (
                     <div className="vault-document__details">
                       <div>
                         <p>{document.tags.length ? document.tags.join(", ") : "No tags"}{document.expiryDate ? ` / expires ${formatLocalDate(document.expiryDate)}` : ""}</p>
+                        <p>OCR: {documentOcrStatus(document)}{document.ocrUpdatedAt ? ` / ${formatLocalDateTime(document.ocrUpdatedAt)}` : ""}</p>
+                        {document.ocrError && <p>{document.ocrError}</p>}
                         <p>{formatDate(document.createdAt)}</p>
                         <p className="technical">{document.id}</p>
                         <p className="technical">{document.filePath}</p>
+                        {document.ocrTextPath && <p className="technical">{document.ocrTextPath}</p>}
                       </div>
                       <div className="button-row">
                         <button type="button" onClick={() => void runDocumentAction("vault.open_document", document)}>Open file</button>
                         <button type="button" onClick={() => void runDocumentAction("vault.open_document_folder", document)}>Open folder</button>
                         <button type="button" onClick={() => startEdit(document)}>Edit metadata</button>
                         <button type="button" onClick={() => void addVersion(document)}>New version</button>
+                        <button type="button" onClick={() => void runVaultOcrAction("vault.ocr.rerun_document", { documentId: document.id })}>{document.ocrStatus === "completed" ? "Re-run OCR" : "Run OCR"}</button>
+                        <button type="button" disabled={!document.ocrTextPath} onClick={() => void runDocumentAction("vault.ocr.open_text", document)}>Open OCR text</button>
+                        <button type="button" disabled={!document.ocrTextPath} onClick={() => void runDocumentAction("vault.ocr.copy_text", document)}>Copy OCR text</button>
                         <button type="button" onClick={() => void runDocumentAction("vault.send_document_to_drop", document)}>Send to Drop</button>
                         <button type="button" className="button-danger" onClick={() => void deleteDocument(document)}>Delete</button>
                       </div>
@@ -3429,10 +4694,28 @@ function DropView({
     const eventsUrl = dropState.localUrl
       ? dropState.localUrl.replace(/\/drop$/, "/drop/api/events")
       : `${endpoint ?? "http://127.0.0.1:43217"}/drop/api/events`;
-    const eventSource = new EventSource(eventsUrl);
+    let eventSource: EventSource;
+
+    try {
+      eventSource = new EventSource(eventsUrl);
+    } catch {
+      fallbackTimer = window.setInterval(() => {
+        void onRefresh();
+      }, 3000);
+      return () => {
+        if (fallbackTimer !== null) {
+          window.clearInterval(fallbackTimer);
+        }
+      };
+    }
 
     eventSource.onmessage = (event) => {
-      const payload = JSON.parse(event.data) as { eventType?: string; message?: string };
+      let payload: { eventType?: string; message?: string } = {};
+      try {
+        payload = JSON.parse(event.data) as { eventType?: string; message?: string };
+      } catch {
+        return;
+      }
       void onRefresh();
       if (payload.eventType && payload.eventType !== "drop.connected" && payload.message) {
         showToast(payload.message);
@@ -3486,16 +4769,19 @@ function DropView({
     }
     setDropText("");
     showToast("Text sent");
+    await onRefresh();
   }
 
   async function sendClipboardToDrop(): Promise<void> {
     const result = await onAction("drop.send_clipboard_to_drop") as { ok?: boolean; error?: string };
     showToast(result?.ok === false ? result.error ?? "Clipboard send failed" : "Text sent", result?.ok === false ? "error" : "success");
+    await onRefresh();
   }
 
   async function addOutgoingFile(): Promise<void> {
     const result = await onAction("drop.add_outgoing_file") as { ok?: boolean; error?: string };
     showToast(result?.ok === false ? result.error ?? "File add failed" : "File added", result?.ok === false ? "error" : "success");
+    await onRefresh();
   }
 
   async function removeOutgoingFile(fileId: string): Promise<void> {
@@ -3506,6 +4792,7 @@ function DropView({
 
     const result = await onAction("drop.remove_outgoing_file", "module_ui", { id: fileId, confirmedDangerous: true }) as { ok?: boolean; error?: string };
     showToast(result?.ok === false ? result.error ?? "File remove failed" : "File removed", result?.ok === false ? "error" : "success");
+    await onRefresh();
   }
 
   async function clearOutgoing(): Promise<void> {
@@ -3516,6 +4803,7 @@ function DropView({
 
     const result = await onAction("drop.clear_outgoing", "module_ui", { confirmedDangerous: true }) as { ok?: boolean; error?: string };
     showToast(result?.ok === false ? result.error ?? "Clear outgoing failed" : "Outgoing cleared", result?.ok === false ? "error" : "success");
+    await onRefresh();
   }
 
   async function clearIncoming(): Promise<void> {
@@ -3526,6 +4814,7 @@ function DropView({
 
     const result = await onAction("drop.clear_incoming", "module_ui", { confirmedDangerous: true }) as { ok?: boolean; error?: string };
     showToast(result?.ok === false ? result.error ?? "Clear incoming failed" : "Incoming list cleared", result?.ok === false ? "error" : "success");
+    await onRefresh();
   }
 
   async function copyIncomingText(itemId: string): Promise<void> {
@@ -3806,6 +5095,12 @@ function formatDuration(seconds: number): string {
     return `${minutes}m`;
   }
   return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+}
+
+function shortcutLabel(value: string): string {
+  return value
+    .replaceAll("CommandOrControl", "Ctrl")
+    .replaceAll("+", " + ");
 }
 
 function CollapsibleListItem({
@@ -4227,7 +5522,7 @@ function CalendarView({
   onRefresh
 }: {
   calendarState: CalendarState;
-  onAction: (actionId: string, source?: string, params?: unknown) => Promise<{ ok: boolean; error?: string; event?: CalendarEvent }>;
+  onAction: (actionId: string, source?: string, params?: unknown) => Promise<{ ok: boolean; error?: string; event?: CalendarEvent; calendarState?: CalendarState }>;
   onRefresh: () => Promise<void>;
 }) {
   const [editingId, setEditingId] = useState<string | undefined>();
@@ -4242,7 +5537,24 @@ function CalendarView({
   const [status, setStatus] = useState("");
   const [visibleMonth, setVisibleMonth] = useState(() => calendarState.today.slice(0, 7));
   const [selectedDate, setSelectedDate] = useState(calendarState.today);
+  const [nudgeSettingsForm, setNudgeSettingsForm] = useState({
+    enabled: calendarState.nudgeSettings.enabled,
+    vaultExpiryReminderDays: calendarState.nudgeSettings.vaultExpiryReminderDays.join(", "),
+    returnReminderDays: calendarState.nudgeSettings.returnReminderDays.join(", "),
+    dailyJournalReminderEnabled: calendarState.nudgeSettings.dailyJournalReminderEnabled,
+    backupReminderAfterDays: String(calendarState.nudgeSettings.backupReminderAfterDays)
+  });
   const calendarTitleRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    setNudgeSettingsForm({
+      enabled: calendarState.nudgeSettings.enabled,
+      vaultExpiryReminderDays: calendarState.nudgeSettings.vaultExpiryReminderDays.join(", "),
+      returnReminderDays: calendarState.nudgeSettings.returnReminderDays.join(", "),
+      dailyJournalReminderEnabled: calendarState.nudgeSettings.dailyJournalReminderEnabled,
+      backupReminderAfterDays: String(calendarState.nudgeSettings.backupReminderAfterDays)
+    });
+  }, [calendarState.nudgeSettings]);
 
   const monthDate = parseLocalDateInput(`${visibleMonth}-01`);
   const monthLabel = monthDate.toLocaleDateString(undefined, { month: "long", year: "numeric" });
@@ -4337,6 +5649,63 @@ function CalendarView({
     await onRefresh();
   }
 
+  async function runNudgeAction(actionId: string, nudge: Nudge, params: Record<string, unknown> = {}): Promise<void> {
+    const result = await onAction(actionId, "module_ui", { nudgeId: nudge.id, ...params });
+    setStatus(result.ok ? "Nudge updated." : result.error ?? "Nudge action failed.");
+    await onRefresh();
+  }
+
+  async function refreshNudgeList(): Promise<void> {
+    const result = await onAction("calendar.nudge.refresh", "module_ui");
+    setStatus(result.ok ? "Nudges refreshed." : result.error ?? "Nudge refresh failed.");
+    await onRefresh();
+  }
+
+  function parseDayList(value: string): number[] {
+    return value
+      .split(",")
+      .map((item) => Number(item.trim()))
+      .filter((item) => Number.isFinite(item) && item > 0)
+      .sort((left, right) => right - left);
+  }
+
+  async function saveNudgeSettings(): Promise<void> {
+    const result = await onAction("calendar.nudge.update_settings", "module_ui", {
+      nudgeSettings: {
+        enabled: nudgeSettingsForm.enabled,
+        vaultExpiryReminderDays: parseDayList(nudgeSettingsForm.vaultExpiryReminderDays),
+        returnReminderDays: parseDayList(nudgeSettingsForm.returnReminderDays),
+        dailyJournalReminderEnabled: nudgeSettingsForm.dailyJournalReminderEnabled,
+        backupReminderAfterDays: Number(nudgeSettingsForm.backupReminderAfterDays) || 7
+      }
+    });
+    setStatus(result.ok ? "Nudge settings saved." : result.error ?? "Nudge settings failed.");
+    await onRefresh();
+  }
+
+  function renderNudge(nudge: Nudge) {
+    return (
+      <CollapsibleListItem
+        accentClass="accent-calendar"
+        key={nudge.id}
+        title={nudge.title}
+        meta={`${formatLocalDate(nudge.date)}${nudge.time ? ` / ${nudge.time}` : ""} / ${nudge.priority} / ${nudge.sourceModule}`}
+        actions={(
+          <>
+          <button type="button" onClick={() => void runNudgeAction("calendar.nudge.open_source", nudge)}>Open source</button>
+          <button type="button" onClick={() => void runNudgeAction("calendar.nudge.snooze", nudge, { snoozeMinutes: 60 })}>Snooze</button>
+          <button type="button" onClick={() => void runNudgeAction("calendar.nudge.complete", nudge)}>Done</button>
+          <button type="button" onClick={() => void runNudgeAction("calendar.nudge.dismiss", nudge)}>Dismiss</button>
+          </>
+        )}
+      >
+        <p>{nudge.message}</p>
+        <p className="technical">{nudge.id}</p>
+        {nudge.snoozeUntil && <p>Snoozed until {formatLocalDateTime(nudge.snoozeUntil)}</p>}
+      </CollapsibleListItem>
+    );
+  }
+
   function renderEvent(event: CalendarEvent) {
     return (
       <CollapsibleListItem
@@ -4368,6 +5737,7 @@ function CalendarView({
           <button type="button" onClick={() => shiftMonth(-1)}>Previous</button>
           <button type="button" onClick={goToToday}>Today</button>
           <button type="button" onClick={() => shiftMonth(1)}>Next</button>
+          <button type="button" onClick={() => void refreshNudgeList()}>Refresh nudges</button>
           </>
         )}
       />
@@ -4438,6 +5808,25 @@ function CalendarView({
           </Panel>
         </div>
 
+      <div className="dashboard-grid">
+        <Panel title="Today Nudges">
+          <div className="action-list action-list--compact">
+            {calendarState.todayNudges.length === 0 ? <EmptyState>No nudges due today.</EmptyState> : calendarState.todayNudges.map(renderNudge)}
+          </div>
+        </Panel>
+        <Panel title="Urgent Nudges">
+          <div className="action-list action-list--compact">
+            {calendarState.urgentNudges.length === 0 ? <EmptyState>No urgent nudges.</EmptyState> : calendarState.urgentNudges.map(renderNudge)}
+          </div>
+        </Panel>
+      </div>
+
+      <Panel title="Upcoming Nudges">
+        <div className="action-list">
+          {calendarState.upcomingNudges.length === 0 ? <EmptyState>No upcoming nudges.</EmptyState> : calendarState.upcomingNudges.map(renderNudge)}
+        </div>
+      </Panel>
+
       <Panel title="Upcoming">
         <div className="action-list">
           {calendarState.upcomingEvents.length === 0 ? <p>No upcoming local events.</p> : calendarState.upcomingEvents.map(renderEvent)}
@@ -4451,8 +5840,34 @@ function CalendarView({
         <Panel title="Travel Buffer">
           <p>Placeholder. No external maps or cloud calls.</p>
         </Panel>
-        <Panel title="Nudge">
-          <p>Placeholder for light local reminders. No background worker added in this phase.</p>
+        <Panel title="Nudge Settings">
+          <div className="registry-controls">
+            <label className="checkbox-row">
+              <input type="checkbox" checked={nudgeSettingsForm.enabled} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, enabled: event.target.checked }))} />
+              <span>Enable nudges</span>
+            </label>
+            <label>
+              Vault expiry days
+              <input value={nudgeSettingsForm.vaultExpiryReminderDays} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, vaultExpiryReminderDays: event.target.value }))} placeholder="90, 30, 7" />
+            </label>
+            <label>
+              Return reminder days
+              <input value={nudgeSettingsForm.returnReminderDays} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, returnReminderDays: event.target.value }))} placeholder="7, 3, 1" />
+            </label>
+            <label>
+              Backup reminder after days
+              <input type="number" min="1" value={nudgeSettingsForm.backupReminderAfterDays} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, backupReminderAfterDays: event.target.value }))} />
+            </label>
+          </div>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={nudgeSettingsForm.dailyJournalReminderEnabled} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, dailyJournalReminderEnabled: event.target.checked }))} />
+            <span>Daily Journal reminder</span>
+          </label>
+          <div className="button-row">
+            <button type="button" onClick={() => void saveNudgeSettings()}>Save nudge settings</button>
+            <button type="button" onClick={() => void refreshNudgeList()}>Refresh nudges</button>
+          </div>
+          <p className="technical">{calendarState.nudgesPath}</p>
         </Panel>
       </div>
     </section>
@@ -5480,6 +6895,8 @@ function SearchView({
     ok: boolean;
     error?: string;
     results?: SearchResult[];
+    secureResults?: SecureSearchResult[];
+    smartResults?: SmartLookupResult[];
     searchState?: SearchState;
     savedSearch?: SavedSearch;
   }>;
@@ -5491,6 +6908,15 @@ function SearchView({
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [results, setResults] = useState<SearchResult[]>([]);
+  const [secureQuery, setSecureQuery] = useState("");
+  const [securePassword, setSecurePassword] = useState("");
+  const [secureIncludeSecrets, setSecureIncludeSecrets] = useState(false);
+  const [secureResults, setSecureResults] = useState<SecureSearchResult[]>([]);
+  const [secureStatus, setSecureStatus] = useState("");
+  const [smartQuestion, setSmartQuestion] = useState("");
+  const [smartResults, setSmartResults] = useState<SmartLookupResult[]>([]);
+  const [revealedSmartIds, setRevealedSmartIds] = useState<string[]>([]);
+  const [smartStatus, setSmartStatus] = useState("");
   const [status, setStatus] = useState("");
 
   const currentParams = { query, sourceModule, fileType, dateFrom, dateTo };
@@ -5572,6 +6998,64 @@ function SearchView({
     setStatus(result.ok ? "Opened index folder." : result.error ?? "Open folder failed.");
   }
 
+  async function runSecureSearch(): Promise<void> {
+    setSecureStatus("Running Secure Vault search in memory...");
+    const result = await onAction("search.secure.run", "module_ui", {
+      query: secureQuery,
+      masterPassword: securePassword,
+      includeSecretValues: secureIncludeSecrets
+    });
+    if (result.ok) {
+      setSecureResults(result.secureResults ?? []);
+      setSecureStatus(`${result.secureResults?.length ?? 0} secure results. Contents remain masked and are not indexed.`);
+      setSecurePassword("");
+    } else {
+      setSecureResults([]);
+      setSecureStatus(result.error ?? "Secure Search failed.");
+    }
+  }
+
+  async function runSmartLookup(question = smartQuestion): Promise<void> {
+    setSmartStatus("Running local Smart Lookup...");
+    setRevealedSmartIds([]);
+    const result = await onAction("search.smart_lookup", "module_ui", { question });
+    if (result.ok) {
+      setSmartResults(result.smartResults ?? []);
+      setSmartStatus(`${result.smartResults?.length ?? 0} answer candidates.`);
+    } else {
+      setSmartResults([]);
+      setSmartStatus(result.error ?? "Smart Lookup failed.");
+    }
+  }
+
+  async function revealSmartAnswer(result: SmartLookupResult): Promise<void> {
+    if (result.sensitive && !window.confirm(`Reveal sensitive ${result.fieldType.replace(/_/g, " ")} value?`)) {
+      return;
+    }
+    const actionResult = await onAction("search.smart_lookup_reveal", "module_ui", {
+      fieldType: result.fieldType,
+      confirmedDangerous: true
+    });
+    if (actionResult.ok) {
+      setRevealedSmartIds((current) => [...new Set([...current, result.id])]);
+      setSmartStatus("Answer revealed locally.");
+    } else {
+      setSmartStatus(actionResult.error ?? "Reveal failed.");
+    }
+  }
+
+  async function copySmartAnswer(result: SmartLookupResult): Promise<void> {
+    if (result.sensitive && !window.confirm(`Copy sensitive ${result.fieldType.replace(/_/g, " ")} value? Clipboard clears after 30 seconds.`)) {
+      return;
+    }
+    const actionResult = await onAction("search.smart_lookup_copy_answer", "module_ui", {
+      answerValue: result.answer,
+      fieldType: result.fieldType,
+      confirmedDangerous: true
+    });
+    setSmartStatus(actionResult.ok ? "Answer copied. Clipboard clears after 30 seconds." : actionResult.error ?? "Copy failed.");
+  }
+
   function sourceOpenAction(sourceModule: string): string | null {
     const actionMap: Record<string, string> = {
       capture: "capture.open",
@@ -5581,6 +7065,7 @@ function SearchView({
       finance: "finance.open",
       finder: "finder.open",
       tools: "tools.open",
+      tools_ocr: "tools.open",
       vault: "vault.open"
     };
     return actionMap[sourceModule] ?? null;
@@ -5640,10 +7125,114 @@ function SearchView({
         </div>
       </Panel>
 
+      <Panel title="Smart Lookup / Answer Mode">
+        <p>Ask local questions against indexed Vault OCR and Tools OCR text. Sensitive answers are masked until you confirm reveal.</p>
+        <div className="search-controls">
+          <label className="search-controls__query">
+            Question
+            <input
+              value={smartQuestion}
+              onChange={(event) => setSmartQuestion(event.target.value)}
+              placeholder="What is my work permit number?"
+            />
+          </label>
+        </div>
+        <div className="button-row">
+          {[
+            "What is my work permit number?",
+            "When does my work permit expire?",
+            "What is my SIN number?",
+            "What is my passport number?",
+            "Show my health card number."
+          ].map((example) => (
+            <button type="button" key={example} onClick={() => { setSmartQuestion(example); void runSmartLookup(example); }}>{example}</button>
+          ))}
+        </div>
+        <div className="button-row">
+          <button type="button" onClick={() => void runSmartLookup()}>Run Smart Lookup</button>
+          <button type="button" onClick={() => { setSmartResults([]); setRevealedSmartIds([]); setSmartStatus(""); }}>Clear answers</button>
+          {smartStatus && <span className="inline-status">{smartStatus}</span>}
+        </div>
+        <div className="action-list">
+          {smartResults.length === 0 ? (
+            <EmptyState>No Smart Lookup answers yet. If this was just OCRed, rebuild the Search index first. Local LLM answer refinement can come later.</EmptyState>
+          ) : (
+            smartResults.map((result) => {
+              const revealed = revealedSmartIds.includes(result.id) || !result.sensitive;
+              return (
+                <CollapsibleListItem
+                  accentClass="accent-search"
+                  key={result.id}
+                  title={`${result.fieldType.replace(/_/g, " ")} / ${result.confidence}`}
+                  meta={`${result.sourceDocumentTitle} / ${result.sourceModule}`}
+                  actions={(
+                    <>
+                      {result.sensitive && <button type="button" onClick={() => void revealSmartAnswer(result)}>Reveal</button>}
+                      <button type="button" onClick={() => void copySmartAnswer(result)}>Copy answer</button>
+                      <button type="button" onClick={() => void onAction("search.smart_lookup_open_source", "module_ui", { sourceId: result.sourceRecordId })}>Open source</button>
+                      {result.ocrTextPath && result.sourceModule === "vault" && <button type="button" onClick={() => void onAction("vault.ocr.open_text", "module_ui", { documentId: result.sourceRecordId.replace(/^vault-/, "") })}>Open OCR text</button>}
+                    </>
+                  )}
+                >
+                  <div className="section-heading section-heading--row">
+                    <strong className="technical">{revealed ? result.answer : result.maskedAnswer}</strong>
+                    <StatusBadge tone={result.sensitive ? "warning" : "success"}>{result.sensitive ? "sensitive" : "safe"}</StatusBadge>
+                  </div>
+                  <p>{result.preview}</p>
+                  <p className="technical">{result.sourceRecordId}</p>
+                  {result.sourceFilePath && <PathText>{result.sourceFilePath}</PathText>}
+                </CollapsibleListItem>
+              );
+            })
+          )}
+        </div>
+      </Panel>
+
+      <Panel title="Secure Vault Admin Search">
+        <p>Secure Search decrypts in memory for this request only. Results are masked and are never saved to the Search index.</p>
+        <div className="search-controls">
+          <label className="search-controls__query">
+            Secure query
+            <input value={secureQuery} onChange={(event) => setSecureQuery(event.target.value)} placeholder="Title, username, URL, notes" />
+          </label>
+          <label>
+            Master password
+            <input type="password" value={securePassword} onChange={(event) => setSecurePassword(event.target.value)} placeholder="Required" />
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={secureIncludeSecrets} onChange={(event) => setSecureIncludeSecrets(event.target.checked)} />
+            <span>Include secret values</span>
+          </label>
+        </div>
+        <div className="button-row">
+          <button type="button" onClick={() => void runSecureSearch()}>Secure Search</button>
+          <button type="button" onClick={() => { setSecureResults([]); setSecureStatus(""); setSecurePassword(""); }}>Clear secure results</button>
+          {secureStatus && <span className="inline-status">{secureStatus}</span>}
+        </div>
+        <div className="action-list action-list--compact">
+          {secureResults.length === 0 ? (
+            <EmptyState>No secure results in memory.</EmptyState>
+          ) : (
+            secureResults.map((result) => (
+              <article className="data-item data-item--stacked accent-vault" key={result.id}>
+                <div className="section-heading section-heading--row">
+                  <strong>{result.title}</strong>
+                  <StatusBadge tone="warning">Secure Vault</StatusBadge>
+                </div>
+                <span>{result.type}{result.username ? ` / ${result.username}` : ""}{result.url ? ` / ${result.url}` : ""}</span>
+                <span>Matched: {result.matchedFields.join(", ")}. Values are masked.</span>
+                <span className="technical">{result.itemId}</span>
+              </article>
+            ))
+          )}
+        </div>
+      </Panel>
+
       <div className="search-meta-grid">
         <Panel title="Index">
           <div className="action-list action-list--compact">
             <p>{searchState.index.length} indexed records. Manual rebuild only. Secure Vault contents are skipped.</p>
+            <p>{searchState.ocrTextFileCount} OCR-backed records indexed.</p>
             <p><PathText>{searchState.indexPath}</PathText></p>
             <div className="button-row">
               <button type="button" onClick={() => void openIndexFolder()}>Open index folder</button>
@@ -5696,7 +7285,7 @@ function SearchView({
       <Panel title={`Results (${results.length})`}>
         <div className="action-list">
           {results.length === 0 ? (
-            <EmptyState>No results yet. Rebuild the index, then run a search.</EmptyState>
+            <EmptyState>No results yet. If this was just OCRed, rebuild the Search index, then run the search again.</EmptyState>
           ) : (
             results.map((result) => (
               <CollapsibleListItem
@@ -5711,6 +7300,7 @@ function SearchView({
                       <button type="button" onClick={() => void resultAction("search.open_result", result.id)}>Open file</button>
                       <button type="button" onClick={() => void resultAction("search.open_result_folder", result.id)}>Open folder</button>
                       <button type="button" onClick={() => void resultAction("search.send_result_to_drop", result.id)}>Send to phone</button>
+                      {result.entityType === "vault_document_ocr" && <button type="button" onClick={() => void onAction("vault.ocr.open_text", "module_ui", { documentId: result.entityId })}>Open OCR text</button>}
                     </>
                   )}
                   {sourceOpenAction(result.sourceModule) && (
@@ -6304,11 +7894,13 @@ function AuditView({
 function SettingsView({
   appInfo,
   backupState,
+  calendarState,
   onAction,
   onRefresh
 }: {
   appInfo: AppInfo | null;
   backupState: BackupState;
+  calendarState: CalendarState;
   onAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>;
   onRefresh: () => Promise<void>;
 }) {
@@ -6318,10 +7910,27 @@ function SettingsView({
   const [backupMessage, setBackupMessage] = useState("");
   const [healthState, setHealthState] = useState<AppHealthState | null>(null);
   const [healthStatus, setHealthStatus] = useState("");
+  const [nudgeSettingsForm, setNudgeSettingsForm] = useState({
+    enabled: calendarState.nudgeSettings.enabled,
+    vaultExpiryReminderDays: calendarState.nudgeSettings.vaultExpiryReminderDays.join(", "),
+    returnReminderDays: calendarState.nudgeSettings.returnReminderDays.join(", "),
+    dailyJournalReminderEnabled: calendarState.nudgeSettings.dailyJournalReminderEnabled,
+    backupReminderAfterDays: String(calendarState.nudgeSettings.backupReminderAfterDays)
+  });
 
   useEffect(() => {
     setBackupOptions(backupState.defaultOptions);
   }, [backupState.defaultOptions]);
+
+  useEffect(() => {
+    setNudgeSettingsForm({
+      enabled: calendarState.nudgeSettings.enabled,
+      vaultExpiryReminderDays: calendarState.nudgeSettings.vaultExpiryReminderDays.join(", "),
+      returnReminderDays: calendarState.nudgeSettings.returnReminderDays.join(", "),
+      dailyJournalReminderEnabled: calendarState.nudgeSettings.dailyJournalReminderEnabled,
+      backupReminderAfterDays: String(calendarState.nudgeSettings.backupReminderAfterDays)
+    });
+  }, [calendarState.nudgeSettings]);
 
   useEffect(() => {
     void runHealthCheck();
@@ -6331,6 +7940,10 @@ function SettingsView({
     ["Data root", appInfo?.dataRoot ?? "Loading"],
     ["Database", appInfo?.dbPath ?? "Loading"],
     ["Local endpoint", appInfo?.actionEndpoint ?? "Loading"],
+    ["Command settings", appInfo?.commandSettingsPath ?? "Loading"],
+    ["Global Command shortcut", appInfo ? `${appInfo.commandShortcutEnabled ? "enabled" : "disabled"} / ${appInfo.commandShortcut}` : "Loading"],
+    ["Command shortcut status", appInfo ? `${appInfo.commandShortcutStatus}${appInfo.commandShortcutLastError ? ` / ${appInfo.commandShortcutLastError}` : ""}` : "Loading"],
+    ["Tray status", appInfo?.trayStatus ?? "Loading"],
     ["Backup folder", appInfo?.backupFolderPath ?? backupState.backupFolderPath ?? "Loading"],
     ["Restore staging", appInfo?.restoreStagingPath ?? backupState.restoreStagingPath ?? "Loading"],
     ["Package mode", appInfo?.packageMode ?? "Loading"],
@@ -6348,11 +7961,17 @@ function SettingsView({
     ["Tools default output", appInfo?.toolsDefaultOutputFolderPath ?? "Loading"],
     ["Tools temp folder", appInfo?.toolsTempFolderPath ?? "Loading"],
     ["Tools outputs metadata", appInfo?.toolsOutputsPath ?? "Loading"],
+    ["Vault documents", appInfo?.vaultDocumentsPath ?? "Loading"],
+    ["Vault OCR output", appInfo?.vaultOcrOutputPath ?? "Loading"],
+    ["Vault OCR jobs", appInfo?.vaultOcrJobsPath ?? "Loading"],
+    ["Vault OCR settings", appInfo?.vaultOcrSettingsPath ?? "Loading"],
     ["Search index", appInfo?.searchIndexPath ?? "Loading"],
     ["Search index folder", appInfo?.searchIndexFolderPath ?? "Loading"],
     ["Saved searches", appInfo?.savedSearchesPath ?? "Loading"],
     ["Journal entries", appInfo?.journalEntriesPath ?? "Loading"],
     ["Calendar events", appInfo?.calendarEventsPath ?? "Loading"],
+    ["Nudges", appInfo?.nudgesPath ?? "Loading"],
+    ["Nudge settings", appInfo?.nudgeSettingsPath ?? "Loading"],
     ["Finder items", appInfo?.finderItemsPath ?? "Loading"],
     ["Finance transactions", appInfo?.financeTransactionsPath ?? "Loading"],
     ["Finance recurring", appInfo?.financeRecurringPath ?? "Loading"],
@@ -6439,6 +8058,33 @@ function SettingsView({
     }
   }
 
+  async function updateCommandSettings(params: Record<string, unknown>): Promise<void> {
+    await onAction("command.update_settings", "module_ui", params);
+    await onRefresh();
+    await runHealthCheck();
+  }
+
+  function parseNudgeDayList(value: string): number[] {
+    return value
+      .split(",")
+      .map((item) => Number(item.trim()))
+      .filter((item) => Number.isFinite(item) && item > 0)
+      .sort((left, right) => right - left);
+  }
+
+  async function updateNudgeSettings(): Promise<void> {
+    await onAction("calendar.nudge.update_settings", "module_ui", {
+      nudgeSettings: {
+        enabled: nudgeSettingsForm.enabled,
+        vaultExpiryReminderDays: parseNudgeDayList(nudgeSettingsForm.vaultExpiryReminderDays),
+        returnReminderDays: parseNudgeDayList(nudgeSettingsForm.returnReminderDays),
+        dailyJournalReminderEnabled: nudgeSettingsForm.dailyJournalReminderEnabled,
+        backupReminderAfterDays: Number(nudgeSettingsForm.backupReminderAfterDays) || 7
+      }
+    });
+    await onRefresh();
+  }
+
   function healthTone(status: HealthStatus): "success" | "warning" | "error" {
     if (status === "pass") {
       return "success";
@@ -6449,6 +8095,52 @@ function SettingsView({
   return (
     <section className="view-stack" aria-labelledby="settings-title">
       <PageHeader eyebrow="Local-only configuration" title="Settings" titleId="settings-title" />
+
+      <Panel title="Command Access">
+        <div className="settings-grid">
+          <article>
+            <span>Global shortcut</span>
+            <strong>{appInfo?.commandShortcutEnabled ? "Enabled" : "Disabled"}</strong>
+            <p className="technical">{appInfo?.commandShortcut ?? "Loading"}</p>
+          </article>
+          <article>
+            <span>Registration</span>
+            <strong>{appInfo?.commandShortcutStatus ?? "Loading"}</strong>
+            <p>{appInfo?.commandShortcutLastError ?? "Ctrl+Space opens DexNest Command when active."}</p>
+          </article>
+          <article>
+            <span>Tray</span>
+            <strong>{appInfo?.trayStatus ?? "Loading"}</strong>
+            <p>Tray menu opens Command, Clipboard, Drop, Dev, Journal, and Settings.</p>
+          </article>
+        </div>
+        <div className="registry-controls">
+          <label>
+            Shortcut
+            <select
+              value={appInfo?.commandShortcut ?? "CommandOrControl+Space"}
+              onChange={(event) => void updateCommandSettings({ globalShortcut: event.target.value })}
+            >
+              <option value="CommandOrControl+Space">Ctrl+Space</option>
+              <option value="CommandOrControl+Alt+Space">Ctrl+Alt+Space</option>
+              <option value="CommandOrControl+Shift+Space">Ctrl+Shift+Space</option>
+            </select>
+          </label>
+          <div className="button-row button-row--align-end">
+            <button
+              type="button"
+              className={appInfo?.commandShortcutEnabled ? "button-danger" : "button-primary"}
+              onClick={() => void updateCommandSettings({ globalShortcutEnabled: !appInfo?.commandShortcutEnabled })}
+            >
+              {appInfo?.commandShortcutEnabled ? "Disable shortcut" : "Enable shortcut"}
+            </button>
+            <button type="button" onClick={() => void updateCommandSettings({})}>
+              Re-register shortcut
+            </button>
+          </div>
+        </div>
+        <p>Some apps may reserve shortcuts. Use a fallback if Ctrl+Space cannot register.</p>
+      </Panel>
 
       <Panel title="App Health">
         <div className="health-summary">
@@ -6497,6 +8189,47 @@ function SettingsView({
           ) : (
             <EmptyState>Run App Health to check DexNest configuration.</EmptyState>
           )}
+        </div>
+      </Panel>
+
+      <Panel title="Nudge Settings">
+        <div className="settings-grid">
+          <article>
+            <span>Active nudges</span>
+            <strong>{calendarState.nudges.length}</strong>
+            <p className="technical">{calendarState.nudgesPath}</p>
+          </article>
+          <article>
+            <span>Nudge settings</span>
+            <strong>{calendarState.nudgeSettings.enabled ? "Enabled" : "Disabled"}</strong>
+            <p className="technical">{calendarState.nudgeSettingsPath}</p>
+          </article>
+        </div>
+        <div className="registry-controls">
+          <label className="checkbox-row">
+            <input type="checkbox" checked={nudgeSettingsForm.enabled} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, enabled: event.target.checked }))} />
+            <span>Enable nudges</span>
+          </label>
+          <label>
+            Vault expiry days
+            <input value={nudgeSettingsForm.vaultExpiryReminderDays} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, vaultExpiryReminderDays: event.target.value }))} />
+          </label>
+          <label>
+            Return reminder days
+            <input value={nudgeSettingsForm.returnReminderDays} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, returnReminderDays: event.target.value }))} />
+          </label>
+          <label>
+            Backup reminder after days
+            <input type="number" min="1" value={nudgeSettingsForm.backupReminderAfterDays} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, backupReminderAfterDays: event.target.value }))} />
+          </label>
+        </div>
+        <label className="checkbox-row">
+          <input type="checkbox" checked={nudgeSettingsForm.dailyJournalReminderEnabled} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, dailyJournalReminderEnabled: event.target.checked }))} />
+          <span>Daily Journal reminder</span>
+        </label>
+        <div className="button-row">
+          <button type="button" onClick={() => void updateNudgeSettings()}>Save nudge settings</button>
+          <button type="button" onClick={() => void onAction("calendar.nudge.refresh", "module_ui")}>Refresh nudges</button>
         </div>
       </Panel>
 

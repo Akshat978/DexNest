@@ -33,7 +33,7 @@ contextBridge.exposeInMainWorld("dexNest", {
   getPdfInfo: (paths: string[]) => ipcRenderer.invoke("dexnest:get-pdf-info", paths),
   chooseToolsOutputFolder: () => ipcRenderer.invoke("dexnest:choose-tools-output-folder"),
   resetToolsOutputFolder: () => ipcRenderer.invoke("dexnest:reset-tools-output-folder"),
-  saveToolsSettings: (payload: { ffmpegPath?: string | null; libreOfficePath?: string | null }) =>
+  saveToolsSettings: (payload: { ffmpegPath?: string | null; libreOfficePath?: string | null; tesseractPath?: string | null; pythonPath?: string | null; ocrEngine?: string; ocrDevice?: string; ocrLanguage?: string }) =>
     ipcRenderer.invoke("dexnest:save-tools-settings", payload),
   openToolsFile: (filePath: string) => ipcRenderer.invoke("dexnest:open-tools-file", filePath),
   copyDropIncomingText: (itemId: string) => ipcRenderer.invoke("dexnest:copy-drop-incoming-text", itemId),
@@ -55,5 +55,15 @@ contextBridge.exposeInMainWorld("dexNest", {
     metadataJson?: Record<string, unknown>;
   }) => ipcRenderer.invoke("dexnest:log-action-result", payload),
   logUiEvent: (payload: { view: string; target: string; summary: string }) =>
-    ipcRenderer.invoke("dexnest:log-ui-event", payload)
+    ipcRenderer.invoke("dexnest:log-ui-event", payload),
+  onClipboardHotkeyResult: (callback: (payload: { message: string; tone: "success" | "error" }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: { message: string; tone: "success" | "error" }) => callback(payload);
+    ipcRenderer.on("dexnest:clipboard-hotkey-result", listener);
+    return () => ipcRenderer.removeListener("dexnest:clipboard-hotkey-result", listener);
+  },
+  onOpenView: (callback: (payload: { view: string }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: { view: string }) => callback(payload);
+    ipcRenderer.on("dexnest:open-view", listener);
+    return () => ipcRenderer.removeListener("dexnest:open-view", listener);
+  }
 });
