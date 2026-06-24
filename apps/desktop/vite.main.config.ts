@@ -25,7 +25,8 @@ export default defineConfig({
       },
       external: ["electron", "better-sqlite3"],
       output: {
-        entryFileNames: "[name].js"
+        entryFileNames: "[name].cjs",
+        format: "cjs"
       }
     },
     target: "node22"

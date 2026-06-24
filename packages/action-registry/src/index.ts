@@ -1,6 +1,6 @@
 import type { DexNestActionDefinition } from "@dexnest/shared-types";
 
-const actionIdPattern = /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/;
+const actionIdPattern = /^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)+$/;
 
 export const seededActions: DexNestActionDefinition[] = [
   {

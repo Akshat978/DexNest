@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "main": "dist/main/main.js",
+  "main": "dist/main/main.cjs",
   "scripts": {
-    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"vite build --config vite.main.config.ts --watch\" \"wait-on http://127.0.0.1:5173 dist/main/main.js dist/main/preload.js && electron .\"",
+    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"vite build --config vite.main.config.ts --watch\" \"wait-on http://127.0.0.1:5173 dist/main/main.cjs dist/main/preload.cjs && electron .\"",
     "build": "vite build --config vite.main.config.ts && vite build",
     "rebuild:native": "electron-rebuild -f -w better-sqlite3",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit"
