@@ -1,15 +1,19 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from "electron";
-import { exec } from "node:child_process";
-import { copyFileSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell } from "electron";
+import { exec, execFile, execFileSync } from "node:child_process";
+import { copyFileSync, cpSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { networkInterfaces } from "node:os";
+import { createCipheriv, createDecipheriv, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import AdmZip from "adm-zip";
+import { PDFDocument } from "pdf-lib";
 import { createActionRegistry, seededActions } from "@dexnest/action-registry";
 import { createLocalDb } from "@dexnest/local-db";
-import type { MessageBoxSyncOptions, OpenDialogSyncOptions } from "electron";
+import type { MessageBoxOptions, MessageBoxSyncOptions, OpenDialogOptions, OpenDialogSyncOptions } from "electron";
 import type { DexNestActionDefinition, DexNestActionTrigger, DexNestEventStatus } from "@dexnest/shared-types";
+import { formatLocalDateTime, getLocalTodayDateString, parseLocalDateInput, resolveRelativeLocalDate } from "@dexnest/shared-types";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(currentDir, "../../../..");
@@ -19,6 +23,18 @@ const dropFilesRoot = join(localDataRoot, "files", "drop");
 const dropIncomingRoot = join(dropFilesRoot, "incoming");
 const dropOutgoingRoot = join(dropFilesRoot, "outgoing");
 const dropTempRoot = join(dropFilesRoot, "temp");
+const toolsFilesRoot = join(localDataRoot, "files", "tools");
+const toolsInputRoot = join(toolsFilesRoot, "input");
+const toolsOutputRoot = join(toolsFilesRoot, "output");
+const toolsTempRoot = join(toolsFilesRoot, "temp");
+const vaultFilesRoot = join(localDataRoot, "files", "vault");
+const vaultDocumentsRoot = join(vaultFilesRoot, "documents");
+const vaultImportsRoot = join(vaultFilesRoot, "imports");
+const vaultVersionsRoot = join(vaultFilesRoot, "versions");
+const vaultTempRoot = join(vaultFilesRoot, "temp");
+const vaultSecureRoot = join(vaultFilesRoot, "secure");
+const receiptsRoot = join(localDataRoot, "files", "receipts");
+const capturesRoot = join(localDataRoot, "files", "captures");
 const projectsConfigPath = join(settingsRoot, "projects.json");
 const commandResultsPath = join(settingsRoot, "project-command-results.json");
 const pinnedActionsPath = join(settingsRoot, "pinned-actions.json");
@@ -27,7 +43,29 @@ const clipboardSnippetsPath = join(settingsRoot, "clipboard-snippets.json");
 const dropShelfPath = join(settingsRoot, "drop-shelf.json");
 const dropIncomingPath = join(settingsRoot, "drop-incoming.json");
 const dropSettingsPath = join(settingsRoot, "drop-settings.json");
+const toolsOutputsPath = join(settingsRoot, "tools-outputs.json");
+const toolsSettingsPath = join(settingsRoot, "tools-settings.json");
+const vaultDocumentsPath = join(settingsRoot, "vault-documents.json");
+const secureVaultPath = join(vaultSecureRoot, "secure-vault.json");
+const searchIndexRoot = join(localDataRoot, "index");
+const searchIndexPath = join(searchIndexRoot, "search-index.json");
+const savedSearchesPath = join(settingsRoot, "saved-searches.json");
+const journalEntriesPath = join(settingsRoot, "journal-entries.json");
+const calendarEventsPath = join(settingsRoot, "calendar-events.json");
+const finderItemsPath = join(settingsRoot, "finder-items.json");
+const financeTransactionsPath = join(settingsRoot, "finance-transactions.json");
+const financeRecurringPath = join(settingsRoot, "finance-recurring.json");
+const financeSettingsPath = join(settingsRoot, "finance-settings.json");
+const captureItemsPath = join(settingsRoot, "capture-items.json");
+const routinesPath = join(settingsRoot, "routines.json");
+const heatmapEventsPath = join(settingsRoot, "heatmap-events.json");
+const heatmapSettingsPath = join(settingsRoot, "heatmap-settings.json");
+const heatmapGoalsPath = join(settingsRoot, "heatmap-goals.json");
+const backupsRoot = join(localDataRoot, "backups");
+const restoreStagingRoot = join(backupsRoot, "restore-staging");
 const actionPort = 43217;
+const dropEventClients = new Set<ServerResponse>();
+let heatmapSampleTimer: ReturnType<typeof setInterval> | null = null;
 
 app.setName("DexNest");
 app.setPath("userData", join(localDataRoot, "app"));
@@ -46,6 +84,10 @@ for (const action of seededActions) {
 
 let mainWindow: BrowserWindow | null = null;
 let actionServer: ReturnType<typeof createServer> | null = null;
+let secureVaultKey: Buffer | null = null;
+let secureVaultAutoLockTimer: NodeJS.Timeout | null = null;
+let secureVaultClipboardTimer: NodeJS.Timeout | null = null;
+let secureVaultProtectedClipboardValue: string | null = null;
 
 interface DexNestProject {
   id: string;
@@ -150,6 +192,532 @@ interface DropSettings {
   receiveFolderPath: string | null;
 }
 
+interface ToolsOutputItem {
+  id: string;
+  fileName: string;
+  path: string;
+  byteLength: number;
+  operation: string;
+  createdAt: string;
+}
+
+interface ToolsSettings {
+  outputFolderPath: string | null;
+  ffmpegPath?: string | null;
+  libreOfficePath?: string | null;
+}
+
+interface ToolsSelectedFile {
+  path: string;
+  name: string;
+  byteLength: number;
+  extension: string;
+}
+
+interface ToolsRunResult {
+  ok: boolean;
+  actionId: string;
+  outputs?: ToolsOutputItem[];
+  output?: ToolsOutputItem;
+  info?: Array<{ fileName: string; byteLength: number; pageCount: number | null }>;
+  error?: string;
+}
+
+interface VaultDocumentRecord {
+  id: string;
+  title: string;
+  originalFileName: string;
+  storedFileName: string;
+  filePath: string;
+  fileType: string;
+  sizeBytes: number;
+  category: string;
+  tags: string[];
+  notes: string;
+  sourceModule: string;
+  expiryDate?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  versionGroupId?: string | null;
+  versionNumber?: number | null;
+}
+
+interface VaultImportInput {
+  paths?: string[];
+  category?: string;
+  tags?: string[] | string;
+  notes?: string;
+  expiryDate?: string | null;
+  sourceModule?: string;
+  title?: string;
+  versionOfId?: string;
+}
+
+interface VaultState {
+  documents: VaultDocumentRecord[];
+  categories: string[];
+  documentsPath: string;
+  importsPath: string;
+  versionsPath: string;
+  tempPath: string;
+  metadataPath: string;
+  documentCount: number;
+  totalSizeBytes: number;
+  secure: SecureVaultState;
+}
+
+type SecureVaultItemType = "password" | "api_key" | "token" | "recovery_code" | "private_note" | "server" | "other";
+
+interface SecureEncryptedBlob {
+  iv: string;
+  ciphertext: string;
+  authTag: string;
+}
+
+interface SecureVaultStoredItem {
+  id: string;
+  title: string;
+  type: SecureVaultItemType;
+  username?: string;
+  url?: string;
+  tags: string[];
+  secret: SecureEncryptedBlob;
+  notes: SecureEncryptedBlob;
+  createdAt: string;
+  updatedAt: string;
+  lastCopiedAt?: string | null;
+  favorite?: boolean;
+}
+
+interface SecureVaultFile {
+  version: 1;
+  kdf: {
+    name: "scrypt";
+    salt: string;
+    keyLength: number;
+    N: number;
+    r: number;
+    p: number;
+  };
+  verifier: SecureEncryptedBlob;
+  settings: {
+    autoLockMinutes: number;
+  };
+  items: SecureVaultStoredItem[];
+}
+
+interface SecureVaultUnlockedItem {
+  id: string;
+  title: string;
+  type: SecureVaultItemType;
+  username?: string;
+  url?: string;
+  tags: string[];
+  secret: string;
+  notes: string;
+  createdAt: string;
+  updatedAt: string;
+  lastCopiedAt?: string | null;
+  favorite?: boolean;
+}
+
+interface SecureVaultState {
+  isSetup: boolean;
+  isUnlocked: boolean;
+  filePath: string;
+  autoLockMinutes: number;
+  itemTypes: SecureVaultItemType[];
+  items: SecureVaultUnlockedItem[];
+}
+
+interface SearchIndexRecord {
+  id: string;
+  sourceModule: string;
+  entityType: string;
+  entityId: string;
+  title: string;
+  filePath?: string | null;
+  fileType?: string | null;
+  sizeBytes?: number | null;
+  textPreview?: string;
+  tags?: string[];
+  category?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  indexedAt: string;
+}
+
+interface SearchQueryInput {
+  query?: string;
+  sourceModule?: string;
+  fileType?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  title?: string;
+  savedSearchId?: string;
+  resultId?: string;
+  indexFolder?: boolean;
+}
+
+interface SearchResult extends SearchIndexRecord {
+  score: number;
+  matchReason: string;
+}
+
+interface SavedSearch {
+  id: string;
+  title: string;
+  query: string;
+  sourceModule: string;
+  fileType: string;
+  dateFrom: string;
+  dateTo: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface ExtractedCalendarCandidate {
+  id: string;
+  title: string;
+  date: string;
+  type: "birthday" | "meeting" | "appointment" | "call" | "reminder";
+  allDay: boolean;
+  sourceSentence: string;
+  recurrence?: string | null;
+}
+
+interface JournalEntry {
+  id: string;
+  date: string;
+  title?: string;
+  rawText: string;
+  cleanedText?: string;
+  mood?: string;
+  productivity?: string;
+  tags: string[];
+  peopleTags: string[];
+  createdAt: string;
+  updatedAt: string;
+  extractedItems: ExtractedCalendarCandidate[];
+}
+
+interface JournalEntryInput {
+  id?: string;
+  date?: string;
+  title?: string;
+  rawText?: string;
+  mood?: string;
+  productivity?: string;
+  tags?: string[] | string;
+  peopleTags?: string[] | string;
+}
+
+interface CalendarEvent {
+  id: string;
+  title: string;
+  date: string;
+  startTime?: string | null;
+  endTime?: string | null;
+  allDay: boolean;
+  sourceModule: string;
+  sourceId?: string | null;
+  recurrence?: string | null;
+  reminderLevel: "soft" | "normal" | "urgent";
+  notes?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface CalendarEventInput {
+  id?: string;
+  title?: string;
+  date?: string;
+  startTime?: string | null;
+  endTime?: string | null;
+  allDay?: boolean;
+  sourceModule?: string;
+  sourceId?: string | null;
+  recurrence?: string | null;
+  reminderLevel?: "soft" | "normal" | "urgent";
+  notes?: string | null;
+}
+
+type FinderItemStatus = "at_home" | "lent_out" | "missing" | "archived";
+type FinderItemConfidence = "sure" | "maybe" | "old";
+
+interface FinderItem {
+  id: string;
+  itemName: string;
+  location: string;
+  room?: string;
+  container?: string;
+  notes?: string;
+  tags: string[];
+  status: FinderItemStatus;
+  lentTo?: string | null;
+  photoPath?: string | null;
+  confidence?: FinderItemConfidence;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface FinderItemInput {
+  id?: string;
+  itemName?: string;
+  location?: string;
+  room?: string;
+  container?: string;
+  notes?: string;
+  tags?: string[] | string;
+  status?: FinderItemStatus;
+  lentTo?: string | null;
+  photoPath?: string | null;
+  confidence?: FinderItemConfidence;
+  query?: string;
+  itemId?: string;
+}
+
+type FinancePaymentType = "cash" | "debit" | "credit" | "e_transfer" | "other";
+type FinanceRecurringFrequency = "monthly" | "yearly" | "weekly" | "custom";
+
+interface FinanceTransaction {
+  id: string;
+  date: string;
+  store: string;
+  amount: number;
+  currency: string;
+  category: string;
+  paymentType: FinancePaymentType;
+  cardName?: string | null;
+  notes?: string;
+  receiptFilePath?: string | null;
+  receiptOriginalName?: string | null;
+  returnDeadline?: string | null;
+  warrantyUntil?: string | null;
+  tags: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface FinanceTransactionInput {
+  id?: string;
+  transactionId?: string;
+  date?: string;
+  store?: string;
+  amount?: number | string;
+  currency?: string;
+  category?: string;
+  paymentType?: FinancePaymentType;
+  cardName?: string | null;
+  notes?: string;
+  receiptPath?: string | null;
+  receiptFilePath?: string | null;
+  returnDeadline?: string | null;
+  warrantyUntil?: string | null;
+  tags?: string[] | string;
+}
+
+interface FinanceRecurringExpense {
+  id: string;
+  name: string;
+  amount: number;
+  currency: string;
+  frequency: FinanceRecurringFrequency;
+  nextDueDate: string;
+  category: string;
+  paymentType: FinancePaymentType;
+  notes?: string;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface FinanceRecurringInput {
+  id?: string;
+  recurringId?: string;
+  name?: string;
+  amount?: number | string;
+  currency?: string;
+  frequency?: FinanceRecurringFrequency;
+  nextDueDate?: string;
+  category?: string;
+  paymentType?: FinancePaymentType;
+  notes?: string;
+  active?: boolean;
+}
+
+interface FinanceSettings {
+  defaultCurrency: string;
+  receiptsPath: string;
+}
+
+type CaptureItemType = "note" | "link" | "task" | "expense" | "file" | "image" | "audio_placeholder" | "document" | "other";
+type CaptureItemStatus = "inbox" | "routed" | "archived" | "deleted";
+type CaptureItemSource = "manual" | "clipboard" | "drop" | "tools" | "finance" | "journal" | "command";
+
+interface CaptureItem {
+  id: string;
+  type: CaptureItemType;
+  title: string;
+  text: string;
+  source: CaptureItemSource;
+  filePath?: string | null;
+  originalFileName?: string | null;
+  url?: string | null;
+  tags: string[];
+  status: CaptureItemStatus;
+  routedTo?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface CaptureItemInput {
+  id?: string;
+  captureId?: string;
+  type?: CaptureItemType;
+  title?: string;
+  text?: string;
+  source?: CaptureItemSource;
+  filePath?: string | null;
+  url?: string | null;
+  tags?: string[] | string;
+  status?: CaptureItemStatus;
+  routedTo?: string | null;
+}
+
+interface RoutineStep {
+  id: string;
+  actionId: string;
+  params?: Record<string, unknown>;
+}
+
+interface DexNestRoutine {
+  id: string;
+  name: string;
+  description: string;
+  steps: RoutineStep[];
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+  lastRunAt?: string | null;
+  lastRunStatus?: string | null;
+  lastRunSummary?: string | null;
+}
+
+interface RoutineInput {
+  id?: string;
+  routineId?: string;
+  name?: string;
+  description?: string;
+  steps?: Array<Partial<RoutineStep> & { actionId?: string; params?: Record<string, unknown> }>;
+  enabled?: boolean;
+}
+
+interface HeatmapSettings {
+  enabled: boolean;
+  paused: boolean;
+  sampleIntervalSeconds: number;
+  aggregationIntervalHours: number;
+  pauseDuringFullscreen: boolean;
+  privateApps: string[];
+  privateTitleKeywords: string[];
+  lastAggregatedAt?: string | null;
+}
+
+interface HeatmapEvent {
+  id: string;
+  timestamp: string;
+  appName: string;
+  windowTitle: string;
+  projectId?: string | null;
+  active: boolean;
+  idleSeconds?: number | null;
+  durationSeconds: number;
+  createdAt: string;
+}
+
+interface HeatmapGoal {
+  id: string;
+  name: string;
+  targetHoursPerWeek: number;
+  keyword: string;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface HeatmapGoalInput {
+  id?: string;
+  goalId?: string;
+  name?: string;
+  targetHoursPerWeek?: number | string;
+  keyword?: string;
+  active?: boolean;
+}
+
+interface ActiveWindowSnapshot {
+  appName: string;
+  windowTitle: string;
+  idleSeconds: number | null;
+  active: boolean;
+  isFullscreen: boolean;
+  detectionStatus: "ok" | "unavailable" | "failed";
+  error?: string;
+}
+
+interface BackupOptions {
+  includeSettings: boolean;
+  includeFiles: boolean;
+  includeVaultDocuments: boolean;
+  includeSecureVault: boolean;
+  includeReceipts: boolean;
+  includeDropFiles: boolean;
+  includeIndex: boolean;
+}
+
+interface BackupFileSummary {
+  fileName: string;
+  path: string;
+  sizeBytes: number;
+  createdAt: string;
+}
+
+interface BackupPreview {
+  ok: boolean;
+  path: string;
+  sizeBytes: number;
+  entries: string[];
+  topLevel: string[];
+  error?: string;
+}
+
+type HealthStatus = "pass" | "warn" | "fail";
+
+interface HealthCheckResult {
+  id: string;
+  label: string;
+  status: HealthStatus;
+  detail: string;
+  suggestion?: string;
+}
+
+interface HealthGroup {
+  id: string;
+  title: string;
+  checks: HealthCheckResult[];
+}
+
+interface AppHealthState {
+  overallStatus: HealthStatus;
+  checkedAt: string;
+  summary: {
+    pass: number;
+    warn: number;
+    fail: number;
+  };
+  groups: HealthGroup[];
+}
+
 function ensureSettingsRoot(): void {
   mkdirSync(settingsRoot, { recursive: true });
 }
@@ -159,6 +727,39 @@ function ensureDropRoot(): void {
   mkdirSync(dropIncomingRoot, { recursive: true });
   mkdirSync(dropOutgoingRoot, { recursive: true });
   mkdirSync(dropTempRoot, { recursive: true });
+}
+
+function ensureToolsRoot(): void {
+  mkdirSync(toolsFilesRoot, { recursive: true });
+  mkdirSync(toolsInputRoot, { recursive: true });
+  mkdirSync(toolsOutputRoot, { recursive: true });
+  mkdirSync(toolsTempRoot, { recursive: true });
+}
+
+function ensureVaultRoot(): void {
+  mkdirSync(vaultFilesRoot, { recursive: true });
+  mkdirSync(vaultDocumentsRoot, { recursive: true });
+  mkdirSync(vaultImportsRoot, { recursive: true });
+  mkdirSync(vaultVersionsRoot, { recursive: true });
+  mkdirSync(vaultTempRoot, { recursive: true });
+  mkdirSync(vaultSecureRoot, { recursive: true });
+}
+
+function ensureFinanceRoot(): void {
+  mkdirSync(receiptsRoot, { recursive: true });
+}
+
+function ensureCaptureRoot(): void {
+  mkdirSync(capturesRoot, { recursive: true });
+}
+
+function ensureSearchRoot(): void {
+  mkdirSync(searchIndexRoot, { recursive: true });
+}
+
+function ensureBackupRoot(): void {
+  mkdirSync(backupsRoot, { recursive: true });
+  mkdirSync(restoreStagingRoot, { recursive: true });
 }
 
 function createId(prefix: string): string {
@@ -198,11 +799,19 @@ function safeChildPath(root: string, fileName: string): string {
   const resolvedRoot = resolve(root);
   const resolvedPath = resolve(root, sanitizeFileName(fileName));
 
-  if (!resolvedPath.startsWith(`${resolvedRoot}\\`) && resolvedPath !== resolvedRoot) {
+  if (!isPathInside(resolvedRoot, resolvedPath)) {
     throw new Error("Invalid Drop file path.");
   }
 
   return resolvedPath;
+}
+
+function isPathInside(root: string, candidate: string): boolean {
+  const resolvedRoot = resolve(root);
+  const resolvedCandidate = resolve(candidate);
+  const normalizedRoot = process.platform === "win32" ? resolvedRoot.toLowerCase() : resolvedRoot;
+  const normalizedCandidate = process.platform === "win32" ? resolvedCandidate.toLowerCase() : resolvedCandidate;
+  return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}${process.platform === "win32" ? "\\" : "/"}`);
 }
 
 function getLanIp(): string | null {
@@ -241,6 +850,775 @@ function writeJsonFile<T>(path: string, value: T): T {
   ensureSettingsRoot();
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
   return value;
+}
+
+function defaultBackupOptions(): BackupOptions {
+  return {
+    includeSettings: true,
+    includeFiles: true,
+    includeVaultDocuments: true,
+    includeSecureVault: true,
+    includeReceipts: true,
+    includeDropFiles: true,
+    includeIndex: false
+  };
+}
+
+function localBackupTimestamp(date = new Date()): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).formatToParts(date);
+  const value = (type: string) => parts.find((part) => part.type === type)?.value ?? "00";
+  return `${value("year")}-${value("month")}-${value("day")}_${value("hour")}-${value("minute")}`;
+}
+
+function listBackups(): BackupFileSummary[] {
+  ensureBackupRoot();
+  return readdirSync(backupsRoot)
+    .filter((fileName) => fileName.toLowerCase().endsWith(".zip"))
+    .map((fileName) => {
+      const path = join(backupsRoot, fileName);
+      const stats = statSync(path);
+      return {
+        fileName,
+        path,
+        sizeBytes: stats.size,
+        createdAt: stats.mtime.toISOString()
+      };
+    })
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+function backupState() {
+  ensureBackupRoot();
+  return {
+    backupFolderPath: backupsRoot,
+    restoreStagingPath: restoreStagingRoot,
+    defaultOptions: defaultBackupOptions(),
+    backups: listBackups()
+  };
+}
+
+function currentGitBranch(): string {
+  try {
+    return execFileSync("git", ["branch", "--show-current"], { cwd: repoRoot, encoding: "utf8" }).trim() || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+function trackedGitFiles(): string[] {
+  try {
+    return execFileSync("git", ["ls-files"], { cwd: repoRoot, encoding: "utf8" })
+      .split(/\r?\n/)
+      .map((file) => file.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function gitignoreHasLocalData(): boolean {
+  try {
+    const value = readFileSync(join(repoRoot, ".gitignore"), "utf8");
+    return value.split(/\r?\n/).some((line) => line.trim() === "local-data/" || line.trim() === "local-data");
+  } catch {
+    return false;
+  }
+}
+
+function check(id: string, label: string, status: HealthStatus, detail: string, suggestion?: string): HealthCheckResult {
+  return { id, label, status, detail, suggestion };
+}
+
+function appHealthState(source: DexNestActionTrigger = "module_ui", writeAudit = false): AppHealthState {
+  const startedAt = Date.now();
+  const actions = [...actionRegistry.list(), ...getProjectActionDefinitions()];
+  const actionIds = actions.map((action) => action.id);
+  const duplicateActionIds = [...new Set(actionIds.filter((id, index) => actionIds.indexOf(id) !== index))];
+  const missingDangerLevel = actions.filter((action) => !action.dangerLevel);
+  const unsafeWithoutConfirmation = actions.filter((action) =>
+    (action.dangerLevel === "danger" || action.dangerLevel === "critical") && !action.requiresConfirmation
+  );
+  const disabledActionCount = actions.filter((action) => !action.enabled).length;
+  const trackedFiles = trackedGitFiles();
+  const trackedLocalData = trackedFiles.filter((file) => file === "local-data" || file.startsWith("local-data/"));
+  const trackedEnv = trackedFiles.filter((file) => file === ".env" || file.startsWith(".env.") || file.endsWith("/.env"));
+  const trackedBuildOutputs = trackedFiles.filter((file) => /(^|\/)(dist|out|build|release)\//.test(file));
+  const branch = currentGitBranch();
+  const recentEvents = localDb.listRecentEvents(500);
+  const today = getLocalTodayDateString();
+  const failedToday = recentEvents.filter((event) => event.status === "failed" && event.timestamp.slice(0, 10) === today);
+  const secureState = vaultState().secure;
+  const tools = toolsState();
+  const search = searchState();
+  const heatmap = heatmapState();
+  const latestBackup = listBackups()[0] ?? null;
+  const localDataExists = existsSync(localDataRoot);
+  const sqliteUnderLocalData = isPathInside(localDataRoot, localDb.dbPath);
+  const vaultUnderLocalData = isPathInside(localDataRoot, vaultDocumentsRoot);
+
+  const groups: HealthGroup[] = [
+    {
+      id: "data-safety",
+      title: "Data Safety",
+      checks: [
+        check("local-data-exists", "local-data folder exists", localDataExists ? "pass" : "fail", localDataExists ? localDataRoot : "Missing local-data folder.", "Run DexNest once to create local-data."),
+        check("local-data-gitignored", "local-data is gitignored", gitignoreHasLocalData() ? "pass" : "fail", gitignoreHasLocalData() ? ".gitignore protects local-data/." : ".gitignore does not include local-data/.", "Add local-data/ to .gitignore."),
+        check("sqlite-under-local-data", "SQLite path is under local-data", sqliteUnderLocalData ? "pass" : "fail", localDb.dbPath, "Move database storage under ./local-data."),
+        check("vault-under-local-data", "Vault files path is under local-data", vaultUnderLocalData ? "pass" : "fail", vaultDocumentsRoot, "Keep Vault documents under ./local-data/files/vault."),
+        check("drop-folders-exist", "Drop incoming/outgoing folders exist", existsSync(dropIncomingRoot) && existsSync(dropOutgoingRoot) ? "pass" : "fail", `${dropIncomingRoot} / ${dropOutgoingRoot}`, "Open Drop or restart DexNest to recreate Drop folders."),
+        check("tools-output-exists", "Tools output folder exists", existsSync(getToolsOutputFolder()) ? "pass" : "fail", getToolsOutputFolder(), "Open Tools or reset output folder."),
+        check("backup-folder-exists", "Backup folder exists", existsSync(backupsRoot) ? "pass" : "fail", backupsRoot, "Open Settings Backup or create a backup.")
+      ]
+    },
+    {
+      id: "git-safety",
+      title: "Git Safety",
+      checks: [
+        check("current-branch", "Current branch", branch === "main" ? "warn" : "pass", branch, branch === "main" ? "Use dev for active DexNest work." : undefined),
+        check("local-data-tracked", "local-data is not tracked", trackedLocalData.length === 0 ? "pass" : "fail", trackedLocalData.length === 0 ? "No tracked local-data files." : `${trackedLocalData.length} local-data file(s) tracked.`, "Remove local-data from Git tracking."),
+        check("env-tracked", ".env files are not tracked", trackedEnv.length === 0 ? "pass" : "warn", trackedEnv.length === 0 ? "No tracked .env files." : `${trackedEnv.length} env file(s) tracked.`, "Remove env files from Git tracking."),
+        check("build-output-tracked", "Build outputs are not tracked", trackedBuildOutputs.length === 0 ? "pass" : "warn", trackedBuildOutputs.length === 0 ? "No tracked build output folders." : `${trackedBuildOutputs.length} build output file(s) tracked.`, "Keep dist/out/build/release ignored.")
+      ]
+    },
+    {
+      id: "action-registry",
+      title: "Action Registry",
+      checks: [
+        check("action-count", "Total action count", "pass", `${actions.length} registered actions.`),
+        check("duplicate-actions", "No duplicate action IDs", duplicateActionIds.length === 0 ? "pass" : "fail", duplicateActionIds.length === 0 ? "No duplicates found." : duplicateActionIds.join(", "), "Action IDs must be stable and unique."),
+        check("danger-levels", "All actions define danger level", missingDangerLevel.length === 0 ? "pass" : "fail", missingDangerLevel.length === 0 ? "All actions have dangerLevel." : `${missingDangerLevel.length} missing dangerLevel.`, "Set safe/caution/danger/critical."),
+        check("danger-confirmation", "Danger actions require confirmation", unsafeWithoutConfirmation.length === 0 ? "pass" : "fail", unsafeWithoutConfirmation.length === 0 ? "Danger/critical actions require confirmation." : `${unsafeWithoutConfirmation.length} unsafe action(s) lack confirmation.`, "Set requiresConfirmation for danger/critical actions."),
+        check("disabled-actions", "Disabled actions count", disabledActionCount === 0 ? "pass" : "warn", `${disabledActionCount} disabled action(s).`)
+      ]
+    },
+    {
+      id: "event-log",
+      title: "Event Log",
+      checks: [
+        check("recent-events", "Recent event count", "pass", `${recentEvents.length} recent event(s) loaded.`),
+        check("failed-today", "Failed events today", failedToday.length === 0 ? "pass" : "warn", `${failedToday.length} failed event(s) today.`, failedToday.length ? "Review Audit for failed actions." : undefined),
+        check("audit-private-content", "Audit private-content safety", "pass", "Audit should store summaries and metadata only, not full secrets, clipboard text, or document contents."),
+        check("event-log-path", "Event log database path", existsSync(localDb.dbPath) ? "pass" : "warn", localDb.dbPath, "Database is created after DexNest initializes.")
+      ]
+    },
+    {
+      id: "security",
+      title: "Security",
+      checks: [
+        check("secure-vault-setup", "Secure Vault setup", secureState.isSetup ? "pass" : "warn", secureState.isSetup ? "Secure Vault is set up." : "Secure Vault is not set up yet."),
+        check("secure-vault-lock", "Secure Vault lock state", secureState.isSetup && !secureState.isUnlocked ? "pass" : secureState.isSetup ? "warn" : "warn", secureState.isSetup ? (secureState.isUnlocked ? "Secure Vault is currently unlocked." : "Secure Vault is locked.") : "Not configured.", secureState.isUnlocked ? "Lock Secure Vault when not actively using secrets." : undefined),
+        check("secure-vault-file", "Secure Vault encrypted file", !secureState.isSetup || existsSync(secureVaultPath) ? "pass" : "fail", secureVaultPath, "Secure Vault setup should create this encrypted file."),
+        check("clipboard-secret-protection", "Clipboard secret protection", "warn", "Secret exclusion from Clipboard history is currently policy/placeholder based.", "Do not save secrets into normal Clipboard history."),
+        check("drop-pin-placeholder", "Drop PIN", "warn", "Drop PIN is a placeholder and is not enforced yet.", "Use Drop only on trusted local Wi-Fi.")
+      ]
+    },
+    {
+      id: "performance",
+      title: "Performance",
+      checks: [
+        check("performance-mode", "Performance mode", "warn", "Performance mode is a placeholder."),
+        check("heatmap-state", "Heatmap status", heatmap.settings.enabled && !heatmap.settings.paused ? "warn" : "pass", heatmap.trackingStatus, heatmap.settings.enabled && !heatmap.settings.paused ? "Heatmap samples only at configured interval." : undefined),
+        check("polling-sources", "Active polling sources", "pass", "No global polling. Drop auto-refresh runs only while Drop page is open."),
+        check("heavy-workers", "No OCR/Search/AI workers", "pass", "No background OCR, Search indexing, AI, embeddings, or local LLM workers are running.")
+      ]
+    },
+    {
+      id: "integrations",
+      title: "Integrations",
+      checks: [
+        check("drop-server", "Drop server status", actionServer ? "pass" : "fail", actionServer ? "Local action/Drop server is running." : "Local server is not running."),
+        check("drop-lan-url", "Drop LAN URL", getLanIp() ? "pass" : "warn", dropPhoneUrl(), "LAN IP may be unavailable when offline or blocked by adapter settings."),
+        check("ffmpeg", "ffmpeg", tools.detectedFfmpegPath || tools.ffmpegPath ? "pass" : "warn", tools.ffmpegPath || tools.detectedFfmpegPath || "Missing.", "Install ffmpeg or set the path in Tools settings for media conversions."),
+        check("libreoffice", "LibreOffice", tools.detectedLibreOfficePath || tools.libreOfficePath ? "pass" : "warn", tools.libreOfficePath || tools.detectedLibreOfficePath || "Missing.", "Install LibreOffice or set soffice.exe path for Office conversions."),
+        check("search-index", "Search index", search.index.length > 0 ? "pass" : "warn", `${search.index.length} indexed record(s).`, "Run Search rebuild when you want local metadata search."),
+        check("latest-backup", "Latest backup", latestBackup ? "pass" : "warn", latestBackup ? `${latestBackup.fileName} / ${formatLocalDateTime(latestBackup.createdAt)}` : "No backup found.", "Create a local backup from Settings.")
+      ]
+    }
+  ];
+
+  const flatChecks = groups.flatMap((group) => group.checks);
+  const summary = {
+    pass: flatChecks.filter((item) => item.status === "pass").length,
+    warn: flatChecks.filter((item) => item.status === "warn").length,
+    fail: flatChecks.filter((item) => item.status === "fail").length
+  };
+  const overallStatus: HealthStatus = summary.fail > 0 ? "fail" : summary.warn > 0 ? "warn" : "pass";
+  const state: AppHealthState = {
+    overallStatus,
+    checkedAt: new Date().toISOString(),
+    summary,
+    groups
+  };
+
+  if (writeAudit) {
+    localDb.appendActionEvent({
+      module: "system",
+      actionId: "system.health.run_checks",
+      eventType: "system_health_checked",
+      status: "success",
+      source,
+      summary: `DexNest App Health checked: ${summary.pass} pass, ${summary.warn} warn, ${summary.fail} fail.`,
+      metadataJson: { overallStatus, ...summary },
+      durationMs: Date.now() - startedAt
+    });
+  }
+
+  return state;
+}
+
+function addPathToZip(zip: AdmZip, sourcePath: string, archivePath: string, excludePath?: (path: string) => boolean): void {
+  if (!existsSync(sourcePath) || excludePath?.(sourcePath)) {
+    return;
+  }
+
+  const stats = statSync(sourcePath);
+  const normalizedArchivePath = archivePath.replace(/\\/g, "/");
+  if (stats.isDirectory()) {
+    zip.addFile(`${normalizedArchivePath}/`, Buffer.alloc(0));
+    for (const child of readdirSync(sourcePath)) {
+      addPathToZip(zip, join(sourcePath, child), `${normalizedArchivePath}/${child}`, excludePath);
+    }
+    return;
+  }
+
+  zip.addFile(normalizedArchivePath, readFileSync(sourcePath));
+}
+
+function createBackup(optionsInput: Partial<BackupOptions> = {}, source: DexNestActionTrigger = "module_ui") {
+  ensureBackupRoot();
+  const startedAt = Date.now();
+  const options = { ...defaultBackupOptions(), ...optionsInput };
+  const fileName = `DexNest_Backup_${localBackupTimestamp()}.zip`;
+  const outputPath = join(backupsRoot, fileName);
+
+  try {
+    const zip = new AdmZip();
+    zip.addFile(
+      "backup-manifest.json",
+      Buffer.from(
+        `${JSON.stringify(
+          {
+            app: "DexNest",
+            version: app.getVersion(),
+            createdAt: new Date().toISOString(),
+            options,
+            dataRoot: localDataRoot
+          },
+          null,
+          2
+        )}\n`,
+        "utf8"
+      )
+    );
+
+    if (options.includeSettings) {
+      addPathToZip(zip, settingsRoot, "settings");
+    }
+
+    const dataRoot = join(localDataRoot, "data");
+    if (existsSync(dataRoot)) {
+      addPathToZip(zip, dataRoot, "data");
+    }
+
+    const filesRoot = join(localDataRoot, "files");
+    const excludeSelectedFilePaths = (candidate: string): boolean => {
+      const resolvedCandidate = resolve(candidate);
+      if (!options.includeVaultDocuments && isPathInside(vaultDocumentsRoot, resolvedCandidate)) {
+        return true;
+      }
+      if (!options.includeSecureVault && isPathInside(vaultSecureRoot, resolvedCandidate)) {
+        return true;
+      }
+      if (!options.includeReceipts && isPathInside(receiptsRoot, resolvedCandidate)) {
+        return true;
+      }
+      if (!options.includeDropFiles && isPathInside(dropFilesRoot, resolvedCandidate)) {
+        return true;
+      }
+      return false;
+    };
+
+    if (options.includeFiles) {
+      addPathToZip(zip, filesRoot, "files", excludeSelectedFilePaths);
+    } else {
+      if (options.includeVaultDocuments) {
+        addPathToZip(zip, vaultDocumentsRoot, "files/vault/documents");
+      }
+      if (options.includeSecureVault) {
+        addPathToZip(zip, vaultSecureRoot, "files/vault/secure");
+      }
+      if (options.includeReceipts) {
+        addPathToZip(zip, receiptsRoot, "files/receipts");
+      }
+      if (options.includeDropFiles) {
+        addPathToZip(zip, dropFilesRoot, "files/drop");
+      }
+    }
+
+    if (options.includeIndex) {
+      addPathToZip(zip, searchIndexRoot, "index");
+    }
+
+    zip.writeZip(outputPath);
+    const sizeBytes = statSync(outputPath).size;
+    localDb.appendActionEvent({
+      module: "backup",
+      actionId: "backup.create",
+      eventType: "backup_created",
+      status: "success",
+      source,
+      summary: "Created local DexNest backup.",
+      metadataJson: { fileName, sizeBytes, includeIndex: options.includeIndex },
+      durationMs: Date.now() - startedAt
+    });
+    return { ok: true, actionId: "backup.create", path: outputPath, fileName, sizeBytes, backupState: backupState() };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "DexNest backup failed.";
+    localDb.appendActionEvent({
+      module: "backup",
+      actionId: "backup.create",
+      eventType: "backup_failed",
+      status: "failed",
+      source,
+      summary: message,
+      metadataJson: {},
+      errorMessage: message,
+      durationMs: Date.now() - startedAt
+    });
+    return { ok: false, actionId: "backup.create", error: message, backupState: backupState() };
+  }
+}
+
+function isUnsafeZipEntry(entryName: string): boolean {
+  const normalized = entryName.replace(/\\/g, "/");
+  return normalized.startsWith("/") || normalized.includes("../") || normalized === ".." || /^[a-zA-Z]:/.test(normalized);
+}
+
+function previewBackupZip(path: string, source: DexNestActionTrigger = "module_ui"): BackupPreview {
+  const startedAt = Date.now();
+  try {
+    const resolvedPath = resolve(path);
+    if (!existsSync(resolvedPath)) {
+      throw new Error("Backup zip was not found.");
+    }
+    if (!resolvedPath.toLowerCase().endsWith(".zip")) {
+      throw new Error("Select a DexNest .zip backup.");
+    }
+
+    const zip = new AdmZip(resolvedPath);
+    const entries = zip.getEntries().map((entry) => entry.entryName).filter(Boolean);
+    const unsafeEntry = entries.find(isUnsafeZipEntry);
+    if (unsafeEntry) {
+      throw new Error(`Backup contains an unsafe path: ${unsafeEntry}`);
+    }
+    const topLevel = [...new Set(entries.map((entry) => entry.replace(/\\/g, "/").split("/")[0]).filter(Boolean))].sort();
+    const preview = {
+      ok: true,
+      path: resolvedPath,
+      sizeBytes: statSync(resolvedPath).size,
+      entries: entries.slice(0, 200),
+      topLevel
+    };
+    localDb.appendActionEvent({
+      module: "backup",
+      actionId: "backup.preview_restore",
+      eventType: "restore_previewed",
+      status: "success",
+      source,
+      summary: "Previewed local DexNest backup restore.",
+      metadataJson: { entryCount: entries.length, topLevel },
+      durationMs: Date.now() - startedAt
+    });
+    return preview;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "DexNest restore preview failed.";
+    localDb.appendActionEvent({
+      module: "backup",
+      actionId: "backup.preview_restore",
+      eventType: "restore_preview_failed",
+      status: "failed",
+      source,
+      summary: message,
+      metadataJson: {},
+      errorMessage: message,
+      durationMs: Date.now() - startedAt
+    });
+    return { ok: false, path, sizeBytes: 0, entries: [], topLevel: [], error: message };
+  }
+}
+
+function extractBackupToStaging(path: string): void {
+  ensureBackupRoot();
+  rmSync(restoreStagingRoot, { recursive: true, force: true });
+  mkdirSync(restoreStagingRoot, { recursive: true });
+
+  const zip = new AdmZip(path);
+  for (const entry of zip.getEntries()) {
+    if (isUnsafeZipEntry(entry.entryName)) {
+      throw new Error(`Backup contains an unsafe path: ${entry.entryName}`);
+    }
+    const targetPath = resolve(restoreStagingRoot, entry.entryName);
+    if (!isPathInside(restoreStagingRoot, targetPath)) {
+      throw new Error(`Backup entry escaped restore staging: ${entry.entryName}`);
+    }
+    if (entry.isDirectory) {
+      mkdirSync(targetPath, { recursive: true });
+    } else {
+      mkdirSync(dirname(targetPath), { recursive: true });
+      writeFileSync(targetPath, entry.getData());
+    }
+  }
+}
+
+function restoreBackupConfirmed(path: string, source: DexNestActionTrigger = "module_ui") {
+  const startedAt = Date.now();
+  try {
+    const preview = previewBackupZip(path, source);
+    if (!preview.ok) {
+      throw new Error(preview.error ?? "Restore preview failed.");
+    }
+
+    const safetyBackup = createBackup({ ...defaultBackupOptions(), includeIndex: true }, source);
+    if (!safetyBackup.ok) {
+      throw new Error("Safety backup failed. Restore cancelled.");
+    }
+
+    extractBackupToStaging(preview.path);
+    const restorableRoots = ["settings", "files", "data", "index"];
+    const restored: string[] = [];
+    for (const rootName of restorableRoots) {
+      const stagedPath = join(restoreStagingRoot, rootName);
+      if (!existsSync(stagedPath)) {
+        continue;
+      }
+      const targetPath = join(localDataRoot, rootName);
+      if (!isPathInside(localDataRoot, targetPath)) {
+        throw new Error(`Invalid restore target: ${rootName}`);
+      }
+      rmSync(targetPath, { recursive: true, force: true });
+      cpSync(stagedPath, targetPath, { recursive: true });
+      restored.push(rootName);
+    }
+
+    localDb.appendActionEvent({
+      module: "backup",
+      actionId: "backup.restore_confirmed",
+      eventType: "restore_completed",
+      status: "success",
+      source,
+      summary: "Restored DexNest local data from backup.",
+      metadataJson: { restored, safetyBackupPath: safetyBackup.path },
+      durationMs: Date.now() - startedAt
+    });
+    return { ok: true, actionId: "backup.restore_confirmed", restored, safetyBackupPath: safetyBackup.path, backupState: backupState() };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "DexNest restore failed.";
+    localDb.appendActionEvent({
+      module: "backup",
+      actionId: "backup.restore_confirmed",
+      eventType: "restore_failed",
+      status: "failed",
+      source,
+      summary: message,
+      metadataJson: {},
+      errorMessage: message,
+      durationMs: Date.now() - startedAt
+    });
+    return { ok: false, actionId: "backup.restore_confirmed", error: message, backupState: backupState() };
+  }
+}
+
+function selectBackupZip(): string | null {
+  const result = dialog.showOpenDialogSync({
+    title: "Select DexNest backup",
+    properties: ["openFile"],
+    filters: [{ name: "DexNest backup zip", extensions: ["zip"] }]
+  });
+  return result?.[0] ?? null;
+}
+
+function runBackupAction(action: DexNestActionDefinition, source: DexNestActionTrigger, payload: unknown = {}) {
+  const input = typeof payload === "object" && payload !== null ? (payload as Partial<BackupOptions> & { path?: string; confirmedDangerous?: boolean }) : {};
+  const startedAt = Date.now();
+
+  if (action.id === "backup.open") {
+    localDb.appendActionEvent({
+      module: "backup",
+      actionId: action.id,
+      eventType: "backup_opened",
+      status: "success",
+      source,
+      summary: "Opened DexNest backup settings.",
+      metadataJson: {},
+      durationMs: Date.now() - startedAt
+    });
+    return { ok: true, actionId: action.id, backupState: backupState() };
+  }
+
+  if (action.id === "backup.create") {
+    return createBackup(input, source);
+  }
+
+  if (action.id === "backup.open_folder") {
+    ensureBackupRoot();
+    void shell.openPath(backupsRoot);
+    localDb.appendActionEvent({
+      module: "backup",
+      actionId: action.id,
+      eventType: "backup_folder_opened",
+      status: "success",
+      source,
+      summary: "Opened DexNest backup folder.",
+      metadataJson: { backupFolderPath: backupsRoot },
+      durationMs: Date.now() - startedAt
+    });
+    return { ok: true, actionId: action.id, backupState: backupState() };
+  }
+
+  if (action.id === "backup.preview_restore") {
+    if (!input.path) {
+      return { ok: false, actionId: action.id, error: "Select a backup zip first.", backupState: backupState() };
+    }
+    return { ok: true, actionId: action.id, preview: previewBackupZip(input.path, source), backupState: backupState() };
+  }
+
+  if (action.id === "backup.restore_confirmed") {
+    if (input.confirmedDangerous !== true) {
+      return { ok: false, actionId: action.id, error: "Restore confirmation is required.", backupState: backupState() };
+    }
+    if (!input.path) {
+      return { ok: false, actionId: action.id, error: "Select a backup zip first.", backupState: backupState() };
+    }
+    return restoreBackupConfirmed(input.path, source);
+  }
+
+  return null;
+}
+
+const vaultCategories = [
+  "Immigration",
+  "University",
+  "Jobs",
+  "Startup",
+  "Tax",
+  "Finance",
+  "Medical",
+  "Research",
+  "Receipts",
+  "Personal",
+  "Other"
+];
+
+const secureVaultItemTypes: SecureVaultItemType[] = ["password", "api_key", "token", "recovery_code", "private_note", "server", "other"];
+const secureVaultVerifierText = "DexNest Secure Vault verifier";
+const secureVaultDefaultAutoLockMinutes = 5;
+
+function normalizeTags(value: string[] | string | undefined): string[] {
+  if (Array.isArray(value)) {
+    return value.map((tag) => tag.trim()).filter(Boolean);
+  }
+
+  return String(value ?? "")
+    .split(",")
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+}
+
+function loadVaultDocuments(): VaultDocumentRecord[] {
+  ensureVaultRoot();
+  return readJsonFile<VaultDocumentRecord[]>(vaultDocumentsPath, []);
+}
+
+function saveVaultDocuments(documents: VaultDocumentRecord[]): VaultDocumentRecord[] {
+  ensureVaultRoot();
+  return writeJsonFile(vaultDocumentsPath, documents);
+}
+
+function defaultSecureVaultFile(masterPassword: string, autoLockMinutes = secureVaultDefaultAutoLockMinutes): SecureVaultFile {
+  const salt = randomBytes(16);
+  const kdf: SecureVaultFile["kdf"] = {
+    name: "scrypt",
+    salt: salt.toString("base64"),
+    keyLength: 32,
+    N: 16384,
+    r: 8,
+    p: 1
+  };
+  const key = deriveSecureVaultKey(masterPassword, kdf);
+  secureVaultKey = key;
+  return {
+    version: 1,
+    kdf,
+    verifier: encryptSecureValue(secureVaultVerifierText, key),
+    settings: {
+      autoLockMinutes: Math.min(60, Math.max(1, Math.floor(autoLockMinutes)))
+    },
+    items: []
+  };
+}
+
+function loadSecureVaultFile(): SecureVaultFile | null {
+  ensureVaultRoot();
+  if (!existsSync(secureVaultPath)) {
+    return null;
+  }
+  return JSON.parse(readFileSync(secureVaultPath, "utf8")) as SecureVaultFile;
+}
+
+function saveSecureVaultFile(file: SecureVaultFile): SecureVaultFile {
+  ensureVaultRoot();
+  writeFileSync(secureVaultPath, `${JSON.stringify(file, null, 2)}\n`, "utf8");
+  return file;
+}
+
+function deriveSecureVaultKey(masterPassword: string, kdf: SecureVaultFile["kdf"]): Buffer {
+  if (!masterPassword) {
+    throw new Error("Master password is required.");
+  }
+  return scryptSync(masterPassword, Buffer.from(kdf.salt, "base64"), kdf.keyLength, {
+    N: kdf.N,
+    r: kdf.r,
+    p: kdf.p,
+    maxmem: 64 * 1024 * 1024
+  });
+}
+
+function encryptSecureValue(value: string, key: Buffer): SecureEncryptedBlob {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const ciphertext = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return {
+    iv: iv.toString("base64"),
+    ciphertext: ciphertext.toString("base64"),
+    authTag: authTag.toString("base64")
+  };
+}
+
+function decryptSecureValue(blob: SecureEncryptedBlob, key: Buffer): string {
+  const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(blob.iv, "base64"));
+  decipher.setAuthTag(Buffer.from(blob.authTag, "base64"));
+  return Buffer.concat([decipher.update(Buffer.from(blob.ciphertext, "base64")), decipher.final()]).toString("utf8");
+}
+
+function verifySecureVaultKey(file: SecureVaultFile, key: Buffer): void {
+  const verifier = Buffer.from(decryptSecureValue(file.verifier, key), "utf8");
+  const expected = Buffer.from(secureVaultVerifierText, "utf8");
+  if (verifier.length !== expected.length || !timingSafeEqual(verifier, expected)) {
+    throw new Error("Invalid master password.");
+  }
+}
+
+function requireSecureVaultKey(): Buffer {
+  if (!secureVaultKey) {
+    throw new Error("Secure Vault is locked.");
+  }
+  return secureVaultKey;
+}
+
+function secureVaultUnlockedItems(): SecureVaultUnlockedItem[] {
+  const file = loadSecureVaultFile();
+  if (!file || !secureVaultKey) {
+    return [];
+  }
+  return file.items.map((item) => ({
+    id: item.id,
+    title: item.title,
+    type: item.type,
+    username: item.username,
+    url: item.url,
+    tags: item.tags,
+    secret: decryptSecureValue(item.secret, secureVaultKey as Buffer),
+    notes: decryptSecureValue(item.notes, secureVaultKey as Buffer),
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    lastCopiedAt: item.lastCopiedAt,
+    favorite: item.favorite
+  }));
+}
+
+function scheduleSecureVaultAutoLock(minutes: number): void {
+  if (secureVaultAutoLockTimer) {
+    clearTimeout(secureVaultAutoLockTimer);
+    secureVaultAutoLockTimer = null;
+  }
+  secureVaultAutoLockTimer = setTimeout(() => {
+    secureVaultKey = null;
+    localDb.appendActionEvent({
+      module: "DexNest Vault",
+      actionId: "vault.secure.lock",
+      eventType: "vault_secure_auto_locked",
+      status: "success",
+      source: "system",
+      summary: "DexNest Secure Vault auto-locked after inactivity.",
+      metadataJson: { autoLockMinutes: minutes }
+    });
+  }, Math.max(1, minutes) * 60 * 1000);
+}
+
+function touchSecureVaultActivity(): void {
+  const file = loadSecureVaultFile();
+  if (file && secureVaultKey) {
+    scheduleSecureVaultAutoLock(file.settings.autoLockMinutes || secureVaultDefaultAutoLockMinutes);
+  }
+}
+
+function lockSecureVault(): void {
+  secureVaultKey = null;
+  if (secureVaultAutoLockTimer) {
+    clearTimeout(secureVaultAutoLockTimer);
+    secureVaultAutoLockTimer = null;
+  }
+}
+
+function secureVaultState(): SecureVaultState {
+  const file = loadSecureVaultFile();
+  return {
+    isSetup: Boolean(file),
+    isUnlocked: Boolean(file && secureVaultKey),
+    filePath: secureVaultPath,
+    autoLockMinutes: file?.settings.autoLockMinutes ?? secureVaultDefaultAutoLockMinutes,
+    itemTypes: secureVaultItemTypes,
+    items: file && secureVaultKey ? secureVaultUnlockedItems() : []
+  };
+}
+
+function findVaultDocument(documentId: string): VaultDocumentRecord | null {
+  return loadVaultDocuments().find((document) => document.id === documentId) ?? null;
+}
+
+function verifiedVaultDocument(documentId: string): VaultDocumentRecord {
+  const document = findVaultDocument(documentId);
+  if (!document || !existsSync(document.filePath)) {
+    throw new Error("Vault document file not found.");
+  }
+  if (!isPathInside(vaultDocumentsRoot, document.filePath) && !isPathInside(vaultVersionsRoot, document.filePath)) {
+    throw new Error("Vault document path is outside DexNest Vault storage.");
+  }
+  return document;
+}
+
+function vaultState(): VaultState {
+  const documents = loadVaultDocuments();
+  return {
+    documents,
+    categories: vaultCategories,
+    documentsPath: vaultDocumentsRoot,
+    importsPath: vaultImportsRoot,
+    versionsPath: vaultVersionsRoot,
+    tempPath: vaultTempRoot,
+    metadataPath: vaultDocumentsPath,
+    documentCount: documents.length,
+    totalSizeBytes: documents.reduce((total, document) => total + document.sizeBytes, 0),
+    secure: secureVaultState()
+  };
 }
 
 function slugifyProjectId(value: string): string {
@@ -354,6 +1732,595 @@ function getDropReceiveFolder(): string {
 
   ensureDropRoot();
   return dropIncomingRoot;
+}
+
+function loadToolsOutputs(): ToolsOutputItem[] {
+  ensureToolsRoot();
+  return readJsonFile<ToolsOutputItem[]>(toolsOutputsPath, []);
+}
+
+function saveToolsOutputs(items: ToolsOutputItem[]): ToolsOutputItem[] {
+  ensureToolsRoot();
+  return writeJsonFile(toolsOutputsPath, items.slice(0, 100));
+}
+
+function loadSearchIndex(): SearchIndexRecord[] {
+  ensureSearchRoot();
+
+  if (!existsSync(searchIndexPath)) {
+    writeFileSync(searchIndexPath, `${JSON.stringify([], null, 2)}\n`, "utf8");
+    return [];
+  }
+
+  return JSON.parse(readFileSync(searchIndexPath, "utf8")) as SearchIndexRecord[];
+}
+
+function saveSearchIndex(items: SearchIndexRecord[]): SearchIndexRecord[] {
+  ensureSearchRoot();
+  writeFileSync(searchIndexPath, `${JSON.stringify(items, null, 2)}\n`, "utf8");
+  return items;
+}
+
+function loadSavedSearches(): SavedSearch[] {
+  return readJsonFile<SavedSearch[]>(savedSearchesPath, []);
+}
+
+function saveSavedSearches(items: SavedSearch[]): SavedSearch[] {
+  return writeJsonFile(savedSearchesPath, items);
+}
+
+function loadJournalEntries(): JournalEntry[] {
+  return readJsonFile<JournalEntry[]>(journalEntriesPath, []);
+}
+
+function saveJournalEntries(items: JournalEntry[]): JournalEntry[] {
+  return writeJsonFile(journalEntriesPath, items);
+}
+
+function loadCalendarEvents(): CalendarEvent[] {
+  return readJsonFile<CalendarEvent[]>(calendarEventsPath, []);
+}
+
+function saveCalendarEvents(items: CalendarEvent[]): CalendarEvent[] {
+  return writeJsonFile(calendarEventsPath, items);
+}
+
+function loadFinderItems(): FinderItem[] {
+  return readJsonFile<FinderItem[]>(finderItemsPath, []);
+}
+
+function saveFinderItems(items: FinderItem[]): FinderItem[] {
+  return writeJsonFile(finderItemsPath, items);
+}
+
+function loadFinanceTransactions(): FinanceTransaction[] {
+  ensureFinanceRoot();
+  return readJsonFile<FinanceTransaction[]>(financeTransactionsPath, []);
+}
+
+function saveFinanceTransactions(items: FinanceTransaction[]): FinanceTransaction[] {
+  ensureFinanceRoot();
+  return writeJsonFile(financeTransactionsPath, items);
+}
+
+function loadFinanceRecurring(): FinanceRecurringExpense[] {
+  ensureFinanceRoot();
+  return readJsonFile<FinanceRecurringExpense[]>(financeRecurringPath, []);
+}
+
+function saveFinanceRecurring(items: FinanceRecurringExpense[]): FinanceRecurringExpense[] {
+  ensureFinanceRoot();
+  return writeJsonFile(financeRecurringPath, items);
+}
+
+function loadFinanceSettings(): FinanceSettings {
+  ensureFinanceRoot();
+  return {
+    defaultCurrency: "CAD",
+    receiptsPath: receiptsRoot,
+    ...readJsonFile<Partial<FinanceSettings>>(financeSettingsPath, {})
+  };
+}
+
+function saveFinanceSettings(settings: FinanceSettings): FinanceSettings {
+  ensureFinanceRoot();
+  return writeJsonFile(financeSettingsPath, settings);
+}
+
+function loadCaptureItems(): CaptureItem[] {
+  ensureCaptureRoot();
+  return readJsonFile<CaptureItem[]>(captureItemsPath, []);
+}
+
+function saveCaptureItems(items: CaptureItem[]): CaptureItem[] {
+  ensureCaptureRoot();
+  return writeJsonFile(captureItemsPath, items);
+}
+
+function seedRoutines(): DexNestRoutine[] {
+  const now = new Date().toISOString();
+  return [
+    {
+      id: "routine-morning-review",
+      name: "Morning Review",
+      description: "Open Command, Calendar, and Capture inbox.",
+      steps: [
+        { id: createId("routine-step"), actionId: "command.open_home", params: {} },
+        { id: createId("routine-step"), actionId: "calendar.show_today", params: {} },
+        { id: createId("routine-step"), actionId: "capture.open", params: {} }
+      ],
+      enabled: true,
+      createdAt: now,
+      updatedAt: now,
+      lastRunAt: null,
+      lastRunStatus: null,
+      lastRunSummary: null
+    },
+    {
+      id: "routine-dev-start",
+      name: "Dev Start",
+      description: "Open Dev and Deck for local project work.",
+      steps: [
+        { id: createId("routine-step"), actionId: "dev.open_dashboard", params: {} },
+        { id: createId("routine-step"), actionId: "deck.test_endpoint", params: {} }
+      ],
+      enabled: true,
+      createdAt: now,
+      updatedAt: now,
+      lastRunAt: null,
+      lastRunStatus: null,
+      lastRunSummary: null
+    },
+    {
+      id: "routine-end-of-day",
+      name: "End of Day",
+      description: "Open Journal, Calendar, and Audit.",
+      steps: [
+        { id: createId("routine-step"), actionId: "journal.open_today", params: {} },
+        { id: createId("routine-step"), actionId: "calendar.show_today", params: {} },
+        { id: createId("routine-step"), actionId: "audit.open_history", params: {} }
+      ],
+      enabled: true,
+      createdAt: now,
+      updatedAt: now,
+      lastRunAt: null,
+      lastRunStatus: null,
+      lastRunSummary: null
+    }
+  ];
+}
+
+function loadRoutines(): DexNestRoutine[] {
+  const existing = readJsonFile<DexNestRoutine[] | null>(routinesPath, null);
+  if (existing && Array.isArray(existing)) {
+    return existing;
+  }
+  return writeJsonFile(routinesPath, seedRoutines());
+}
+
+function saveRoutines(routines: DexNestRoutine[]): DexNestRoutine[] {
+  return writeJsonFile(routinesPath, routines);
+}
+
+function defaultHeatmapSettings(): HeatmapSettings {
+  return {
+    enabled: false,
+    paused: true,
+    sampleIntervalSeconds: 60,
+    aggregationIntervalHours: 3,
+    pauseDuringFullscreen: true,
+    privateApps: [],
+    privateTitleKeywords: [],
+    lastAggregatedAt: null
+  };
+}
+
+function loadHeatmapSettings(): HeatmapSettings {
+  return {
+    ...defaultHeatmapSettings(),
+    ...readJsonFile<Partial<HeatmapSettings>>(heatmapSettingsPath, defaultHeatmapSettings())
+  };
+}
+
+function saveHeatmapSettings(settings: HeatmapSettings): HeatmapSettings {
+  return writeJsonFile(heatmapSettingsPath, settings);
+}
+
+function loadHeatmapEvents(): HeatmapEvent[] {
+  return readJsonFile<HeatmapEvent[]>(heatmapEventsPath, []);
+}
+
+function saveHeatmapEvents(events: HeatmapEvent[]): HeatmapEvent[] {
+  return writeJsonFile(heatmapEventsPath, events.slice(0, 10000));
+}
+
+function loadHeatmapGoals(): HeatmapGoal[] {
+  return readJsonFile<HeatmapGoal[]>(heatmapGoalsPath, []);
+}
+
+function saveHeatmapGoals(goals: HeatmapGoal[]): HeatmapGoal[] {
+  return writeJsonFile(heatmapGoalsPath, goals);
+}
+
+function sanitizeHeatmapText(value: string, maxLength = 80): string {
+  return value.replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
+function privacyFilterHeatmapSnapshot(snapshot: ActiveWindowSnapshot, settings: HeatmapSettings): ActiveWindowSnapshot {
+  const appName = sanitizeHeatmapText(snapshot.appName || "Unknown app", 48);
+  const windowTitle = sanitizeHeatmapText(snapshot.windowTitle || "Untitled window", 80);
+  const appMatch = settings.privateApps.some((item) => item.trim() && appName.toLowerCase().includes(item.trim().toLowerCase()));
+  const titleMatch = settings.privateTitleKeywords.some((item) => item.trim() && windowTitle.toLowerCase().includes(item.trim().toLowerCase()));
+
+  if (appMatch || titleMatch) {
+    return {
+      ...snapshot,
+      appName: "Private app",
+      windowTitle: "Private window"
+    };
+  }
+
+  return {
+    ...snapshot,
+    appName,
+    windowTitle
+  };
+}
+
+function runPowerShellJson(script: string): Promise<unknown> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], { windowsHide: true, timeout: 5000 }, (error, stdout, stderr) => {
+      if (error) {
+        rejectPromise(new Error(stderr.trim() || error.message));
+        return;
+      }
+
+      try {
+        resolvePromise(JSON.parse(stdout.trim()));
+      } catch {
+        rejectPromise(new Error("DexNest could not parse active window metadata."));
+      }
+    });
+  });
+}
+
+async function detectActiveWindow(): Promise<ActiveWindowSnapshot> {
+  const script = `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public class DexNestWin32 {
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+  [DllImport("user32.dll")] public static extern int GetSystemMetrics(int nIndex);
+  [StructLayout(LayoutKind.Sequential)] public struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
+  [DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
+}
+"@
+$handle = [DexNestWin32]::GetForegroundWindow()
+$titleBuilder = New-Object System.Text.StringBuilder 512
+[void][DexNestWin32]::GetWindowText($handle, $titleBuilder, $titleBuilder.Capacity)
+$pidValue = 0
+[void][DexNestWin32]::GetWindowThreadProcessId($handle, [ref]$pidValue)
+$processName = "Unknown app"
+if ($pidValue -gt 0) {
+  try { $processName = (Get-Process -Id $pidValue -ErrorAction Stop).ProcessName } catch {}
+}
+$lastInput = New-Object DexNestWin32+LASTINPUTINFO
+$lastInput.cbSize = [System.Runtime.InteropServices.Marshal]::SizeOf($lastInput)
+$idleSeconds = $null
+if ([DexNestWin32]::GetLastInputInfo([ref]$lastInput)) {
+  $idleSeconds = [math]::Max(0, [int](([Environment]::TickCount - $lastInput.dwTime) / 1000))
+}
+$rect = New-Object DexNestWin32+RECT
+$isFullscreen = $false
+if ([DexNestWin32]::GetWindowRect($handle, [ref]$rect)) {
+  $screenWidth = [DexNestWin32]::GetSystemMetrics(0)
+  $screenHeight = [DexNestWin32]::GetSystemMetrics(1)
+  $windowWidth = $rect.Right - $rect.Left
+  $windowHeight = $rect.Bottom - $rect.Top
+  $isFullscreen = ($rect.Left -le 0 -and $rect.Top -le 0 -and $windowWidth -ge $screenWidth -and $windowHeight -ge $screenHeight)
+}
+[pscustomobject]@{
+  appName = $processName
+  windowTitle = $titleBuilder.ToString()
+  idleSeconds = $idleSeconds
+  isFullscreen = $isFullscreen
+} | ConvertTo-Json -Compress
+`;
+
+  try {
+    const result = await runPowerShellJson(script);
+    const record = result as { appName?: string; windowTitle?: string; idleSeconds?: number | null; isFullscreen?: boolean };
+    const idleSeconds = typeof record.idleSeconds === "number" ? record.idleSeconds : null;
+    return {
+      appName: record.appName || "Unknown app",
+      windowTitle: record.windowTitle || "Untitled window",
+      idleSeconds,
+      active: idleSeconds === null ? true : idleSeconds < 300,
+      isFullscreen: record.isFullscreen === true,
+      detectionStatus: "ok"
+    };
+  } catch (error) {
+    return {
+      appName: "Manual sample",
+      windowTitle: "Active window detection unavailable",
+      idleSeconds: null,
+      active: true,
+      isFullscreen: false,
+      detectionStatus: "failed",
+      error: error instanceof Error ? error.message : "Unknown active window detection failure."
+    };
+  }
+}
+
+function mapHeatmapProject(appName: string, windowTitle: string): string | null {
+  const haystack = `${appName} ${windowTitle}`.toLowerCase();
+  return loadProjects().find((project) => haystack.includes(project.name.toLowerCase()) || haystack.includes(project.path.toLowerCase()))?.id ?? null;
+}
+
+function maybeAggregateHeatmapOnInterval(settings: HeatmapSettings, startedAt = Date.now()): void {
+  const lastAggregatedAt = settings.lastAggregatedAt ? Date.parse(settings.lastAggregatedAt) : 0;
+  const intervalMs = Math.max(3, settings.aggregationIntervalHours) * 60 * 60 * 1000;
+  if (Number.isFinite(lastAggregatedAt) && Date.now() - lastAggregatedAt < intervalMs) {
+    return;
+  }
+
+  const updatedSettings = saveHeatmapSettings({ ...settings, lastAggregatedAt: new Date().toISOString() });
+  const state = heatmapState();
+  localDb.appendActionEvent({
+    module: "DexNest Heatmap",
+    actionId: "heatmap.aggregate_now",
+    eventType: "heatmap_aggregation_completed",
+    status: "success",
+    source: "system",
+    summary: "Aggregated Heatmap summaries on interval.",
+    metadataJson: {
+      aggregationIntervalHours: updatedSettings.aggregationIntervalHours,
+      topAppToday: state.summary.topAppToday,
+      eventCount: state.events.length
+    },
+    errorMessage: null,
+    durationMs: Date.now() - startedAt
+  });
+}
+
+async function logHeatmapSample(source: DexNestActionTrigger | "system" = "module_ui"): Promise<{ ok: boolean; event?: HeatmapEvent; snapshot: ActiveWindowSnapshot; heatmapState: ReturnType<typeof heatmapState> }> {
+  const startedAt = Date.now();
+  const settings = loadHeatmapSettings();
+  const rawSnapshot = await detectActiveWindow();
+  if (settings.pauseDuringFullscreen && rawSnapshot.isFullscreen) {
+    localDb.appendActionEvent({
+      module: "DexNest Heatmap",
+      actionId: "heatmap.log_current_app",
+      eventType: "heatmap_sample_skipped",
+      status: "skipped",
+      source,
+      summary: "Skipped Heatmap sample while fullscreen pause is enabled.",
+      metadataJson: { reason: "fullscreen" },
+      errorMessage: null,
+      durationMs: Date.now() - startedAt
+    });
+    return { ok: true, snapshot: rawSnapshot, heatmapState: heatmapState() };
+  }
+  const snapshot = privacyFilterHeatmapSnapshot(rawSnapshot, settings);
+  const event: HeatmapEvent = {
+    id: `heatmap-event-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    timestamp: new Date().toISOString(),
+    appName: snapshot.appName,
+    windowTitle: snapshot.windowTitle,
+    projectId: mapHeatmapProject(snapshot.appName, snapshot.windowTitle),
+    active: snapshot.active,
+    idleSeconds: snapshot.idleSeconds,
+    durationSeconds: Math.max(1, Math.min(3600, settings.sampleIntervalSeconds)),
+    createdAt: new Date().toISOString()
+  };
+
+  saveHeatmapEvents([event, ...loadHeatmapEvents()]);
+  if (settings.enabled && !settings.paused) {
+    maybeAggregateHeatmapOnInterval(settings, startedAt);
+  }
+  localDb.appendActionEvent({
+    module: "DexNest Heatmap",
+    actionId: "heatmap.log_current_app",
+    eventType: "heatmap_sample_logged",
+    status: snapshot.detectionStatus === "ok" ? "success" : "failed",
+    source,
+    summary: snapshot.detectionStatus === "ok" ? "Logged active app metadata." : "Logged Heatmap placeholder sample because active window detection failed.",
+    metadataJson: { appName: event.appName, active: event.active, detectionStatus: snapshot.detectionStatus },
+    errorMessage: snapshot.error ?? null,
+    durationMs: Date.now() - startedAt
+  });
+
+  return { ok: snapshot.detectionStatus === "ok", event, snapshot, heatmapState: heatmapState() };
+}
+
+function stopHeatmapTimer(): void {
+  if (heatmapSampleTimer) {
+    clearInterval(heatmapSampleTimer);
+    heatmapSampleTimer = null;
+  }
+}
+
+function startHeatmapTimer(): void {
+  stopHeatmapTimer();
+  const settings = loadHeatmapSettings();
+  if (!settings.enabled || settings.paused) {
+    return;
+  }
+
+  heatmapSampleTimer = setInterval(() => {
+    void logHeatmapSample("system");
+  }, Math.max(60, settings.sampleIntervalSeconds) * 1000);
+}
+
+function defaultToolsSettings(): ToolsSettings {
+  return {
+    outputFolderPath: null,
+    ffmpegPath: null,
+    libreOfficePath: null
+  };
+}
+
+function loadToolsSettings(): ToolsSettings {
+  return { ...defaultToolsSettings(), ...readJsonFile<ToolsSettings>(toolsSettingsPath, defaultToolsSettings()) };
+}
+
+function saveToolsSettings(settings: ToolsSettings): ToolsSettings {
+  return writeJsonFile(toolsSettingsPath, { ...defaultToolsSettings(), ...settings });
+}
+
+function getToolsOutputFolder(): string {
+  const configuredPath = loadToolsSettings().outputFolderPath;
+  if (configuredPath && existsSync(configuredPath)) {
+    return configuredPath;
+  }
+
+  ensureToolsRoot();
+  return toolsOutputRoot;
+}
+
+function findOnPath(command: string): string | null {
+  const pathValue = process.env.PATH ?? "";
+  const pathExts = process.platform === "win32"
+    ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT").split(";")
+    : [""];
+  const commandHasExtension = Boolean(extname(command));
+
+  for (const folder of pathValue.split(process.platform === "win32" ? ";" : ":").filter(Boolean)) {
+    const candidates = commandHasExtension ? [command] : [command, ...pathExts.map((extension) => `${command}${extension.toLowerCase()}`), ...pathExts.map((extension) => `${command}${extension}`)];
+    for (const candidate of candidates) {
+      const resolvedPath = join(folder, candidate);
+      if (existsSync(resolvedPath)) {
+        return resolvedPath;
+      }
+    }
+  }
+
+  return null;
+}
+
+function detectFfmpegPath(): string | null {
+  return findOnPath("ffmpeg") ?? findOnPath("ffmpeg.exe");
+}
+
+function detectLibreOfficePath(): string | null {
+  const candidates = [
+    "C:\\Program Files\\LibreOffice\\program\\soffice.exe",
+    "C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe",
+    findOnPath("soffice"),
+    findOnPath("soffice.exe")
+  ].filter(Boolean) as string[];
+
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
+
+function resolveFfmpegPath(): string {
+  const configuredPath = loadToolsSettings().ffmpegPath?.trim();
+  const detectedPath = configuredPath && existsSync(configuredPath) ? configuredPath : detectFfmpegPath();
+  if (!detectedPath) {
+    throw new Error("ffmpeg is required for media conversions. Install it and set the path in Settings.");
+  }
+  return detectedPath;
+}
+
+function resolveLibreOfficePath(): string {
+  const configuredPath = loadToolsSettings().libreOfficePath?.trim();
+  const detectedPath = configuredPath && existsSync(configuredPath) ? configuredPath : detectLibreOfficePath();
+  if (!detectedPath) {
+    throw new Error("LibreOffice is required for Office conversions. Install it and set the path in Settings.");
+  }
+  return detectedPath;
+}
+
+function resolveCommandPath(command: string, setupMessage: string): string {
+  const resolvedPath = findOnPath(command) ?? findOnPath(`${command}.exe`);
+  if (!resolvedPath) {
+    throw new Error(setupMessage);
+  }
+  return resolvedPath;
+}
+
+function execFileAsync(file: string, args: string[], cwd?: string): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    execFile(file, args, { cwd, windowsHide: true, maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
+      if (error) {
+        rejectPromise(new Error(stderr.trim() || stdout.trim() || error.message));
+        return;
+      }
+      resolvePromise({ stdout, stderr });
+    });
+  });
+}
+
+function createToolsTempFolder(operation: string): string {
+  const tempFolder = join(toolsTempRoot, `${operation}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  mkdirSync(tempFolder, { recursive: true });
+  return tempFolder;
+}
+
+function safeOutputPath(root: string, fileName: string): string {
+  const resolvedRoot = resolve(root);
+  const resolvedPath = resolve(root, sanitizeFileName(fileName));
+
+  if (!isPathInside(resolvedRoot, resolvedPath)) {
+    throw new Error("Invalid DexNest Tools output path.");
+  }
+
+  return resolvedPath;
+}
+
+function createToolsOutput(fileName: string, operation: string): { fileName: string; path: string } {
+  const outputFolder = getToolsOutputFolder();
+  mkdirSync(outputFolder, { recursive: true });
+  const uniqueName = uniqueFileName(outputFolder, fileName);
+  return {
+    fileName: uniqueName,
+    path: safeOutputPath(outputFolder, uniqueName)
+  };
+}
+
+function recordToolsOutput(filePath: string, operation: string): ToolsOutputItem {
+  const item: ToolsOutputItem = {
+    id: createId("tools-output"),
+    fileName: basename(filePath),
+    path: filePath,
+    byteLength: statSync(filePath).size,
+    operation,
+    createdAt: new Date().toISOString()
+  };
+  saveToolsOutputs([item, ...loadToolsOutputs()]);
+  return item;
+}
+
+function findRecordedToolsOutput(filePath: string): ToolsOutputItem | null {
+  if (!filePath) {
+    return null;
+  }
+
+  const resolvedPath = resolve(filePath);
+  return loadToolsOutputs().find((output) => resolve(output.path) === resolvedPath) ?? null;
+}
+
+function getVerifiedToolsOutputPath(filePath: string): string {
+  const output = findRecordedToolsOutput(filePath);
+  if (!output || !existsSync(output.path)) {
+    throw new Error("Tools output file is not registered.");
+  }
+  return output.path;
+}
+
+function selectedFileMetadata(path: string): ToolsSelectedFile {
+  return {
+    path,
+    name: basename(path),
+    byteLength: statSync(path).size,
+    extension: extname(path).toLowerCase()
+  };
 }
 
 function getProjectActionDefinitions(projects = loadProjects()): DexNestActionDefinition[] {
@@ -513,6 +2480,22 @@ function sendSvg(response: ServerResponse, statusCode: number, svg: string): voi
     "Cache-Control": "no-store"
   });
   response.end(svg);
+}
+
+function sendDropEvent(response: ServerResponse, payload: Record<string, unknown>): void {
+  response.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function broadcastDropUpdate(message: string, eventType = "drop_updated"): void {
+  const payload = {
+    eventType,
+    message,
+    timestamp: new Date().toISOString()
+  };
+
+  for (const client of dropEventClients) {
+    sendDropEvent(client, payload);
+  }
 }
 
 function sendPlain(response: ServerResponse, statusCode: number, value: string): void {
@@ -861,6 +2844,18 @@ function logActionEvent(
   });
 }
 
+function payloadMetadata(payload: unknown): Record<string, unknown> {
+  if (payload && typeof payload === "object") {
+    return {
+      payloadKeys: Object.keys(payload as Record<string, unknown>)
+    };
+  }
+
+  return {
+    payloadType: typeof payload
+  };
+}
+
 function clipboardState() {
   return {
     history: loadClipboardHistory(),
@@ -894,6 +2889,1931 @@ function dropState() {
   };
 }
 
+function toolsState() {
+  const settings = loadToolsSettings();
+  return {
+    selectedFiles: [] as ToolsSelectedFile[],
+    outputs: loadToolsOutputs(),
+    inputFolderPath: toolsInputRoot,
+    outputFolderPath: getToolsOutputFolder(),
+    defaultOutputFolderPath: toolsOutputRoot,
+    customOutputFolderPath: settings.outputFolderPath,
+    ffmpegPath: settings.ffmpegPath ?? null,
+    detectedFfmpegPath: detectFfmpegPath(),
+    libreOfficePath: settings.libreOfficePath ?? null,
+    detectedLibreOfficePath: detectLibreOfficePath(),
+    tempFolderPath: toolsTempRoot,
+    outputsPath: toolsOutputsPath
+  };
+}
+
+function searchState(query: SearchQueryInput = {}) {
+  const index = loadSearchIndex();
+  const savedSearches = loadSavedSearches();
+  return {
+    index,
+    savedSearches,
+    indexPath: searchIndexPath,
+    indexFolderPath: searchIndexRoot,
+    savedSearchesPath,
+    resultCount: runSearchQuery(query, index).length,
+    sources: [...new Set(index.map((item) => item.sourceModule))].sort(),
+    fileTypes: [...new Set(index.map((item) => item.fileType).filter(Boolean) as string[])].sort()
+  };
+}
+
+function logSearchEvent(
+  actionId: string,
+  eventType: string,
+  status: DexNestEventStatus,
+  source: DexNestActionTrigger,
+  summary: string,
+  metadataJson: Record<string, unknown>,
+  startedAt: number,
+  errorMessage: string | null = null
+): void {
+  localDb.appendActionEvent({
+    module: "DexNest Search",
+    actionId,
+    eventType,
+    status,
+    source,
+    summary,
+    metadataJson,
+    errorMessage,
+    durationMs: Date.now() - startedAt
+  });
+}
+
+function textBucket(...values: Array<string | null | undefined>): string {
+  return values.filter(Boolean).join(" ");
+}
+
+function fileTypeForPath(filePath?: string | null): string | null {
+  if (!filePath) {
+    return null;
+  }
+
+  return extname(filePath).toLowerCase() || null;
+}
+
+function buildSearchIndexRecords(): SearchIndexRecord[] {
+  const indexedAt = new Date().toISOString();
+  const records: SearchIndexRecord[] = [];
+
+  for (const document of loadVaultDocuments()) {
+    records.push({
+      id: `vault-${document.id}`,
+      sourceModule: "vault",
+      entityType: "vault_document",
+      entityId: document.id,
+      title: document.title || document.originalFileName,
+      filePath: document.filePath,
+      fileType: document.fileType || fileTypeForPath(document.filePath),
+      sizeBytes: document.sizeBytes,
+      textPreview: previewText(textBucket(document.originalFileName, document.notes)),
+      tags: document.tags,
+      category: document.category,
+      createdAt: document.createdAt,
+      updatedAt: document.updatedAt,
+      indexedAt
+    });
+  }
+
+  for (const output of loadToolsOutputs()) {
+    records.push({
+      id: `tools-${output.id}`,
+      sourceModule: "tools",
+      entityType: "tools_output",
+      entityId: output.id,
+      title: output.fileName,
+      filePath: output.path,
+      fileType: fileTypeForPath(output.path),
+      sizeBytes: output.byteLength,
+      textPreview: previewText(output.operation),
+      tags: [output.operation].filter(Boolean),
+      category: output.operation,
+      createdAt: output.createdAt,
+      updatedAt: output.createdAt,
+      indexedAt
+    });
+  }
+
+  for (const item of [...loadDropShelf(), ...loadDropIncoming()]) {
+    const title = item.type === "file" ? item.originalName : item.preview || "Drop text";
+    records.push({
+      id: `drop-${item.direction}-${item.id}`,
+      sourceModule: "drop",
+      entityType: item.type === "file" ? "drop_file" : "drop_text",
+      entityId: item.id,
+      title,
+      filePath: item.type === "file" ? item.path : null,
+      fileType: item.type === "file" ? fileTypeForPath(item.path) : "text",
+      sizeBytes: item.byteLength,
+      textPreview: item.type === "text" ? previewText(item.preview ?? "") : previewText(item.fileName ?? item.originalName),
+      tags: [item.direction, item.source],
+      category: item.direction,
+      createdAt: item.createdAt,
+      updatedAt: item.createdAt,
+      indexedAt
+    });
+  }
+
+  for (const item of loadClipboardHistory()) {
+    records.push({
+      id: `clipboard-history-${item.id}`,
+      sourceModule: "clipboard",
+      entityType: "clipboard_history",
+      entityId: item.id,
+      title: item.preview || "Clipboard history item",
+      filePath: null,
+      fileType: "text",
+      sizeBytes: item.byteLength,
+      textPreview: previewText(item.preview),
+      tags: ["clipboard"],
+      category: "history",
+      createdAt: item.createdAt,
+      updatedAt: item.createdAt,
+      indexedAt
+    });
+  }
+
+  for (const snippet of loadClipboardSnippets()) {
+    records.push({
+      id: `clipboard-snippet-${snippet.id}`,
+      sourceModule: "clipboard",
+      entityType: "clipboard_snippet",
+      entityId: snippet.id,
+      title: snippet.title,
+      filePath: null,
+      fileType: "text",
+      sizeBytes: null,
+      textPreview: "Snippet body is not indexed.",
+      tags: ["snippet"],
+      category: "snippet",
+      createdAt: snippet.createdAt,
+      updatedAt: snippet.updatedAt,
+      indexedAt
+    });
+  }
+
+  for (const project of loadProjects()) {
+    records.push({
+      id: `dev-project-${project.id}`,
+      sourceModule: "dev",
+      entityType: "dev_project",
+      entityId: project.id,
+      title: project.name,
+      filePath: project.path,
+      fileType: "folder",
+      sizeBytes: null,
+      textPreview: previewText(textBucket(project.description, project.notes, project.urls.join(" "))),
+      tags: ["project", ...project.urls],
+      category: "project",
+      createdAt: project.createdAt,
+      updatedAt: project.updatedAt,
+      indexedAt
+    });
+  }
+
+  for (const item of loadFinderItems()) {
+    records.push({
+      id: `finder-item-${item.id}`,
+      sourceModule: "finder",
+      entityType: "finder_item",
+      entityId: item.id,
+      title: item.itemName,
+      filePath: null,
+      fileType: "metadata",
+      sizeBytes: null,
+      textPreview: previewText(textBucket(item.location, item.room, item.container, item.notes)),
+      tags: [...item.tags, item.status, item.confidence ?? "sure"].filter(Boolean),
+      category: item.room || item.container || item.location,
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt,
+      indexedAt
+    });
+  }
+
+  for (const transaction of loadFinanceTransactions()) {
+    records.push({
+      id: `finance-transaction-${transaction.id}`,
+      sourceModule: "finance",
+      entityType: "finance_transaction",
+      entityId: transaction.id,
+      title: transaction.store,
+      filePath: transaction.receiptFilePath ?? null,
+      fileType: transaction.receiptFilePath ? fileTypeForPath(transaction.receiptFilePath) : "metadata",
+      sizeBytes: transaction.receiptFilePath && existsSync(transaction.receiptFilePath) ? statSync(transaction.receiptFilePath).size : null,
+      textPreview: previewText(textBucket(transaction.store, transaction.category, transaction.tags.join(" "), transaction.notes)),
+      tags: transaction.tags,
+      category: transaction.category,
+      createdAt: transaction.createdAt,
+      updatedAt: transaction.updatedAt,
+      indexedAt
+    });
+  }
+
+  for (const recurring of loadFinanceRecurring()) {
+    records.push({
+      id: `finance-recurring-${recurring.id}`,
+      sourceModule: "finance",
+      entityType: "finance_recurring",
+      entityId: recurring.id,
+      title: recurring.name,
+      filePath: null,
+      fileType: "metadata",
+      sizeBytes: null,
+      textPreview: previewText(textBucket(recurring.category, recurring.frequency, recurring.notes)),
+      tags: [recurring.frequency, recurring.paymentType, recurring.active ? "active" : "inactive"],
+      category: recurring.category,
+      createdAt: recurring.createdAt,
+      updatedAt: recurring.updatedAt,
+      indexedAt
+    });
+  }
+
+  for (const item of loadCaptureItems().filter((capture) => capture.status !== "deleted")) {
+    records.push({
+      id: `capture-${item.id}`,
+      sourceModule: "capture",
+      entityType: "capture_item",
+      entityId: item.id,
+      title: item.title,
+      filePath: item.filePath ?? null,
+      fileType: item.filePath ? fileTypeForPath(item.filePath) : item.type,
+      sizeBytes: item.filePath && existsSync(item.filePath) ? statSync(item.filePath).size : null,
+      textPreview: previewText(textBucket(item.type, item.title, item.tags.join(" "), item.originalFileName ?? "", item.text)),
+      tags: item.tags,
+      category: item.type,
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt,
+      indexedAt
+    });
+  }
+
+  return records;
+}
+
+function searchMatchScore(record: SearchIndexRecord, query: string): { score: number; reason: string } {
+  if (!query) {
+    return { score: 1, reason: "filter match" };
+  }
+
+  const normalizedQuery = query.toLowerCase();
+  const title = record.title.toLowerCase();
+  const tagsAndCategory = [...(record.tags ?? []), record.category ?? ""].join(" ").toLowerCase();
+  const preview = (record.textPreview ?? "").toLowerCase();
+
+  if (title.includes(normalizedQuery)) {
+    return { score: 100, reason: "title" };
+  }
+
+  if (tagsAndCategory.includes(normalizedQuery)) {
+    return { score: 60, reason: "tag/category" };
+  }
+
+  if (preview.includes(normalizedQuery)) {
+    return { score: 30, reason: "preview" };
+  }
+
+  return { score: 0, reason: "" };
+}
+
+function runSearchQuery(queryInput: SearchQueryInput = {}, records = loadSearchIndex()): SearchResult[] {
+  const query = (queryInput.query ?? "").trim();
+  const sourceModule = queryInput.sourceModule && queryInput.sourceModule !== "all" ? queryInput.sourceModule : "";
+  const fileType = queryInput.fileType && queryInput.fileType !== "all" ? queryInput.fileType.toLowerCase() : "";
+  const dateFrom = queryInput.dateFrom ? parseLocalDateInput(queryInput.dateFrom).getTime() : Number.NaN;
+  const dateToDate = queryInput.dateTo ? parseLocalDateInput(queryInput.dateTo) : null;
+  if (dateToDate) {
+    dateToDate.setHours(23, 59, 59, 999);
+  }
+  const dateTo = dateToDate ? dateToDate.getTime() : Number.NaN;
+
+  return records
+    .map((record) => {
+      const match = searchMatchScore(record, query);
+      return { ...record, score: match.score, matchReason: match.reason };
+    })
+    .filter((record) => {
+      if (record.score <= 0) {
+        return false;
+      }
+      if (sourceModule && record.sourceModule !== sourceModule) {
+        return false;
+      }
+      if (fileType && (record.fileType ?? "").toLowerCase() !== fileType) {
+        return false;
+      }
+      const createdAt = Date.parse(record.createdAt);
+      if (!Number.isNaN(dateFrom) && createdAt < dateFrom) {
+        return false;
+      }
+      if (!Number.isNaN(dateTo) && createdAt > dateTo) {
+        return false;
+      }
+      return true;
+    })
+    .sort((a, b) => b.score - a.score || Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+}
+
+function todayDateString(): string {
+  return getLocalTodayDateString();
+}
+
+function localDateStringFromTimestamp(timestamp: string): string {
+  const date = new Date(timestamp);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function cleanJournalText(value: string): string {
+  return value
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.replace(/[ \t]+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function parseTagList(value: string[] | string | undefined): string[] {
+  if (Array.isArray(value)) {
+    return value.map((item) => item.trim()).filter(Boolean);
+  }
+
+  return String(value ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function resolveSimpleDatePhrase(sentence: string, baseDate: Date): string | null {
+  return resolveRelativeLocalDate(sentence, baseDate);
+}
+
+function extractCalendarCandidatesFromText(text: string, baseDateString = todayDateString()): ExtractedCalendarCandidate[] {
+  const baseDate = parseLocalDateInput(baseDateString);
+  return text
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean)
+    .flatMap((sentence) => {
+      const normalized = sentence.toLowerCase();
+      const hasSignal = /\b(birthday|meeting|appointment|call|remind me)\b/.test(normalized);
+      if (!hasSignal) {
+        return [];
+      }
+
+      const date = resolveSimpleDatePhrase(sentence, baseDate);
+      if (!date) {
+        return [];
+      }
+
+      const type: ExtractedCalendarCandidate["type"] = normalized.includes("birthday")
+        ? "birthday"
+        : normalized.includes("meeting")
+          ? "meeting"
+          : normalized.includes("appointment")
+            ? "appointment"
+            : normalized.includes("call")
+              ? "call"
+              : "reminder";
+      const title = previewText(sentence.replace(/\b(remind me to|remind me|is|on|in \d+ days?|today|tomorrow|next \w+)\b/gi, " ").trim()) || type;
+      return [{
+        id: createId("calendar-candidate"),
+        title: type === "birthday" && !title.toLowerCase().includes("birthday") ? `${title} birthday` : title,
+        date,
+        type,
+        allDay: type === "birthday",
+        sourceSentence: sentence,
+        recurrence: type === "birthday" ? "yearly-placeholder" : null
+      }];
+    });
+}
+
+function journalState() {
+  const entries = loadJournalEntries().sort((a, b) => b.date.localeCompare(a.date) || Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  const today = todayDateString();
+  return {
+    entries,
+    todayEntry: entries.find((entry) => entry.date === today) ?? null,
+    entriesPath: journalEntriesPath,
+    today
+  };
+}
+
+function calendarState() {
+  const events = loadCalendarEvents().sort((a, b) => a.date.localeCompare(b.date) || (a.startTime ?? "").localeCompare(b.startTime ?? ""));
+  const today = todayDateString();
+  return {
+    events,
+    today,
+    todayEvents: events.filter((event) => event.date === today),
+    upcomingEvents: events.filter((event) => event.date >= today).slice(0, 20),
+    eventsPath: calendarEventsPath
+  };
+}
+
+function logJournalEvent(
+  actionId: string,
+  status: DexNestEventStatus,
+  source: DexNestActionTrigger,
+  summary: string,
+  metadataJson: Record<string, unknown>,
+  startedAt: number,
+  errorMessage: string | null = null
+): void {
+  localDb.appendActionEvent({
+    module: "DexNest Journal",
+    actionId,
+    eventType: "journal_action",
+    status,
+    source,
+    summary,
+    metadataJson,
+    errorMessage,
+    durationMs: Date.now() - startedAt
+  });
+}
+
+function logCalendarEvent(
+  actionId: string,
+  status: DexNestEventStatus,
+  source: DexNestActionTrigger,
+  summary: string,
+  metadataJson: Record<string, unknown>,
+  startedAt: number,
+  errorMessage: string | null = null
+): void {
+  localDb.appendActionEvent({
+    module: "DexNest Calendar",
+    actionId,
+    eventType: "calendar_action",
+    status,
+    source,
+    summary,
+    metadataJson,
+    errorMessage,
+    durationMs: Date.now() - startedAt
+  });
+}
+
+function finderState() {
+  const items = loadFinderItems().sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  return {
+    items,
+    itemsPath: finderItemsPath,
+    statusCounts: {
+      at_home: items.filter((item) => item.status === "at_home").length,
+      lent_out: items.filter((item) => item.status === "lent_out").length,
+      missing: items.filter((item) => item.status === "missing").length,
+      archived: items.filter((item) => item.status === "archived").length
+    }
+  };
+}
+
+function logFinderEvent(
+  actionId: string,
+  status: DexNestEventStatus,
+  source: DexNestActionTrigger,
+  summary: string,
+  metadataJson: Record<string, unknown>,
+  startedAt: number,
+  errorMessage: string | null = null
+): void {
+  localDb.appendActionEvent({
+    module: "DexNest Finder",
+    actionId,
+    eventType: "finder_action",
+    status,
+    source,
+    summary,
+    metadataJson,
+    errorMessage,
+    durationMs: Date.now() - startedAt
+  });
+}
+
+function finderItemMatches(item: FinderItem, query: string, status = "all"): boolean {
+  const normalizedQuery = query.trim().toLowerCase();
+  const matchesStatus = status === "all" || item.status === status;
+  if (!matchesStatus) {
+    return false;
+  }
+  if (!normalizedQuery) {
+    return true;
+  }
+
+  return [
+    item.itemName,
+    item.location,
+    item.room ?? "",
+    item.container ?? "",
+    item.tags.join(" ")
+  ].join(" ").toLowerCase().includes(normalizedQuery);
+}
+
+function reverseLookupMatches(item: FinderItem, query: string): boolean {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) {
+    return false;
+  }
+
+  return [item.location, item.room ?? "", item.container ?? ""].join(" ").toLowerCase().includes(normalizedQuery);
+}
+
+function financeMonthKey(value: string): string {
+  return value.slice(0, 7);
+}
+
+function financeTotalBy<T extends string>(transactions: FinanceTransaction[], key: (transaction: FinanceTransaction) => T): Record<T, number> {
+  return transactions.reduce((totals, transaction) => {
+    const group = key(transaction);
+    totals[group] = Number(((totals[group] ?? 0) + transaction.amount).toFixed(2));
+    return totals;
+  }, {} as Record<T, number>);
+}
+
+function financeState() {
+  const transactions = loadFinanceTransactions().sort((a, b) => b.date.localeCompare(a.date) || Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  const recurring = loadFinanceRecurring().sort((a, b) => a.nextDueDate.localeCompare(b.nextDueDate));
+  const settings = loadFinanceSettings();
+  const today = todayDateString();
+  const currentMonth = financeMonthKey(today);
+  const previousMonthDate = parseLocalDateInput(`${currentMonth}-01`);
+  previousMonthDate.setMonth(previousMonthDate.getMonth() - 1);
+  const previousMonth = `${previousMonthDate.getFullYear()}-${String(previousMonthDate.getMonth() + 1).padStart(2, "0")}`;
+  const currentMonthTransactions = transactions.filter((transaction) => financeMonthKey(transaction.date) === currentMonth);
+  const previousMonthTransactions = transactions.filter((transaction) => financeMonthKey(transaction.date) === previousMonth);
+  const currentMonthTotal = Number(currentMonthTransactions.reduce((sum, transaction) => sum + transaction.amount, 0).toFixed(2));
+  const previousMonthTotal = Number(previousMonthTransactions.reduce((sum, transaction) => sum + transaction.amount, 0).toFixed(2));
+  const addDays = (days: number) => {
+    const date = parseLocalDateInput(today);
+    date.setDate(date.getDate() + days);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  };
+  const within = (value: string | null | undefined, end: string) => Boolean(value && value >= today && value <= end);
+  return {
+    transactions,
+    recurring,
+    settings,
+    transactionsPath: financeTransactionsPath,
+    recurringPath: financeRecurringPath,
+    settingsPath: financeSettingsPath,
+    receiptsPath: receiptsRoot,
+    summary: {
+      currentMonth,
+      previousMonth,
+      currentMonthTotal,
+      previousMonthTotal,
+      categoryTotals: financeTotalBy(currentMonthTransactions, (transaction) => transaction.category || "Other"),
+      paymentTypeTotals: financeTotalBy(currentMonthTransactions, (transaction) => transaction.paymentType),
+      cashTotal: Number(currentMonthTransactions.filter((transaction) => transaction.paymentType === "cash").reduce((sum, transaction) => sum + transaction.amount, 0).toFixed(2)),
+      cardTotal: Number(currentMonthTransactions.filter((transaction) => transaction.paymentType === "debit" || transaction.paymentType === "credit").reduce((sum, transaction) => sum + transaction.amount, 0).toFixed(2)),
+      transactionCount: currentMonthTransactions.length
+    },
+    deadlines: {
+      returns7: transactions.filter((transaction) => within(transaction.returnDeadline, addDays(7))),
+      returns30: transactions.filter((transaction) => within(transaction.returnDeadline, addDays(30))),
+      warranties90: transactions.filter((transaction) => within(transaction.warrantyUntil, addDays(90))),
+      expiredReturns: transactions.filter((transaction) => Boolean(transaction.returnDeadline && transaction.returnDeadline < today))
+    }
+  };
+}
+
+function logFinanceEvent(
+  actionId: string,
+  status: DexNestEventStatus,
+  source: DexNestActionTrigger,
+  summary: string,
+  metadataJson: Record<string, unknown>,
+  startedAt: number,
+  errorMessage: string | null = null
+): void {
+  localDb.appendActionEvent({
+    module: "DexNest Finance",
+    actionId,
+    eventType: "finance_action",
+    status,
+    source,
+    summary,
+    metadataJson,
+    errorMessage,
+    durationMs: Date.now() - startedAt
+  });
+}
+
+function financeTransactionMetadata(transaction: FinanceTransaction): Record<string, unknown> {
+  return {
+    transactionId: transaction.id,
+    category: transaction.category,
+    paymentType: transaction.paymentType,
+    amount: transaction.amount,
+    hasReceipt: Boolean(transaction.receiptFilePath)
+  };
+}
+
+function copyReceiptIntoFinance(sourcePath: string | null | undefined): { path: string | null; originalName: string | null } {
+  if (!sourcePath) {
+    return { path: null, originalName: null };
+  }
+  if (!existsSync(sourcePath)) {
+    throw new Error("Receipt file not found.");
+  }
+  ensureFinanceRoot();
+  const originalName = sanitizeFileName(basename(sourcePath));
+  const storedName = uniqueFileName(receiptsRoot, originalName);
+  const storedPath = safeOutputPath(receiptsRoot, storedName);
+  copyFileSync(sourcePath, storedPath);
+  return { path: storedPath, originalName };
+}
+
+function normalizePaymentType(value: unknown): FinancePaymentType {
+  return value === "cash" || value === "debit" || value === "credit" || value === "e_transfer" || value === "other" ? value : "other";
+}
+
+function normalizeRecurringFrequency(value: unknown): FinanceRecurringFrequency {
+  return value === "monthly" || value === "yearly" || value === "weekly" || value === "custom" ? value : "monthly";
+}
+
+function normalizeFinanceTransaction(input: FinanceTransactionInput, existing?: FinanceTransaction): FinanceTransaction {
+  const now = new Date().toISOString();
+  const copiedReceipt = input.receiptPath ? copyReceiptIntoFinance(input.receiptPath) : { path: input.receiptFilePath ?? existing?.receiptFilePath ?? null, originalName: existing?.receiptOriginalName ?? null };
+  const amount = Number(input.amount ?? existing?.amount ?? 0);
+  if (!Number.isFinite(amount) || amount < 0) {
+    throw new Error("Enter a valid non-negative transaction amount.");
+  }
+
+  return {
+    id: input.id ?? existing?.id ?? createId("finance-transaction"),
+    date: input.date || existing?.date || todayDateString(),
+    store: input.store?.trim() || existing?.store || "Unknown store",
+    amount: Number(amount.toFixed(2)),
+    currency: (input.currency?.trim() || existing?.currency || loadFinanceSettings().defaultCurrency || "CAD").toUpperCase(),
+    category: input.category?.trim() || existing?.category || "Other",
+    paymentType: normalizePaymentType(input.paymentType ?? existing?.paymentType),
+    cardName: input.cardName ?? existing?.cardName ?? null,
+    notes: input.notes ?? existing?.notes ?? "",
+    receiptFilePath: copiedReceipt.path,
+    receiptOriginalName: copiedReceipt.originalName ?? existing?.receiptOriginalName ?? null,
+    returnDeadline: input.returnDeadline || null,
+    warrantyUntil: input.warrantyUntil || null,
+    tags: parseTagList(input.tags ?? existing?.tags),
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now
+  };
+}
+
+function normalizeFinanceRecurring(input: FinanceRecurringInput, existing?: FinanceRecurringExpense): FinanceRecurringExpense {
+  const now = new Date().toISOString();
+  const amount = Number(input.amount ?? existing?.amount ?? 0);
+  if (!Number.isFinite(amount) || amount < 0) {
+    throw new Error("Enter a valid non-negative recurring amount.");
+  }
+
+  return {
+    id: input.id ?? existing?.id ?? createId("finance-recurring"),
+    name: input.name?.trim() || existing?.name || "Untitled recurring expense",
+    amount: Number(amount.toFixed(2)),
+    currency: (input.currency?.trim() || existing?.currency || loadFinanceSettings().defaultCurrency || "CAD").toUpperCase(),
+    frequency: normalizeRecurringFrequency(input.frequency ?? existing?.frequency),
+    nextDueDate: input.nextDueDate || existing?.nextDueDate || todayDateString(),
+    category: input.category?.trim() || existing?.category || "Other",
+    paymentType: normalizePaymentType(input.paymentType ?? existing?.paymentType),
+    notes: input.notes ?? existing?.notes ?? "",
+    active: input.active ?? existing?.active ?? true,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now
+  };
+}
+
+function captureState() {
+  const items = loadCaptureItems().sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  return {
+    items,
+    inbox: items.filter((item) => item.status === "inbox"),
+    routed: items.filter((item) => item.status === "routed"),
+    archived: items.filter((item) => item.status === "archived"),
+    itemsPath: captureItemsPath,
+    capturesPath: capturesRoot
+  };
+}
+
+function startOfLocalWeek(): string {
+  const today = parseLocalDateInput(todayDateString());
+  const day = today.getDay();
+  today.setDate(today.getDate() - day);
+  return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+}
+
+function commandStats() {
+  const today = todayDateString();
+  const weekStart = startOfLocalWeek();
+  const events = localDb.listRecentEvents(500);
+  const todayEvents = events.filter((event) => localDateStringFromTimestamp(event.timestamp) === today);
+  const finance = financeState();
+  const heatmap = heatmapState();
+  return {
+    journalEntriesThisWeek: loadJournalEntries().filter((entry) => entry.date >= weekStart && entry.date <= today).length,
+    calendarUpcoming: calendarState().upcomingEvents.length,
+    transactionsThisMonth: finance.summary.transactionCount,
+    receiptsThisMonth: finance.transactions.filter((transaction) => transaction.receiptFilePath && transaction.date.slice(0, 7) === finance.summary.currentMonth).length,
+    vaultDocuments: loadVaultDocuments().length,
+    dropIncoming: loadDropIncoming().length,
+    dropOutgoing: loadDropShelf().length,
+    capturesInbox: captureState().inbox.length,
+    finderItems: loadFinderItems().filter((item) => item.status !== "archived").length,
+    devProjects: loadProjects().length,
+    actionsRunToday: todayEvents.filter((event) => event.actionId).length,
+    failedActionsToday: todayEvents.filter((event) => event.status === "failed").length,
+    routinesRunToday: todayEvents.filter((event) => event.eventType === "routine_completed").length,
+    heatmapActiveSecondsToday: heatmap.summary.activeSecondsToday,
+    heatmapTopAppToday: heatmap.summary.topAppToday,
+    heatmapStatus: heatmap.trackingStatus,
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function routinesState() {
+  return {
+    routines: loadRoutines(),
+    routinesPath
+  };
+}
+
+function aggregateHeatmapEvents(events = loadHeatmapEvents()) {
+  const today = todayDateString();
+  const weekStart = startOfLocalWeek();
+  const todayEvents = events.filter((event) => localDateStringFromTimestamp(event.timestamp) === today);
+  const weekEvents = events.filter((event) => localDateStringFromTimestamp(event.timestamp) >= weekStart);
+  const totalsByApp = new Map<string, number>();
+  const weekTotalsByApp = new Map<string, number>();
+  const hourlyTotals = new Map<number, number>();
+  const projectTotals = new Map<string, number>();
+  let activeSecondsToday = 0;
+  let idleSecondsToday = 0;
+
+  for (const event of todayEvents) {
+    const duration = Math.max(0, event.durationSeconds || 0);
+    totalsByApp.set(event.appName, (totalsByApp.get(event.appName) ?? 0) + duration);
+    const hour = new Date(event.timestamp).getHours();
+    hourlyTotals.set(hour, (hourlyTotals.get(hour) ?? 0) + duration);
+    if (event.projectId) {
+      projectTotals.set(event.projectId, (projectTotals.get(event.projectId) ?? 0) + duration);
+    }
+    if (event.active) {
+      activeSecondsToday += duration;
+    } else {
+      idleSecondsToday += duration;
+    }
+  }
+
+  for (const event of weekEvents) {
+    weekTotalsByApp.set(event.appName, (weekTotalsByApp.get(event.appName) ?? 0) + Math.max(0, event.durationSeconds || 0));
+  }
+
+  const sortTotals = (totals: Map<string | number, number>) =>
+    [...totals.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([name, seconds]) => ({ name: String(name), seconds }));
+
+  const topAppToday = sortTotals(totalsByApp)[0]?.name ?? "none";
+
+  return {
+    todayByApp: sortTotals(totalsByApp),
+    weekByApp: sortTotals(weekTotalsByApp),
+    activeHours: sortTotals(hourlyTotals).map((item) => ({ hour: Number(item.name), seconds: item.seconds })),
+    projectUsage: sortTotals(projectTotals),
+    activeSecondsToday,
+    idleSecondsToday,
+    topAppToday
+  };
+}
+
+function heatmapGoalProgress(goals = loadHeatmapGoals(), events = loadHeatmapEvents()) {
+  const weekStart = startOfLocalWeek();
+  const weekEvents = events.filter((event) => localDateStringFromTimestamp(event.timestamp) >= weekStart);
+  return goals.map((goal) => {
+    const keyword = goal.keyword.trim().toLowerCase();
+    const seconds = weekEvents
+      .filter((event) => !keyword || `${event.appName} ${event.windowTitle} ${event.projectId ?? ""}`.toLowerCase().includes(keyword))
+      .reduce((sum, event) => sum + Math.max(0, event.durationSeconds || 0), 0);
+    const targetSeconds = Math.max(0, goal.targetHoursPerWeek * 3600);
+    return {
+      ...goal,
+      progressSeconds: seconds,
+      targetSeconds,
+      percent: targetSeconds > 0 ? Math.min(100, Math.round((seconds / targetSeconds) * 100)) : 0
+    };
+  });
+}
+
+function heatmapState() {
+  const settings = loadHeatmapSettings();
+  const events = loadHeatmapEvents();
+  const goals = loadHeatmapGoals();
+  return {
+    settings,
+    events: events.slice(0, 100),
+    goals,
+    goalProgress: heatmapGoalProgress(goals, events),
+    summary: aggregateHeatmapEvents(events),
+    eventsPath: heatmapEventsPath,
+    settingsPath: heatmapSettingsPath,
+    goalsPath: heatmapGoalsPath,
+    trackingStatus: settings.enabled && !settings.paused && heatmapSampleTimer ? "running" : settings.enabled ? "paused" : "disabled",
+    detectionNote: process.platform === "win32"
+      ? "Windows active window metadata is sampled with a local one-shot Win32 call."
+      : "Active window detection is currently Windows-only; manual placeholder logging is used here."
+  };
+}
+
+function logHeatmapAudit(
+  actionId: string,
+  eventType: string,
+  status: DexNestEventStatus,
+  source: DexNestActionTrigger,
+  summary: string,
+  metadataJson: Record<string, unknown> = {},
+  startedAt = Date.now(),
+  errorMessage: string | null = null
+): void {
+  localDb.appendActionEvent({
+    module: "DexNest Heatmap",
+    actionId,
+    eventType,
+    status,
+    source,
+    summary,
+    metadataJson,
+    errorMessage,
+    durationMs: Date.now() - startedAt
+  });
+}
+
+function normalizeHeatmapGoal(input: HeatmapGoalInput, existing?: HeatmapGoal): HeatmapGoal {
+  const now = new Date().toISOString();
+  const target = Number(input.targetHoursPerWeek ?? existing?.targetHoursPerWeek ?? 5);
+  if (!Number.isFinite(target) || target <= 0) {
+    throw new Error("Goal target hours must be greater than zero.");
+  }
+
+  return {
+    id: input.id ?? input.goalId ?? existing?.id ?? createId("heatmap-goal"),
+    name: input.name?.trim() || existing?.name || "Focus goal",
+    targetHoursPerWeek: Number(target.toFixed(2)),
+    keyword: input.keyword?.trim() || existing?.keyword || "",
+    active: input.active ?? existing?.active ?? true,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now
+  };
+}
+
+async function runHeatmapAction(action: DexNestActionDefinition, source: DexNestActionTrigger, payload: unknown = {}) {
+  const startedAt = Date.now();
+  const input = typeof payload === "object" && payload !== null ? (payload as HeatmapGoalInput & Partial<HeatmapSettings> & { confirmedDangerous?: boolean }) : {};
+
+  try {
+    if (action.id === "heatmap.open") {
+      logHeatmapAudit(action.id, "heatmap_opened", "success", source, "Opened DexNest Heatmap.", {}, startedAt);
+      return { ok: true, actionId: action.id, heatmapState: heatmapState() };
+    }
+
+    if (action.id === "heatmap.start") {
+      const settings = loadHeatmapSettings();
+      const updated = saveHeatmapSettings({
+        ...settings,
+        enabled: true,
+        paused: false,
+        sampleIntervalSeconds: Math.max(60, Number(input.sampleIntervalSeconds ?? settings.sampleIntervalSeconds ?? 60)),
+        aggregationIntervalHours: Math.max(3, Number(input.aggregationIntervalHours ?? settings.aggregationIntervalHours ?? 3)),
+        pauseDuringFullscreen: input.pauseDuringFullscreen ?? settings.pauseDuringFullscreen,
+        privateApps: Array.isArray(input.privateApps) ? input.privateApps : settings.privateApps,
+        privateTitleKeywords: Array.isArray(input.privateTitleKeywords) ? input.privateTitleKeywords : settings.privateTitleKeywords
+      });
+      startHeatmapTimer();
+      logHeatmapAudit(action.id, "heatmap_started", "success", source, "Started Heatmap tracking.", { sampleIntervalSeconds: updated.sampleIntervalSeconds }, startedAt);
+      return { ok: true, actionId: action.id, heatmapState: heatmapState() };
+    }
+
+    if (action.id === "heatmap.pause") {
+      const settings = loadHeatmapSettings();
+      const enabled = input.enabled === false ? false : true;
+      saveHeatmapSettings({ ...settings, enabled, paused: true });
+      stopHeatmapTimer();
+      logHeatmapAudit(action.id, enabled ? "heatmap_paused" : "heatmap_disabled", "success", source, enabled ? "Paused Heatmap tracking." : "Disabled Heatmap tracking.", {}, startedAt);
+      return { ok: true, actionId: action.id, heatmapState: heatmapState() };
+    }
+
+    if (action.id === "heatmap.log_current_app") {
+      const result = await logHeatmapSample(source);
+      return { ok: result.ok, actionId: action.id, heatmapState: result.heatmapState, snapshot: result.snapshot };
+    }
+
+    if (action.id === "heatmap.aggregate_now") {
+      const settings = loadHeatmapSettings();
+      saveHeatmapSettings({ ...settings, lastAggregatedAt: new Date().toISOString() });
+      const state = heatmapState();
+      logHeatmapAudit(action.id, "heatmap_aggregation_completed", "success", source, "Aggregated Heatmap summaries.", { eventCount: state.events.length, topAppToday: state.summary.topAppToday }, startedAt);
+      return { ok: true, actionId: action.id, heatmapState: state };
+    }
+
+    if (action.id === "heatmap.create_goal" || action.id === "heatmap.update_goal") {
+      const goals = loadHeatmapGoals();
+      const existingId = input.goalId ?? input.id;
+      const existing = existingId ? goals.find((goal) => goal.id === existingId) : undefined;
+      const goal = normalizeHeatmapGoal(input, existing);
+      saveHeatmapGoals([goal, ...goals.filter((item) => item.id !== goal.id)]);
+      logHeatmapAudit(action.id, action.id === "heatmap.create_goal" ? "heatmap_goal_created" : "heatmap_goal_updated", "success", source, "Saved Heatmap goal.", { goalId: goal.id, active: goal.active }, startedAt);
+      return { ok: true, actionId: action.id, goal, heatmapState: heatmapState() };
+    }
+
+    if (action.id === "heatmap.delete_goal") {
+      const goalId = String(input.goalId ?? input.id ?? "");
+      saveHeatmapGoals(loadHeatmapGoals().filter((goal) => goal.id !== goalId));
+      logHeatmapAudit(action.id, "heatmap_goal_deleted", "success", source, "Deleted Heatmap goal.", { goalId }, startedAt);
+      return { ok: true, actionId: action.id, heatmapState: heatmapState() };
+    }
+
+    if (action.id === "heatmap.clear_data") {
+      saveHeatmapEvents([]);
+      logHeatmapAudit(action.id, "heatmap_data_cleared", "success", source, "Cleared Heatmap data.", {}, startedAt);
+      return { ok: true, actionId: action.id, heatmapState: heatmapState() };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Heatmap action failed.";
+    logHeatmapAudit(action.id, "heatmap_action_failed", "failed", source, "Heatmap action failed.", {}, startedAt, message);
+    return { ok: false, actionId: action.id, error: message, heatmapState: heatmapState() };
+  }
+
+  return null;
+}
+
+function logRoutineEvent(
+  actionId: string,
+  eventType: string,
+  status: DexNestEventStatus,
+  source: DexNestActionTrigger,
+  summary: string,
+  metadataJson: Record<string, unknown>,
+  startedAt: number,
+  errorMessage: string | null = null
+): void {
+  localDb.appendActionEvent({
+    module: "DexNest Deck",
+    actionId,
+    eventType,
+    status,
+    source,
+    summary,
+    metadataJson,
+    errorMessage,
+    durationMs: Date.now() - startedAt
+  });
+}
+
+function logCaptureEvent(
+  actionId: string,
+  status: DexNestEventStatus,
+  source: DexNestActionTrigger,
+  summary: string,
+  metadataJson: Record<string, unknown>,
+  startedAt: number,
+  errorMessage: string | null = null
+): void {
+  localDb.appendActionEvent({
+    module: "DexNest Capture",
+    actionId,
+    eventType: "capture_action",
+    status,
+    source,
+    summary,
+    metadataJson,
+    errorMessage,
+    durationMs: Date.now() - startedAt
+  });
+}
+
+function captureMetadata(item: CaptureItem): Record<string, unknown> {
+  return {
+    captureId: item.id,
+    type: item.type,
+    status: item.status,
+    routedTo: item.routedTo ?? null,
+    hasFile: Boolean(item.filePath)
+  };
+}
+
+function copyFileIntoCapture(sourcePath: string | null | undefined): { path: string | null; originalName: string | null } {
+  if (!sourcePath) {
+    return { path: null, originalName: null };
+  }
+  if (!existsSync(sourcePath)) {
+    throw new Error("Capture source file not found.");
+  }
+  ensureCaptureRoot();
+  const originalName = sanitizeFileName(basename(sourcePath));
+  const storedName = uniqueFileName(capturesRoot, originalName);
+  const storedPath = safeOutputPath(capturesRoot, storedName);
+  copyFileSync(sourcePath, storedPath);
+  return { path: storedPath, originalName };
+}
+
+function normalizeCaptureType(value: unknown): CaptureItemType {
+  return value === "note" || value === "link" || value === "task" || value === "expense" || value === "file" || value === "image" || value === "audio_placeholder" || value === "document" || value === "other" ? value : "note";
+}
+
+function normalizeCaptureSource(value: unknown): CaptureItemSource {
+  return value === "manual" || value === "clipboard" || value === "drop" || value === "tools" || value === "finance" || value === "journal" || value === "command" ? value : "manual";
+}
+
+function normalizeCaptureItem(input: CaptureItemInput, existing?: CaptureItem): CaptureItem {
+  const now = new Date().toISOString();
+  const copiedFile = input.filePath && input.filePath !== existing?.filePath
+    ? copyFileIntoCapture(input.filePath)
+    : { path: existing?.filePath ?? null, originalName: existing?.originalFileName ?? null };
+  const title = input.title?.trim() || existing?.title || previewText(input.text ?? existing?.text ?? "") || copiedFile.originalName || "Untitled capture";
+  const url = input.url?.trim() || (normalizeCaptureType(input.type ?? existing?.type) === "link" ? (input.text?.trim() || existing?.url || null) : existing?.url ?? null);
+
+  return {
+    id: input.id ?? existing?.id ?? createId("capture-item"),
+    type: normalizeCaptureType(input.type ?? existing?.type),
+    title,
+    text: input.text ?? existing?.text ?? "",
+    source: normalizeCaptureSource(input.source ?? existing?.source),
+    filePath: copiedFile.path,
+    originalFileName: copiedFile.originalName,
+    url,
+    tags: parseTagList(input.tags ?? existing?.tags),
+    status: input.status ?? existing?.status ?? "inbox",
+    routedTo: input.routedTo ?? existing?.routedTo ?? null,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now
+  };
+}
+
+function logToolsEvent(
+  actionId: string,
+  status: DexNestEventStatus,
+  source: DexNestActionTrigger,
+  summary: string,
+  metadataJson: Record<string, unknown>,
+  startedAt: number,
+  errorMessage: string | null = null
+): void {
+  localDb.appendActionEvent({
+    module: "DexNest Tools",
+    actionId,
+    eventType: "tools_action",
+    status,
+    source,
+    summary,
+    metadataJson,
+    errorMessage,
+    durationMs: Date.now() - startedAt
+  });
+}
+
+function logVaultEvent(
+  actionId: string,
+  status: DexNestEventStatus,
+  source: DexNestActionTrigger,
+  summary: string,
+  metadataJson: Record<string, unknown>,
+  startedAt: number,
+  errorMessage: string | null = null
+): void {
+  localDb.appendActionEvent({
+    module: "DexNest Vault",
+    actionId,
+    eventType: "vault_action",
+    status,
+    source,
+    summary,
+    metadataJson,
+    errorMessage,
+    durationMs: Date.now() - startedAt
+  });
+}
+
+function createVaultDocumentFromFile(filePath: string, input: VaultImportInput, versionBase?: VaultDocumentRecord): VaultDocumentRecord {
+  if (!filePath || !existsSync(filePath)) {
+    throw new Error("Vault import file not found.");
+  }
+
+  ensureVaultRoot();
+  const now = new Date().toISOString();
+  const originalFileName = basename(filePath);
+  const storageRoot = versionBase ? vaultVersionsRoot : vaultDocumentsRoot;
+  const storedFileName = uniqueFileName(storageRoot, originalFileName);
+  const storedPath = safeOutputPath(storageRoot, storedFileName);
+  copyFileSync(filePath, storedPath);
+
+  const versionGroupId = versionBase?.versionGroupId ?? versionBase?.id ?? createId("vault-version");
+  const existingVersions = versionBase
+    ? loadVaultDocuments().filter((document) => (document.versionGroupId ?? document.id) === versionGroupId)
+    : [];
+  const versionNumber = versionBase ? Math.max(1, ...existingVersions.map((document) => document.versionNumber ?? 1)) + 1 : 1;
+
+  return {
+    id: createId("vault-doc"),
+    title: input.title?.trim() || basename(originalFileName, extname(originalFileName)) || originalFileName,
+    originalFileName: sanitizeFileName(originalFileName),
+    storedFileName,
+    filePath: storedPath,
+    fileType: extname(originalFileName).toLowerCase() || "file",
+    sizeBytes: statSync(storedPath).size,
+    category: vaultCategories.includes(String(input.category ?? "")) ? String(input.category) : "Other",
+    tags: normalizeTags(input.tags),
+    notes: String(input.notes ?? ""),
+    sourceModule: String(input.sourceModule ?? "DexNest Vault"),
+    expiryDate: input.expiryDate ? String(input.expiryDate) : null,
+    createdAt: now,
+    updatedAt: now,
+    versionGroupId,
+    versionNumber
+  };
+}
+
+function importVaultDocuments(input: VaultImportInput, source: DexNestActionTrigger, actionId = "vault.import_documents") {
+  const startedAt = Date.now();
+  const paths = Array.isArray(input.paths) ? input.paths.filter(Boolean) : [];
+
+  try {
+    if (paths.length === 0) {
+      throw new Error("Select one or more documents to import.");
+    }
+
+    const existingDocuments = loadVaultDocuments();
+    const imported = paths.map((filePath) => createVaultDocumentFromFile(filePath, input));
+    saveVaultDocuments([...imported, ...existingDocuments]);
+    logVaultEvent(actionId, "success", source, `Imported ${imported.length} Vault document${imported.length === 1 ? "" : "s"}.`, {
+      documentIds: imported.map((document) => document.id),
+      category: input.category ?? "Other",
+      fileCount: imported.length,
+      outputSize: imported.reduce((total, document) => total + document.sizeBytes, 0)
+    }, startedAt);
+    return { ok: true, actionId, documents: imported };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "Vault import failed.";
+    logVaultEvent(actionId, "failed", source, errorMessage, { fileCount: paths.length }, startedAt, errorMessage);
+    return { ok: false, actionId, error: errorMessage };
+  }
+}
+
+function safeSecureItemType(value: unknown): SecureVaultItemType {
+  const itemType = String(value ?? "other") as SecureVaultItemType;
+  return secureVaultItemTypes.includes(itemType) ? itemType : "other";
+}
+
+function secureItemMetadata(item?: Pick<SecureVaultUnlockedItem | SecureVaultStoredItem, "id" | "title" | "type"> | null): Record<string, unknown> {
+  return item ? { itemId: item.id, itemType: item.type, title: item.title } : {};
+}
+
+function runSecureVaultAction(action: DexNestActionDefinition, source: DexNestActionTrigger, payload: unknown) {
+  const params = typeof payload === "object" && payload !== null ? payload as Record<string, unknown> : {};
+  const startedAt = Date.now();
+
+  try {
+    if (action.id === "vault.secure.setup") {
+      const masterPassword = String(params.masterPassword ?? "");
+      const confirmPassword = String(params.confirmPassword ?? "");
+      if (loadSecureVaultFile()) {
+        throw new Error("Secure Vault is already set up.");
+      }
+      if (masterPassword.length < 8) {
+        throw new Error("Master password must be at least 8 characters.");
+      }
+      if (masterPassword !== confirmPassword) {
+        throw new Error("Master passwords do not match.");
+      }
+      const autoLockMinutes = Math.min(60, Math.max(1, Math.floor(Number(params.autoLockMinutes ?? secureVaultDefaultAutoLockMinutes))));
+      const file = saveSecureVaultFile(defaultSecureVaultFile(masterPassword, autoLockMinutes));
+      scheduleSecureVaultAutoLock(file.settings.autoLockMinutes);
+      logVaultEvent(action.id, "success", source, "Set up DexNest Secure Vault.", { kdf: file.kdf.name, autoLockMinutes: file.settings.autoLockMinutes }, startedAt);
+      return { ok: true, actionId: action.id, secure: secureVaultState() };
+    }
+
+    if (action.id === "vault.secure.unlock") {
+      const file = loadSecureVaultFile();
+      if (!file) {
+        throw new Error("Secure Vault is not set up.");
+      }
+      const key = deriveSecureVaultKey(String(params.masterPassword ?? ""), file.kdf);
+      verifySecureVaultKey(file, key);
+      secureVaultKey = key;
+      scheduleSecureVaultAutoLock(file.settings.autoLockMinutes);
+      logVaultEvent(action.id, "success", source, "Unlocked DexNest Secure Vault.", { itemCount: file.items.length }, startedAt);
+      return { ok: true, actionId: action.id, secure: secureVaultState() };
+    }
+
+    if (action.id === "vault.secure.lock") {
+      lockSecureVault();
+      logVaultEvent(action.id, "success", source, "Locked DexNest Secure Vault.", {}, startedAt);
+      return { ok: true, actionId: action.id, secure: secureVaultState() };
+    }
+
+    if (action.id === "vault.secure.import_encrypted_placeholder") {
+      logVaultEvent(action.id, "skipped", source, "Secure Vault encrypted import is a future placeholder.", {}, startedAt);
+      return { ok: false, actionId: action.id, error: "Encrypted Secure Vault import is a future placeholder." };
+    }
+
+    const file = loadSecureVaultFile();
+    if (!file) {
+      throw new Error("Secure Vault is not set up.");
+    }
+    const key = requireSecureVaultKey();
+    touchSecureVaultActivity();
+
+    if (action.id === "vault.secure.create_item") {
+      const now = new Date().toISOString();
+      const item: SecureVaultStoredItem = {
+        id: createId("secure-item"),
+        title: String(params.title ?? "").trim() || "Untitled secure item",
+        type: safeSecureItemType(params.type),
+        username: String(params.username ?? "").trim() || undefined,
+        url: String(params.url ?? "").trim() || undefined,
+        tags: normalizeTags(params.tags as string[] | string | undefined),
+        secret: encryptSecureValue(String(params.secret ?? ""), key),
+        notes: encryptSecureValue(String(params.notes ?? ""), key),
+        createdAt: now,
+        updatedAt: now,
+        lastCopiedAt: null,
+        favorite: Boolean(params.favorite)
+      };
+      saveSecureVaultFile({ ...file, items: [item, ...file.items] });
+      logVaultEvent(action.id, "success", source, "Created Secure Vault item.", secureItemMetadata(item), startedAt);
+      return { ok: true, actionId: action.id, secure: secureVaultState() };
+    }
+
+    if (action.id === "vault.secure.edit_item") {
+      const itemId = String(params.itemId ?? "");
+      const existing = file.items.find((item) => item.id === itemId);
+      if (!existing) {
+        throw new Error("Secure Vault item not found.");
+      }
+      const updated: SecureVaultStoredItem = {
+        ...existing,
+        title: String(params.title ?? existing.title).trim() || existing.title,
+        type: safeSecureItemType(params.type ?? existing.type),
+        username: String(params.username ?? existing.username ?? "").trim() || undefined,
+        url: String(params.url ?? existing.url ?? "").trim() || undefined,
+        tags: normalizeTags(params.tags as string[] | string | undefined),
+        secret: encryptSecureValue(String(params.secret ?? decryptSecureValue(existing.secret, key)), key),
+        notes: encryptSecureValue(String(params.notes ?? decryptSecureValue(existing.notes, key)), key),
+        updatedAt: new Date().toISOString(),
+        favorite: Boolean(params.favorite)
+      };
+      saveSecureVaultFile({ ...file, items: file.items.map((item) => item.id === itemId ? updated : item) });
+      logVaultEvent(action.id, "success", source, "Edited Secure Vault item.", secureItemMetadata(updated), startedAt);
+      return { ok: true, actionId: action.id, secure: secureVaultState() };
+    }
+
+    if (action.id === "vault.secure.delete_item") {
+      const itemId = String(params.itemId ?? "");
+      const existing = file.items.find((item) => item.id === itemId);
+      if (!existing) {
+        throw new Error("Secure Vault item not found.");
+      }
+      saveSecureVaultFile({ ...file, items: file.items.filter((item) => item.id !== itemId) });
+      logVaultEvent(action.id, "success", source, "Deleted Secure Vault item.", secureItemMetadata(existing), startedAt);
+      return { ok: true, actionId: action.id, secure: secureVaultState() };
+    }
+
+    if (action.id === "vault.secure.copy_secret" || action.id === "vault.secure.copy_username") {
+      const itemId = String(params.itemId ?? "");
+      const existing = file.items.find((item) => item.id === itemId);
+      if (!existing) {
+        throw new Error("Secure Vault item not found.");
+      }
+      const copiedValue = action.id === "vault.secure.copy_secret"
+        ? decryptSecureValue(existing.secret, key)
+        : existing.username ?? "";
+      if (!copiedValue) {
+        throw new Error(action.id === "vault.secure.copy_secret" ? "Secure item has no secret." : "Secure item has no username.");
+      }
+      // TODO: When DexNest adds an automatic clipboard listener, mark Secure Vault writes as excluded from Clipboard history.
+      clipboard.writeText(copiedValue);
+      secureVaultProtectedClipboardValue = copiedValue;
+      if (secureVaultClipboardTimer) {
+        clearTimeout(secureVaultClipboardTimer);
+      }
+      secureVaultClipboardTimer = setTimeout(() => {
+        if (clipboard.readText() === copiedValue) {
+          clipboard.clear();
+        }
+        if (secureVaultProtectedClipboardValue === copiedValue) {
+          secureVaultProtectedClipboardValue = null;
+        }
+      }, 30000);
+      const updatedItem: SecureVaultStoredItem = { ...existing, lastCopiedAt: new Date().toISOString() };
+      saveSecureVaultFile({ ...file, items: file.items.map((item) => item.id === itemId ? updatedItem : item) });
+      logVaultEvent(action.id, "success", source, action.id === "vault.secure.copy_secret" ? "Copied Secure Vault secret to clipboard." : "Copied Secure Vault username to clipboard.", secureItemMetadata(existing), startedAt);
+      return { ok: true, actionId: action.id, secure: secureVaultState() };
+    }
+
+    if (action.id === "vault.secure.export_encrypted") {
+      void shell.showItemInFolder(secureVaultPath);
+      logVaultEvent(action.id, "success", source, "Opened encrypted Secure Vault file location.", { filePath: secureVaultPath }, startedAt);
+      return { ok: true, actionId: action.id, secure: secureVaultState() };
+    }
+
+    return null;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "Secure Vault action failed.";
+    logVaultEvent(action.id, "failed", source, errorMessage, {
+      itemId: typeof params.itemId === "string" ? params.itemId : undefined,
+      itemType: typeof params.type === "string" ? params.type : undefined,
+      title: typeof params.title === "string" ? params.title : undefined
+    }, startedAt, errorMessage);
+    return { ok: false, actionId: action.id, error: errorMessage, secure: secureVaultState() };
+  }
+}
+
+function runVaultAction(action: DexNestActionDefinition, source: DexNestActionTrigger, payload: unknown) {
+  const params = typeof payload === "object" && payload !== null ? payload as Record<string, unknown> : {};
+  const startedAt = Date.now();
+
+  try {
+    if (action.id.startsWith("vault.secure.")) {
+      return runSecureVaultAction(action, source, payload);
+    }
+
+    if (action.id === "vault.open" || action.id === "vault.show_expiring_soon") {
+      logVaultEvent(action.id, "success", source, action.id === "vault.open" ? "Opened DexNest Vault." : "Opened Vault expiring documents.", { view: "vault" }, startedAt);
+      return { ok: true, actionId: action.id };
+    }
+
+    if (action.id === "vault.import_documents") {
+      return importVaultDocuments({
+        paths: Array.isArray(params.paths) ? params.paths.map(String) : [],
+        category: String(params.category ?? "Other"),
+        tags: params.tags as string[] | string | undefined,
+        notes: String(params.notes ?? ""),
+        expiryDate: params.expiryDate ? String(params.expiryDate) : null,
+        sourceModule: String(params.sourceModule ?? "DexNest Vault"),
+        title: typeof params.title === "string" ? params.title : undefined
+      }, source, action.id);
+    }
+
+    if (action.id === "vault.edit_document_metadata") {
+      const documentId = String(params.documentId ?? "");
+      const documents = loadVaultDocuments();
+      const existing = documents.find((document) => document.id === documentId);
+      if (!existing) {
+        throw new Error("Vault document not found.");
+      }
+      const updated: VaultDocumentRecord = {
+        ...existing,
+        title: String(params.title ?? existing.title).trim() || existing.title,
+        category: vaultCategories.includes(String(params.category ?? "")) ? String(params.category) : existing.category,
+        tags: normalizeTags(params.tags as string[] | string | undefined).length ? normalizeTags(params.tags as string[] | string | undefined) : existing.tags,
+        notes: typeof params.notes === "string" ? params.notes : existing.notes,
+        expiryDate: params.expiryDate ? String(params.expiryDate) : null,
+        updatedAt: new Date().toISOString()
+      };
+      saveVaultDocuments(documents.map((document) => document.id === documentId ? updated : document));
+      logVaultEvent(action.id, "success", source, "Updated Vault document metadata.", {
+        documentId,
+        category: updated.category,
+        fileType: updated.fileType,
+        sizeBytes: updated.sizeBytes
+      }, startedAt);
+      return { ok: true, actionId: action.id, document: updated };
+    }
+
+    if (action.id === "vault.open_document" || action.id === "vault.open_document_folder" || action.id === "vault.send_document_to_drop") {
+      const document = verifiedVaultDocument(String(params.documentId ?? ""));
+
+      if (action.id === "vault.open_document") {
+        void shell.openPath(document.filePath);
+        logVaultEvent(action.id, "success", source, "Opened Vault document.", { documentId: document.id, fileType: document.fileType, sizeBytes: document.sizeBytes }, startedAt);
+        return { ok: true, actionId: action.id };
+      }
+
+      if (action.id === "vault.open_document_folder") {
+        void shell.openPath(dirname(document.filePath));
+        logVaultEvent(action.id, "success", source, "Opened Vault document folder.", { documentId: document.id, fileType: document.fileType, sizeBytes: document.sizeBytes }, startedAt);
+        return { ok: true, actionId: action.id };
+      }
+
+      const item = createDropFileItem(document.filePath, "desktop", "outgoing");
+      saveDropShelf([item, ...loadDropShelf()]);
+      broadcastDropUpdate("Vault document added to Drop.", "drop.outgoing_file_added");
+      logVaultEvent(action.id, "success", source, "Sent Vault document to DexNest Drop.", { documentId: document.id, fileType: document.fileType, sizeBytes: document.sizeBytes }, startedAt);
+      return { ok: true, actionId: action.id };
+    }
+
+    if (action.id === "vault.add_document_version") {
+      const baseDocument = findVaultDocument(String(params.documentId ?? ""));
+      const paths = Array.isArray(params.paths) ? params.paths.map(String).filter(Boolean) : [];
+      if (!baseDocument) {
+        throw new Error("Vault document not found.");
+      }
+      if (paths.length !== 1) {
+        throw new Error("Select exactly one file for the new version.");
+      }
+      const nextVersion = createVaultDocumentFromFile(paths[0], {
+        category: baseDocument.category,
+        tags: baseDocument.tags,
+        notes: baseDocument.notes,
+        expiryDate: baseDocument.expiryDate,
+        sourceModule: "DexNest Vault",
+        title: baseDocument.title
+      }, baseDocument);
+      saveVaultDocuments([nextVersion, ...loadVaultDocuments()]);
+      logVaultEvent(action.id, "success", source, "Added Vault document version.", {
+        documentId: nextVersion.id,
+        versionGroupId: nextVersion.versionGroupId,
+        versionNumber: nextVersion.versionNumber,
+        fileType: nextVersion.fileType,
+        sizeBytes: nextVersion.sizeBytes
+      }, startedAt);
+      return { ok: true, actionId: action.id, document: nextVersion };
+    }
+
+    if (action.id === "vault.delete_document") {
+      const documentId = String(params.documentId ?? "");
+      const deleteFile = Boolean(params.deleteFile);
+      const documents = loadVaultDocuments();
+      const document = documents.find((item) => item.id === documentId);
+      if (!document) {
+        throw new Error("Vault document not found.");
+      }
+      if (deleteFile && (!existsSync(document.filePath) || (!isPathInside(vaultDocumentsRoot, document.filePath) && !isPathInside(vaultVersionsRoot, document.filePath)))) {
+        throw new Error("Vault copied file path is outside DexNest Vault storage.");
+      }
+      if (deleteFile && existsSync(document.filePath)) {
+        rmSync(document.filePath, { force: true });
+      }
+      saveVaultDocuments(documents.filter((item) => item.id !== documentId));
+      logVaultEvent(action.id, "success", source, deleteFile ? "Deleted Vault document metadata and copied file." : "Deleted Vault document metadata only.", {
+        documentId,
+        deletedCopiedFile: deleteFile,
+        fileType: document.fileType,
+        sizeBytes: document.sizeBytes
+      }, startedAt);
+      return { ok: true, actionId: action.id };
+    }
+
+    return null;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "DexNest Vault action failed.";
+    logVaultEvent(action.id, "failed", source, errorMessage, {
+      documentId: typeof params.documentId === "string" ? params.documentId : undefined
+    }, startedAt, errorMessage);
+    return { ok: false, actionId: action.id, error: errorMessage };
+  }
+}
+
+function parsePageRange(range: string, pageCount: number): number[] {
+  const pages = new Set<number>();
+  const parts = range.split(",").map((part) => part.trim()).filter(Boolean);
+
+  for (const part of parts) {
+    const match = part.match(/^(\d+)(?:-(\d+))?$/);
+    if (!match) {
+      throw new Error("Use page ranges like 1-3 or 1,3,5.");
+    }
+
+    const start = Number(match[1]);
+    const end = Number(match[2] ?? match[1]);
+    if (start < 1 || end < start || end > pageCount) {
+      throw new Error(`Page range must be within 1-${pageCount}.`);
+    }
+
+    for (let page = start; page <= end; page += 1) {
+      pages.add(page - 1);
+    }
+  }
+
+  if (pages.size === 0) {
+    throw new Error("Page range is required.");
+  }
+
+  return [...pages];
+}
+
+async function getPdfInfo(paths: string[]): Promise<Array<{ fileName: string; byteLength: number; pageCount: number | null }>> {
+  const info = [];
+  for (const filePath of paths) {
+    let pageCount: number | null = null;
+    try {
+      const pdf = await PDFDocument.load(readFileSync(filePath));
+      pageCount = pdf.getPageCount();
+    } catch {
+      pageCount = null;
+    }
+    info.push({
+      fileName: basename(filePath),
+      byteLength: statSync(filePath).size,
+      pageCount
+    });
+  }
+  return info;
+}
+
+async function mergePdfs(paths: string[]): Promise<ToolsOutputItem> {
+  if (paths.length < 2) {
+    throw new Error("Select at least two PDFs to merge.");
+  }
+
+  const merged = await PDFDocument.create();
+  for (const filePath of paths) {
+    const sourcePdf = await PDFDocument.load(readFileSync(filePath));
+    const copiedPages = await merged.copyPages(sourcePdf, sourcePdf.getPageIndices());
+    copiedPages.forEach((page) => merged.addPage(page));
+  }
+
+  const output = createToolsOutput(`dexnest-merged-${Date.now()}.pdf`, "merge_pdfs");
+  writeFileSync(output.path, await merged.save());
+  return recordToolsOutput(output.path, "merge_pdfs");
+}
+
+async function splitPdf(paths: string[], range: string): Promise<ToolsOutputItem> {
+  if (paths.length !== 1) {
+    throw new Error("Select exactly one PDF to split.");
+  }
+
+  const sourcePdf = await PDFDocument.load(readFileSync(paths[0]));
+  const pageIndexes = parsePageRange(range, sourcePdf.getPageCount());
+  const split = await PDFDocument.create();
+  const copiedPages = await split.copyPages(sourcePdf, pageIndexes);
+  copiedPages.forEach((page) => split.addPage(page));
+
+  const baseName = basename(paths[0], extname(paths[0]));
+  const output = createToolsOutput(`${baseName}-pages-${range.replace(/[^0-9,-]/g, "")}.pdf`, "split_pdf");
+  writeFileSync(output.path, await split.save());
+  return recordToolsOutput(output.path, "split_pdf");
+}
+
+async function imagesToPdf(paths: string[]): Promise<ToolsOutputItem> {
+  if (paths.length === 0) {
+    throw new Error("Select one or more images.");
+  }
+
+  const pdf = await PDFDocument.create();
+  for (const filePath of paths) {
+    const image = nativeImage.createFromPath(filePath);
+    if (image.isEmpty()) {
+      throw new Error(`Could not read image: ${basename(filePath)}`);
+    }
+
+    const pngBytes = image.toPNG();
+    const embedded = await pdf.embedPng(pngBytes);
+    const page = pdf.addPage([embedded.width, embedded.height]);
+    page.drawImage(embedded, { x: 0, y: 0, width: embedded.width, height: embedded.height });
+  }
+
+  const output = createToolsOutput(`dexnest-images-${Date.now()}.pdf`, "images_to_pdf");
+  writeFileSync(output.path, await pdf.save());
+  return recordToolsOutput(output.path, "images_to_pdf");
+}
+
+function processImages(
+  actionId: string,
+  paths: string[],
+  operation: "compress_image" | "resize_image" | "convert_image",
+  options: Record<string, unknown>
+): ToolsOutputItem[] {
+  if (paths.length === 0) {
+    throw new Error("Select one or more images.");
+  }
+
+  const outputs: ToolsOutputItem[] = [];
+  const format = String(options.format ?? "jpg").toLowerCase();
+  const quality = Math.min(100, Math.max(1, Number(options.quality ?? 80)));
+  const width = Number(options.width ?? 0);
+  const height = Number(options.height ?? 0);
+
+  for (const filePath of paths) {
+    let image = nativeImage.createFromPath(filePath);
+    if (image.isEmpty()) {
+      throw new Error(`Could not read image: ${basename(filePath)}`);
+    }
+
+    if (operation === "resize_image" && (width > 0 || height > 0)) {
+      const currentSize = image.getSize();
+      image = image.resize({
+        width: width > 0 ? width : undefined,
+        height: height > 0 ? height : Math.round((width / currentSize.width) * currentSize.height),
+        quality: "best"
+      });
+    }
+
+    const extension = format === "png" ? "png" : "jpg";
+    const baseName = basename(filePath, extname(filePath));
+    const output = createToolsOutput(`${baseName}-${operation}.${extension}`, operation);
+    const bytes = extension === "png" ? image.toPNG() : image.toJPEG(quality);
+    writeFileSync(output.path, bytes);
+    outputs.push(recordToolsOutput(output.path, operation));
+  }
+
+  return outputs;
+}
+
+async function convertMedia(paths: string[], operation: "mp4_to_mp3" | "extract_audio" | "convert_audio", format: string): Promise<ToolsOutputItem[]> {
+  if (paths.length === 0) {
+    throw new Error("Select one or more media files.");
+  }
+
+  const ffmpegPath = resolveFfmpegPath();
+  const safeFormat = ["mp3", "wav", "m4a"].includes(format.toLowerCase()) ? format.toLowerCase() : "mp3";
+  const outputs: ToolsOutputItem[] = [];
+
+  for (const filePath of paths) {
+    const baseName = basename(filePath, extname(filePath));
+    const output = createToolsOutput(`${baseName}-${operation}.${operation === "mp4_to_mp3" ? "mp3" : safeFormat}`, operation);
+    await execFileAsync(ffmpegPath, ["-y", "-i", filePath, "-vn", output.path]);
+    outputs.push(recordToolsOutput(output.path, operation));
+  }
+
+  return outputs;
+}
+
+async function convertOffice(paths: string[], operation: "docx_to_pdf" | "pptx_to_pdf" | "pdf_to_docx_experimental", targetExtension: "pdf" | "docx"): Promise<ToolsOutputItem[]> {
+  if (paths.length === 0) {
+    throw new Error("Select one or more Office/PDF files.");
+  }
+
+  const libreOfficePath = resolveLibreOfficePath();
+  const outputs: ToolsOutputItem[] = [];
+
+  for (const filePath of paths) {
+    const tempFolder = createToolsTempFolder(operation);
+    try {
+      await execFileAsync(libreOfficePath, ["--headless", "--convert-to", targetExtension, "--outdir", tempFolder, filePath]);
+      const produced = readdirSync(tempFolder)
+        .map((fileName) => join(tempFolder, fileName))
+        .find((candidate) => extname(candidate).toLowerCase() === `.${targetExtension}`);
+      if (!produced) {
+        throw new Error(`LibreOffice did not create a ${targetExtension.toUpperCase()} output.`);
+      }
+      const output = createToolsOutput(`${basename(filePath, extname(filePath))}-${operation}.${targetExtension}`, operation);
+      copyFileSync(produced, output.path);
+      outputs.push(recordToolsOutput(output.path, operation));
+    } finally {
+      rmSync(tempFolder, { recursive: true, force: true });
+    }
+  }
+
+  return outputs;
+}
+
+async function pdfToImages(paths: string[]): Promise<ToolsOutputItem[]> {
+  if (paths.length === 0) {
+    throw new Error("Select one or more PDFs.");
+  }
+
+  const pdftoppmPath = resolveCommandPath("pdftoppm", "Poppler is required for PDF image export. Install it and add pdftoppm to PATH.");
+  const outputs: ToolsOutputItem[] = [];
+
+  for (const filePath of paths) {
+    const tempFolder = createToolsTempFolder("pdf_to_images");
+    try {
+      const prefix = join(tempFolder, basename(filePath, extname(filePath)));
+      await execFileAsync(pdftoppmPath, ["-png", filePath, prefix]);
+      const producedImages = readdirSync(tempFolder)
+        .filter((fileName) => extname(fileName).toLowerCase() === ".png")
+        .map((fileName) => join(tempFolder, fileName));
+      if (producedImages.length === 0) {
+        throw new Error("No PDF page images were created.");
+      }
+      for (const produced of producedImages) {
+        const output = createToolsOutput(`${basename(produced, extname(produced))}-pdf-page.png`, "pdf_to_images");
+        copyFileSync(produced, output.path);
+        outputs.push(recordToolsOutput(output.path, "pdf_to_images"));
+      }
+    } finally {
+      rmSync(tempFolder, { recursive: true, force: true });
+    }
+  }
+
+  return outputs;
+}
+
+async function pdfToText(paths: string[]): Promise<ToolsOutputItem[]> {
+  if (paths.length === 0) {
+    throw new Error("Select one or more PDFs.");
+  }
+
+  const pdftotextPath = resolveCommandPath("pdftotext", "Poppler is required for PDF text export. Install it and add pdftotext to PATH.");
+  const outputs: ToolsOutputItem[] = [];
+
+  for (const filePath of paths) {
+    const output = createToolsOutput(`${basename(filePath, extname(filePath))}-pdf-text.txt`, "pdf_to_text");
+    await execFileAsync(pdftotextPath, [filePath, output.path]);
+    outputs.push(recordToolsOutput(output.path, "pdf_to_text"));
+  }
+
+  return outputs;
+}
+
+async function pptxToImages(paths: string[]): Promise<ToolsOutputItem[]> {
+  if (paths.length === 0) {
+    throw new Error("Select one or more PPTX files.");
+  }
+
+  const libreOfficePath = resolveLibreOfficePath();
+  const pdftoppmPath = resolveCommandPath("pdftoppm", "Poppler is required for PPTX image export. Install it and add pdftoppm to PATH.");
+  const outputs: ToolsOutputItem[] = [];
+
+  for (const filePath of paths) {
+    const tempFolder = createToolsTempFolder("pptx_to_images");
+    try {
+      await execFileAsync(libreOfficePath, ["--headless", "--convert-to", "pdf", "--outdir", tempFolder, filePath]);
+      const pdfPath = readdirSync(tempFolder)
+        .map((fileName) => join(tempFolder, fileName))
+        .find((candidate) => extname(candidate).toLowerCase() === ".pdf");
+      if (!pdfPath) {
+        throw new Error("LibreOffice did not create a PDF intermediate.");
+      }
+      const prefix = join(tempFolder, basename(filePath, extname(filePath)));
+      await execFileAsync(pdftoppmPath, ["-png", pdfPath, prefix]);
+      const producedImages = readdirSync(tempFolder)
+        .filter((fileName) => extname(fileName).toLowerCase() === ".png")
+        .map((fileName) => join(tempFolder, fileName));
+      if (producedImages.length === 0) {
+        throw new Error("No PPTX slide images were created.");
+      }
+      for (const produced of producedImages) {
+        const output = createToolsOutput(`${basename(produced, extname(produced))}-slide.png`, "pptx_to_images");
+        copyFileSync(produced, output.path);
+        outputs.push(recordToolsOutput(output.path, "pptx_to_images"));
+      }
+    } finally {
+      rmSync(tempFolder, { recursive: true, force: true });
+    }
+  }
+
+  return outputs;
+}
+
+async function runToolsAction(action: DexNestActionDefinition, source: DexNestActionTrigger, payload: unknown): Promise<ToolsRunResult | null> {
+  const params = typeof payload === "object" && payload !== null ? payload as Record<string, unknown> : {};
+  const paths = Array.isArray(params.paths) ? params.paths.map(String).filter(Boolean) : [];
+  const startedAt = Date.now();
+
+  try {
+    if (action.id === "tools.open") {
+      logToolsEvent(action.id, "success", source, "Opened DexNest Tools.", { view: "tools" }, startedAt);
+      return { ok: true, actionId: action.id };
+    }
+
+    if (action.id === "tools.open_output_folder") {
+      void shell.openPath(getToolsOutputFolder());
+      logToolsEvent(action.id, "success", source, "Opened DexNest Tools output folder.", { path: getToolsOutputFolder() }, startedAt);
+      return { ok: true, actionId: action.id };
+    }
+
+    if (action.id === "tools.send_output_to_drop") {
+      const filePath = getVerifiedToolsOutputPath(String(params.path ?? ""));
+      const item = createDropFileItem(filePath, "desktop", "outgoing");
+      saveDropShelf([item, ...loadDropShelf()]);
+      broadcastDropUpdate("Tools output added to Drop.", "drop.outgoing_file_added");
+      logToolsEvent(action.id, "success", source, "Sent Tools output to DexNest Drop.", {
+        fileName: item.originalName,
+        outputSize: item.byteLength
+      }, startedAt);
+      return { ok: true, actionId: action.id };
+    }
+
+    if (action.id === "tools.save_output_to_vault") {
+      const filePath = getVerifiedToolsOutputPath(String(params.path ?? ""));
+      const result = importVaultDocuments({
+        paths: [filePath],
+        category: String(params.category ?? "Other"),
+        tags: params.tags as string[] | string | undefined,
+        notes: String(params.notes ?? ""),
+        expiryDate: params.expiryDate ? String(params.expiryDate) : null,
+        sourceModule: "DexNest Tools",
+        title: typeof params.title === "string" ? params.title : undefined
+      }, source, action.id);
+      if (!result.ok) {
+        throw new Error(result.error ?? "Save to Vault failed.");
+      }
+      logToolsEvent(action.id, "success", source, "Saved Tools output to DexNest Vault.", {
+        fileName: basename(filePath),
+        category: String(params.category ?? "Other")
+      }, startedAt);
+      return { ok: true, actionId: action.id };
+    }
+
+    if (action.id === "tools.merge_pdfs") {
+      const output = await mergePdfs(paths);
+      logToolsEvent(action.id, "success", source, `Merged ${paths.length} PDFs.`, {
+        fileCount: paths.length,
+        outputSize: output.byteLength,
+        operation: "merge_pdfs"
+      }, startedAt);
+      return { ok: true, actionId: action.id, output, outputs: [output] };
+    }
+
+    if (action.id === "tools.split_pdf") {
+      const output = await splitPdf(paths, String(params.range ?? ""));
+      logToolsEvent(action.id, "success", source, "Split PDF by page range.", {
+        fileCount: paths.length,
+        outputSize: output.byteLength,
+        operation: "split_pdf",
+        range: String(params.range ?? "")
+      }, startedAt);
+      return { ok: true, actionId: action.id, output, outputs: [output] };
+    }
+
+    if (action.id === "tools.images_to_pdf") {
+      const output = await imagesToPdf(paths);
+      logToolsEvent(action.id, "success", source, `Created PDF from ${paths.length} image${paths.length === 1 ? "" : "s"}.`, {
+        fileCount: paths.length,
+        outputSize: output.byteLength,
+        operation: "images_to_pdf"
+      }, startedAt);
+      return { ok: true, actionId: action.id, output, outputs: [output] };
+    }
+
+    if (action.id === "tools.compress_image" || action.id === "tools.resize_image" || action.id === "tools.convert_image") {
+      const operation = action.id.replace("tools.", "") as "compress_image" | "resize_image" | "convert_image";
+      const outputs = processImages(action.id, paths, operation, params);
+      logToolsEvent(action.id, "success", source, `Processed ${outputs.length} image${outputs.length === 1 ? "" : "s"}.`, {
+        fileCount: paths.length,
+        outputSize: outputs.reduce((total, item) => total + item.byteLength, 0),
+        operation
+      }, startedAt);
+      return { ok: true, actionId: action.id, outputs, output: outputs[0] };
+    }
+
+    if (action.id === "tools.mp4_to_mp3" || action.id === "tools.extract_audio" || action.id === "tools.convert_audio") {
+      const operation = action.id.replace("tools.", "") as "mp4_to_mp3" | "extract_audio" | "convert_audio";
+      const outputs = await convertMedia(paths, operation, String(params.format ?? "mp3"));
+      logToolsEvent(action.id, "success", source, `Converted ${outputs.length} media file${outputs.length === 1 ? "" : "s"}.`, {
+        fileCount: paths.length,
+        outputCount: outputs.length,
+        outputSize: outputs.reduce((total, item) => total + item.byteLength, 0),
+        operation
+      }, startedAt);
+      return { ok: true, actionId: action.id, outputs, output: outputs[0] };
+    }
+
+    if (action.id === "tools.docx_to_pdf" || action.id === "tools.pptx_to_pdf" || action.id === "tools.pdf_to_docx_experimental") {
+      const operation = action.id.replace("tools.", "") as "docx_to_pdf" | "pptx_to_pdf" | "pdf_to_docx_experimental";
+      const outputs = await convertOffice(paths, operation, operation === "pdf_to_docx_experimental" ? "docx" : "pdf");
+      logToolsEvent(action.id, "success", source, `Converted ${outputs.length} document${outputs.length === 1 ? "" : "s"}.`, {
+        fileCount: paths.length,
+        outputCount: outputs.length,
+        outputSize: outputs.reduce((total, item) => total + item.byteLength, 0),
+        operation,
+        experimental: operation === "pdf_to_docx_experimental"
+      }, startedAt);
+      return { ok: true, actionId: action.id, outputs, output: outputs[0] };
+    }
+
+    if (action.id === "tools.pptx_to_images") {
+      const outputs = await pptxToImages(paths);
+      logToolsEvent(action.id, "success", source, `Exported ${outputs.length} slide image${outputs.length === 1 ? "" : "s"}.`, {
+        fileCount: paths.length,
+        outputCount: outputs.length,
+        outputSize: outputs.reduce((total, item) => total + item.byteLength, 0),
+        operation: "pptx_to_images"
+      }, startedAt);
+      return { ok: true, actionId: action.id, outputs, output: outputs[0] };
+    }
+
+    if (action.id === "tools.pdf_to_images") {
+      const outputs = await pdfToImages(paths);
+      logToolsEvent(action.id, "success", source, `Exported ${outputs.length} PDF page image${outputs.length === 1 ? "" : "s"}.`, {
+        fileCount: paths.length,
+        outputCount: outputs.length,
+        outputSize: outputs.reduce((total, item) => total + item.byteLength, 0),
+        operation: "pdf_to_images"
+      }, startedAt);
+      return { ok: true, actionId: action.id, outputs, output: outputs[0] };
+    }
+
+    if (action.id === "tools.pdf_to_text") {
+      const outputs = await pdfToText(paths);
+      logToolsEvent(action.id, "success", source, `Exported text from ${paths.length} PDF${paths.length === 1 ? "" : "s"}.`, {
+        fileCount: paths.length,
+        outputCount: outputs.length,
+        outputSize: outputs.reduce((total, item) => total + item.byteLength, 0),
+        operation: "pdf_to_text"
+      }, startedAt);
+      return { ok: true, actionId: action.id, outputs, output: outputs[0] };
+    }
+
+    if (action.id === "tools.open_tools_settings") {
+      logToolsEvent(action.id, "success", source, "Opened DexNest Tools settings.", { view: "tools_settings" }, startedAt);
+      return { ok: true, actionId: action.id };
+    }
+
+    return null;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "DexNest Tools action failed.";
+    logToolsEvent(action.id, "failed", source, errorMessage, {
+      fileCount: paths.length,
+      operation: action.id.replace("tools.", "")
+    }, startedAt, errorMessage);
+    return { ok: false, actionId: action.id, error: errorMessage };
+  }
+}
+
 function runClipboardAction(action: DexNestActionDefinition, source: DexNestActionTrigger, payload: unknown) {
   const params = typeof payload === "object" && payload !== null ? payload as Record<string, unknown> : {};
   const now = new Date().toISOString();
@@ -908,6 +4828,10 @@ function runClipboardAction(action: DexNestActionDefinition, source: DexNestActi
     if (!text.trim()) {
       logActionEvent(action, "skipped", source, "Clipboard save skipped because clipboard text was empty.", { byteLength: 0 });
       return { ok: false, actionId: action.id, error: "Clipboard text is empty." };
+    }
+    if (secureVaultProtectedClipboardValue && text === secureVaultProtectedClipboardValue) {
+      logActionEvent(action, "skipped", source, "Clipboard save skipped because the current clipboard value came from DexNest Secure Vault.", { protectedSource: "secure_vault" });
+      return { ok: false, actionId: action.id, error: "Secure Vault clipboard values are excluded from Clipboard history." };
     }
 
     const item: ClipboardHistoryItem = {
@@ -1057,6 +4981,7 @@ function runDropAction(action: DexNestActionDefinition, source: DexNestActionTri
       byteLength: item.byteLength,
       expiresAt: item.expiresAt
     });
+    broadcastDropUpdate("Text sent to phone.", "drop.outgoing_text_created");
     return { ok: true, actionId: action.id, item };
   }
 
@@ -1074,6 +4999,7 @@ function runDropAction(action: DexNestActionDefinition, source: DexNestActionTri
       byteLength: item.byteLength,
       expiresAt: item.expiresAt
     });
+    broadcastDropUpdate("Clipboard sent to phone.", "drop.outgoing_text_created");
     return { ok: true, actionId: action.id, item };
   }
 
@@ -1102,6 +5028,7 @@ function runDropAction(action: DexNestActionDefinition, source: DexNestActionTri
       fileName: item.fileName,
       byteLength: item.byteLength
     });
+    broadcastDropUpdate("File added for phone download.", "drop.outgoing_file_added");
     return { ok: true, actionId: action.id, item };
   }
 
@@ -1122,6 +5049,7 @@ function runDropAction(action: DexNestActionDefinition, source: DexNestActionTri
       fileId,
       fileName: item.fileName
     });
+    broadcastDropUpdate("Outgoing file removed.", "drop.outgoing_file_removed");
     return { ok: true, actionId: action.id };
   }
 
@@ -1135,6 +5063,7 @@ function runDropAction(action: DexNestActionDefinition, source: DexNestActionTri
     }
     saveDropShelf([]);
     logActionEvent(action, "success", source, `Cleared ${count} outgoing Drop item${count === 1 ? "" : "s"}.`, { count });
+    broadcastDropUpdate("Outgoing Drop shelf cleared.", "drop.outgoing_cleared");
     return { ok: true, actionId: action.id, count };
   }
 
@@ -1142,6 +5071,7 @@ function runDropAction(action: DexNestActionDefinition, source: DexNestActionTri
     const count = loadDropIncoming().length;
     saveDropIncoming([]);
     logActionEvent(action, "success", source, `Cleared ${count} incoming Drop metadata item${count === 1 ? "" : "s"}.`, { count });
+    broadcastDropUpdate("Incoming Drop list cleared.", "drop.incoming_cleared");
     return { ok: true, actionId: action.id, count };
   }
 
@@ -1188,20 +5118,20 @@ function copyIncomingDropText(itemId: string): { ok: boolean; error?: string } {
   return { ok: true };
 }
 
-function chooseDropReceiveFolder(): { ok: boolean; path?: string; error?: string } {
-  const openOptions: OpenDialogSyncOptions = {
+async function chooseDropReceiveFolder(): Promise<{ ok: boolean; path?: string; error?: string }> {
+  const openOptions: OpenDialogOptions = {
     title: "Choose DexNest Drop receive folder",
     properties: ["openDirectory", "createDirectory"]
   };
-  const result = mainWindow ? dialog.showOpenDialogSync(mainWindow, openOptions) : dialog.showOpenDialogSync(openOptions);
-  const selectedPath = result?.[0];
+  const result = mainWindow ? await dialog.showOpenDialog(mainWindow, openOptions) : await dialog.showOpenDialog(openOptions);
+  const selectedPath = result.canceled ? "" : result.filePaths[0];
   if (!selectedPath) {
     return { ok: false, error: "No folder selected." };
   }
 
-  const isOutsideLocalData = !resolve(selectedPath).startsWith(resolve(localDataRoot));
+  const isOutsideLocalData = !isPathInside(localDataRoot, selectedPath);
   if (isOutsideLocalData) {
-    const messageOptions: MessageBoxSyncOptions = {
+    const messageOptions: MessageBoxOptions = {
       type: "warning",
       buttons: ["Use folder", "Cancel"],
       defaultId: 1,
@@ -1211,9 +5141,9 @@ function chooseDropReceiveFolder(): { ok: boolean; path?: string; error?: string
       detail: "DexNest can use it, but project rules prefer local-data for user data."
     };
     const response = mainWindow
-      ? dialog.showMessageBoxSync(mainWindow, messageOptions)
-      : dialog.showMessageBoxSync(messageOptions);
-    if (response !== 0) {
+      ? await dialog.showMessageBox(mainWindow, messageOptions)
+      : await dialog.showMessageBox(messageOptions);
+    if (response.response !== 0) {
       return { ok: false, error: "Folder selection cancelled." };
     }
   }
@@ -1229,6 +5159,7 @@ function chooseDropReceiveFolder(): { ok: boolean; path?: string; error?: string
     summary: "Changed DexNest Drop receive folder.",
     metadataJson: { path: selectedPath, outsideLocalData: isOutsideLocalData }
   });
+  broadcastDropUpdate("Receive folder changed.", "drop.receive_folder_changed");
   return { ok: true, path: selectedPath };
 }
 
@@ -1244,6 +5175,7 @@ function resetDropReceiveFolder(): { ok: boolean; path: string } {
     summary: "Reset DexNest Drop receive folder.",
     metadataJson: { path: dropIncomingRoot }
   });
+  broadcastDropUpdate("Receive folder reset.", "drop.receive_folder_reset");
   return { ok: true, path: dropIncomingRoot };
 }
 
@@ -1257,6 +5189,19 @@ function dropPublicState() {
   };
 }
 
+function sharedDesignTokensCss(): string {
+  const tokensPath = resolve(repoRoot, "packages", "shared-ui", "src", "tokens.css");
+  return readFileSync(tokensPath, "utf8");
+}
+
+function designTokenValue(tokenName: string): string {
+  const match = sharedDesignTokensCss().match(new RegExp(`${tokenName.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&")}\\s*:\\s*([^;]+);`));
+  if (!match) {
+    throw new Error(`DexNest design token not found: ${tokenName}`);
+  }
+  return match[1].trim();
+}
+
 function dropManifest() {
   return {
     name: "DexNest Drop",
@@ -1266,8 +5211,8 @@ function dropManifest() {
     scope: "/drop",
     display: "standalone",
     orientation: "portrait",
-    background_color: "#000000",
-    theme_color: "#22D3EE",
+    background_color: designTokenValue("--bg"),
+    theme_color: designTokenValue("--accent-drop"),
     icons: [
       {
         src: "/drop/icon.svg",
@@ -1280,20 +5225,24 @@ function dropManifest() {
 }
 
 function renderDropIcon(): string {
+  const background = designTokenValue("--bg");
+  const accent = designTokenValue("--accent-drop");
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="DexNest Drop">
-  <rect width="512" height="512" rx="96" fill="#000000"/>
-  <path d="M256 92 372 160v136L256 420 140 296V160L256 92Z" fill="none" stroke="#22D3EE" stroke-width="28" stroke-linejoin="round"/>
-  <path d="M256 92v120m0 0 116-52m-116 52-116-52m116 52v208" fill="none" stroke="#22D3EE" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect width="512" height="512" rx="96" fill="${background}"/>
+  <path d="M256 92 372 160v136L256 420 140 296V160L256 92Z" fill="none" stroke="${accent}" stroke-width="28" stroke-linejoin="round"/>
+  <path d="M256 92v120m0 0 116-52m-116 52-116-52m116 52v208" fill="none" stroke="${accent}" stroke-width="24" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>`;
 }
 
 function renderDropPhonePage(): string {
+  const tokenCss = sharedDesignTokensCss();
+  const themeColor = designTokenValue("--accent-drop");
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#22D3EE" />
+  <meta name="theme-color" content="${themeColor}" />
   <meta name="color-scheme" content="dark" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -1306,16 +5255,10 @@ function renderDropPhonePage(): string {
   <style>
     :root {
       color-scheme: dark;
-      --bg: #000000;
-      --surface: #0A0A0A;
-      --surface-2: #111111;
-      --surface-hover: #111111;
-      --border: #262626;
-      --text: #F5F5F5;
-      --text-muted: #A3A3A3;
-      --accent: #38BDF8;
-      --success: #22C55E;
-      --error: #EF4444;
+    }
+    ${tokenCss}
+    :root {
+      --accent: var(--accent-drop);
       --font-ui: Inter, system-ui, sans-serif;
       --font-tech: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
       --radius: 8px;
@@ -1337,10 +5280,6 @@ function renderDropPhonePage(): string {
     textarea { min-height: 120px; resize: vertical; text-align: left; }
     label { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; color: var(--text-muted); }
     label input { width: auto; min-height: auto; }
-    .header-top { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
-    .status { padding: 6px 9px; color: var(--accent); background: var(--surface-2); border: 1px solid var(--accent); border-radius: var(--radius); font-family: var(--font-tech); font-size: 0.8rem; white-space: nowrap; }
-    .pills { display: flex; flex-wrap: wrap; gap: 8px; }
-    .pills span { padding: 6px 9px; color: var(--text-muted); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.82rem; }
     .item { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); }
     .item button, .item a { border-color: var(--accent); }
     .mono { font-family: var(--font-tech); overflow-wrap: anywhere; }
@@ -1359,26 +5298,8 @@ function renderDropPhonePage(): string {
 <body>
   <main>
     <header>
-      <div class="header-top">
-        <div>
-          <h1>DexNest Drop</h1>
-          <p>Local Wi-Fi transfer</p>
-        </div>
-        <span class="status">Connected</span>
-      </div>
-      <div class="pills">
-        <span>Local only</span>
-        <span>Same Wi-Fi required</span>
-        <span>No cloud</span>
-      </div>
-      <p class="notice">Two-way handoff between this phone browser and the DexNest desktop app.</p>
-      <p class="notice">On Android Chrome, tap ⋮ → Add to Home screen.</p>
+      <h1>DexNest Drop</h1>
     </header>
-    <section>
-      <h2>Refresh</h2>
-      <label><input id="autoRefresh" type="checkbox" checked /> Auto-refresh every 3 seconds</label>
-      <button id="manualRefresh">Refresh now</button>
-    </section>
     <section>
       <h2>From PC: text</h2>
       <div id="texts"></div>
@@ -1390,14 +5311,16 @@ function renderDropPhonePage(): string {
     <section>
       <h2>Send to PC: text</h2>
       <textarea id="note" placeholder="Write a note to save on the PC"></textarea>
-      <button id="sendText" class="primary">Upload text to PC</button>
       <p id="textStatus" class="notice"></p>
     </section>
     <section>
       <h2>Send to PC: files</h2>
+      <p class="notice">Photos/gallery</p>
+      <input id="uploadGallery" type="file" accept="image/*" multiple />
+      <p id="gallerySelectedCount" class="file-count">No photos selected</p>
+      <p class="notice">Files/docs</p>
       <input id="uploadFiles" type="file" multiple />
       <p id="selectedCount" class="file-count">No files selected</p>
-      <button id="sendFiles" class="primary">Upload files/photos/docs to PC</button>
       <p id="fileStatus" class="notice"></p>
       <p>PC receive folder:</p>
       <p id="receivePath" class="mono"></p>
@@ -1407,6 +5330,9 @@ function renderDropPhonePage(): string {
   <script>
     let uploadActive = false;
     let refreshTimer = null;
+    let dropEvents = null;
+    let textUploadTimer = null;
+    let lastSentText = '';
     function toast(message, tone = 'success') {
       const stack = document.getElementById('toastStack');
       const node = document.createElement('div');
@@ -1494,24 +5420,42 @@ function renderDropPhonePage(): string {
         files.append(node);
       }
     }
-    document.getElementById('sendText').onclick = async () => {
-      const text = document.getElementById('note').value;
+    async function uploadTextNow() {
+      const note = document.getElementById('note');
+      const text = note.value.trim();
+      if (!text || text === lastSentText) return;
+      lastSentText = text;
       const response = await fetch('/drop/api/text', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
       document.getElementById('textStatus').textContent = response.ok ? 'Uploaded text to PC.' : 'Text upload failed.';
       if (response.ok) {
-        document.getElementById('note').value = '';
+        note.value = '';
+        lastSentText = '';
         toast('Text sent');
       } else {
+        lastSentText = '';
         toast('Text send failed', 'error');
       }
       await loadDrop();
+    }
+    document.getElementById('note').oninput = () => {
+      if (textUploadTimer) clearTimeout(textUploadTimer);
+      document.getElementById('textStatus').textContent = 'Auto-sending after typing stops.';
+      textUploadTimer = setTimeout(() => {
+        void uploadTextNow();
+      }, 900);
     };
     document.getElementById('uploadFiles').onchange = (event) => {
       const count = event.target.files ? event.target.files.length : 0;
       document.getElementById('selectedCount').textContent = count ? count + ' file' + (count === 1 ? '' : 's') + ' selected' : 'No files selected';
+      if (count) void uploadSelectedFiles('uploadFiles', 'selectedCount', 'No files selected');
     };
-    document.getElementById('sendFiles').onclick = async () => {
-      const input = document.getElementById('uploadFiles');
+    document.getElementById('uploadGallery').onchange = (event) => {
+      const count = event.target.files ? event.target.files.length : 0;
+      document.getElementById('gallerySelectedCount').textContent = count ? count + ' photo' + (count === 1 ? '' : 's') + ' selected' : 'No photos selected';
+      if (count) void uploadSelectedFiles('uploadGallery', 'gallerySelectedCount', 'No photos selected');
+    };
+    async function uploadSelectedFiles(inputId, countId, emptyLabel) {
+      const input = document.getElementById(inputId);
       if (!input.files.length) {
         toast('Choose files first', 'error');
         return;
@@ -1530,18 +5474,31 @@ function renderDropPhonePage(): string {
       if (failed.length || !response.ok) toast('Some files failed to upload', 'error');
       if (response.ok || saved.length) {
         input.value = '';
-        document.getElementById('selectedCount').textContent = 'No files selected';
+        document.getElementById(countId).textContent = emptyLabel;
       }
       uploadActive = false;
       await loadDrop();
-    };
-    document.getElementById('manualRefresh').onclick = () => loadDrop();
-    document.getElementById('autoRefresh').onchange = (event) => {
-      if (refreshTimer) clearInterval(refreshTimer);
-      if (event.target.checked) refreshTimer = setInterval(loadDrop, 3000);
-    };
+    }
+    function connectDropEvents() {
+      if (dropEvents) dropEvents.close();
+      if (!window.EventSource) {
+        refreshTimer = setInterval(loadDrop, 3000);
+        return;
+      }
+      dropEvents = new EventSource('/drop/api/events');
+      dropEvents.onmessage = (event) => {
+        const payload = JSON.parse(event.data);
+        void loadDrop();
+        if (payload.eventType && payload.eventType.indexOf('drop.outgoing') === 0 && payload.message) {
+          toast(payload.message);
+        }
+      };
+      dropEvents.onerror = () => {
+        if (!refreshTimer) refreshTimer = setInterval(loadDrop, 3000);
+      };
+    }
     loadDrop();
-    refreshTimer = setInterval(loadDrop, 3000);
+    connectDropEvents();
   </script>
 </body>
 </html>`;
@@ -1567,6 +5524,25 @@ async function handleDropRoutes(request: IncomingMessage, response: ServerRespon
 
   if (request.method === "GET" && url.pathname === "/drop/api/state") {
     sendJson(response, 200, dropPublicState());
+    return true;
+  }
+
+  if (request.method === "GET" && url.pathname === "/drop/api/events") {
+    response.writeHead(200, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-store",
+      Connection: "keep-alive",
+      "Access-Control-Allow-Origin": "*"
+    });
+    sendDropEvent(response, {
+      eventType: "drop.connected",
+      message: "DexNest Drop live updates connected.",
+      timestamp: new Date().toISOString()
+    });
+    dropEventClients.add(response);
+    request.on("close", () => {
+      dropEventClients.delete(response);
+    });
     return true;
   }
 
@@ -1596,6 +5572,7 @@ async function handleDropRoutes(request: IncomingMessage, response: ServerRespon
       summary: `Received phone text Drop item, ${item.byteLength} bytes.`,
       metadataJson: { dropId: item.id, byteLength: item.byteLength }
     });
+    broadcastDropUpdate("Text received from phone.", "drop.incoming_text_created");
     sendJson(response, 200, { ok: true, itemId: item.id });
     return true;
   }
@@ -1685,6 +5662,7 @@ async function handleDropRoutes(request: IncomingMessage, response: ServerRespon
         fileNames: savedItems.map((item) => item.fileName)
       }
     });
+    broadcastDropUpdate(`${savedItems.length} file${savedItems.length === 1 ? "" : "s"} received from phone.`, "drop.incoming_files_created");
     sendJson(response, 200, {
       ok: failedFiles.length === 0,
       count: savedItems.length,
@@ -1747,6 +5725,863 @@ async function handleDropRoutes(request: IncomingMessage, response: ServerRespon
   return false;
 }
 
+function runJournalAction(action: DexNestActionDefinition, source: DexNestActionTrigger, payload: unknown = {}) {
+  const startedAt = Date.now();
+  const input = typeof payload === "object" && payload !== null ? (payload as JournalEntryInput & { entryId?: string }) : {};
+
+  try {
+    if (action.id === "journal.open" || action.id === "journal.open_today") {
+      logJournalEvent(action.id, "success", source, "Opened DexNest Journal.", {}, startedAt);
+      return { ok: true, actionId: action.id, journalState: journalState() };
+    }
+
+    if (action.id === "journal.create_entry" || action.id === "journal.update_entry") {
+      const entries = loadJournalEntries();
+      const now = new Date().toISOString();
+      const entryId = input.id ?? createId("journal-entry");
+      const existing = entries.find((entry) => entry.id === entryId);
+      const rawText = input.rawText ?? existing?.rawText ?? "";
+      const cleanedText = cleanJournalText(rawText);
+      const nextEntry: JournalEntry = {
+        id: entryId,
+        date: input.date ?? existing?.date ?? todayDateString(),
+        title: input.title ?? existing?.title ?? "",
+        rawText,
+        cleanedText,
+        mood: input.mood ?? existing?.mood ?? "",
+        productivity: input.productivity ?? existing?.productivity ?? "",
+        tags: parseTagList(input.tags ?? existing?.tags),
+        peopleTags: parseTagList(input.peopleTags ?? existing?.peopleTags),
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+        extractedItems: extractCalendarCandidatesFromText(rawText, input.date ?? existing?.date ?? todayDateString())
+      };
+      const saved = saveJournalEntries([nextEntry, ...entries.filter((entry) => entry.id !== entryId)]);
+      logJournalEvent(
+        action.id,
+        "success",
+        source,
+        `${existing ? "Updated" : "Created"} DexNest Journal entry.`,
+        {
+          entryId,
+          date: nextEntry.date,
+          tagCount: nextEntry.tags.length,
+          peopleTagCount: nextEntry.peopleTags.length,
+          rawTextBytes: byteLength(rawText),
+          extractedCandidateCount: nextEntry.extractedItems.length
+        },
+        startedAt
+      );
+      return { ok: true, actionId: action.id, entry: nextEntry, journalState: { ...journalState(), entries: saved } };
+    }
+
+    if (action.id === "journal.delete_entry") {
+      const entryId = input.entryId ?? input.id ?? "";
+      const entries = loadJournalEntries();
+      const existing = entries.find((entry) => entry.id === entryId);
+      saveJournalEntries(entries.filter((entry) => entry.id !== entryId));
+      logJournalEvent(
+        action.id,
+        "success",
+        source,
+        "Deleted DexNest Journal entry.",
+        { entryId, date: existing?.date ?? null },
+        startedAt
+      );
+      return { ok: true, actionId: action.id, journalState: journalState() };
+    }
+
+    if (action.id === "journal.extract_events") {
+      const rawText = input.rawText ?? loadJournalEntries().find((entry) => entry.id === input.entryId)?.rawText ?? "";
+      const candidates = extractCalendarCandidatesFromText(rawText, input.date ?? todayDateString());
+      logJournalEvent(
+        action.id,
+        "success",
+        source,
+        `Extracted ${candidates.length} Calendar candidate${candidates.length === 1 ? "" : "s"} from Journal text.`,
+        { entryId: input.entryId ?? input.id ?? null, candidateCount: candidates.length },
+        startedAt
+      );
+      return { ok: true, actionId: action.id, candidates };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "DexNest Journal action failed.";
+    logJournalEvent(action.id, "failed", source, message, payloadMetadata(payload), startedAt, message);
+    return { ok: false, actionId: action.id, error: message };
+  }
+
+  return null;
+}
+
+function normalizeCalendarInput(input: CalendarEventInput, existing?: CalendarEvent): CalendarEvent {
+  const now = new Date().toISOString();
+  return {
+    id: input.id ?? existing?.id ?? createId("calendar-event"),
+    title: input.title?.trim() || existing?.title || "Untitled event",
+    date: input.date || existing?.date || todayDateString(),
+    startTime: input.startTime ?? existing?.startTime ?? null,
+    endTime: input.endTime ?? existing?.endTime ?? null,
+    allDay: input.allDay ?? existing?.allDay ?? false,
+    sourceModule: input.sourceModule ?? existing?.sourceModule ?? "calendar",
+    sourceId: input.sourceId ?? existing?.sourceId ?? null,
+    recurrence: input.recurrence ?? existing?.recurrence ?? null,
+    reminderLevel: input.reminderLevel ?? existing?.reminderLevel ?? "normal",
+    notes: input.notes ?? existing?.notes ?? null,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now
+  };
+}
+
+function runCalendarAction(action: DexNestActionDefinition, source: DexNestActionTrigger, payload: unknown = {}) {
+  const startedAt = Date.now();
+  const input = typeof payload === "object" && payload !== null ? (payload as CalendarEventInput & { eventId?: string }) : {};
+
+  try {
+    if (action.id === "calendar.open" || action.id === "calendar.show_today" || action.id === "calendar.show_upcoming") {
+      logCalendarEvent(action.id, "success", source, "Opened DexNest Calendar.", {}, startedAt);
+      return { ok: true, actionId: action.id, calendarState: calendarState() };
+    }
+
+    if (action.id === "calendar.create_event" || action.id === "calendar.update_event") {
+      const events = loadCalendarEvents();
+      const existing = input.id ? events.find((event) => event.id === input.id) : null;
+      const nextEvent = normalizeCalendarInput(input, existing ?? undefined);
+      const duplicateJournalEvent = action.id === "calendar.create_event" && nextEvent.sourceModule === "journal"
+        ? events.find((event) =>
+            event.sourceModule === "journal"
+            && event.sourceId === nextEvent.sourceId
+            && event.date === nextEvent.date
+            && event.title.trim().toLowerCase() === nextEvent.title.trim().toLowerCase()
+          )
+        : null;
+
+      if (duplicateJournalEvent) {
+        logCalendarEvent(
+          action.id,
+          "skipped",
+          source,
+          "Skipped duplicate Journal-derived Calendar event.",
+          {
+            eventId: duplicateJournalEvent.id,
+            date: duplicateJournalEvent.date,
+            sourceModule: duplicateJournalEvent.sourceModule,
+            sourceId: duplicateJournalEvent.sourceId
+          },
+          startedAt
+        );
+        return {
+          ok: false,
+          actionId: action.id,
+          duplicate: true,
+          event: duplicateJournalEvent,
+          error: "This Journal event is already on the Calendar."
+        };
+      }
+
+      saveCalendarEvents([nextEvent, ...events.filter((event) => event.id !== nextEvent.id)]);
+      logCalendarEvent(
+        action.id,
+        "success",
+        source,
+        `${existing ? "Updated" : "Created"} DexNest Calendar event.`,
+        {
+          eventId: nextEvent.id,
+          date: nextEvent.date,
+          allDay: nextEvent.allDay,
+          sourceModule: nextEvent.sourceModule,
+          sourceId: nextEvent.sourceId,
+          reminderLevel: nextEvent.reminderLevel,
+          recurrence: nextEvent.recurrence
+        },
+        startedAt
+      );
+      return { ok: true, actionId: action.id, event: nextEvent, calendarState: calendarState() };
+    }
+
+    if (action.id === "calendar.delete_event") {
+      const eventId = input.eventId ?? input.id ?? "";
+      const events = loadCalendarEvents();
+      const existing = events.find((event) => event.id === eventId);
+      saveCalendarEvents(events.filter((event) => event.id !== eventId));
+      logCalendarEvent(action.id, "success", source, "Deleted DexNest Calendar event.", { eventId, date: existing?.date ?? null }, startedAt);
+      return { ok: true, actionId: action.id, calendarState: calendarState() };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "DexNest Calendar action failed.";
+    logCalendarEvent(action.id, "failed", source, message, payloadMetadata(payload), startedAt, message);
+    return { ok: false, actionId: action.id, error: message };
+  }
+
+  return null;
+}
+
+function normalizeFinderItem(input: FinderItemInput, existing?: FinderItem): FinderItem {
+  const now = new Date().toISOString();
+  return {
+    id: input.id ?? existing?.id ?? createId("finder-item"),
+    itemName: input.itemName?.trim() || existing?.itemName || "Untitled item",
+    location: input.location?.trim() || existing?.location || "Unknown location",
+    room: input.room?.trim() || existing?.room || "",
+    container: input.container?.trim() || existing?.container || "",
+    notes: input.notes ?? existing?.notes ?? "",
+    tags: parseTagList(input.tags ?? existing?.tags),
+    status: input.status ?? existing?.status ?? "at_home",
+    lentTo: input.lentTo ?? existing?.lentTo ?? null,
+    photoPath: input.photoPath ?? existing?.photoPath ?? null,
+    confidence: input.confidence ?? existing?.confidence ?? "sure",
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now
+  };
+}
+
+function runFinderAction(action: DexNestActionDefinition, source: DexNestActionTrigger, payload: unknown = {}) {
+  const startedAt = Date.now();
+  const input = typeof payload === "object" && payload !== null ? (payload as FinderItemInput & { statusFilter?: string; newLocation?: string }) : {};
+
+  try {
+    if (action.id === "finder.open") {
+      logFinderEvent(action.id, "success", source, "Opened DexNest Finder.", {}, startedAt);
+      return { ok: true, actionId: action.id, finderState: finderState() };
+    }
+
+    if (action.id === "finder.create_item" || action.id === "finder.update_item") {
+      const items = loadFinderItems();
+      const existing = input.id ? items.find((item) => item.id === input.id) : undefined;
+      const nextItem = normalizeFinderItem(input, existing);
+      saveFinderItems([nextItem, ...items.filter((item) => item.id !== nextItem.id)]);
+      logFinderEvent(action.id, "success", source, `${existing ? "Updated" : "Created"} DexNest Finder item.`, {
+        itemId: nextItem.id,
+        status: nextItem.status
+      }, startedAt);
+      return { ok: true, actionId: action.id, item: nextItem, finderState: finderState() };
+    }
+
+    if (action.id === "finder.delete_item") {
+      const itemId = input.itemId ?? input.id ?? "";
+      const items = loadFinderItems();
+      const existing = items.find((item) => item.id === itemId);
+      saveFinderItems(items.filter((item) => item.id !== itemId));
+      logFinderEvent(action.id, "success", source, "Deleted DexNest Finder item.", {
+        itemId,
+        status: existing?.status ?? null
+      }, startedAt);
+      return { ok: true, actionId: action.id, finderState: finderState() };
+    }
+
+    if (["finder.archive_item", "finder.mark_moved", "finder.mark_lent_out", "finder.mark_returned"].includes(action.id)) {
+      const itemId = input.itemId ?? input.id ?? "";
+      const items = loadFinderItems();
+      const existing = items.find((item) => item.id === itemId);
+      if (!existing) {
+        throw new Error("Finder item not found.");
+      }
+
+      const patch: FinderItemInput = { id: itemId };
+      if (action.id === "finder.archive_item") {
+        patch.status = "archived";
+      }
+      if (action.id === "finder.mark_moved") {
+        patch.location = input.newLocation ?? input.location ?? existing.location;
+        patch.room = input.room ?? existing.room;
+        patch.container = input.container ?? existing.container;
+        patch.status = "at_home";
+        patch.lentTo = null;
+      }
+      if (action.id === "finder.mark_lent_out") {
+        patch.status = "lent_out";
+        patch.lentTo = input.lentTo ?? existing.lentTo ?? "";
+      }
+      if (action.id === "finder.mark_returned") {
+        patch.status = "at_home";
+        patch.lentTo = null;
+      }
+
+      const nextItem = normalizeFinderItem({ ...existing, ...patch }, existing);
+      saveFinderItems([nextItem, ...items.filter((item) => item.id !== itemId)]);
+      logFinderEvent(action.id, "success", source, "Updated DexNest Finder item status/location.", {
+        itemId,
+        status: nextItem.status
+      }, startedAt);
+      return { ok: true, actionId: action.id, item: nextItem, finderState: finderState() };
+    }
+
+    if (action.id === "finder.search_items") {
+      const query = input.query ?? "";
+      const statusFilter = input.statusFilter ?? input.status ?? "all";
+      const results = loadFinderItems().filter((item) => finderItemMatches(item, query, statusFilter));
+      logFinderEvent(action.id, "success", source, `Searched DexNest Finder with ${results.length} result${results.length === 1 ? "" : "s"}.`, {
+        queryLength: query.length,
+        statusFilter,
+        resultCount: results.length
+      }, startedAt);
+      return { ok: true, actionId: action.id, results, finderState: finderState() };
+    }
+
+    if (action.id === "finder.reverse_lookup") {
+      const query = input.query ?? "";
+      const results = loadFinderItems().filter((item) => reverseLookupMatches(item, query));
+      logFinderEvent(action.id, "success", source, `Ran DexNest Finder reverse lookup with ${results.length} result${results.length === 1 ? "" : "s"}.`, {
+        queryLength: query.length,
+        resultCount: results.length
+      }, startedAt);
+      return { ok: true, actionId: action.id, results, finderState: finderState() };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "DexNest Finder action failed.";
+    logFinderEvent(action.id, "failed", source, message, payloadMetadata(payload), startedAt, message);
+    return { ok: false, actionId: action.id, error: message };
+  }
+
+  return null;
+}
+
+function findFinanceTransaction(transactionId: string): FinanceTransaction {
+  const transaction = loadFinanceTransactions().find((item) => item.id === transactionId);
+  if (!transaction) {
+    throw new Error("Finance transaction not found.");
+  }
+  return transaction;
+}
+
+function runFinanceAction(action: DexNestActionDefinition, source: DexNestActionTrigger, payload: unknown = {}) {
+  const startedAt = Date.now();
+  const input = typeof payload === "object" && payload !== null ? (payload as FinanceTransactionInput & FinanceRecurringInput & { active?: boolean }) : {};
+
+  try {
+    if (action.id === "finance.open" || action.id === "finance.show_monthly_summary") {
+      logFinanceEvent(action.id, "success", source, "Opened DexNest Finance.", {}, startedAt);
+      return { ok: true, actionId: action.id, financeState: financeState() };
+    }
+
+    if (action.id === "finance.create_transaction" || action.id === "finance.update_transaction" || action.id === "finance.attach_receipt") {
+      const transactions = loadFinanceTransactions();
+      const existingId = input.transactionId ?? input.id;
+      const existing = existingId ? transactions.find((transaction) => transaction.id === existingId) : undefined;
+      const nextTransaction = normalizeFinanceTransaction({ ...existing, ...input, id: existing?.id ?? input.id }, existing);
+      saveFinanceTransactions([nextTransaction, ...transactions.filter((transaction) => transaction.id !== nextTransaction.id)]);
+      logFinanceEvent(action.id, "success", source, `${existing ? "Updated" : "Created"} DexNest Finance transaction.`, financeTransactionMetadata(nextTransaction), startedAt);
+      return { ok: true, actionId: action.id, transaction: nextTransaction, financeState: financeState() };
+    }
+
+    if (action.id === "finance.delete_transaction") {
+      const transactionId = String(input.transactionId ?? input.id ?? "");
+      const transactions = loadFinanceTransactions();
+      const existing = transactions.find((transaction) => transaction.id === transactionId);
+      saveFinanceTransactions(transactions.filter((transaction) => transaction.id !== transactionId));
+      logFinanceEvent(action.id, "success", source, "Deleted DexNest Finance transaction metadata.", existing ? financeTransactionMetadata(existing) : { transactionId }, startedAt);
+      return { ok: true, actionId: action.id, financeState: financeState() };
+    }
+
+    if (action.id === "finance.send_receipt_to_drop" || action.id === "finance.save_receipt_to_vault") {
+      const transaction = findFinanceTransaction(String(input.transactionId ?? input.id ?? ""));
+      if (!transaction.receiptFilePath || !existsSync(transaction.receiptFilePath)) {
+        throw new Error("This transaction has no receipt file.");
+      }
+
+      if (action.id === "finance.send_receipt_to_drop") {
+        const item = createDropFileItem(transaction.receiptFilePath, "desktop", "outgoing");
+        saveDropShelf([item, ...loadDropShelf()]);
+        broadcastDropUpdate("Finance receipt added to Drop.", "drop.outgoing_file_added");
+        logFinanceEvent(action.id, "success", source, "Sent Finance receipt to DexNest Drop.", financeTransactionMetadata(transaction), startedAt);
+        return { ok: true, actionId: action.id, financeState: financeState() };
+      }
+
+      const imported = importVaultDocuments({
+        paths: [transaction.receiptFilePath],
+        category: "Receipts",
+        tags: [...transaction.tags, "finance", "receipt"],
+        notes: "",
+        sourceModule: "DexNest Finance",
+        title: `${transaction.store} receipt`
+      }, source, action.id);
+      logFinanceEvent(action.id, imported.ok ? "success" : "failed", source, imported.ok ? "Saved Finance receipt to DexNest Vault." : imported.error ?? "Save receipt to Vault failed.", financeTransactionMetadata(transaction), startedAt, imported.ok ? null : imported.error ?? null);
+      return imported.ok ? { ...imported, financeState: financeState() } : imported;
+    }
+
+    if (action.id === "finance.create_recurring" || action.id === "finance.update_recurring") {
+      const recurringItems = loadFinanceRecurring();
+      const existingId = input.recurringId ?? input.id;
+      const existing = existingId ? recurringItems.find((item) => item.id === existingId) : undefined;
+      const nextRecurring = normalizeFinanceRecurring({ ...existing, ...input, id: existing?.id ?? input.id }, existing);
+      saveFinanceRecurring([nextRecurring, ...recurringItems.filter((item) => item.id !== nextRecurring.id)]);
+      logFinanceEvent(action.id, "success", source, `${existing ? "Updated" : "Created"} DexNest recurring expense.`, {
+        recurringId: nextRecurring.id,
+        category: nextRecurring.category,
+        paymentType: nextRecurring.paymentType,
+        amount: nextRecurring.amount,
+        active: nextRecurring.active
+      }, startedAt);
+      return { ok: true, actionId: action.id, recurring: nextRecurring, financeState: financeState() };
+    }
+
+    if (action.id === "finance.delete_recurring" || action.id === "finance.toggle_recurring") {
+      const recurringId = String(input.recurringId ?? input.id ?? "");
+      const recurringItems = loadFinanceRecurring();
+      const existing = recurringItems.find((item) => item.id === recurringId);
+      if (!existing) {
+        throw new Error("Recurring expense not found.");
+      }
+
+      if (action.id === "finance.delete_recurring") {
+        saveFinanceRecurring(recurringItems.filter((item) => item.id !== recurringId));
+        logFinanceEvent(action.id, "success", source, "Deleted DexNest recurring expense.", {
+          recurringId,
+          category: existing.category,
+          paymentType: existing.paymentType,
+          amount: existing.amount
+        }, startedAt);
+        return { ok: true, actionId: action.id, financeState: financeState() };
+      }
+
+      const nextRecurring = { ...existing, active: input.active ?? !existing.active, updatedAt: new Date().toISOString() };
+      saveFinanceRecurring([nextRecurring, ...recurringItems.filter((item) => item.id !== recurringId)]);
+      logFinanceEvent(action.id, "success", source, "Toggled DexNest recurring expense.", {
+        recurringId,
+        active: nextRecurring.active,
+        category: nextRecurring.category,
+        paymentType: nextRecurring.paymentType,
+        amount: nextRecurring.amount
+      }, startedAt);
+      return { ok: true, actionId: action.id, recurring: nextRecurring, financeState: financeState() };
+    }
+
+    if (action.id === "finance.create_return_reminder" || action.id === "finance.create_warranty_reminder") {
+      const transaction = findFinanceTransaction(String(input.transactionId ?? input.id ?? ""));
+      const date = action.id === "finance.create_return_reminder" ? transaction.returnDeadline : transaction.warrantyUntil;
+      if (!date) {
+        throw new Error(action.id === "finance.create_return_reminder" ? "No return deadline set." : "No warranty date set.");
+      }
+      const event = normalizeCalendarInput({
+        title: action.id === "finance.create_return_reminder" ? `Return deadline: ${transaction.store}` : `Warranty reminder: ${transaction.store}`,
+        date,
+        allDay: true,
+        sourceModule: "finance",
+        sourceId: transaction.id,
+        reminderLevel: "normal",
+        notes: `DexNest Finance ${action.id === "finance.create_return_reminder" ? "return" : "warranty"} reminder.`
+      });
+      saveCalendarEvents([event, ...loadCalendarEvents()]);
+      logFinanceEvent(action.id, "success", source, "Created DexNest Calendar reminder from Finance.", {
+        ...financeTransactionMetadata(transaction),
+        eventId: event.id,
+        date
+      }, startedAt);
+      return { ok: true, actionId: action.id, event, financeState: financeState(), calendarState: calendarState() };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "DexNest Finance action failed.";
+    logFinanceEvent(action.id, "failed", source, message, payloadMetadata(payload), startedAt, message);
+    return { ok: false, actionId: action.id, error: message };
+  }
+
+  return null;
+}
+
+function findCaptureItem(captureId: string): CaptureItem {
+  const item = loadCaptureItems().find((entry) => entry.id === captureId);
+  if (!item) {
+    throw new Error("Capture item not found.");
+  }
+  return item;
+}
+
+function saveRoutedCaptureItem(item: CaptureItem, routedTo: string): CaptureItem {
+  const updated = { ...item, status: "routed" as CaptureItemStatus, routedTo, updatedAt: new Date().toISOString() };
+  saveCaptureItems([updated, ...loadCaptureItems().filter((entry) => entry.id !== item.id)]);
+  return updated;
+}
+
+function runCaptureAction(action: DexNestActionDefinition, source: DexNestActionTrigger, payload: unknown = {}) {
+  const startedAt = Date.now();
+  const input = typeof payload === "object" && payload !== null ? (payload as CaptureItemInput & { location?: string; amount?: string | number; date?: string }) : {};
+
+  try {
+    if (action.id === "capture.open") {
+      logCaptureEvent(action.id, "success", source, "Opened DexNest Capture.", {}, startedAt);
+      return { ok: true, actionId: action.id, captureState: captureState() };
+    }
+
+    if (action.id === "capture.create_note" || action.id === "capture.create_from_file") {
+      const item = normalizeCaptureItem(input);
+      saveCaptureItems([item, ...loadCaptureItems()]);
+      logCaptureEvent(action.id, "success", source, "Created DexNest Capture item.", captureMetadata(item), startedAt);
+      return { ok: true, actionId: action.id, item, captureState: captureState() };
+    }
+
+    if (action.id === "capture.create_from_clipboard") {
+      const text = clipboard.readText();
+      const item = normalizeCaptureItem({ ...input, type: input.type ?? "note", title: input.title ?? "Clipboard capture", text, source: "clipboard" });
+      saveCaptureItems([item, ...loadCaptureItems()]);
+      logCaptureEvent(action.id, "success", source, "Created DexNest Capture item from clipboard.", { ...captureMetadata(item), byteLength: byteLength(text) }, startedAt);
+      return { ok: true, actionId: action.id, item, captureState: captureState() };
+    }
+
+    if (action.id === "capture.archive_item" || action.id === "capture.delete_item") {
+      const item = findCaptureItem(String(input.captureId ?? input.id ?? ""));
+      const status: CaptureItemStatus = action.id === "capture.archive_item" ? "archived" : "deleted";
+      const updated = { ...item, status, updatedAt: new Date().toISOString() };
+      saveCaptureItems([updated, ...loadCaptureItems().filter((entry) => entry.id !== item.id)]);
+      logCaptureEvent(action.id, "success", source, action.id === "capture.archive_item" ? "Archived DexNest Capture item." : "Deleted DexNest Capture item.", captureMetadata(updated), startedAt);
+      return { ok: true, actionId: action.id, item: updated, captureState: captureState() };
+    }
+
+    if (action.id.startsWith("capture.route_to_")) {
+      const item = findCaptureItem(String(input.captureId ?? input.id ?? ""));
+      const route = action.id.replace("capture.route_to_", "");
+      if (route === "journal") {
+        const journal = normalizeJournalCapture(item);
+        saveJournalEntries([journal, ...loadJournalEntries().filter((entry) => entry.id !== journal.id)]);
+      }
+      if (route === "calendar") {
+        const event = normalizeCalendarInput({ title: item.title, date: input.date || todayDateString(), allDay: true, sourceModule: "capture", sourceId: item.id, reminderLevel: "normal", notes: "From DexNest Capture." });
+        saveCalendarEvents([event, ...loadCalendarEvents()]);
+      }
+      if (route === "vault") {
+        if (!item.filePath) {
+          throw new Error("Vault routing needs an attached file for this MVP.");
+        }
+        const imported = importVaultDocuments({ paths: [item.filePath], category: "Other", tags: [...item.tags, "capture"], notes: "", sourceModule: "DexNest Capture", title: item.title }, source, action.id);
+        if (!imported.ok) {
+          throw new Error(imported.error ?? "Vault import failed.");
+        }
+      }
+      if (route === "finance") {
+        const amountMatch = item.text.match(/(?:\$|CAD\s*)?(\d+(?:\.\d{1,2})?)/i);
+        const transaction = normalizeFinanceTransaction({ date: input.date || todayDateString(), store: item.title, amount: input.amount ?? amountMatch?.[1] ?? 0, category: "Capture", paymentType: "other", notes: item.text, tags: item.tags, receiptPath: item.filePath ?? null });
+        saveFinanceTransactions([transaction, ...loadFinanceTransactions()]);
+      }
+      if (route === "finder") {
+        const itemName = input.title || item.title;
+        const location = typeof input.location === "string" && input.location.trim() ? input.location.trim() : windowlessLocationFromText(item.text);
+        const finderItem = normalizeFinderItem({ itemName, location, notes: item.text, tags: item.tags, status: "at_home" });
+        saveFinderItems([finderItem, ...loadFinderItems()]);
+      }
+      if (route === "drop") {
+        if (item.filePath) {
+          saveDropShelf([createDropFileItem(item.filePath, "desktop", "outgoing"), ...loadDropShelf()]);
+        } else {
+          const dropItem = createDropTextItem(item.text || item.title, "manual", "outgoing");
+          saveDropShelf([dropItem, ...loadDropShelf()]);
+        }
+        broadcastDropUpdate("Capture item added to Drop.", "drop.capture_added");
+      }
+
+      const updated = saveRoutedCaptureItem(item, route);
+      logCaptureEvent(action.id, "success", source, `Routed DexNest Capture item to ${route}.`, captureMetadata(updated), startedAt);
+      return { ok: true, actionId: action.id, item: updated, captureState: captureState() };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "DexNest Capture action failed.";
+    logCaptureEvent(action.id, "failed", source, message, payloadMetadata(payload), startedAt, message);
+    return { ok: false, actionId: action.id, error: message };
+  }
+
+  return null;
+}
+
+function normalizeJournalCapture(item: CaptureItem): JournalEntry {
+  const now = new Date().toISOString();
+  const rawText = [item.title, item.text, item.url ?? ""].filter(Boolean).join("\n\n");
+  return {
+    id: createId("journal-entry"),
+    date: todayDateString(),
+    title: item.title,
+    rawText,
+    cleanedText: cleanJournalText(rawText),
+    mood: "",
+    productivity: "",
+    tags: item.tags,
+    peopleTags: [],
+    createdAt: now,
+    updatedAt: now,
+    extractedItems: extractCalendarCandidatesFromText(rawText, todayDateString())
+  };
+}
+
+function windowlessLocationFromText(text: string): string {
+  const match = text.match(/\b(?:in|at|inside)\s+(.{2,80})/i);
+  return match?.[1]?.trim() || "Unknown location";
+}
+
+function normalizeRoutine(input: RoutineInput, existing?: DexNestRoutine): DexNestRoutine {
+  const now = new Date().toISOString();
+  const steps = (input.steps ?? existing?.steps ?? [])
+    .map((step) => ({
+      id: step.id ?? createId("routine-step"),
+      actionId: String(step.actionId ?? "").trim(),
+      params: step.params ?? {}
+    }))
+    .filter((step) => Boolean(step.actionId));
+  return {
+    id: input.id ?? existing?.id ?? createId("routine"),
+    name: input.name?.trim() || existing?.name || "Untitled routine",
+    description: input.description ?? existing?.description ?? "",
+    steps,
+    enabled: input.enabled ?? existing?.enabled ?? true,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+    lastRunAt: existing?.lastRunAt ?? null,
+    lastRunStatus: existing?.lastRunStatus ?? null,
+    lastRunSummary: existing?.lastRunSummary ?? null
+  };
+}
+
+async function runDeckRoutineAction(action: DexNestActionDefinition, source: DexNestActionTrigger, payload: unknown = {}) {
+  const startedAt = Date.now();
+  const input = typeof payload === "object" && payload !== null ? (payload as RoutineInput & { confirmedDangerous?: boolean }) : {};
+
+  try {
+    if (action.id === "deck.routine.create" || action.id === "deck.routine.update") {
+      const routines = loadRoutines();
+      const existingId = input.routineId ?? input.id;
+      const existing = existingId ? routines.find((routine) => routine.id === existingId) : undefined;
+      const routine = normalizeRoutine({ ...existing, ...input, id: existing?.id ?? input.id }, existing);
+      saveRoutines([routine, ...routines.filter((item) => item.id !== routine.id)]);
+      logRoutineEvent(action.id, "routine_saved", "success", source, `${existing ? "Updated" : "Created"} DexNest routine.`, { routineId: routine.id, stepCount: routine.steps.length }, startedAt);
+      return { ok: true, actionId: action.id, routine, routinesState: routinesState() };
+    }
+
+    if (action.id === "deck.routine.delete") {
+      const routineId = String(input.routineId ?? input.id ?? "");
+      saveRoutines(loadRoutines().filter((routine) => routine.id !== routineId));
+      logRoutineEvent(action.id, "routine_deleted", "success", source, "Deleted DexNest routine.", { routineId }, startedAt);
+      return { ok: true, actionId: action.id, routinesState: routinesState() };
+    }
+
+    if (action.id === "deck.routine.reorder") {
+      const routineId = String(input.routineId ?? input.id ?? "");
+      const routines = loadRoutines();
+      const existing = routines.find((routine) => routine.id === routineId);
+      if (!existing) {
+        throw new Error("Routine not found.");
+      }
+      const routine = normalizeRoutine({ ...existing, steps: input.steps ?? existing.steps }, existing);
+      saveRoutines([routine, ...routines.filter((item) => item.id !== routine.id)]);
+      logRoutineEvent(action.id, "routine_reordered", "success", source, "Reordered DexNest routine steps.", { routineId, stepCount: routine.steps.length }, startedAt);
+      return { ok: true, actionId: action.id, routine, routinesState: routinesState() };
+    }
+
+    if (action.id === "deck.routine.run") {
+      const routineId = String(input.routineId ?? input.id ?? "");
+      const routines = loadRoutines();
+      const routine = routines.find((item) => item.id === routineId);
+      if (!routine) {
+        throw new Error("Routine not found.");
+      }
+      if (!routine.enabled) {
+        throw new Error("Routine is disabled.");
+      }
+      logRoutineEvent(action.id, "routine_started", "pending", source, "Started DexNest routine.", { routineId, stepCount: routine.steps.length }, startedAt);
+
+      let completed = 0;
+      for (const step of routine.steps) {
+        const stepAction = findAction(step.actionId);
+        if (!stepAction) {
+          throw new Error(`Routine step action not found: ${step.actionId}`);
+        }
+        const stepNeedsConfirmation = stepAction.dangerLevel === "danger" || stepAction.dangerLevel === "critical" || stepAction.requiresConfirmation;
+        if (stepNeedsConfirmation && input.confirmedDangerous !== true && step.params?.confirmedDangerous !== true) {
+          throw new Error(`Routine step requires confirmation: ${step.actionId}`);
+        }
+        const result = await runRegisteredAction(step.actionId, "routine", { ...(step.params ?? {}), confirmedDangerous: input.confirmedDangerous === true || step.params?.confirmedDangerous === true });
+        const resultError = "error" in result && typeof result.error === "string" ? result.error : "Routine step failed.";
+        logRoutineEvent(action.id, result.ok ? "routine_step_success" : "routine_step_failed", result.ok ? "success" : "failed", source, result.ok ? "Routine step completed." : "Routine step failed.", { routineId, stepId: step.id, stepActionId: step.actionId }, startedAt, result.ok ? null : resultError);
+        if (!result.ok) {
+          throw new Error(resultError || `Routine step failed: ${step.actionId}`);
+        }
+        completed += 1;
+      }
+
+      const updated = { ...routine, lastRunAt: new Date().toISOString(), lastRunStatus: "success", lastRunSummary: `${completed}/${routine.steps.length} steps completed.`, updatedAt: new Date().toISOString() };
+      saveRoutines([updated, ...routines.filter((item) => item.id !== routine.id)]);
+      logRoutineEvent(action.id, "routine_completed", "success", source, "Completed DexNest routine.", { routineId, completed, stepCount: routine.steps.length }, startedAt);
+      return { ok: true, actionId: action.id, routine: updated, routinesState: routinesState() };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "DexNest routine action failed.";
+    const routineId = String(input.routineId ?? input.id ?? "");
+    if (routineId) {
+      const routines = loadRoutines();
+      const routine = routines.find((item) => item.id === routineId);
+      if (routine) {
+        saveRoutines([{ ...routine, lastRunAt: new Date().toISOString(), lastRunStatus: "failed", lastRunSummary: message, updatedAt: new Date().toISOString() }, ...routines.filter((item) => item.id !== routineId)]);
+      }
+    }
+    logRoutineEvent(action.id, "routine_failed", "failed", source, message, { routineId: routineId || null }, startedAt, message);
+    return { ok: false, actionId: action.id, error: message, routinesState: routinesState() };
+  }
+
+  return null;
+}
+
+async function runSearchAction(action: DexNestActionDefinition, source: DexNestActionTrigger, payload: unknown = {}) {
+  const startedAt = Date.now();
+  const input = typeof payload === "object" && payload !== null ? (payload as SearchQueryInput) : {};
+
+  try {
+    if (action.id === "search.open") {
+      logSearchEvent(action.id, "search_opened", "success", source, "Opened DexNest Search.", {}, startedAt);
+      return { ok: true, actionId: action.id, searchState: searchState() };
+    }
+
+    if (action.id === "search.rebuild_index") {
+      const records = saveSearchIndex(buildSearchIndexRecords());
+      logSearchEvent(
+        action.id,
+        "search_index_rebuilt",
+        "success",
+        source,
+        `Rebuilt DexNest Search index with ${records.length} records.`,
+        {
+          recordCount: records.length,
+          sources: [...new Set(records.map((record) => record.sourceModule))]
+        },
+        startedAt
+      );
+      return { ok: true, actionId: action.id, index: records, searchState: searchState(input) };
+    }
+
+    if (action.id === "search.clear_index") {
+      saveSearchIndex([]);
+      logSearchEvent(action.id, "search_index_cleared", "success", source, "Cleared DexNest Search index.", {}, startedAt);
+      return { ok: true, actionId: action.id, searchState: searchState() };
+    }
+
+    if (action.id === "search.run_query") {
+      const results = runSearchQuery(input);
+      logSearchEvent(
+        action.id,
+        "search_query_run",
+        "success",
+        source,
+        `Ran DexNest Search query with ${results.length} results.`,
+        {
+          queryLength: (input.query ?? "").length,
+          sourceModule: input.sourceModule ?? "all",
+          fileType: input.fileType ?? "all",
+          hasDateFrom: Boolean(input.dateFrom),
+          hasDateTo: Boolean(input.dateTo),
+          resultCount: results.length
+        },
+        startedAt
+      );
+      return { ok: true, actionId: action.id, results, resultCount: results.length };
+    }
+
+    if (action.id === "search.save_query") {
+      const now = new Date().toISOString();
+      const savedSearch: SavedSearch = {
+        id: createId("saved-search"),
+        title: previewText(input.title || input.query || "Saved DexNest Search"),
+        query: input.query ?? "",
+        sourceModule: input.sourceModule ?? "all",
+        fileType: input.fileType ?? "all",
+        dateFrom: input.dateFrom ?? "",
+        dateTo: input.dateTo ?? "",
+        createdAt: now,
+        updatedAt: now
+      };
+      saveSavedSearches([savedSearch, ...loadSavedSearches()]);
+      logSearchEvent(
+        action.id,
+        "search_saved_query_created",
+        "success",
+        source,
+        "Saved DexNest Search query.",
+        {
+          savedSearchId: savedSearch.id,
+          queryLength: savedSearch.query.length,
+          sourceModule: savedSearch.sourceModule,
+          fileType: savedSearch.fileType
+        },
+        startedAt
+      );
+      return { ok: true, actionId: action.id, savedSearch, searchState: searchState(input) };
+    }
+
+    if (action.id === "search.delete_saved_query") {
+      const savedSearchId = input.savedSearchId ?? "";
+      const nextSavedSearches = loadSavedSearches().filter((savedSearch) => savedSearch.id !== savedSearchId);
+      saveSavedSearches(nextSavedSearches);
+      logSearchEvent(
+        action.id,
+        "search_saved_query_deleted",
+        "success",
+        source,
+        "Deleted DexNest saved Search query.",
+        { savedSearchId },
+        startedAt
+      );
+      return { ok: true, actionId: action.id, searchState: searchState(input) };
+    }
+
+    if (action.id === "search.open_result_folder" && input.indexFolder) {
+      void shell.openPath(searchIndexRoot);
+      logSearchEvent(action.id, "search_index_folder_opened", "success", source, "Opened DexNest Search index folder.", {}, startedAt);
+      return { ok: true, actionId: action.id };
+    }
+
+    if (["search.open_result", "search.open_result_folder", "search.send_result_to_drop"].includes(action.id)) {
+      const result = loadSearchIndex().find((record) => record.id === input.resultId);
+      if (!result) {
+        throw new Error("Search result was not found in the current index.");
+      }
+      if (!result.filePath) {
+        throw new Error("Search result does not have a local file path.");
+      }
+
+      if (action.id === "search.open_result") {
+        void shell.openPath(result.filePath);
+        logSearchEvent(action.id, "search_result_opened", "success", source, "Opened DexNest Search result.", {
+          resultId: result.id,
+          sourceModule: result.sourceModule,
+          entityType: result.entityType,
+          fileType: result.fileType ?? null
+        }, startedAt);
+        return { ok: true, actionId: action.id };
+      }
+
+      if (action.id === "search.open_result_folder") {
+        void shell.openPath(dirname(result.filePath));
+        logSearchEvent(action.id, "search_result_folder_opened", "success", source, "Opened DexNest Search result folder.", {
+          resultId: result.id,
+          sourceModule: result.sourceModule,
+          entityType: result.entityType,
+          fileType: result.fileType ?? null
+        }, startedAt);
+        return { ok: true, actionId: action.id };
+      }
+
+      const item = createDropFileItem(result.filePath, "desktop", "outgoing");
+      saveDropShelf([item, ...loadDropShelf()]);
+      broadcastDropUpdate("Search result sent to phone.", "drop.outgoing_file_added");
+      logSearchEvent(action.id, "search_result_sent_to_drop", "success", source, "Sent DexNest Search result to Drop.", {
+        resultId: result.id,
+        sourceModule: result.sourceModule,
+        entityType: result.entityType,
+        fileType: result.fileType ?? null,
+        sizeBytes: result.sizeBytes ?? null
+      }, startedAt);
+      return { ok: true, actionId: action.id, dropItem: item };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "DexNest Search action failed.";
+    logSearchEvent(
+      action.id,
+      "search_action_failed",
+      "failed",
+      source,
+      message,
+      payloadMetadata(payload),
+      startedAt,
+      message
+    );
+    return { ok: false, actionId: action.id, error: message };
+  }
+
+  return null;
+}
+
 async function runRegisteredAction(actionId: string, source: DexNestActionTrigger, payload: unknown = {}) {
   const startedAt = Date.now();
   const action = findAction(actionId);
@@ -1759,13 +6594,35 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
       status: "failed",
       source,
       summary: `Unknown DexNest action: ${actionId}`,
-      metadataJson: { payload }
+      metadataJson: payloadMetadata(payload)
     });
 
     return {
       ok: false,
       actionId,
       error: `Unknown DexNest action: ${actionId}`
+    };
+  }
+
+  const params = typeof payload === "object" && payload !== null ? (payload as { confirmedDangerous?: boolean }) : {};
+  const needsConfirmation = action.dangerLevel === "danger" || action.dangerLevel === "critical" || action.requiresConfirmation;
+  if (needsConfirmation && params.confirmedDangerous !== true) {
+    localDb.appendActionEvent({
+      module: action.module,
+      actionId,
+      eventType: "action_confirmation_required",
+      status: "cancelled",
+      source,
+      summary: `${action.title} was blocked because confirmation was required.`,
+      metadataJson: {
+        dangerLevel: action.dangerLevel
+      }
+    });
+
+    return {
+      ok: false,
+      actionId,
+      error: `${action.title} requires confirmation.`
     };
   }
 
@@ -1788,12 +6645,121 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
     }
   }
 
+  if (action.module === "deck" && action.id.startsWith("deck.routine.")) {
+    const result = await runDeckRoutineAction(action, source, payload);
+    if (result) {
+      return result;
+    }
+  }
+
+  if (action.module === "command" && (action.id === "command.refresh_stats" || action.id === "command.open_recent_activity")) {
+    localDb.appendActionEvent({
+      module: "DexNest Command",
+      actionId,
+      eventType: action.id === "command.refresh_stats" ? "command_stats_refreshed" : "command_recent_activity_opened",
+      status: "success",
+      source,
+      summary: action.id === "command.refresh_stats" ? "Refreshed DexNest Command stats." : "Opened DexNest Command recent activity.",
+      metadataJson: {}
+    });
+    return { ok: true, actionId, commandStats: commandStats(), events: localDb.listRecentEvents(10) };
+  }
+
+  if (action.module === "tools") {
+    const result = await runToolsAction(action, source, payload);
+    if (result) {
+      return result;
+    }
+  }
+
+  if (action.module === "vault") {
+    const result = runVaultAction(action, source, payload);
+    if (result) {
+      return result;
+    }
+  }
+
+  if (action.module === "search") {
+    const result = await runSearchAction(action, source, payload);
+    if (result) {
+      return result;
+    }
+  }
+
+  if (action.module === "journal") {
+    const result = runJournalAction(action, source, payload);
+    if (result) {
+      return result;
+    }
+  }
+
+  if (action.module === "calendar") {
+    const result = runCalendarAction(action, source, payload);
+    if (result) {
+      return result;
+    }
+  }
+
+  if (action.module === "finder") {
+    const result = runFinderAction(action, source, payload);
+    if (result) {
+      return result;
+    }
+  }
+
+  if (action.module === "finance") {
+    const result = runFinanceAction(action, source, payload);
+    if (result) {
+      return result;
+    }
+  }
+
+  if (action.module === "heatmap") {
+    const result = await runHeatmapAction(action, source, payload);
+    if (result) {
+      return result;
+    }
+  }
+
+  if (action.module === "backup") {
+    const result = runBackupAction(action, source, payload);
+    if (result) {
+      return result;
+    }
+  }
+
+  if (action.module === "system" && action.id.startsWith("system.health.")) {
+    const health = appHealthState(source, action.id === "system.health.run_checks");
+    return { ok: true, actionId, health };
+  }
+
+  if (action.module === "capture") {
+    const result = runCaptureAction(action, source, payload);
+    if (result) {
+      return result;
+    }
+  }
+
+  if (action.module === "voice") {
+    localDb.appendActionEvent({
+      module: "DexNest Voice",
+      actionId,
+      eventType: "voice_dictation_started",
+      status: "success",
+      source,
+      summary: "Started DexNest click-to-speak dictation placeholder.",
+      metadataJson: payloadMetadata(payload),
+      durationMs: Date.now() - startedAt
+    });
+    return { ok: true, actionId, message: "Voice dictation placeholder started." };
+  }
+
   logActionEvent(
     action,
     "success",
     source,
     `${action.title} completed.`,
-    { handlerType: action.handlerType, handlerRef: action.handlerRef, payload },
+    { handlerType: action.handlerType, handlerRef: action.handlerRef, ...payloadMetadata(payload) },
     null,
     Date.now() - startedAt
   );
@@ -1913,6 +6879,63 @@ function runProjectAction(actionId: string, projectId: string, operation: string
   return { ok: false, actionId, error: `Unsupported project operation: ${operation}` };
 }
 
+function startWindowsDictation(): Promise<{ ok: boolean; error?: string }> {
+  if (process.platform !== "win32") {
+    return Promise.resolve({ ok: false, error: "Windows dictation shortcut is only available on Windows." });
+  }
+
+  const script = `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class DexNestKeyboard {
+  [DllImport("user32.dll")]
+  public static extern void keybd_event(byte bVk, byte bScan, int dwFlags, int dwExtraInfo);
+}
+"@
+[DexNestKeyboard]::keybd_event(0x5B, 0, 0, 0)
+[DexNestKeyboard]::keybd_event(0x48, 0, 0, 0)
+Start-Sleep -Milliseconds 80
+[DexNestKeyboard]::keybd_event(0x48, 0, 2, 0)
+[DexNestKeyboard]::keybd_event(0x5B, 0, 2, 0)
+`;
+
+  return new Promise((resolvePromise) => {
+    execFile(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+      { windowsHide: true, timeout: 3000 },
+      (error) => {
+        if (error) {
+          localDb.appendActionEvent({
+            module: "DexNest Voice",
+            actionId: "voice.start_dictation_placeholder",
+            eventType: "voice_windows_dictation_failed",
+            status: "failed",
+            source: "module_ui",
+            summary: "Failed to start Windows dictation shortcut.",
+            metadataJson: {},
+            errorMessage: error.message
+          });
+          resolvePromise({ ok: false, error: error.message });
+          return;
+        }
+
+        localDb.appendActionEvent({
+          module: "DexNest Voice",
+          actionId: "voice.start_dictation_placeholder",
+          eventType: "voice_windows_dictation_started",
+          status: "success",
+          source: "module_ui",
+          summary: "Started Windows dictation shortcut from DexNest Mic button.",
+          metadataJson: {}
+        });
+        resolvePromise({ ok: true });
+      }
+    );
+  });
+}
+
 function startActionEndpoint(): void {
   actionServer = createServer(async (request, response) => {
     try {
@@ -1966,6 +6989,139 @@ function startActionEndpoint(): void {
   actionServer.listen(actionPort, "0.0.0.0");
 }
 
+async function selectToolsFiles(kind: "pdf" | "image" | "any"): Promise<ToolsSelectedFile[]> {
+  const filters = kind === "pdf"
+    ? [{ name: "PDF files", extensions: ["pdf"] }]
+    : kind === "image"
+      ? [{ name: "Image files", extensions: ["png", "jpg", "jpeg", "webp"] }]
+      : [{ name: "DexNest Tools files", extensions: ["pdf", "png", "jpg", "jpeg", "webp", "mp4", "mov", "mkv", "mp3", "wav", "m4a", "docx", "pptx"] }];
+  const options: OpenDialogOptions = {
+    title: "Select DexNest Tools files",
+    properties: ["openFile", "multiSelections"],
+    filters
+  };
+  const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+  if (result.canceled) {
+    return [];
+  }
+
+  return result.filePaths.filter((filePath) => existsSync(filePath)).map(selectedFileMetadata);
+}
+
+async function selectVaultFiles(): Promise<ToolsSelectedFile[]> {
+  const options: OpenDialogOptions = {
+    title: "Select DexNest Vault documents",
+    properties: ["openFile", "multiSelections"],
+    filters: [{ name: "Documents and files", extensions: ["pdf", "docx", "pptx", "png", "jpg", "jpeg", "webp", "txt", "md", "xlsx", "csv", "zip"] }]
+  };
+  const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+  if (result.canceled) {
+    return [];
+  }
+
+  return result.filePaths.filter((filePath) => existsSync(filePath)).map(selectedFileMetadata);
+}
+
+async function selectFinanceReceipt(): Promise<ToolsSelectedFile[]> {
+  const options: OpenDialogOptions = {
+    title: "Select DexNest Finance receipt",
+    properties: ["openFile"],
+    filters: [{ name: "Receipt files", extensions: ["pdf", "png", "jpg", "jpeg", "webp", "heic", "txt", "docx"] }]
+  };
+  const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+  if (result.canceled) {
+    return [];
+  }
+
+  return result.filePaths.filter((filePath) => existsSync(filePath)).map(selectedFileMetadata);
+}
+
+async function selectCaptureFile(): Promise<ToolsSelectedFile[]> {
+  const options: OpenDialogOptions = {
+    title: "Select DexNest Capture file",
+    properties: ["openFile"],
+    filters: [{ name: "Capture files", extensions: ["pdf", "docx", "pptx", "png", "jpg", "jpeg", "webp", "heic", "txt", "md", "xlsx", "csv", "zip", "mp3", "wav", "m4a"] }]
+  };
+  const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+  if (result.canceled) {
+    return [];
+  }
+
+  return result.filePaths.filter((filePath) => existsSync(filePath)).map(selectedFileMetadata);
+}
+
+async function chooseToolsOutputFolder(): Promise<{ ok: boolean; path?: string; error?: string }> {
+  const options: OpenDialogOptions = {
+    title: "Choose DexNest Tools output folder",
+    properties: ["openDirectory", "createDirectory"]
+  };
+  const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+  const selectedPath = result.canceled ? "" : result.filePaths[0];
+  if (!selectedPath) {
+    return { ok: false, error: "No folder selected." };
+  }
+
+  mkdirSync(selectedPath, { recursive: true });
+  saveToolsSettings({ ...loadToolsSettings(), outputFolderPath: selectedPath });
+  localDb.appendActionEvent({
+    module: "DexNest Tools",
+    actionId: "tools.output_folder_changed",
+    eventType: "tools_output_folder_changed",
+    status: "success",
+    source: "module_ui",
+    summary: "Changed DexNest Tools output folder.",
+    metadataJson: { path: selectedPath }
+  });
+  return { ok: true, path: selectedPath };
+}
+
+function resetToolsOutputFolder(): { ok: boolean; path: string } {
+  saveToolsSettings({ ...loadToolsSettings(), outputFolderPath: null });
+  ensureToolsRoot();
+  localDb.appendActionEvent({
+    module: "DexNest Tools",
+    actionId: "tools.output_folder_reset",
+    eventType: "tools_output_folder_reset",
+    status: "success",
+    source: "module_ui",
+    summary: "Reset DexNest Tools output folder.",
+    metadataJson: { path: toolsOutputRoot }
+  });
+  return { ok: true, path: toolsOutputRoot };
+}
+
+function updateToolsSettings(input: Partial<ToolsSettings>): ToolsSettings {
+  const nextSettings = saveToolsSettings({
+    ...loadToolsSettings(),
+    ffmpegPath: typeof input.ffmpegPath === "string" && input.ffmpegPath.trim() ? input.ffmpegPath.trim() : null,
+    libreOfficePath: typeof input.libreOfficePath === "string" && input.libreOfficePath.trim() ? input.libreOfficePath.trim() : null
+  });
+
+  localDb.appendActionEvent({
+    module: "DexNest Tools",
+    actionId: "tools.open_tools_settings",
+    eventType: "tools_settings_updated",
+    status: "success",
+    source: "module_ui",
+    summary: "Updated DexNest Tools dependency settings.",
+    metadataJson: {
+      hasFfmpegPath: Boolean(nextSettings.ffmpegPath),
+      hasLibreOfficePath: Boolean(nextSettings.libreOfficePath)
+    }
+  });
+
+  return nextSettings;
+}
+
+function openToolsFile(filePath: string): { ok: boolean; error?: string } {
+  if (!filePath || !existsSync(filePath)) {
+    return { ok: false, error: "File not found." };
+  }
+
+  void shell.openPath(filePath);
+  return { ok: true };
+}
+
 function registerIpcHandlers(): void {
   ipcMain.handle("dexnest:get-app-info", () => ({
     appName: "DexNest",
@@ -1982,6 +7138,38 @@ function registerIpcHandlers(): void {
     dropReceiveFolderPath: dropIncomingRoot,
     dropOutgoingFolderPath: dropOutgoingRoot,
     dropTempFolderPath: dropTempRoot,
+    toolsInputFolderPath: toolsInputRoot,
+    toolsOutputFolderPath: getToolsOutputFolder(),
+    toolsDefaultOutputFolderPath: toolsOutputRoot,
+    toolsTempFolderPath: toolsTempRoot,
+    toolsOutputsPath,
+    vaultDocumentsPath: vaultDocumentsRoot,
+    vaultImportsPath: vaultImportsRoot,
+    vaultVersionsPath: vaultVersionsRoot,
+    vaultMetadataPath: vaultDocumentsPath,
+    searchIndexPath,
+    searchIndexFolderPath: searchIndexRoot,
+    savedSearchesPath,
+    journalEntriesPath,
+    calendarEventsPath,
+    finderItemsPath,
+    financeTransactionsPath,
+    financeRecurringPath,
+    financeSettingsPath,
+    receiptsPath: receiptsRoot,
+    captureItemsPath,
+    capturesPath: capturesRoot,
+    routinesPath,
+    heatmapEventsPath,
+    heatmapSettingsPath,
+    heatmapGoalsPath,
+    backupFolderPath: backupsRoot,
+    restoreStagingPath: restoreStagingRoot,
+    packageMode: app.isPackaged ? "packaged" : "development",
+    currentBranch: currentGitBranch(),
+    localTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    localDateTimePreview: formatLocalDateTime(new Date()),
+    localToday: getLocalTodayDateString(),
     dropLocalUrl: dropLocalUrl(),
     dropPhoneUrl: dropPhoneUrl(),
     lanIp: getLanIp(),
@@ -2007,6 +7195,52 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("dexnest:get-drop-state", () => dropState());
 
+  ipcMain.handle("dexnest:get-tools-state", () => toolsState());
+
+  ipcMain.handle("dexnest:get-vault-state", () => vaultState());
+
+  ipcMain.handle("dexnest:get-search-state", () => searchState());
+
+  ipcMain.handle("dexnest:get-journal-state", () => journalState());
+
+  ipcMain.handle("dexnest:get-calendar-state", () => calendarState());
+
+  ipcMain.handle("dexnest:get-finder-state", () => finderState());
+
+  ipcMain.handle("dexnest:get-finance-state", () => financeState());
+
+  ipcMain.handle("dexnest:get-capture-state", () => captureState());
+
+  ipcMain.handle("dexnest:get-heatmap-state", () => heatmapState());
+
+  ipcMain.handle("dexnest:get-routines-state", () => routinesState());
+
+  ipcMain.handle("dexnest:get-backup-state", () => backupState());
+
+  ipcMain.handle("dexnest:select-backup-zip", () => selectBackupZip());
+
+  ipcMain.handle("dexnest:get-app-health", () => appHealthState("module_ui", true));
+
+  ipcMain.handle("dexnest:get-command-stats", () => commandStats());
+
+  ipcMain.handle("dexnest:select-tools-files", (_event, kind: "pdf" | "image" | "any") => selectToolsFiles(kind));
+
+  ipcMain.handle("dexnest:select-vault-files", () => selectVaultFiles());
+
+  ipcMain.handle("dexnest:select-finance-receipt", () => selectFinanceReceipt());
+
+  ipcMain.handle("dexnest:select-capture-file", () => selectCaptureFile());
+
+  ipcMain.handle("dexnest:get-pdf-info", (_event, paths: string[]) => getPdfInfo(paths));
+
+  ipcMain.handle("dexnest:choose-tools-output-folder", () => chooseToolsOutputFolder());
+
+  ipcMain.handle("dexnest:reset-tools-output-folder", () => resetToolsOutputFolder());
+
+  ipcMain.handle("dexnest:save-tools-settings", (_event, input: Partial<ToolsSettings>) => updateToolsSettings(input));
+
+  ipcMain.handle("dexnest:open-tools-file", (_event, filePath: string) => openToolsFile(filePath));
+
   ipcMain.handle("dexnest:copy-drop-incoming-text", (_event, itemId: string) => copyIncomingDropText(itemId));
 
   ipcMain.handle("dexnest:choose-drop-receive-folder", () => chooseDropReceiveFolder());
@@ -2024,6 +7258,8 @@ function registerIpcHandlers(): void {
       metadataJson: { enabled }
     });
   });
+
+  ipcMain.handle("dexnest:start-windows-dictation", () => startWindowsDictation());
 
   ipcMain.handle("dexnest:save-project", (_event, input: ProjectInput) => upsertProject(input));
 
@@ -2118,8 +7354,15 @@ function createWindow(): void {
 app.whenReady().then(() => {
   localDb.initialize();
   ensureDropRoot();
+  ensureToolsRoot();
+  ensureVaultRoot();
+  ensureFinanceRoot();
+  ensureCaptureRoot();
+  ensureSearchRoot();
+  ensureBackupRoot();
   registerIpcHandlers();
   startActionEndpoint();
+  startHeatmapTimer();
   createWindow();
 
   app.on("activate", () => {
@@ -2136,6 +7379,8 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  stopHeatmapTimer();
   actionServer?.close();
   localDb.close();
 });
+

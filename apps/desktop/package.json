@@ -7,8 +7,36 @@
   "scripts": {
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"vite build --config vite.main.config.ts --watch\" \"wait-on http://127.0.0.1:5173 dist/main/main.cjs dist/main/preload.cjs && electron .\"",
     "build": "vite build --config vite.main.config.ts && vite build",
+    "package:win": "corepack pnpm build && electron-builder --win --dir",
+    "dist:win": "corepack pnpm build && electron-builder --win",
     "rebuild:native": "electron-rebuild -f -w better-sqlite3",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit"
+  },
+  "build": {
+    "appId": "com.dexnest.desktop",
+    "productName": "DexNest",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json",
+      "!local-data/**/*",
+      "!**/*.map"
+    ],
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    }
   },
   "dependencies": {
     "@dexnest/action-registry": "workspace:*",
@@ -17,19 +45,23 @@
     "@dexnest/module-deck": "workspace:*",
     "@dexnest/module-dev": "workspace:*",
     "@dexnest/shared-types": "workspace:*",
+    "adm-zip": "^0.5.17",
     "better-sqlite3": "^11.9.1",
-    "electron": "^35.1.4",
+    "pdf-lib": "^1.17.1",
     "qrcode": "^1.5.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",
+    "@types/adm-zip": "^0.5.8",
     "@types/node": "^22.13.14",
     "@types/react": "^19.0.12",
     "@types/react-dom": "^19.0.4",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.2",
+    "electron": "^35.1.4",
+    "electron-builder": "^26.15.3",
     "vite": "^6.2.3",
     "wait-on": "^8.0.3"
   }

@@ -1,4 +1,21 @@
-export type DexNestModuleId = "command" | "dev" | "deck" | "clipboard" | "drop";
+export type DexNestModuleId =
+  | "command"
+  | "dev"
+  | "deck"
+  | "clipboard"
+  | "drop"
+  | "tools"
+  | "vault"
+  | "search"
+  | "capture"
+  | "journal"
+  | "calendar"
+  | "finder"
+  | "finance"
+  | "heatmap"
+  | "backup"
+  | "system"
+  | "voice";
 
 export type DexNestActionStatus = "available" | "placeholder";
 export type DexNestActionDangerLevel = "safe" | "caution" | "danger" | "critical";
@@ -58,4 +75,101 @@ export interface DexNestEventLogEntry {
   eventType: string;
   status: DexNestEventStatus;
   summary: string;
+}
+
+function padDatePart(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+export function toLocalDateInputValue(date: Date): string {
+  return `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(date.getDate())}`;
+}
+
+export function getLocalTodayDateString(): string {
+  return toLocalDateInputValue(new Date());
+}
+
+export function parseLocalDateInput(value: string): Date {
+  const [year, month, day] = value.split("-").map(Number);
+  if (!year || !month || !day) {
+    return new Date(value);
+  }
+
+  return new Date(year, month - 1, day, 12, 0, 0, 0);
+}
+
+function dateFromLocalInputOrTimestamp(dateOrString: Date | string): Date {
+  if (dateOrString instanceof Date) {
+    return dateOrString;
+  }
+
+  return /^\d{4}-\d{2}-\d{2}$/.test(dateOrString)
+    ? parseLocalDateInput(dateOrString)
+    : new Date(dateOrString);
+}
+
+export function formatLocalDate(dateOrString: Date | string): string {
+  return dateFromLocalInputOrTimestamp(dateOrString).toLocaleDateString();
+}
+
+export function formatLocalDateTime(dateOrString: Date | string): string {
+  return dateFromLocalInputOrTimestamp(dateOrString).toLocaleString();
+}
+
+function addLocalDays(date: Date, days: number): Date {
+  const nextDate = new Date(date);
+  nextDate.setDate(nextDate.getDate() + days);
+  return nextDate;
+}
+
+export function resolveRelativeLocalDate(phrase: string, baseDate: Date = new Date()): string | null {
+  const normalized = phrase.toLowerCase();
+  const localBaseDate = parseLocalDateInput(toLocalDateInputValue(baseDate));
+
+  if (/\btoday\b/.test(normalized)) {
+    return toLocalDateInputValue(localBaseDate);
+  }
+
+  if (/\btomorrow\b/.test(normalized)) {
+    return toLocalDateInputValue(addLocalDays(localBaseDate, 1));
+  }
+
+  const inDaysMatch = normalized.match(/\bin\s+(\d{1,3})\s+days?\b/);
+  if (inDaysMatch) {
+    return toLocalDateInputValue(addLocalDays(localBaseDate, Number(inDaysMatch[1])));
+  }
+
+  const weekdays = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+  const weekdayMatch = normalized.match(/\bnext\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
+  if (weekdayMatch) {
+    const targetDay = weekdays.indexOf(weekdayMatch[1]);
+    const currentDay = localBaseDate.getDay();
+    const daysUntil = ((targetDay - currentDay + 7) % 7) || 7;
+    return toLocalDateInputValue(addLocalDays(localBaseDate, daysUntil));
+  }
+
+  const monthMatch = normalized.match(/\bon\s+(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})\b/);
+  if (monthMatch) {
+    const monthIndex = [
+      "january",
+      "february",
+      "march",
+      "april",
+      "may",
+      "june",
+      "july",
+      "august",
+      "september",
+      "october",
+      "november",
+      "december"
+    ].indexOf(monthMatch[1]);
+    const candidate = new Date(localBaseDate.getFullYear(), monthIndex, Number(monthMatch[2]), 12, 0, 0, 0);
+    if (candidate < localBaseDate) {
+      candidate.setFullYear(candidate.getFullYear() + 1);
+    }
+    return toLocalDateInputValue(candidate);
+  }
+
+  return null;
 }

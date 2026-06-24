@@ -7,6 +7,8 @@
   "scripts": {
     "dev": "corepack pnpm --filter @dexnest/desktop dev",
     "build": "corepack pnpm -r build",
+    "package:win": "corepack pnpm --filter @dexnest/desktop package:win",
+    "dist:win": "corepack pnpm --filter @dexnest/desktop dist:win",
     "rebuild:native": "corepack pnpm --filter @dexnest/desktop rebuild:native",
     "typecheck": "corepack pnpm -r typecheck"
   },
