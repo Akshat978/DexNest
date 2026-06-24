@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import QRCode from "qrcode";
-import { formatLocalDate, formatLocalDateTime, getLocalTodayDateString, parseLocalDateInput, toLocalDateInputValue } from "@dexnest/shared-types";
+import { formatLocalDate, formatLocalDateTime, getLocalTodayDateString, parseLocalDateInput, resolveRelativeLocalDate, toLocalDateInputValue } from "@dexnest/shared-types";
 import "@dexnest/shared-ui/tokens.css";
 import "./styles.css";
 
@@ -452,11 +452,78 @@ interface SmartLookupResult {
   confidence: "high" | "medium" | "low";
   sourceRecordId: string;
   sourceModule: string;
+  sourceType?: string;
   sourceDocumentTitle: string;
   sourceFilePath?: string | null;
   ocrTextPath?: string | null;
   preview: string;
   score: number;
+  autoRevealed?: boolean;
+}
+
+type VoiceIntentName =
+  | "smart_lookup"
+  | "calendar_create_candidate"
+  | "finder_search"
+  | "drop_send_clipboard"
+  | "open_module"
+  | "dev_run_command"
+  | "journal_open_today"
+  | "search_query"
+  | "capture_note"
+  | "unknown";
+
+type VoiceConfidence = "high" | "medium" | "low";
+type VoiceSensitivity = "none" | "personal" | "sensitive";
+
+interface VoiceRouteResult {
+  intent: VoiceIntentName;
+  targetModule: string;
+  actionId?: string;
+  params: Record<string, unknown>;
+  confidence: VoiceConfidence;
+  requiresConfirmation: boolean;
+  sensitivity: VoiceSensitivity;
+  explanation: string;
+  suggestions?: string[];
+}
+
+type AssistantRouterUsed = "rules" | "local-llm";
+
+interface AssistantSettings {
+  localIntentEngineEnabled: boolean;
+  ollamaUrl: string;
+  ollamaModel: string;
+  fallbackToRules: boolean;
+}
+
+interface AssistantSecuritySettings {
+  trustedSessionEnabled: boolean;
+  autoRevealWhileUnlocked: boolean;
+  sessionTimeoutMinutes: number;
+  speakSensitiveAnswers: boolean;
+  lockOnAppClose: boolean;
+}
+
+interface AssistantSecurityState {
+  settings: AssistantSecuritySettings;
+  sessionUnlocked: boolean;
+  sessionExpiresAt: number | null;
+  secureVaultUnlocked: boolean;
+  secureVaultSetup: boolean;
+}
+
+interface AssistantChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  // Assistant-only routing context (shown under Advanced/Debug).
+  route?: VoiceRouteResult;
+  routerUsed?: AssistantRouterUsed;
+  awaitingConfirm?: boolean;
+  resolved?: "ran" | "cancelled" | "failed" | "info";
+  smartResults?: SmartLookupResult[];
+  searchResults?: SearchResult[];
 }
 
 interface SavedSearch {
@@ -922,6 +989,14 @@ interface DexNestBridge {
   resetToolsOutputFolder: () => Promise<{ ok: boolean; path: string }>;
   saveToolsSettings: (payload: { ffmpegPath?: string | null; libreOfficePath?: string | null; tesseractPath?: string | null; pythonPath?: string | null; ocrEngine?: string; ocrDevice?: string; ocrLanguage?: string }) => Promise<unknown>;
   openToolsFile: (filePath: string) => Promise<{ ok: boolean; error?: string }>;
+  getAssistantState: () => Promise<{ settings: AssistantSettings }>;
+  saveAssistantSettings: (payload: Partial<AssistantSettings>) => Promise<AssistantSettings>;
+  testOllama: (payload: { ollamaUrl?: string; ollamaModel?: string }) => Promise<{ ok: boolean; models?: string[]; modelAvailable?: boolean; error?: string }>;
+  assistantLlmIntent: (payload: { query: string }) => Promise<{ ok: boolean; intent?: Record<string, unknown>; error?: string }>;
+  getAssistantSecurityState: () => Promise<AssistantSecurityState>;
+  saveAssistantSecuritySettings: (payload: Partial<AssistantSecuritySettings>) => Promise<AssistantSecurityState>;
+  unlockTrustedSession: (payload: { masterPassword?: string }) => Promise<{ ok: boolean; error?: string; state: AssistantSecurityState }>;
+  lockTrustedSession: () => Promise<AssistantSecurityState>;
   copyDropIncomingText: (itemId: string) => Promise<{ ok: boolean; error?: string }>;
   chooseDropReceiveFolder: () => Promise<{ ok: boolean; path?: string; error?: string }>;
   resetDropReceiveFolder: () => Promise<{ ok: boolean; path: string }>;
@@ -1312,6 +1387,20 @@ const fallbackBridge: DexNestBridge = {
   resetToolsOutputFolder: async () => ({ ok: true, path: "./local-data/files/tools/output" }),
   saveToolsSettings: async () => fallbackBridge.getToolsState(),
   openToolsFile: async () => ({ ok: false, error: "Bridge unavailable" }),
+  getAssistantState: async () => ({ settings: { localIntentEngineEnabled: false, ollamaUrl: "http://127.0.0.1:11434", ollamaModel: "qwen2.5:3b", fallbackToRules: true } }),
+  saveAssistantSettings: async () => ({ localIntentEngineEnabled: false, ollamaUrl: "http://127.0.0.1:11434", ollamaModel: "qwen2.5:3b", fallbackToRules: true }),
+  testOllama: async () => ({ ok: false, error: "Bridge unavailable" }),
+  assistantLlmIntent: async () => ({ ok: false, error: "Bridge unavailable" }),
+  getAssistantSecurityState: async () => ({
+    settings: { trustedSessionEnabled: true, autoRevealWhileUnlocked: true, sessionTimeoutMinutes: 10, speakSensitiveAnswers: false, lockOnAppClose: true },
+    sessionUnlocked: false,
+    sessionExpiresAt: null,
+    secureVaultUnlocked: false,
+    secureVaultSetup: false
+  }),
+  saveAssistantSecuritySettings: async () => fallbackBridge.getAssistantSecurityState(),
+  unlockTrustedSession: async () => ({ ok: false, error: "Bridge unavailable", state: await fallbackBridge.getAssistantSecurityState() }),
+  lockTrustedSession: async () => fallbackBridge.getAssistantSecurityState(),
   copyDropIncomingText: async () => ({ ok: true }),
   chooseDropReceiveFolder: async () => ({ ok: false, error: "Bridge unavailable" }),
   resetDropReceiveFolder: async () => ({ ok: true, path: "./local-data/files/drop/incoming" }),
@@ -1374,9 +1463,565 @@ function viewFromAction(action?: ActionDefinition): ViewId | null {
   return views.some((view) => view.id === viewId) ? viewId : null;
 }
 
+const voiceModuleAliases: Record<string, { module: ViewId; actionId: string }> = {
+  command: { module: "command", actionId: "command.open_home" },
+  home: { module: "command", actionId: "command.open_home" },
+  dev: { module: "dev", actionId: "dev.open_dashboard" },
+  developer: { module: "dev", actionId: "dev.open_dashboard" },
+  deck: { module: "deck", actionId: "deck.test_endpoint" },
+  clipboard: { module: "clipboard", actionId: "clipboard.open" },
+  drop: { module: "drop", actionId: "drop.open" },
+  phone: { module: "drop", actionId: "drop.open" },
+  tools: { module: "tools", actionId: "tools.open" },
+  vault: { module: "vault", actionId: "vault.open" },
+  search: { module: "search", actionId: "search.open" },
+  capture: { module: "capture", actionId: "capture.open" },
+  inbox: { module: "capture", actionId: "capture.open" },
+  finance: { module: "finance", actionId: "finance.open" },
+  journal: { module: "journal", actionId: "journal.open_today" },
+  calendar: { module: "calendar", actionId: "calendar.show_today" },
+  finder: { module: "finder", actionId: "finder.open" },
+  heatmap: { module: "heatmap", actionId: "heatmap.open" },
+  audit: { module: "audit", actionId: "audit.open_history" },
+  settings: { module: "settings", actionId: "settings.open" }
+};
+
+function normalizeVoiceCommand(value: string): string {
+  return value.toLowerCase().replace(/[^\w\s:'-]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function extractVoiceTime(input: string): string | null {
+  const match = input.match(/\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i);
+  if (!match) {
+    return null;
+  }
+
+  let hour = Number(match[1]);
+  const minute = Number(match[2] ?? 0);
+  const meridian = match[3]?.toLowerCase();
+  if (meridian === "pm" && hour < 12) {
+    hour += 12;
+  }
+  if (meridian === "am" && hour === 12) {
+    hour = 0;
+  }
+  if (hour > 23 || minute > 59) {
+    return null;
+  }
+
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function cleanVoiceCalendarTitle(input: string): string {
+  return input
+    .replace(/\b(add|create|schedule)\b/gi, "")
+    .replace(/\b(remind me to|remind me|please)\b/gi, "")
+    .replace(/\b(today|tomorrow|in\s+\d{1,3}\s+days?|next\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday))\b/gi, "")
+    .replace(/\bon\s+(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}\b/gi, "")
+    .replace(/\bat\s+\d{1,2}(?::\d{2})?\s*(am|pm)?\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildVoiceCalendarParams(input: string): Record<string, unknown> {
+  const date = resolveRelativeLocalDate(input) ?? getLocalTodayDateString();
+  const startTime = extractVoiceTime(input);
+  const title = cleanVoiceCalendarTitle(input) || "Voice Calendar event";
+  const lower = input.toLowerCase();
+  const type = lower.includes("birthday") ? "birthday" : lower.includes("call") ? "call" : lower.includes("appointment") ? "appointment" : lower.includes("meeting") ? "meeting" : "reminder";
+
+  return {
+    title,
+    date,
+    startTime,
+    allDay: !startTime || type === "birthday",
+    sourceModule: "voice",
+    sourceId: `voice-${Date.now()}`,
+    recurrence: type === "birthday" ? "yearly-placeholder" : null,
+    reminderLevel: lower.includes("urgent") ? "urgent" : "normal",
+    notes: "Created from DexNest Voice command candidate."
+  };
+}
+
+function extractFinderQuery(input: string): string {
+  return input
+    .replace(/\b(where did i put|where is|where are|find my|find the|find)\b/gi, "")
+    .replace(/\b(my|the)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractSearchQuery(input: string): string {
+  return input
+    .replace(/\b(search for|search|find document|find file|find docs?|look up)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractCaptureNote(input: string): string {
+  return input
+    .replace(/\b(capture this note|capture note|save note|remember this|add this to inbox|capture this)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function findDevRunAction(input: string, actions: ActionDefinition[]): ActionDefinition | undefined {
+  const normalized = normalizeVoiceCommand(input);
+  const commandKey = normalized.includes("typecheck") || normalized.includes("type check")
+    ? "typecheck"
+    : normalized.includes("build")
+      ? "build"
+      : normalized.includes("test")
+        ? "test"
+        : normalized.includes("start") || normalized.includes("dev")
+          ? "start"
+          : null;
+  if (!commandKey) {
+    return undefined;
+  }
+
+  const candidates = actions.filter((action) => action.id.startsWith("dev.project.") && action.id.endsWith(`.run_${commandKey}`));
+  return candidates.find((action) => /dexnest|desknest/i.test(action.title)) ?? candidates[0];
+}
+
+function routeVoiceCommand(input: string, actions: ActionDefinition[]): VoiceRouteResult {
+  const trimmed = input.trim();
+  const normalized = normalizeVoiceCommand(trimmed);
+  const sensitiveQuestion = /\b(sin|social insurance|passport|health card|work permit|permit number|document number|uci|expiry|expires|valid until)\b/i.test(trimmed);
+
+  if (!trimmed) {
+    return {
+      intent: "unknown",
+      targetModule: "command",
+      params: {},
+      confidence: "low",
+      requiresConfirmation: false,
+      sensitivity: "none",
+      explanation: "Type or speak a DexNest command.",
+      suggestions: ["Open Dev", "Search work permit", "Send clipboard to phone"]
+    };
+  }
+
+  if (/^(what|when|show|find).*\b(sin|social insurance|passport|health card|work permit|permit number|document number|uci|expiry|expires|valid until)\b/i.test(trimmed)) {
+    return {
+      intent: "smart_lookup",
+      targetModule: "search",
+      actionId: "search.smart_lookup",
+      params: { question: trimmed },
+      confidence: sensitiveQuestion ? "high" : "medium",
+      requiresConfirmation: true,
+      sensitivity: sensitiveQuestion ? "sensitive" : "personal",
+      explanation: "Routes to local Smart Lookup using the existing Search index. Sensitive answers stay masked."
+    };
+  }
+
+  if (/\b(add|create|schedule|remind me|meeting|appointment|call|birthday)\b/i.test(trimmed) && /\b(today|tomorrow|in\s+\d{1,3}\s+days?|next\s+\w+|at\s+\d{1,2}|birthday|meeting|appointment|call)\b/i.test(trimmed)) {
+    return {
+      intent: "calendar_create_candidate",
+      targetModule: "calendar",
+      actionId: "calendar.create_event",
+      params: buildVoiceCalendarParams(trimmed),
+      confidence: "medium",
+      requiresConfirmation: true,
+      sensitivity: "personal",
+      explanation: "Creates an editable Calendar event candidate. DexNest will not add it until you confirm."
+    };
+  }
+
+  if (/\b(where did i put|where is|where are|find my)\b/i.test(trimmed)) {
+    const query = extractFinderQuery(trimmed);
+    return {
+      intent: "finder_search",
+      targetModule: "finder",
+      actionId: "finder.search_items",
+      params: { query },
+      confidence: query ? "high" : "low",
+      requiresConfirmation: true,
+      sensitivity: "personal",
+      explanation: "Searches DexNest Finder item-location records."
+    };
+  }
+
+  if (/\b(send|share).*\b(clipboard|this|current).*\b(phone|drop)\b/i.test(trimmed) || /\bsend clipboard to phone\b/i.test(trimmed)) {
+    return {
+      intent: "drop_send_clipboard",
+      targetModule: "drop",
+      actionId: "drop.send_clipboard_to_drop",
+      params: {},
+      confidence: "high",
+      requiresConfirmation: true,
+      sensitivity: "personal",
+      explanation: "Sends the current Windows clipboard to DexNest Drop for phone pickup."
+    };
+  }
+
+  const devRunAction = /\brun\b/i.test(trimmed) ? findDevRunAction(trimmed, actions) : undefined;
+  if (devRunAction) {
+    return {
+      intent: "dev_run_command",
+      targetModule: "dev",
+      actionId: devRunAction.id,
+      params: { confirmedDangerous: devRunAction.dangerLevel === "danger" || devRunAction.dangerLevel === "critical" },
+      confidence: "medium",
+      requiresConfirmation: true,
+      sensitivity: "none",
+      explanation: `Runs the registered Dev action "${devRunAction.title}" after confirmation.`
+    };
+  }
+
+  if (/\b(open|show|go to)\b.*\b(today'?s journal|journal today|journal)\b/i.test(trimmed)) {
+    return {
+      intent: "journal_open_today",
+      targetModule: "journal",
+      actionId: "journal.open_today",
+      params: {},
+      confidence: "high",
+      requiresConfirmation: true,
+      sensitivity: "personal",
+      explanation: "Opens today's local DexNest Journal view."
+    };
+  }
+
+  for (const [alias, target] of Object.entries(voiceModuleAliases)) {
+    if (new RegExp(`\\b(open|show|go to)\\s+${alias}\\b`, "i").test(normalized)) {
+      return {
+        intent: "open_module",
+        targetModule: target.module,
+        actionId: target.actionId,
+        params: {},
+        confidence: "high",
+        requiresConfirmation: true,
+        sensitivity: "none",
+        explanation: `Opens DexNest ${target.module}.`
+      };
+    }
+  }
+
+  if (/^\s*(search|find document|find file|find docs?|look up)\b/i.test(trimmed)) {
+    const query = extractSearchQuery(trimmed);
+    return {
+      intent: "search_query",
+      targetModule: "search",
+      actionId: "search.run_query",
+      params: { query, sourceModule: "all", fileType: "all", dateFrom: "", dateTo: "" },
+      confidence: query ? "high" : "low",
+      requiresConfirmation: true,
+      sensitivity: "personal",
+      explanation: "Runs a local DexNest Search query against the current manual index."
+    };
+  }
+
+  if (/^\s*(capture this note|capture note|save note|remember this|add this to inbox|capture this)\b/i.test(trimmed)) {
+    const text = extractCaptureNote(trimmed) || trimmed;
+    return {
+      intent: "capture_note",
+      targetModule: "capture",
+      actionId: "capture.create_note",
+      params: { title: text.slice(0, 60) || "Voice capture", text, type: "note", source: "command" },
+      confidence: "medium",
+      requiresConfirmation: true,
+      sensitivity: "personal",
+      explanation: "Creates a Capture inbox item after confirmation."
+    };
+  }
+
+  return {
+    intent: "unknown",
+    targetModule: "command",
+    params: { transcriptLength: trimmed.length },
+    confidence: "low",
+    requiresConfirmation: false,
+    sensitivity: sensitiveQuestion ? "sensitive" : "none",
+    explanation: "DexNest could not map this to a safe local action.",
+    suggestions: ["Try: What is my work permit number?", "Try: Add meeting with Tim tomorrow at 3", "Try: Where did I put my passport?", "Try: Search work permit"]
+  };
+}
+
+const assistantSensitiveRegex = /\b(sin|social insurance|passport|health card|work permit|permit number|document number|uci|expiry|expires|valid until)\b/i;
+
+function detectModuleAliasFromText(text: string): { module: ViewId; actionId: string } | null {
+  const normalized = normalizeVoiceCommand(text);
+  for (const [alias, target] of Object.entries(voiceModuleAliases)) {
+    if (new RegExp(`\\b${alias}\\b`, "i").test(normalized)) {
+      return target;
+    }
+  }
+  return null;
+}
+
+// Deterministically build a safe route for a known intent. DexNest — not the
+// LLM — chooses the actionId and params here, so the model can only pick an
+// intent category. Returns null when no safe registered action can be built.
+function buildRouteForIntent(intent: VoiceIntentName, text: string, actions: ActionDefinition[]): VoiceRouteResult | null {
+  const trimmed = text.trim();
+  const sensitive = assistantSensitiveRegex.test(trimmed);
+
+  switch (intent) {
+    case "smart_lookup":
+      return {
+        intent,
+        targetModule: "search",
+        actionId: "search.smart_lookup",
+        params: { question: trimmed },
+        confidence: sensitive ? "high" : "medium",
+        requiresConfirmation: true,
+        sensitivity: sensitive ? "sensitive" : "personal",
+        explanation: "Routes to local Smart Lookup using the existing Search index. Sensitive answers stay masked."
+      };
+    case "search_query": {
+      const query = extractSearchQuery(trimmed) || trimmed;
+      return {
+        intent,
+        targetModule: "search",
+        actionId: "search.run_query",
+        params: { query, sourceModule: "all", fileType: "all", dateFrom: "", dateTo: "" },
+        confidence: query ? "high" : "low",
+        requiresConfirmation: false,
+        sensitivity: "personal",
+        explanation: "Runs a local DexNest Search query against the current manual index."
+      };
+    }
+    case "finder_search": {
+      const query = extractFinderQuery(trimmed) || trimmed;
+      return {
+        intent,
+        targetModule: "finder",
+        actionId: "finder.search_items",
+        params: { query },
+        confidence: query ? "high" : "low",
+        requiresConfirmation: false,
+        sensitivity: "personal",
+        explanation: "Searches DexNest Finder item-location records."
+      };
+    }
+    case "calendar_create_candidate":
+      return {
+        intent,
+        targetModule: "calendar",
+        actionId: "calendar.create_event",
+        params: buildVoiceCalendarParams(trimmed),
+        confidence: "medium",
+        requiresConfirmation: true,
+        sensitivity: "personal",
+        explanation: "Creates an editable Calendar event candidate. DexNest will not add it until you confirm."
+      };
+    case "drop_send_clipboard":
+      return {
+        intent,
+        targetModule: "drop",
+        actionId: "drop.send_clipboard_to_drop",
+        params: {},
+        confidence: "high",
+        requiresConfirmation: true,
+        sensitivity: "personal",
+        explanation: "Sends the current Windows clipboard to DexNest Drop for phone pickup."
+      };
+    case "dev_run_command": {
+      const devRunAction = findDevRunAction(trimmed, actions);
+      if (!devRunAction) {
+        return null;
+      }
+      return {
+        intent,
+        targetModule: "dev",
+        actionId: devRunAction.id,
+        params: { confirmedDangerous: devRunAction.dangerLevel === "danger" || devRunAction.dangerLevel === "critical" },
+        confidence: "medium",
+        requiresConfirmation: true,
+        sensitivity: "none",
+        explanation: `Runs the registered Dev action "${devRunAction.title}" after confirmation.`
+      };
+    }
+    case "journal_open_today":
+      return {
+        intent,
+        targetModule: "journal",
+        actionId: "journal.open_today",
+        params: {},
+        confidence: "high",
+        requiresConfirmation: false,
+        sensitivity: "personal",
+        explanation: "Opens today's local DexNest Journal view."
+      };
+    case "open_module": {
+      const target = detectModuleAliasFromText(trimmed);
+      if (!target) {
+        return null;
+      }
+      return {
+        intent,
+        targetModule: target.module,
+        actionId: target.actionId,
+        params: {},
+        confidence: "high",
+        requiresConfirmation: false,
+        sensitivity: "none",
+        explanation: `Opens DexNest ${target.module}.`
+      };
+    }
+    case "capture_note": {
+      const note = extractCaptureNote(trimmed) || trimmed;
+      return {
+        intent,
+        targetModule: "capture",
+        actionId: "capture.create_note",
+        params: { title: note.slice(0, 60) || "Assistant capture", text: note, type: "note", source: "command" },
+        confidence: "medium",
+        requiresConfirmation: true,
+        sensitivity: "personal",
+        explanation: "Creates a Capture inbox item after confirmation."
+      };
+    }
+    default:
+      return null;
+  }
+}
+
+function maxSensitivity(a: VoiceSensitivity, b: VoiceSensitivity): VoiceSensitivity {
+  const order: VoiceSensitivity[] = ["none", "personal", "sensitive"];
+  return order.indexOf(a) >= order.indexOf(b) ? a : b;
+}
+
+// Validate a raw LLM intent object against the registered action list and the
+// allowed intent enum. The LLM's actionId/params are intentionally discarded;
+// only the intent category (plus a sensitivity hint) is trusted.
+function validateLlmIntent(raw: Record<string, unknown> | undefined, text: string, actions: ActionDefinition[]): VoiceRouteResult | null {
+  if (!raw) {
+    return null;
+  }
+  const intentValue = typeof raw.intent === "string" ? raw.intent : "unknown";
+  const allowed: VoiceIntentName[] = ["smart_lookup", "search_query", "finder_search", "calendar_create_candidate", "drop_send_clipboard", "open_module", "dev_run_command", "journal_open_today", "capture_note", "unknown"];
+  if (!allowed.includes(intentValue as VoiceIntentName) || intentValue === "unknown") {
+    return null;
+  }
+  const built = buildRouteForIntent(intentValue as VoiceIntentName, text, actions);
+  if (!built || !built.actionId) {
+    return null;
+  }
+  // Guard: only run actions that are actually registered.
+  if (!actions.some((action) => action.id === built.actionId)) {
+    return null;
+  }
+  const llmSensitivity = raw.sensitivity === "sensitive" || raw.sensitivity === "personal" || raw.sensitivity === "none" ? raw.sensitivity : "none";
+  const llmConfidence = raw.confidence === "high" || raw.confidence === "medium" || raw.confidence === "low" ? raw.confidence : built.confidence;
+  return {
+    ...built,
+    confidence: llmConfidence,
+    sensitivity: maxSensitivity(built.sensitivity, llmSensitivity),
+    explanation: built.explanation
+  };
+}
+
+function createClientId(prefix: string): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function sourceOpenActionId(sourceModule: string): string | null {
+  const map: Record<string, string> = {
+    capture: "capture.open",
+    clipboard: "clipboard.open",
+    dev: "dev.open_dashboard",
+    drop: "drop.open",
+    finance: "finance.open",
+    finder: "finder.open",
+    tools: "tools.open",
+    tools_ocr: "tools.open",
+    vault: "vault.open"
+  };
+  return map[sourceModule] ?? null;
+}
+
+// Friendly, user-facing chat copy per intent (no routing internals).
+function assistantPendingText(route: VoiceRouteResult): string {
+  switch (route.intent) {
+    case "drop_send_clipboard":
+      return "Send your current clipboard to your phone via DexNest Drop?";
+    case "dev_run_command":
+      return `Run this Dev command for DexNest? (${route.actionId ?? "dev"})`;
+    case "calendar_create_candidate":
+      return "I found an event candidate. Review and add it to your Calendar?";
+    case "capture_note":
+      return "Save this note to your DexNest Capture inbox?";
+    default:
+      return "Ready to run. Confirm?";
+  }
+}
+
+function assistantSuccessText(route: VoiceRouteResult, resultCount: number): string {
+  switch (route.intent) {
+    case "smart_lookup":
+      return resultCount > 0
+        ? "I found a likely answer in your Vault/OCR documents. It is masked for safety."
+        : "I could not find a confident answer in your indexed documents.";
+    case "finder_search":
+      return resultCount > 0 ? "I found this in Finder." : "Finder search ran. Open Finder to see matches.";
+    case "search_query":
+      return resultCount > 0 ? `I found ${resultCount} matching document${resultCount === 1 ? "" : "s"}.` : "Search ran. No strong matches in the current index.";
+    case "calendar_create_candidate":
+      return "Added the event to your Calendar.";
+    case "drop_send_clipboard":
+      return "Sent your clipboard to DexNest Drop.";
+    case "dev_run_command":
+      return "Dev command finished. Check the Dev dashboard for output.";
+    case "journal_open_today":
+      return "Opened today's Journal.";
+    case "open_module":
+      return `Opened DexNest ${route.targetModule}.`;
+    case "capture_note":
+      return "Saved to your Capture inbox.";
+    default:
+      return "Done.";
+  }
+}
+
+// Builds the assistant's answer line. For Smart Lookup it states the value only
+// when it is non-sensitive or the trusted session auto-revealed it; otherwise it
+// keeps the value masked and just names the source document.
+function assistantAnswerText(route: VoiceRouteResult, smartResults: SmartLookupResult[], resultCount: number): string {
+  if (route.intent === "smart_lookup") {
+    const top = smartResults[0];
+    if (!top) {
+      return "I couldn't find a confident answer in your indexed documents.";
+    }
+    const field = top.fieldType.replace(/_/g, " ");
+    if (!top.sensitive || top.autoRevealed) {
+      return `Your ${field} from ${top.sourceDocumentTitle} is ${top.answer}.`;
+    }
+    return `I found it in ${top.sourceDocumentTitle}. It is masked for safety.`;
+  }
+  return assistantSuccessText(route, resultCount);
+}
+
+// Redacts the user's question from debug routing details for sensitive intents,
+// so sensitive transcripts/values never surface in the debug panel.
+function assistantDebugParams(route: VoiceRouteResult): Record<string, unknown> {
+  const params: Record<string, unknown> = { ...route.params };
+  if (route.sensitivity === "sensitive" && "question" in params) {
+    params.question = "[hidden]";
+  }
+  return params;
+}
+
+// State-changing or sensitive intents must be confirmed in chat before running.
+function assistantNeedsConfirm(route: VoiceRouteResult, actions: ActionDefinition[]): boolean {
+  if (["drop_send_clipboard", "dev_run_command", "calendar_create_candidate", "capture_note"].includes(route.intent)) {
+    return true;
+  }
+  if (route.targetModule.toLowerCase() === "dev") {
+    return true;
+  }
+  const action = route.actionId ? actions.find((item) => item.id === route.actionId) : undefined;
+  if (action && (action.dangerLevel === "danger" || action.dangerLevel === "critical")) {
+    return true;
+  }
+  return false;
+}
+
 function DexNestApp() {
   const [activeView, setActiveView] = useState<ViewId>("command");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [busyCount, setBusyCount] = useState(0);
+  const [initialLoadDone, setInitialLoadDone] = useState(false);
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [actions, setActions] = useState<ActionDefinition[]>([]);
   const [projects, setProjects] = useState<DexNestProject[]>([]);
@@ -1602,14 +2247,58 @@ function DexNestApp() {
   });
   const [commandStats, setCommandStats] = useState<CommandStats>(emptyCommandStats);
   const [events, setEvents] = useState<EventEntry[]>([]);
+  const [assistantSettings, setAssistantSettings] = useState<AssistantSettings>({
+    localIntentEngineEnabled: false,
+    ollamaUrl: "http://127.0.0.1:11434",
+    ollamaModel: "qwen2.5:3b",
+    fallbackToRules: true
+  });
+  const [assistantSecurityState, setAssistantSecurityState] = useState<AssistantSecurityState>({
+    settings: { trustedSessionEnabled: true, autoRevealWhileUnlocked: true, sessionTimeoutMinutes: 10, speakSensitiveAnswers: false, lockOnAppClose: true },
+    sessionUnlocked: false,
+    sessionExpiresAt: null,
+    secureVaultUnlocked: false,
+    secureVaultSetup: false
+  });
+  const [assistantFocusSignal, setAssistantFocusSignal] = useState(0);
 
   const activeLabel = useMemo(
     () => views.find((view) => view.id === activeView)?.label ?? "Command",
     [activeView]
   );
 
+  async function refreshAssistantSettings(): Promise<void> {
+    const state = await getBridge().getAssistantState();
+    setAssistantSettings(state.settings);
+  }
+
+  async function refreshAssistantSecurity(): Promise<void> {
+    const state = await getBridge().getAssistantSecurityState();
+    setAssistantSecurityState(state);
+  }
+
+  function openAssistantFromCommand(): void {
+    setActiveView("search");
+    setAssistantFocusSignal((value) => value + 1);
+    void refreshAssistantSecurity();
+  }
+
+  // Tracks any user-initiated async work so the global loading indicator can reflect it.
+  // Note: background refreshes (e.g. Drop's 3s auto-poll) intentionally bypass this so the
+  // indicator does not flicker constantly.
+  async function track<T>(work: Promise<T>): Promise<T> {
+    setBusyCount((count) => count + 1);
+    try {
+      return await work;
+    } finally {
+      setBusyCount((count) => Math.max(0, count - 1));
+    }
+  }
+
   useEffect(() => {
-    void refreshShellData();
+    void track(refreshShellData()).finally(() => setInitialLoadDone(true));
+    void refreshAssistantSettings();
+    void refreshAssistantSecurity();
   }, []);
 
   useEffect(() => {
@@ -1723,9 +2412,13 @@ function DexNestApp() {
   }
 
   async function runAction(actionId: string, source = "module_ui", params: unknown = {}) {
-    const result = await getBridge().runAction({ actionId, source, params });
-    await refreshShellData();
-    return result;
+    return track(
+      (async () => {
+        const result = await getBridge().runAction({ actionId, source, params });
+        await refreshShellData();
+        return result;
+      })()
+    );
   }
 
   async function runUiAction(actionId: string, source = "module_ui", params: unknown = {}) {
@@ -1758,8 +2451,25 @@ function DexNestApp() {
     await refreshShellData();
   }
 
+  const isBusy = busyCount > 0;
+
   return (
     <div className="app-shell" data-sidebar-collapsed={sidebarCollapsed}>
+      {isBusy && <div className="app-loading-bar" aria-hidden="true" />}
+      {isBusy && (
+        <div className="app-busy-pill" role="status" aria-live="polite">
+          <Spinner size="sm" />
+          <span>Working…</span>
+        </div>
+      )}
+      {!initialLoadDone && (
+        <div className="app-initial-overlay" role="status" aria-live="polite">
+          <div className="app-initial-overlay__inner">
+            <Spinner size="lg" />
+            <span>Loading DexNest…</span>
+          </div>
+        </div>
+      )}
       <aside className="sidebar" aria-label="DexNest navigation">
         <div className="brand">
           <span className="brand__mark" aria-hidden="true" />
@@ -1814,6 +2524,7 @@ function DexNestApp() {
               calendarState={calendarState}
               commandStats={commandStats}
               events={events}
+              onOpenAssistant={openAssistantFromCommand}
               onAction={runUiAction}
               onPinnedActionsChange={savePinnedActionIds}
             />
@@ -1869,6 +2580,12 @@ function DexNestApp() {
           {activeView === "search" && (
             <SearchView
               searchState={searchState}
+              actions={actions}
+              assistantSettings={assistantSettings}
+              onAssistantSettingsChange={refreshAssistantSettings}
+              securityState={assistantSecurityState}
+              onSecurityChange={refreshAssistantSecurity}
+              assistantFocusSignal={assistantFocusSignal}
               onAction={runUiAction}
               onRefresh={refreshShellData}
             />
@@ -1932,6 +2649,600 @@ function DexNestApp() {
   );
 }
 
+function formatSessionRemaining(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+}
+
+// DexNest Assistant ("Ask DexNest"). Lives inside Search. Routes natural language
+// to existing Search/Smart Lookup/Vault/Finder/Calendar/Drop/Dev actions, and
+// honors the trusted sensitive-access session for auto-revealing answers.
+function AskDexNest({
+  actions,
+  assistantSettings,
+  onAssistantSettingsChange,
+  securityState,
+  onSecurityChange,
+  onAction,
+  focusSignal
+}: {
+  actions: ActionDefinition[];
+  assistantSettings: AssistantSettings;
+  onAssistantSettingsChange: () => Promise<void>;
+  securityState: AssistantSecurityState;
+  onSecurityChange: () => Promise<void>;
+  onAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>;
+  focusSignal: number;
+}) {
+  const [voiceInput, setVoiceInput] = useState("");
+  const [voiceListening, setVoiceListening] = useState(false);
+  const [micStatus, setMicStatus] = useState("");
+  const voiceInputRef = useRef<HTMLInputElement | null>(null);
+  const [assistantMessages, setAssistantMessages] = useState<AssistantChatMessage[]>([]);
+  const [assistantBusy, setAssistantBusy] = useState(false);
+  const [assistantDebug, setAssistantDebug] = useState(false);
+  const [revealedAssistantIds, setRevealedAssistantIds] = useState<string[]>([]);
+  const [assistantSettingsOpen, setAssistantSettingsOpen] = useState(false);
+  const [assistantEngineEnabled, setAssistantEngineEnabled] = useState(assistantSettings.localIntentEngineEnabled);
+  const [assistantOllamaUrl, setAssistantOllamaUrl] = useState(assistantSettings.ollamaUrl);
+  const [assistantOllamaModel, setAssistantOllamaModel] = useState(assistantSettings.ollamaModel);
+  const [assistantFallback, setAssistantFallback] = useState(assistantSettings.fallbackToRules);
+  const [assistantTestStatus, setAssistantTestStatus] = useState("");
+  const assistantScrollRef = useRef<HTMLDivElement | null>(null);
+  // Trusted-session UI state.
+  const [unlockPassword, setUnlockPassword] = useState("");
+  const [sessionStatus, setSessionStatus] = useState("");
+  const [securityOpen, setSecurityOpen] = useState(false);
+  const [nowTick, setNowTick] = useState(Date.now());
+  const [secTimeout, setSecTimeout] = useState(securityState.settings.sessionTimeoutMinutes);
+  const [secAutoReveal, setSecAutoReveal] = useState(securityState.settings.autoRevealWhileUnlocked);
+  const [secEnabled, setSecEnabled] = useState(securityState.settings.trustedSessionEnabled);
+  const [secSpeak, setSecSpeak] = useState(securityState.settings.speakSensitiveAnswers);
+  const [secLockOnClose, setSecLockOnClose] = useState(securityState.settings.lockOnAppClose);
+
+  useEffect(() => {
+    setAssistantEngineEnabled(assistantSettings.localIntentEngineEnabled);
+    setAssistantOllamaUrl(assistantSettings.ollamaUrl);
+    setAssistantOllamaModel(assistantSettings.ollamaModel);
+    setAssistantFallback(assistantSettings.fallbackToRules);
+  }, [assistantSettings.localIntentEngineEnabled, assistantSettings.ollamaUrl, assistantSettings.ollamaModel, assistantSettings.fallbackToRules]);
+
+  useEffect(() => {
+    setSecTimeout(securityState.settings.sessionTimeoutMinutes);
+    setSecAutoReveal(securityState.settings.autoRevealWhileUnlocked);
+    setSecEnabled(securityState.settings.trustedSessionEnabled);
+    setSecSpeak(securityState.settings.speakSensitiveAnswers);
+    setSecLockOnClose(securityState.settings.lockOnAppClose);
+  }, [securityState.settings.sessionTimeoutMinutes, securityState.settings.autoRevealWhileUnlocked, securityState.settings.trustedSessionEnabled, securityState.settings.speakSensitiveAnswers, securityState.settings.lockOnAppClose]);
+
+  useEffect(() => {
+    const node = assistantScrollRef.current;
+    if (node) {
+      node.scrollTop = node.scrollHeight;
+    }
+  }, [assistantMessages]);
+
+  // Focus the input when Command's launcher opens the assistant.
+  useEffect(() => {
+    if (focusSignal > 0) {
+      voiceInputRef.current?.focus();
+    }
+  }, [focusSignal]);
+
+  // Tick the session countdown; refresh state when it expires so the UI re-locks.
+  useEffect(() => {
+    if (!securityState.sessionUnlocked || !securityState.sessionExpiresAt) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setNowTick(Date.now());
+      if (securityState.sessionExpiresAt && Date.now() >= securityState.sessionExpiresAt) {
+        void onSecurityChange();
+      }
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [securityState.sessionUnlocked, securityState.sessionExpiresAt, onSecurityChange]);
+
+  const remainingMs = securityState.sessionExpiresAt ? Math.max(0, securityState.sessionExpiresAt - nowTick) : 0;
+
+  function appendAssistantMessage(message: AssistantChatMessage): void {
+    setAssistantMessages((current) => [...current, message]);
+  }
+
+  function updateAssistantMessage(id: string, patch: Partial<AssistantChatMessage>): void {
+    setAssistantMessages((current) => current.map((message) => (message.id === id ? { ...message, ...patch } : message)));
+  }
+
+  async function executeAssistantRoute(messageId: string, route: VoiceRouteResult, routerUsed: AssistantRouterUsed): Promise<void> {
+    if (!route.actionId) {
+      return;
+    }
+    await onAction("assistant.confirmed", "voice", {
+      router: routerUsed,
+      intent: route.intent,
+      targetModule: route.targetModule,
+      actionId: route.actionId,
+      confidence: route.confidence,
+      sensitivity: route.sensitivity
+    });
+    const result = await onAction(route.actionId, "voice", route.params) as {
+      ok?: boolean;
+      error?: string;
+      smartResults?: SmartLookupResult[];
+      results?: SearchResult[];
+    };
+    const smartResults = result.smartResults ?? [];
+    const searchResults = result.results ?? [];
+    const resultCount = smartResults.length + searchResults.length;
+    await onAction("assistant.routed", "voice", {
+      router: routerUsed,
+      intent: route.intent,
+      targetModule: route.targetModule,
+      sensitivity: route.sensitivity,
+      status: result.ok === false ? "failed" : "completed",
+      resultCount
+    });
+    // If a trusted session unlocked auto-reveal, the session may have changed; refresh.
+    if (smartResults.some((item) => item.sensitive)) {
+      void onSecurityChange();
+    }
+    updateAssistantMessage(messageId, {
+      awaitingConfirm: false,
+      resolved: result.ok === false ? "failed" : "ran",
+      smartResults,
+      searchResults,
+      text: result.ok === false
+        ? (result.error ?? "DexNest could not complete that.")
+        : assistantAnswerText(route, smartResults, resultCount)
+    });
+  }
+
+  async function sendAssistant(rawText = voiceInput): Promise<void> {
+    const text = rawText.trim();
+    if (!text || assistantBusy) {
+      return;
+    }
+    setVoiceInput("");
+    appendAssistantMessage({ id: createClientId("assistant-user"), role: "user", text });
+    setAssistantBusy(true);
+
+    const ruleRoute = routeVoiceCommand(text, actions);
+    await onAction("assistant.command_received", "voice", {
+      router: "rules",
+      intent: ruleRoute.intent,
+      sensitivity: ruleRoute.sensitivity,
+      status: "received"
+    });
+
+    try {
+      let route = ruleRoute;
+      let routerUsed: AssistantRouterUsed = "rules";
+
+      const engineEligible = assistantSettings.localIntentEngineEnabled
+        && (ruleRoute.intent === "unknown" || ruleRoute.confidence !== "high");
+      if (engineEligible) {
+        const llm = await getBridge().assistantLlmIntent({ query: text });
+        if (llm.ok) {
+          const validated = validateLlmIntent(llm.intent, text, actions);
+          if (validated) {
+            route = validated;
+            routerUsed = "local-llm";
+          }
+        }
+      }
+
+      const assistantId = createClientId("assistant-reply");
+      const needsConfirm = route.intent !== "unknown" && Boolean(route.actionId) && assistantNeedsConfirm(route, actions);
+      const initialText = route.intent === "unknown"
+        ? "I’m not sure what to do yet. Here are some things you can ask."
+        : needsConfirm
+          ? assistantPendingText(route)
+          : "Working on it…";
+
+      appendAssistantMessage({
+        id: assistantId,
+        role: "assistant",
+        text: initialText,
+        route,
+        routerUsed,
+        awaitingConfirm: needsConfirm,
+        resolved: route.intent === "unknown" ? "info" : undefined
+      });
+
+      await onAction("assistant.routed", "voice", {
+        router: routerUsed,
+        intent: route.intent,
+        targetModule: route.targetModule,
+        sensitivity: route.sensitivity,
+        confidence: route.confidence,
+        status: route.intent === "unknown" ? "unknown" : (needsConfirm ? "awaiting_confirm" : "detected")
+      });
+
+      if (route.intent !== "unknown" && route.actionId && !needsConfirm) {
+        await executeAssistantRoute(assistantId, route, routerUsed);
+      }
+    } finally {
+      setAssistantBusy(false);
+    }
+  }
+
+  async function confirmAssistant(message: AssistantChatMessage): Promise<void> {
+    if (!message.route || !message.awaitingConfirm) {
+      return;
+    }
+    setAssistantBusy(true);
+    try {
+      await executeAssistantRoute(message.id, message.route, message.routerUsed ?? "rules");
+    } finally {
+      setAssistantBusy(false);
+    }
+  }
+
+  async function cancelAssistant(message: AssistantChatMessage): Promise<void> {
+    if (!message.route) {
+      return;
+    }
+    await onAction("assistant.cancelled", "voice", {
+      router: message.routerUsed ?? "rules",
+      intent: message.route.intent,
+      targetModule: message.route.targetModule,
+      sensitivity: message.route.sensitivity,
+      status: "cancelled"
+    });
+    updateAssistantMessage(message.id, { awaitingConfirm: false, resolved: "cancelled", text: "Cancelled. Nothing was run." });
+  }
+
+  function isSmartResultRevealed(result: SmartLookupResult): boolean {
+    return !result.sensitive || Boolean(result.autoRevealed) || revealedAssistantIds.includes(result.id);
+  }
+
+  async function revealAssistantSmart(result: SmartLookupResult): Promise<void> {
+    if (result.sensitive && !securityState.sessionUnlocked && !window.confirm(`Reveal sensitive ${result.fieldType.replace(/_/g, " ")} value?`)) {
+      return;
+    }
+    const actionResult = await onAction("search.smart_lookup_reveal", "voice", { fieldType: result.fieldType, confirmedDangerous: true }) as { ok?: boolean };
+    if (actionResult.ok !== false) {
+      setRevealedAssistantIds((current) => [...new Set([...current, result.id])]);
+    }
+  }
+
+  async function copyAssistantSmart(result: SmartLookupResult): Promise<void> {
+    if (result.sensitive && !securityState.sessionUnlocked && !window.confirm(`Copy sensitive ${result.fieldType.replace(/_/g, " ")} value? Clipboard clears automatically.`)) {
+      return;
+    }
+    await onAction("search.smart_lookup_copy_answer", "voice", { answerValue: result.answer, fieldType: result.fieldType, confirmedDangerous: true });
+  }
+
+  async function saveAssistantSettings(): Promise<void> {
+    await getBridge().saveAssistantSettings({
+      localIntentEngineEnabled: assistantEngineEnabled,
+      ollamaUrl: assistantOllamaUrl,
+      ollamaModel: assistantOllamaModel,
+      fallbackToRules: assistantFallback
+    });
+    await onAssistantSettingsChange();
+    setAssistantTestStatus("Assistant settings saved.");
+  }
+
+  async function testAssistantOllama(): Promise<void> {
+    setAssistantTestStatus("Testing Ollama connection…");
+    const result = await getBridge().testOllama({ ollamaUrl: assistantOllamaUrl, ollamaModel: assistantOllamaModel });
+    if (!result.ok) {
+      setAssistantTestStatus(`Connection failed: ${result.error ?? "unknown error"}`);
+      return;
+    }
+    const modelNote = result.modelAvailable ? `Model "${assistantOllamaModel}" is available.` : `Model "${assistantOllamaModel}" not found. Pull it with: ollama pull ${assistantOllamaModel}`;
+    setAssistantTestStatus(`Connected. ${result.models?.length ?? 0} model(s) installed. ${modelNote}`);
+  }
+
+  async function unlockSensitiveSession(): Promise<void> {
+    const needsPassword = !securityState.secureVaultUnlocked && securityState.secureVaultSetup;
+    const result = await getBridge().unlockTrustedSession({ masterPassword: needsPassword ? unlockPassword : undefined });
+    setUnlockPassword("");
+    setSessionStatus(result.ok ? "" : (result.error ?? "Unlock failed."));
+    await onSecurityChange();
+  }
+
+  async function lockSensitiveSession(): Promise<void> {
+    await getBridge().lockTrustedSession();
+    setSessionStatus("");
+    await onSecurityChange();
+  }
+
+  async function saveSecuritySettings(): Promise<void> {
+    await getBridge().saveAssistantSecuritySettings({
+      trustedSessionEnabled: secEnabled,
+      autoRevealWhileUnlocked: secAutoReveal,
+      sessionTimeoutMinutes: secTimeout,
+      speakSensitiveAnswers: secSpeak,
+      lockOnAppClose: secLockOnClose
+    });
+    await onSecurityChange();
+    setSessionStatus("Trusted session settings saved.");
+  }
+
+  async function startVoiceListening(): Promise<void> {
+    if (voiceListening) {
+      return;
+    }
+    const inputBefore = voiceInputRef.current?.value ?? "";
+    voiceInputRef.current?.focus();
+    setVoiceListening(true);
+    setMicStatus("Opening Windows voice typing…");
+    const windowsResult = await getBridge().startWindowsDictation();
+    await onAction("voice.start_listening", "voice", {
+      speechRecognitionAvailable: false,
+      provider: "windows_dictation",
+      status: windowsResult.ok ? "started" : "failed"
+    });
+
+    if (windowsResult.ok) {
+      voiceInputRef.current?.focus();
+      setMicStatus("Listening… speak now, then pause.");
+      const startedAt = Date.now();
+      let lastValue = inputBefore;
+      let lastChangeAt = Date.now();
+      const poll = window.setInterval(() => {
+        const current = voiceInputRef.current?.value ?? "";
+        if (current !== lastValue) {
+          lastValue = current;
+          lastChangeAt = Date.now();
+          setMicStatus("Heard you… finishing up.");
+        }
+        const captured = current.trim() && current.trim() !== inputBefore.trim();
+        const settled = captured && Date.now() - lastChangeAt > 1500;
+        const timedOut = Date.now() - startedAt > 12000;
+        if (settled || timedOut) {
+          window.clearInterval(poll);
+          setVoiceListening(false);
+          const dictatedText = (voiceInputRef.current?.value ?? "").trim();
+          if (dictatedText && dictatedText !== inputBefore.trim()) {
+            setMicStatus("");
+            void sendAssistant(dictatedText);
+          } else {
+            setMicStatus("No speech captured. Enable Windows voice typing (Win+H): Settings → Time & language → Speech, or just type your question.");
+          }
+        }
+      }, 400);
+      return;
+    }
+
+    setMicStatus(windowsResult.error ? `Mic unavailable: ${windowsResult.error}` : "Mic unavailable on this system. Type your question instead.");
+    setVoiceListening(false);
+  }
+
+  const sessionEnabled = securityState.settings.trustedSessionEnabled;
+  const canUnlockWithVault = securityState.secureVaultUnlocked;
+  const needsPasswordToUnlock = !securityState.secureVaultUnlocked && securityState.secureVaultSetup;
+
+  return (
+    <div className="assistant accent-search">
+      <div className="section-heading section-heading--row">
+        <div>
+          <p>Ask DexNest in plain language across your documents, Vault, OCR, notes, and local memory.</p>
+          <p className="technical">Local-only · no cloud · sensitive answers stay masked{assistantSettings.localIntentEngineEnabled ? " · local LLM on" : " · rules only"}</p>
+        </div>
+        <label className="assistant__debug-toggle">
+          <input type="checkbox" checked={assistantDebug} onChange={(event) => setAssistantDebug(event.target.checked)} />
+          <span>Debug</span>
+        </label>
+      </div>
+
+      <div className="assistant__session" data-unlocked={securityState.sessionUnlocked}>
+        {!sessionEnabled ? (
+          <span className="technical">Trusted session disabled. Sensitive answers always require Reveal.</span>
+        ) : securityState.sessionUnlocked ? (
+          <>
+            <span className="assistant__session-state">🔓 Sensitive session unlocked · {formatSessionRemaining(remainingMs)} left</span>
+            <button type="button" onClick={() => void lockSensitiveSession()}>Lock now</button>
+          </>
+        ) : (
+          <>
+            <span className="assistant__session-state">🔒 Sensitive answers locked</span>
+            {needsPasswordToUnlock && (
+              <input
+                type="password"
+                value={unlockPassword}
+                onChange={(event) => setUnlockPassword(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void unlockSensitiveSession(); } }}
+                placeholder="Secure Vault master password"
+                aria-label="Secure Vault master password"
+              />
+            )}
+            {securityState.secureVaultSetup ? (
+              <button type="button" onClick={() => void unlockSensitiveSession()}>
+                {canUnlockWithVault ? "Unlock sensitive session" : "Unlock"}
+              </button>
+            ) : (
+              <span className="technical">Set up Secure Vault to enable trusted unlock.</span>
+            )}
+          </>
+        )}
+      </div>
+      {sessionStatus && <p className="inline-status">{sessionStatus}</p>}
+
+      <div className="assistant__transcript" ref={assistantScrollRef}>
+        {assistantMessages.length === 0 ? (
+          <div className="assistant__empty">
+            <p>Try one of these:</p>
+            <div className="assistant__examples">
+              {[
+                "What is my work permit number?",
+                "Where did I put my passport?",
+                "Find my passport document",
+                "Search work permit",
+                "Add meeting with Tim tomorrow at 3",
+                "Run typecheck"
+              ].map((example) => (
+                <button type="button" key={example} disabled={assistantBusy} onClick={() => void sendAssistant(example)}>{example}</button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          assistantMessages.map((message) => (
+            <div className={`assistant__msg assistant__msg--${message.role}`} key={message.id}>
+              <div className="assistant__bubble">
+                <p>{message.text}</p>
+
+                {message.smartResults && message.smartResults.length > 0 && (
+                  <div className="assistant__results">
+                    {message.smartResults.slice(0, 5).map((result) => {
+                      const revealed = isSmartResultRevealed(result);
+                      return (
+                        <article className="assistant__card accent-search" key={result.id}>
+                          <strong>{result.fieldType.replace(/_/g, " ")}</strong>
+                          <span className="technical">{revealed ? result.answer : result.maskedAnswer}</span>
+                          <span>{result.confidence} · {result.sourceType ?? "Vault"} · {result.sourceDocumentTitle}</span>
+                          <div className="button-row">
+                            {result.sensitive && !revealed && <button type="button" onClick={() => void revealAssistantSmart(result)}>Reveal</button>}
+                            <button type="button" onClick={() => void copyAssistantSmart(result)}>Copy (auto-clear)</button>
+                            {sourceOpenActionId(result.sourceModule) && (
+                              <button type="button" onClick={() => void onAction(sourceOpenActionId(result.sourceModule) as string, "voice")}>Open source</button>
+                            )}
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {message.searchResults && message.searchResults.length > 0 && (
+                  <div className="assistant__results">
+                    {message.searchResults.slice(0, 5).map((result) => (
+                      <article className="assistant__card accent-search" key={result.id}>
+                        <strong>{result.title}</strong>
+                        <span>{result.sourceModule} · {result.matchReason}</span>
+                        {result.textPreview && <span>{result.textPreview}</span>}
+                      </article>
+                    ))}
+                  </div>
+                )}
+
+                {message.route?.intent === "unknown" && (message.route.suggestions ?? []).length > 0 && (
+                  <div className="assistant__suggestions">
+                    {(message.route.suggestions ?? []).map((suggestion) => (
+                      <button type="button" key={suggestion} disabled={assistantBusy} onClick={() => void sendAssistant(suggestion.replace(/^Try:\s*/i, ""))}>{suggestion}</button>
+                    ))}
+                  </div>
+                )}
+
+                {message.awaitingConfirm && (
+                  <div className="button-row">
+                    <button type="button" disabled={assistantBusy} onClick={() => void confirmAssistant(message)}>Confirm</button>
+                    <button type="button" disabled={assistantBusy} onClick={() => void cancelAssistant(message)}>Cancel</button>
+                  </div>
+                )}
+
+                {assistantDebug && message.route && (
+                  <div className="assistant__debug technical">
+                    <span>router: {message.routerUsed ?? "rules"}</span>
+                    <span>intent: {message.route.intent}</span>
+                    <span>module: {message.route.targetModule}</span>
+                    <span>action: {message.route.actionId ?? "none"}</span>
+                    <span>confidence: {message.route.confidence}</span>
+                    <span>sensitivity: {message.route.sensitivity}</span>
+                    <pre>{JSON.stringify(assistantDebugParams(message.route), null, 2)}</pre>
+                  </div>
+                )}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+
+      <div className="assistant__inputbar">
+        <button type="button" className={voiceListening ? "is-busy" : undefined} disabled={voiceListening} onClick={() => void startVoiceListening()} title="Click to speak (no always-on mic)">
+          {voiceListening ? "Listening…" : "Mic"}
+        </button>
+        <input
+          ref={voiceInputRef}
+          value={voiceInput}
+          onChange={(event) => setVoiceInput(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              void sendAssistant();
+            }
+          }}
+          placeholder="Ask DexNest… e.g. What is my work permit number?"
+          aria-label="Ask DexNest"
+        />
+        <button type="button" disabled={assistantBusy || !voiceInput.trim()} onClick={() => void sendAssistant()}>Send</button>
+      </div>
+      {assistantBusy && <p className="inline-status"><Spinner size="sm" /> Thinking…</p>}
+      {!assistantBusy && micStatus && <p className="inline-status">{voiceListening && <Spinner size="sm" />} {micStatus}</p>}
+
+      <div className="assistant__toggles">
+        <button type="button" className="assistant__settings-toggle" aria-expanded={securityOpen} onClick={() => setSecurityOpen((open) => !open)}>
+          {securityOpen ? "Hide" : "Show"} sensitive session settings
+        </button>
+        <button type="button" className="assistant__settings-toggle" aria-expanded={assistantSettingsOpen} onClick={() => setAssistantSettingsOpen((open) => !open)}>
+          {assistantSettingsOpen ? "Hide" : "Show"} local intent engine settings
+        </button>
+      </div>
+
+      {securityOpen && (
+        <div className="assistant__settings">
+          <label className="assistant__check">
+            <input type="checkbox" checked={secEnabled} onChange={(event) => setSecEnabled(event.target.checked)} />
+            <span>Enable trusted sensitive session (reuses Secure Vault unlock).</span>
+          </label>
+          <label className="assistant__check">
+            <input type="checkbox" checked={secAutoReveal} onChange={(event) => setSecAutoReveal(event.target.checked)} />
+            <span>Auto-reveal sensitive answers while the session is unlocked.</span>
+          </label>
+          <label>
+            Session timeout
+            <select value={secTimeout} onChange={(event) => setSecTimeout(Number(event.target.value))}>
+              {[5, 10, 15, 30].map((minutes) => <option key={minutes} value={minutes}>{minutes} minutes</option>)}
+            </select>
+          </label>
+          <label className="assistant__check">
+            <input type="checkbox" checked={secSpeak} onChange={(event) => setSecSpeak(event.target.checked)} />
+            <span>Speak sensitive answers aloud (future voice output). Off by default.</span>
+          </label>
+          <label className="assistant__check">
+            <input type="checkbox" checked={secLockOnClose} onChange={(event) => setSecLockOnClose(event.target.checked)} />
+            <span>Lock sensitive session when DexNest closes.</span>
+          </label>
+          <div className="button-row">
+            <button type="button" onClick={() => void saveSecuritySettings()}>Save session settings</button>
+            {securityState.sessionUnlocked && <button type="button" onClick={() => void lockSensitiveSession()}>Lock sensitive session</button>}
+          </div>
+        </div>
+      )}
+
+      {assistantSettingsOpen && (
+        <div className="assistant__settings">
+          <label className="assistant__check">
+            <input type="checkbox" checked={assistantEngineEnabled} onChange={(event) => setAssistantEngineEnabled(event.target.checked)} />
+            <span>Enable local intent engine (Ollama). When off, DexNest uses the rule router only.</span>
+          </label>
+          <label>
+            Ollama URL
+            <input value={assistantOllamaUrl} onChange={(event) => setAssistantOllamaUrl(event.target.value)} placeholder="http://127.0.0.1:11434" />
+          </label>
+          <label>
+            Model name
+            <input value={assistantOllamaModel} onChange={(event) => setAssistantOllamaModel(event.target.value)} placeholder="qwen2.5:3b" />
+          </label>
+          <label className="assistant__check">
+            <input type="checkbox" checked={assistantFallback} onChange={(event) => setAssistantFallback(event.target.checked)} />
+            <span>Fall back to the rule router if Ollama fails or is unavailable.</span>
+          </label>
+          <div className="button-row">
+            <button type="button" onClick={() => void testAssistantOllama()}>Test Ollama connection</button>
+            <button type="button" onClick={() => void saveAssistantSettings()}>Save settings</button>
+          </div>
+          {assistantTestStatus && <p className="inline-status">{assistantTestStatus}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CommandView({
   appInfo,
   actions,
@@ -1940,6 +3251,7 @@ function CommandView({
   calendarState,
   commandStats,
   events,
+  onOpenAssistant,
   onAction,
   onPinnedActionsChange
 }: {
@@ -1950,6 +3262,7 @@ function CommandView({
   calendarState: CalendarState;
   commandStats: CommandStats;
   events: EventEntry[];
+  onOpenAssistant: () => void;
   onAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>;
   onPinnedActionsChange: (actionIds: string[]) => Promise<void>;
 }) {
@@ -2142,6 +3455,16 @@ function CommandView({
             )}
           </div>
           {paletteMessage && <p className="inline-status">{paletteMessage}</p>}
+        </div>
+      </Panel>
+
+      <Panel title="Ask DexNest">
+        <div className="ask-launcher accent-search">
+          <div>
+            <h3>Ask DexNest</h3>
+            <p>Search documents, Vault, OCR, notes, and local memory.</p>
+          </div>
+          <button type="button" onClick={() => onOpenAssistant()}>Open Ask DexNest</button>
         </div>
       </Panel>
 
@@ -3511,19 +4834,24 @@ function ToolsView({
 
   async function runTool(actionId: string, params: Record<string, unknown> = {}): Promise<void> {
     setRunningActionId(actionId);
-    const result = await onAction(actionId, "module_ui", { paths: selectedPaths, ...params });
-    setRunningActionId(null);
+    try {
+      const result = await onAction(actionId, "module_ui", { paths: selectedPaths, ...params });
 
-    if (result.ok) {
-      const count = result.outputs?.length ?? (result.output ? 1 : 0);
-      if (result.ocrPreview !== undefined) {
-        setOcrPreview(result.ocrPreview || "OCR completed but no preview text was extracted.");
-        setOcrMetadata(result.ocrMetadata ?? null);
+      if (result.ok) {
+        const count = result.outputs?.length ?? (result.output ? 1 : 0);
+        if (result.ocrPreview !== undefined) {
+          setOcrPreview(result.ocrPreview || "OCR completed but no preview text was extracted.");
+          setOcrMetadata(result.ocrMetadata ?? null);
+        }
+        showStatus(count ? `Created ${count} output file${count === 1 ? "" : "s"}.` : "Tools action completed.");
+        await onRefresh();
+      } else {
+        showStatus(result.error ?? "Tools action failed.", "error");
       }
-      showStatus(count ? `Created ${count} output file${count === 1 ? "" : "s"}.` : "Tools action completed.");
-      await onRefresh();
-    } else {
-      showStatus(result.error ?? "Tools action failed.", "error");
+    } catch (error) {
+      showStatus(error instanceof Error ? error.message : "Tools action failed.", "error");
+    } finally {
+      setRunningActionId(null);
     }
   }
 
@@ -3779,8 +5107,8 @@ function ToolsView({
               </label>
             </div>
             <div className="button-row">
-              <button type="button" disabled={runningActionId === "tools.ocr_image"} onClick={() => void runTool("tools.ocr_image", { engine: ocrEngine, device: ocrDevice, language: ocrLanguage, upscale: ocrUpscale, grayscale: scanGrayscale, contrastBoost: true, sharpen: scanSharpen, threshold: ocrThreshold, rotateDegrees: scanRotate })}>OCR images</button>
-              <button type="button" disabled={runningActionId === "tools.ocr_pdf"} onClick={() => void runTool("tools.ocr_pdf", { engine: ocrEngine, device: ocrDevice, language: ocrLanguage, upscale: ocrUpscale, grayscale: scanGrayscale, contrastBoost: true, sharpen: scanSharpen, threshold: ocrThreshold, rotateDegrees: scanRotate })}>OCR PDFs</button>
+              <button type="button" className={runningActionId === "tools.ocr_image" ? "is-busy" : undefined} disabled={runningActionId === "tools.ocr_image"} onClick={() => void runTool("tools.ocr_image", { engine: ocrEngine, device: ocrDevice, language: ocrLanguage, upscale: ocrUpscale, grayscale: scanGrayscale, contrastBoost: true, sharpen: scanSharpen, threshold: ocrThreshold, rotateDegrees: scanRotate })}>{runningActionId === "tools.ocr_image" && <Spinner size="sm" />}{runningActionId === "tools.ocr_image" ? "Running OCR…" : "OCR images"}</button>
+              <button type="button" className={runningActionId === "tools.ocr_pdf" ? "is-busy" : undefined} disabled={runningActionId === "tools.ocr_pdf"} onClick={() => void runTool("tools.ocr_pdf", { engine: ocrEngine, device: ocrDevice, language: ocrLanguage, upscale: ocrUpscale, grayscale: scanGrayscale, contrastBoost: true, sharpen: scanSharpen, threshold: ocrThreshold, rotateDegrees: scanRotate })}>{runningActionId === "tools.ocr_pdf" && <Spinner size="sm" />}{runningActionId === "tools.ocr_pdf" ? "Running OCR…" : "OCR PDFs"}</button>
               <button type="button" onClick={() => setActiveTab("settings")}>OCR settings</button>
             </div>
             {ocrEngine === "paddleocr" && <p>GPU is the DexNest default for PaddleOCR, but it requires a GPU-enabled PaddlePaddle install. A CPU-only PaddlePaddle package cannot use GPU OCR.</p>}
@@ -5184,6 +6512,16 @@ function ToastStack({ toasts }: { toasts: ToastMessage[] }) {
         <div className="toast" data-tone={toast.tone} key={toast.id}>{toast.message}</div>
       ))}
     </div>
+  );
+}
+
+function Spinner({ size = "md", label }: { size?: "sm" | "md" | "lg"; label?: string }) {
+  return (
+    <span
+      className={`spinner${size === "sm" ? " spinner--sm" : size === "lg" ? " spinner--lg" : ""}`}
+      role="status"
+      aria-label={label ?? "Loading"}
+    />
   );
 }
 
@@ -6887,10 +8225,22 @@ function CaptureView({
 
 function SearchView({
   searchState,
+  actions,
+  assistantSettings,
+  onAssistantSettingsChange,
+  securityState,
+  onSecurityChange,
+  assistantFocusSignal,
   onAction,
   onRefresh
 }: {
   searchState: SearchState;
+  actions: ActionDefinition[];
+  assistantSettings: AssistantSettings;
+  onAssistantSettingsChange: () => Promise<void>;
+  securityState: AssistantSecurityState;
+  onSecurityChange: () => Promise<void>;
+  assistantFocusSignal: number;
   onAction: (actionId: string, source?: string, params?: unknown) => Promise<{
     ok: boolean;
     error?: string;
@@ -6918,6 +8268,7 @@ function SearchView({
   const [revealedSmartIds, setRevealedSmartIds] = useState<string[]>([]);
   const [smartStatus, setSmartStatus] = useState("");
   const [status, setStatus] = useState("");
+  const [searching, setSearching] = useState(false);
 
   const currentParams = { query, sourceModule, fileType, dateFrom, dateTo };
   const recentRecovery = searchState.index
@@ -6950,12 +8301,19 @@ function SearchView({
   }
 
   async function runQuery(nextParams = currentParams): Promise<void> {
-    const result = await onAction("search.run_query", "module_ui", nextParams);
-    if (result.ok) {
-      setResults(result.results ?? []);
-      setStatus(`${result.results?.length ?? 0} results.`);
-    } else {
-      setStatus(result.error ?? "Search failed.");
+    setSearching(true);
+    try {
+      const result = await onAction("search.run_query", "module_ui", nextParams);
+      if (result.ok) {
+        setResults(result.results ?? []);
+        setStatus(`${result.results?.length ?? 0} results.`);
+      } else {
+        setStatus(result.error ?? "Search failed.");
+      }
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Search failed.");
+    } finally {
+      setSearching(false);
     }
   }
 
@@ -7085,6 +8443,18 @@ function SearchView({
         )}
       />
 
+      <Panel title="Ask DexNest">
+        <AskDexNest
+          actions={actions}
+          assistantSettings={assistantSettings}
+          onAssistantSettingsChange={onAssistantSettingsChange}
+          securityState={securityState}
+          onSecurityChange={onSecurityChange}
+          onAction={onAction}
+          focusSignal={assistantFocusSignal}
+        />
+      </Panel>
+
       <Panel title="Run Search">
         <div className="search-controls">
           <label className="search-controls__query">
@@ -7119,7 +8489,7 @@ function SearchView({
           </label>
         </div>
         <div className="button-row">
-          <button type="button" onClick={() => void runQuery()}>Search</button>
+          <button type="button" className={searching ? "is-busy" : undefined} disabled={searching} onClick={() => void runQuery()}>{searching && <Spinner size="sm" />}{searching ? "Searching…" : "Search"}</button>
           <button type="button" onClick={() => void saveQuery()}>Save search</button>
           {status && <span className="inline-status">{status}</span>}
         </div>
@@ -7164,7 +8534,7 @@ function SearchView({
                   accentClass="accent-search"
                   key={result.id}
                   title={`${result.fieldType.replace(/_/g, " ")} / ${result.confidence}`}
-                  meta={`${result.sourceDocumentTitle} / ${result.sourceModule}`}
+                  meta={`${result.sourceDocumentTitle} / ${result.sourceType ?? result.sourceModule}`}
                   actions={(
                     <>
                       {result.sensitive && <button type="button" onClick={() => void revealSmartAnswer(result)}>Reveal</button>}
@@ -8331,4 +9701,3 @@ createRoot(root).render(
     <DexNestApp />
   </React.StrictMode>
 );
-

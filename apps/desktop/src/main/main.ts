@@ -72,6 +72,8 @@ const routinesPath = join(settingsRoot, "routines.json");
 const heatmapEventsPath = join(settingsRoot, "heatmap-events.json");
 const heatmapSettingsPath = join(settingsRoot, "heatmap-settings.json");
 const heatmapGoalsPath = join(settingsRoot, "heatmap-goals.json");
+const assistantSettingsPath = join(settingsRoot, "assistant-settings.json");
+const assistantSecuritySettingsPath = join(settingsRoot, "assistant-security-settings.json");
 const backupsRoot = join(localDataRoot, "backups");
 const restoreStagingRoot = join(backupsRoot, "restore-staging");
 const actionPort = 43217;
@@ -97,6 +99,10 @@ let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let actionServer: ReturnType<typeof createServer> | null = null;
 let secureVaultKey: Buffer | null = null;
+// Trusted sensitive-access session for the Assistant. In-memory only — never
+// persisted — so it is always locked again on app close. Established by reusing
+// the Secure Vault master password (no separate password system).
+let trustedSessionExpiresAt: number | null = null;
 let secureVaultAutoLockTimer: NodeJS.Timeout | null = null;
 let secureVaultClipboardTimer: NodeJS.Timeout | null = null;
 let secureVaultProtectedClipboardValue: string | null = null;
@@ -531,11 +537,16 @@ interface SmartLookupResult {
   confidence: "high" | "medium" | "low";
   sourceRecordId: string;
   sourceModule: string;
+  sourceType: string;
   sourceDocumentTitle: string;
   sourceFilePath?: string | null;
   ocrTextPath?: string | null;
   preview: string;
   score: number;
+  // True when a sensitive answer may be shown automatically because a trusted
+  // session is active and auto-reveal is enabled. Non-sensitive answers are
+  // always true. The renderer must keep sensitive answers masked when false.
+  autoRevealed: boolean;
 }
 
 interface SavedSearch {
@@ -3451,6 +3462,305 @@ function startHeatmapTimer(): void {
   }, Math.max(60, settings.sampleIntervalSeconds) * 1000);
 }
 
+// --- DexNest Assistant local intent engine (Phase 18.5) ---------------------
+// The local LLM (Ollama) is a cold, on-demand worker. It is only ever asked to
+// return a structured JSON intent. It never executes actions, reads files, runs
+// shell commands, or reveals secrets. DexNest validates the JSON in the renderer
+// and only runs already-registered actions.
+interface AssistantSettings {
+  localIntentEngineEnabled: boolean;
+  ollamaUrl: string;
+  ollamaModel: string;
+  fallbackToRules: boolean;
+}
+
+const assistantAllowedIntents = [
+  "smart_lookup",
+  "search_query",
+  "finder_search",
+  "calendar_create_candidate",
+  "drop_send_clipboard",
+  "open_module",
+  "dev_run_command",
+  "journal_open_today",
+  "capture_note",
+  "unknown"
+] as const;
+
+function defaultAssistantSettings(): AssistantSettings {
+  return {
+    localIntentEngineEnabled: false,
+    ollamaUrl: "http://127.0.0.1:11434",
+    ollamaModel: "qwen2.5:3b",
+    fallbackToRules: true
+  };
+}
+
+function normalizeOllamaUrl(value: unknown, fallback: string): string {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw) {
+    return fallback;
+  }
+  return raw.replace(/\/+$/, "");
+}
+
+function loadAssistantSettings(): AssistantSettings {
+  return {
+    ...defaultAssistantSettings(),
+    ...readJsonFile<Partial<AssistantSettings>>(assistantSettingsPath, defaultAssistantSettings())
+  };
+}
+
+function saveAssistantSettings(settings: AssistantSettings): AssistantSettings {
+  return writeJsonFile(assistantSettingsPath, settings);
+}
+
+function updateAssistantSettings(input: Partial<AssistantSettings>): AssistantSettings {
+  const current = loadAssistantSettings();
+  const next: AssistantSettings = {
+    localIntentEngineEnabled: typeof input.localIntentEngineEnabled === "boolean" ? input.localIntentEngineEnabled : current.localIntentEngineEnabled,
+    ollamaUrl: normalizeOllamaUrl(input.ollamaUrl ?? current.ollamaUrl, defaultAssistantSettings().ollamaUrl),
+    ollamaModel: typeof input.ollamaModel === "string" && input.ollamaModel.trim() ? input.ollamaModel.trim() : current.ollamaModel,
+    fallbackToRules: typeof input.fallbackToRules === "boolean" ? input.fallbackToRules : current.fallbackToRules
+  };
+  return saveAssistantSettings(next);
+}
+
+function assistantState(): { settings: AssistantSettings } {
+  return { settings: loadAssistantSettings() };
+}
+
+// --- Trusted sensitive-access session (Phase 18.6) --------------------------
+interface AssistantSecuritySettings {
+  trustedSessionEnabled: boolean;
+  autoRevealWhileUnlocked: boolean;
+  sessionTimeoutMinutes: number;
+  speakSensitiveAnswers: boolean;
+  lockOnAppClose: boolean;
+}
+
+const allowedSessionTimeouts = [5, 10, 15, 30];
+
+function defaultAssistantSecuritySettings(): AssistantSecuritySettings {
+  return {
+    trustedSessionEnabled: true,
+    autoRevealWhileUnlocked: true,
+    sessionTimeoutMinutes: 10,
+    speakSensitiveAnswers: false,
+    lockOnAppClose: true
+  };
+}
+
+function loadAssistantSecuritySettings(): AssistantSecuritySettings {
+  return {
+    ...defaultAssistantSecuritySettings(),
+    ...readJsonFile<Partial<AssistantSecuritySettings>>(assistantSecuritySettingsPath, defaultAssistantSecuritySettings())
+  };
+}
+
+function updateAssistantSecuritySettings(input: Partial<AssistantSecuritySettings>): AssistantSecuritySettings {
+  const current = loadAssistantSecuritySettings();
+  const timeout = Number(input.sessionTimeoutMinutes);
+  const next: AssistantSecuritySettings = {
+    trustedSessionEnabled: typeof input.trustedSessionEnabled === "boolean" ? input.trustedSessionEnabled : current.trustedSessionEnabled,
+    autoRevealWhileUnlocked: typeof input.autoRevealWhileUnlocked === "boolean" ? input.autoRevealWhileUnlocked : current.autoRevealWhileUnlocked,
+    sessionTimeoutMinutes: allowedSessionTimeouts.includes(timeout) ? timeout : current.sessionTimeoutMinutes,
+    speakSensitiveAnswers: typeof input.speakSensitiveAnswers === "boolean" ? input.speakSensitiveAnswers : current.speakSensitiveAnswers,
+    lockOnAppClose: typeof input.lockOnAppClose === "boolean" ? input.lockOnAppClose : current.lockOnAppClose
+  };
+  // If the trusted session is disabled, lock immediately.
+  if (!next.trustedSessionEnabled) {
+    trustedSessionExpiresAt = null;
+  }
+  return writeJsonFile(assistantSecuritySettingsPath, next);
+}
+
+// A trusted session is active only when enabled, established (timer set), and
+// not yet expired. The Secure Vault being unlocked makes establishing one a
+// one-click action but does not by itself bypass the timeout.
+function isTrustedSessionActive(): boolean {
+  const settings = loadAssistantSecuritySettings();
+  if (!settings.trustedSessionEnabled) {
+    return false;
+  }
+  return trustedSessionExpiresAt !== null && Date.now() < trustedSessionExpiresAt;
+}
+
+function assistantSecurityState(): {
+  settings: AssistantSecuritySettings;
+  sessionUnlocked: boolean;
+  sessionExpiresAt: number | null;
+  secureVaultUnlocked: boolean;
+  secureVaultSetup: boolean;
+} {
+  const active = isTrustedSessionActive();
+  return {
+    settings: loadAssistantSecuritySettings(),
+    sessionUnlocked: active,
+    sessionExpiresAt: active ? trustedSessionExpiresAt : null,
+    secureVaultUnlocked: secureVaultKey !== null,
+    secureVaultSetup: existsSync(secureVaultPath)
+  };
+}
+
+// Establish a trusted session by reusing Secure Vault auth. If the Vault is
+// already unlocked, no password is required; otherwise the master password is
+// validated through the existing Secure Vault mechanism. The password is never
+// stored or logged.
+function unlockTrustedSession(masterPassword?: string): { ok: boolean; error?: string } {
+  const settings = loadAssistantSecuritySettings();
+  if (!settings.trustedSessionEnabled) {
+    return { ok: false, error: "Trusted sensitive session is disabled in settings." };
+  }
+  if (secureVaultKey === null) {
+    const file = loadSecureVaultFile();
+    if (!file) {
+      return { ok: false, error: "Set up the DexNest Secure Vault first to use a trusted session." };
+    }
+    if (!masterPassword) {
+      return { ok: false, error: "Enter your Secure Vault master password to unlock." };
+    }
+    try {
+      const key = deriveSecureVaultKey(masterPassword, file.kdf);
+      verifySecureVaultKey(file, key);
+    } catch {
+      return { ok: false, error: "Invalid master password." };
+    }
+  }
+  trustedSessionExpiresAt = Date.now() + settings.sessionTimeoutMinutes * 60 * 1000;
+  return { ok: true };
+}
+
+function lockTrustedSession(): void {
+  trustedSessionExpiresAt = null;
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function testOllamaConnection(input: { ollamaUrl?: string; ollamaModel?: string }): Promise<{ ok: boolean; models?: string[]; modelAvailable?: boolean; error?: string }> {
+  const settings = loadAssistantSettings();
+  const url = normalizeOllamaUrl(input.ollamaUrl ?? settings.ollamaUrl, settings.ollamaUrl);
+  const model = (typeof input.ollamaModel === "string" && input.ollamaModel.trim() ? input.ollamaModel.trim() : settings.ollamaModel);
+  try {
+    const response = await fetchWithTimeout(`${url}/api/tags`, { method: "GET" }, 4000);
+    if (!response.ok) {
+      return { ok: false, error: `Ollama responded with HTTP ${response.status}.` };
+    }
+    const data = (await response.json()) as { models?: Array<{ name?: string }> };
+    const models = Array.isArray(data.models) ? data.models.map((item) => item.name ?? "").filter(Boolean) : [];
+    const modelAvailable = models.some((name) => name === model || name.startsWith(`${model.split(":")[0]}:`) || name === `${model}:latest`);
+    return { ok: true, models, modelAvailable };
+  } catch (error) {
+    const message = error instanceof Error ? (error.name === "AbortError" ? "Ollama did not respond in time." : error.message) : "Ollama connection failed.";
+    return { ok: false, error: message };
+  }
+}
+
+function assistantIntentPrompt(query: string): string {
+  // Force strict JSON only. The model only classifies; DexNest derives the
+  // actionId and params deterministically and validates everything.
+  return [
+    "You are DexNest Assistant's local intent classifier. You run fully offline.",
+    "Classify the user's request into exactly one intent and return STRICT JSON only.",
+    "Do not add explanations outside JSON. Do not execute anything. Do not invent secrets.",
+    "",
+    "Allowed intents:",
+    "- smart_lookup: asking for a specific value from their own documents (passport NUMBER, work permit number, SIN, UCI, health card number, expiry date).",
+    "- finder_search: asking WHERE a physical item is (where is/where did I put my passport, charger, what is in the black drawer).",
+    "- search_query: find/open a document or file (find my passport document, search work permit, find the PDF about taxes, open my latest resume).",
+    "- calendar_create_candidate: add/schedule/remind about an event (add meeting with Tim tomorrow at 3, remind me to call Tim next Friday, birthday in 3 days).",
+    "- drop_send_clipboard: send clipboard or current file to phone.",
+    "- open_module: open a DexNest module/screen.",
+    "- dev_run_command: run a dev command (typecheck, build, test, start).",
+    "- journal_open_today: open today's journal.",
+    "- capture_note: save/remember a note, add to inbox.",
+    "- unknown: anything else.",
+    "",
+    "Distinctions:",
+    "- 'Where is my passport' = finder_search. 'What is my passport number' = smart_lookup. 'Find my passport document' = search_query.",
+    "",
+    "targetModule must be one of: Search, Finder, Calendar, Drop, Dev, Journal, Capture, Command, Unknown.",
+    "sensitivity: 'sensitive' for passport/SIN/UCI/work permit/health card numbers or expiry; 'personal' for personal but non-secret; otherwise 'none'.",
+    "requiresConfirmation: true for calendar/drop/dev/capture or any sensitive lookup.",
+    "",
+    "Return ONLY this JSON shape:",
+    '{"intent":"","targetModule":"","actionId":"","params":{},"confidence":"high|medium|low","sensitivity":"none|personal|sensitive","requiresConfirmation":true,"explanation":"short safe explanation"}',
+    "",
+    `User request: ${JSON.stringify(query)}`
+  ].join("\n");
+}
+
+async function runOllamaIntent(input: { query?: unknown }): Promise<{ ok: boolean; intent?: Record<string, unknown>; error?: string }> {
+  const settings = loadAssistantSettings();
+  if (!settings.localIntentEngineEnabled) {
+    return { ok: false, error: "Local intent engine is disabled." };
+  }
+  const query = typeof input.query === "string" ? input.query.trim() : "";
+  if (!query) {
+    return { ok: false, error: "Empty assistant query." };
+  }
+
+  try {
+    const response = await fetchWithTimeout(
+      `${settings.ollamaUrl}/api/generate`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: settings.ollamaModel,
+          prompt: assistantIntentPrompt(query),
+          format: "json",
+          stream: false,
+          options: { temperature: 0 }
+        })
+      },
+      20000
+    );
+    if (!response.ok) {
+      return { ok: false, error: `Ollama responded with HTTP ${response.status}.` };
+    }
+    const data = (await response.json()) as { response?: string };
+    const rawJson = typeof data.response === "string" ? data.response.trim() : "";
+    if (!rawJson) {
+      return { ok: false, error: "Ollama returned an empty response." };
+    }
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(rawJson) as Record<string, unknown>;
+    } catch {
+      // Best-effort: extract the first {...} block.
+      const start = rawJson.indexOf("{");
+      const end = rawJson.lastIndexOf("}");
+      if (start < 0 || end <= start) {
+        return { ok: false, error: "Ollama did not return valid JSON." };
+      }
+      try {
+        parsed = JSON.parse(rawJson.slice(start, end + 1)) as Record<string, unknown>;
+      } catch {
+        return { ok: false, error: "Ollama did not return valid JSON." };
+      }
+    }
+    // Light shape guard here; the renderer does full validation against the
+    // real action registry before anything can run.
+    const intentValue = typeof parsed.intent === "string" ? parsed.intent : "unknown";
+    if (!(assistantAllowedIntents as readonly string[]).includes(intentValue)) {
+      parsed.intent = "unknown";
+    }
+    return { ok: true, intent: parsed };
+  } catch (error) {
+    const message = error instanceof Error ? (error.name === "AbortError" ? "Ollama did not respond in time." : error.message) : "Ollama request failed.";
+    return { ok: false, error: message };
+  }
+}
+
 function defaultToolsSettings(): ToolsSettings {
   return {
     outputFolderPath: null,
@@ -4408,6 +4718,20 @@ function buildSearchIndexRecords(): SearchIndexRecord[] {
     const ocrMetadata = document.ocrMetadataPath && existsSync(document.ocrMetadataPath) && isPathInside(vaultOcrRoot, document.ocrMetadataPath)
       ? readOcrMetadataForSearch(document.ocrMetadataPath)
       : null;
+    // Always contribute Vault metadata to the index even when OCR has not run or
+    // failed. The structured expiry date is injected as an "expiry date:" phrase
+    // so both Search and Smart Lookup can use it like notes text.
+    const expiryPhrase = document.expiryDate ? `expiry date: ${document.expiryDate}` : "";
+    const documentTypePhrase = document.fileType ? `document type ${document.fileType}` : "";
+    const vaultMetadataText = textBucket(
+      document.title,
+      document.originalFileName,
+      document.category,
+      document.tags.join(" "),
+      document.notes,
+      expiryPhrase,
+      documentTypePhrase
+    );
     records.push({
       id: `vault-${document.id}`,
       sourceModule: "vault",
@@ -4417,8 +4741,8 @@ function buildSearchIndexRecords(): SearchIndexRecord[] {
       filePath: document.filePath,
       fileType: document.fileType || fileTypeForPath(document.filePath),
       sizeBytes: document.sizeBytes,
-      textPreview: previewText(textBucket(document.originalFileName, document.notes, ocrText)),
-      searchableText: normalizeSearchText(textBucket(document.title, document.originalFileName, document.notes, document.category, document.tags.join(" "), ocrText, String(ocrMetadata?.engine ?? ""), String(ocrMetadata?.device ?? ""))),
+      textPreview: previewText(textBucket(document.originalFileName, document.notes, expiryPhrase, ocrText)),
+      searchableText: normalizeSearchText(textBucket(vaultMetadataText, ocrText, String(ocrMetadata?.engine ?? ""), String(ocrMetadata?.device ?? ""))),
       tags: [...document.tags, document.ocrStatus ?? "", String(ocrMetadata?.engine ?? ""), String(ocrMetadata?.device ?? "")].filter(Boolean),
       category: document.category,
       createdAt: document.createdAt,
@@ -4632,6 +4956,17 @@ function buildSearchIndexRecords(): SearchIndexRecord[] {
   return records;
 }
 
+// Rebuild the local Search index. The index is rebuildable and not a source of
+// truth, so it is safe to refresh on demand after Vault metadata changes.
+function reindexSearchIndex(): SearchIndexRecord[] {
+  try {
+    return saveSearchIndex(buildSearchIndexRecords());
+  } catch (error) {
+    console.error("DexNest: search reindex after Vault change failed.", error);
+    return loadSearchIndex();
+  }
+}
+
 function searchMatchScore(record: SearchIndexRecord, query: string): { score: number; reason: string } {
   if (!query) {
     return { score: 1, reason: "filter match" };
@@ -4780,17 +5115,24 @@ function requestedSmartFields(question: string): string[] {
   return fields.length ? [...new Set(fields)] : ["permit_number", "passport_number", "uci", "expiry_date", "sin", "health_card"];
 }
 
-function smartLookupTextForRecord(record: SearchIndexRecord): { text: string; ocrTextPath: string | null } {
+function smartLookupTextForRecord(record: SearchIndexRecord): { text: string; ocrTextPath: string | null; sourceType: string } {
   if (record.sourceModule === "vault") {
     const document = findVaultDocument(record.entityId);
+    let ocrText = "";
+    let ocrTextPath: string | null = null;
     if (document?.ocrTextPath && existsSync(document.ocrTextPath) && isPathInside(vaultOcrRoot, document.ocrTextPath)) {
-      return { text: readTextFileForSearch(document.ocrTextPath, 5 * 1024 * 1024), ocrTextPath: document.ocrTextPath };
+      ocrText = readTextFileForSearch(document.ocrTextPath, 5 * 1024 * 1024);
+      ocrTextPath = document.ocrTextPath;
     }
+    // Always scan Vault metadata/notes (via searchableText) in addition to any
+    // OCR text, so values written in notes are found even without OCR.
+    const text = textBucket(ocrText, record.searchableText, record.title);
+    return { text, ocrTextPath, sourceType: ocrText ? "Vault metadata + OCR" : "Vault notes" };
   }
   if ((record.entityType === "tools_ocr_text" || record.fileType === ".txt") && record.filePath && existsSync(record.filePath)) {
-    return { text: readTextFileForSearch(record.filePath, 5 * 1024 * 1024), ocrTextPath: record.filePath };
+    return { text: readTextFileForSearch(record.filePath, 5 * 1024 * 1024), ocrTextPath: record.filePath, sourceType: "Tools OCR" };
   }
-  return { text: textBucket(record.title, record.textPreview, record.searchableText), ocrTextPath: null };
+  return { text: textBucket(record.title, record.textPreview, record.searchableText), ocrTextPath: null, sourceType: "Index" };
 }
 
 function contextAround(text: string, start: number, end: number, radius = 90): string {
@@ -4814,22 +5156,36 @@ function confidenceForContext(fieldType: string, context: string, question: stri
   return normalized.includes(fieldType.replace("_", " ")) ? "medium" : "low";
 }
 
+// Connector between a field label and its value. Tolerates plain notes phrasing
+// like "work permit number is 272829", "permit number: 272829", "UCI - 1234-5678".
+const smartFieldConnector = "(?:\\s*(?:is|are|was|=|:|#|->|of)\\s*|[\\s:#=._-]+)*";
+const smartDatePattern = "([A-Za-z]{3,9}\\.?\\s+\\d{1,2},?\\s+\\d{2,4}|\\d{4}[-/.]\\d{1,2}[-/.]\\d{1,2}|\\d{1,2}[-/.]\\d{1,2}[-/.]\\d{2,4})";
+
+function smartFieldRegex(label: string, value: string): RegExp {
+  return new RegExp(`\\b(?:${label})${smartFieldConnector}(${value})\\b`, "gi");
+}
+
 function smartPatternsForField(fieldType: string): RegExp[] {
   switch (fieldType) {
     case "sin":
-      return [/\b(?:sin|social insurance number)?\s*[:#-]?\s*(\d{3}[-\s]?\d{3}[-\s]?\d{3})\b/gi];
+      return [smartFieldRegex("sin|social insurance(?:\\s+number)?", "\\d{3}[-\\s]?\\d{3}[-\\s]?\\d{3}")];
     case "passport_number":
-      return [/\b(?:passport(?:\s*(?:no|number|#))?)\s*[:#-]?\s*([A-Z]{1,2}\d{6,8}|[A-Z0-9]{6,9})\b/gi];
+      return [smartFieldRegex("passport(?:\\s*(?:no\\.?|number|num|#))?", "[A-Z]{1,2}\\d{6,8}|[A-Z0-9]{6,9}")];
     case "permit_number":
-      return [/\b(?:document number|document no|permit number|permit no|work permit(?:\s*(?:no|number|#))?)\s*[:#-]?\s*([A-Z]{1,4}\d{6,10}|[A-Z0-9-]{7,14})\b/gi];
+      // Plain numeric permit/document/application numbers (e.g. "272829") and
+      // alphanumeric variants, after a label like "work permit number".
+      return [smartFieldRegex(
+        "work permit(?:\\s*(?:no\\.?|number|num|#))?|permit(?:\\s*(?:no\\.?|number|num|#))?|document(?:\\s*(?:no\\.?|number|num|#))?|application(?:\\s*(?:no\\.?|number|num|#))?",
+        "[A-Z]{0,4}\\d{5,12}|[A-Z]{1,4}[-\\s]?\\d{4,10}|[A-Z0-9]{2,5}-\\d{3,8}"
+      )];
     case "uci":
-      return [/\b(?:uci|client id|unique client identifier)\s*[:#-]?\s*(\d{4}[-\s]?\d{4}|\d{8,10})\b/gi];
+      return [smartFieldRegex("uci|client id|unique client(?:\\s+identifier)?", "\\d{4}[-\\s]?\\d{4}|\\d{8,10}")];
     case "expiry_date":
-      return [/\b(?:expiry date|expires|valid until|valid to|valid thru)\s*[:#-]?\s*([A-Z][a-z]{2,8}\s+\d{1,2},?\s+\d{4}|\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\b/gi];
+      return [smartFieldRegex("expiry(?:\\s+date)?|expires(?:\\s+on)?|expiration(?:\\s+date)?|valid until|valid to|valid thru", smartDatePattern)];
     case "issue_date":
-      return [/\b(?:issue date|issued|date of issue)\s*[:#-]?\s*([A-Z][a-z]{2,8}\s+\d{1,2},?\s+\d{4}|\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\b/gi];
+      return [smartFieldRegex("issue(?:\\s+date)?|issued(?:\\s+on)?|date of issue", smartDatePattern)];
     case "health_card":
-      return [/\b(?:health card|health number|ohip|phn)\s*[:#-]?\s*([A-Z0-9 -]{8,16})\b/gi];
+      return [smartFieldRegex("health card(?:\\s+(?:no\\.?|number))?|health number|ohip|phn", "[A-Z0-9][A-Z0-9 -]{7,15}")];
     case "email":
       return [/\b([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})\b/gi];
     case "phone":
@@ -4848,6 +5204,11 @@ function runSmartLookup(input: SearchQueryInput): SmartLookupResult[] {
   }
 
   const fields = requestedSmartFields(question);
+  // A sensitive answer may be auto-revealed only when a trusted session is
+  // active AND the auto-reveal setting is on. Computed once per lookup.
+  const securitySettings = loadAssistantSecuritySettings();
+  const trustedActive = isTrustedSessionActive();
+  const allowAutoReveal = trustedActive && securitySettings.autoRevealWhileUnlocked;
   const records = loadSearchIndex().filter((record) => (
     record.sourceModule === "vault"
     || record.sourceModule === "tools_ocr"
@@ -4858,7 +5219,7 @@ function runSmartLookup(input: SearchQueryInput): SmartLookupResult[] {
   const seen = new Set<string>();
 
   for (const record of records) {
-    const { text, ocrTextPath } = smartLookupTextForRecord(record);
+    const { text, ocrTextPath, sourceType } = smartLookupTextForRecord(record);
     if (!text.trim()) {
       continue;
     }
@@ -4888,11 +5249,13 @@ function runSmartLookup(input: SearchQueryInput): SmartLookupResult[] {
             confidence,
             sourceRecordId: record.id,
             sourceModule: record.sourceModule,
+            sourceType,
             sourceDocumentTitle: record.title,
             sourceFilePath: record.filePath ?? null,
             ocrTextPath,
             preview,
-            score
+            score,
+            autoRevealed: sensitiveSmartFields.has(fieldType) ? allowAutoReveal : true
           });
         }
       }
@@ -5967,6 +6330,7 @@ function importVaultDocuments(input: VaultImportInput, source: DexNestActionTrig
     const existingDocuments = loadVaultDocuments();
     const imported = paths.map((filePath) => createVaultDocumentFromFile(filePath, input));
     saveVaultDocuments([...imported, ...existingDocuments]);
+    reindexSearchIndex();
     const queuedJobs = imported
       .map((document) => queueVaultOcrJob(document))
       .filter((job): job is VaultOcrJob => Boolean(job));
@@ -6201,6 +6565,9 @@ function runVaultAction(action: DexNestActionDefinition, source: DexNestActionTr
         updatedAt: new Date().toISOString()
       };
       saveVaultDocuments(documents.map((document) => document.id === documentId ? updated : document));
+      // Auto-refresh the Search index so edited notes/tags/expiry are immediately
+      // searchable by Search and Smart Lookup without a manual rebuild.
+      reindexSearchIndex();
       logVaultEvent(action.id, "success", source, "Updated Vault document metadata.", {
         documentId,
         category: updated.category,
@@ -6312,6 +6679,7 @@ function runVaultAction(action: DexNestActionDefinition, source: DexNestActionTr
         title: baseDocument.title
       }, baseDocument);
       saveVaultDocuments([nextVersion, ...loadVaultDocuments()]);
+      reindexSearchIndex();
       logVaultEvent(action.id, "success", source, "Added Vault document version.", {
         documentId: nextVersion.id,
         versionGroupId: nextVersion.versionGroupId,
@@ -6337,6 +6705,7 @@ function runVaultAction(action: DexNestActionDefinition, source: DexNestActionTr
         rmSync(document.filePath, { force: true });
       }
       saveVaultDocuments(documents.filter((item) => item.id !== documentId));
+      reindexSearchIndex();
       logVaultEvent(action.id, "success", source, deleteFile ? "Deleted Vault document metadata and copied file." : "Deleted Vault document metadata only.", {
         documentId,
         deletedCopiedFile: deleteFile,
@@ -7127,6 +7496,8 @@ async function processVaultOcrQueue(source: DexNestActionTrigger | "system" = "s
           ocrError: null,
           ocrUpdatedAt: completedAt
         });
+        // Make the freshly extracted OCR text searchable right away.
+        reindexSearchIndex();
         localDb.appendActionEvent({
           module: "DexNest Vault",
           actionId: "vault.ocr.run_queue",
@@ -9487,10 +9858,18 @@ async function runSearchAction(action: DexNestActionDefinition, source: DexNestA
         source,
         `Ran DexNest Smart Lookup with ${smartResults.length} result${smartResults.length === 1 ? "" : "s"}.`,
         {
+          // Metadata only: field categories, source types, counts, sensitivity.
+          // Never the question text, note contents, or extracted values.
           requestedFieldTypes: requestedSmartFields(String(input.question ?? input.query ?? "")),
           resultFieldTypes: fieldTypes,
           resultCount: smartResults.length,
-          sourceModules: [...new Set(smartResults.map((result) => result.sourceModule))]
+          sourceModules: [...new Set(smartResults.map((result) => result.sourceModule))],
+          sourceTypes: [...new Set(smartResults.map((result) => result.sourceType))],
+          sensitivity: smartResults.some((result) => result.sensitive) ? "sensitive" : (smartResults.length ? "personal" : "none"),
+          // Metadata only: whether a sensitive answer was auto-revealed, never the value.
+          autoReveal: smartResults.some((result) => result.sensitive && result.autoRevealed),
+          trustedSession: isTrustedSessionActive(),
+          status: smartResults.length ? "found" : "not_found"
         },
         startedAt
       );
@@ -9855,17 +10234,88 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
   }
 
   if (action.module === "voice") {
+    const input = typeof payload === "object" && payload !== null ? payload as Record<string, unknown> : {};
+    const eventTypeByAction: Record<string, string> = {
+      "voice.open": "voice_opened",
+      "voice.start_listening": "voice_listening_started",
+      "voice.stop_listening": "voice_listening_stopped",
+      "voice.route_command": "voice_intent_detected",
+      "voice.confirm_command": "voice_command_confirmed",
+      "voice.cancel_command": "voice_command_cancelled",
+      "voice.start_dictation_placeholder": "voice_dictation_started"
+    };
+    const safeVoiceMetadata = {
+      intent: typeof input.intent === "string" ? input.intent : null,
+      targetModule: typeof input.targetModule === "string" ? input.targetModule : null,
+      routedActionId: typeof input.actionId === "string" ? input.actionId : null,
+      confidence: typeof input.confidence === "string" ? input.confidence : null,
+      sensitivity: typeof input.sensitivity === "string" ? input.sensitivity : null,
+      status: typeof input.status === "string" ? input.status : null,
+      speechRecognitionAvailable: typeof input.speechRecognitionAvailable === "boolean" ? input.speechRecognitionAvailable : null
+    };
     localDb.appendActionEvent({
       module: "DexNest Voice",
       actionId,
-      eventType: "voice_dictation_started",
+      eventType: eventTypeByAction[actionId] ?? "voice_action",
       status: "success",
       source,
-      summary: "Started DexNest click-to-speak dictation placeholder.",
-      metadataJson: payloadMetadata(payload),
+      summary: actionId === "voice.route_command"
+        ? "Routed DexNest voice command intent."
+        : actionId === "voice.confirm_command"
+          ? "Confirmed DexNest voice command."
+          : actionId === "voice.cancel_command"
+            ? "Cancelled DexNest voice command."
+            : actionId === "voice.start_listening"
+              ? "Started DexNest click-to-speak listening."
+              : actionId === "voice.stop_listening"
+                ? "Stopped DexNest click-to-speak listening."
+                : "Ran DexNest Voice action.",
+      metadataJson: safeVoiceMetadata,
       durationMs: Date.now() - startedAt
     });
-    return { ok: true, actionId, message: "Voice dictation placeholder started." };
+    return { ok: true, actionId, message: "DexNest Voice action logged." };
+  }
+
+  if (action.module === "assistant") {
+    const input = typeof payload === "object" && payload !== null ? payload as Record<string, unknown> : {};
+    // Metadata only. Never store the transcript, the answer, OCR text, or any
+    // sensitive value (SIN/passport/permit/health card). For sensitive queries
+    // we keep only intent category, target module, status, and sensitivity.
+    const sensitivity = typeof input.sensitivity === "string" ? input.sensitivity : null;
+    const isSensitive = sensitivity === "sensitive";
+    const safeAssistantMetadata = {
+      router: typeof input.router === "string" ? input.router : null,
+      intent: typeof input.intent === "string" ? input.intent : null,
+      targetModule: typeof input.targetModule === "string" ? input.targetModule : null,
+      routedActionId: isSensitive ? null : (typeof input.actionId === "string" ? input.actionId : null),
+      confidence: typeof input.confidence === "string" ? input.confidence : null,
+      sensitivity,
+      status: typeof input.status === "string" ? input.status : null,
+      resultCount: typeof input.resultCount === "number" ? input.resultCount : null
+    };
+    const eventTypeByAction: Record<string, string> = {
+      "assistant.command_received": "assistant_command_received",
+      "assistant.routed": "assistant_intent_routed",
+      "assistant.confirmed": "assistant_command_confirmed",
+      "assistant.cancelled": "assistant_command_cancelled"
+    };
+    const summaryByAction: Record<string, string> = {
+      "assistant.command_received": "DexNest Assistant received a command.",
+      "assistant.routed": "DexNest Assistant routed an intent.",
+      "assistant.confirmed": "DexNest Assistant command confirmed.",
+      "assistant.cancelled": "DexNest Assistant command cancelled."
+    };
+    localDb.appendActionEvent({
+      module: "DexNest Assistant",
+      actionId,
+      eventType: eventTypeByAction[actionId] ?? "assistant_action",
+      status: "success",
+      source,
+      summary: summaryByAction[actionId] ?? "Ran DexNest Assistant action.",
+      metadataJson: safeAssistantMetadata,
+      durationMs: Date.now() - startedAt
+    });
+    return { ok: true, actionId, message: "DexNest Assistant action logged." };
   }
 
   logActionEvent(
@@ -10380,6 +10830,63 @@ function registerIpcHandlers(): void {
   ipcMain.handle("dexnest:reset-tools-output-folder", () => resetToolsOutputFolder());
 
   ipcMain.handle("dexnest:save-tools-settings", (_event, input: Partial<ToolsSettings>) => updateToolsSettings(input));
+
+  ipcMain.handle("dexnest:get-assistant-state", () => assistantState());
+  ipcMain.handle("dexnest:save-assistant-settings", (_event, input: Partial<AssistantSettings>) => updateAssistantSettings(input));
+  ipcMain.handle("dexnest:test-ollama", (_event, input: { ollamaUrl?: string; ollamaModel?: string }) => testOllamaConnection(input ?? {}));
+  ipcMain.handle("dexnest:assistant-llm-intent", (_event, input: { query?: unknown }) => runOllamaIntent(input ?? {}));
+
+  ipcMain.handle("dexnest:get-assistant-security-state", () => assistantSecurityState());
+  ipcMain.handle("dexnest:save-assistant-security-settings", (_event, input: Partial<AssistantSecuritySettings>) => {
+    const next = updateAssistantSecuritySettings(input ?? {});
+    // Metadata only — never the password or any sensitive value.
+    localDb.appendActionEvent({
+      module: "DexNest Assistant",
+      actionId: "assistant.update_security_settings",
+      eventType: "assistant_security_settings_updated",
+      status: "success",
+      source: "module_ui",
+      summary: "Updated DexNest Assistant trusted session settings.",
+      metadataJson: {
+        trustedSessionEnabled: next.trustedSessionEnabled,
+        autoRevealWhileUnlocked: next.autoRevealWhileUnlocked,
+        sessionTimeoutMinutes: next.sessionTimeoutMinutes,
+        speakSensitiveAnswers: next.speakSensitiveAnswers,
+        lockOnAppClose: next.lockOnAppClose
+      }
+    });
+    return assistantSecurityState();
+  });
+  ipcMain.handle("dexnest:unlock-trusted-session", (_event, input: { masterPassword?: string }) => {
+    // The master password is read here only to validate via Secure Vault and is
+    // never stored or written to the audit log.
+    const result = unlockTrustedSession(typeof input?.masterPassword === "string" ? input.masterPassword : undefined);
+    const state = assistantSecurityState();
+    localDb.appendActionEvent({
+      module: "DexNest Assistant",
+      actionId: "assistant.unlock_session",
+      eventType: "assistant_sensitive_session_unlocked",
+      status: result.ok ? "success" : "failed",
+      source: "module_ui",
+      summary: result.ok ? "Unlocked DexNest Assistant trusted session." : "Failed to unlock DexNest Assistant trusted session.",
+      metadataJson: { sessionTimeoutMinutes: state.settings.sessionTimeoutMinutes, secureVaultUnlocked: state.secureVaultUnlocked },
+      errorMessage: result.ok ? null : (result.error ?? "Unlock failed.")
+    });
+    return { ...result, state };
+  });
+  ipcMain.handle("dexnest:lock-trusted-session", () => {
+    lockTrustedSession();
+    localDb.appendActionEvent({
+      module: "DexNest Assistant",
+      actionId: "assistant.lock_session",
+      eventType: "assistant_sensitive_session_locked",
+      status: "success",
+      source: "module_ui",
+      summary: "Locked DexNest Assistant trusted session.",
+      metadataJson: {}
+    });
+    return assistantSecurityState();
+  });
 
   ipcMain.handle("dexnest:open-tools-file", (_event, filePath: string) => openToolsFile(filePath));
 

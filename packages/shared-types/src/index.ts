@@ -15,7 +15,8 @@ export type DexNestModuleId =
   | "heatmap"
   | "backup"
   | "system"
-  | "voice";
+  | "voice"
+  | "assistant";
 
 export type DexNestActionStatus = "available" | "placeholder";
 export type DexNestActionDangerLevel = "safe" | "caution" | "danger" | "critical";

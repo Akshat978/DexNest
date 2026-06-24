@@ -36,6 +36,16 @@ contextBridge.exposeInMainWorld("dexNest", {
   saveToolsSettings: (payload: { ffmpegPath?: string | null; libreOfficePath?: string | null; tesseractPath?: string | null; pythonPath?: string | null; ocrEngine?: string; ocrDevice?: string; ocrLanguage?: string }) =>
     ipcRenderer.invoke("dexnest:save-tools-settings", payload),
   openToolsFile: (filePath: string) => ipcRenderer.invoke("dexnest:open-tools-file", filePath),
+  getAssistantState: () => ipcRenderer.invoke("dexnest:get-assistant-state"),
+  saveAssistantSettings: (payload: { localIntentEngineEnabled?: boolean; ollamaUrl?: string; ollamaModel?: string; fallbackToRules?: boolean }) =>
+    ipcRenderer.invoke("dexnest:save-assistant-settings", payload),
+  testOllama: (payload: { ollamaUrl?: string; ollamaModel?: string }) => ipcRenderer.invoke("dexnest:test-ollama", payload),
+  assistantLlmIntent: (payload: { query: string }) => ipcRenderer.invoke("dexnest:assistant-llm-intent", payload),
+  getAssistantSecurityState: () => ipcRenderer.invoke("dexnest:get-assistant-security-state"),
+  saveAssistantSecuritySettings: (payload: { trustedSessionEnabled?: boolean; autoRevealWhileUnlocked?: boolean; sessionTimeoutMinutes?: number; speakSensitiveAnswers?: boolean; lockOnAppClose?: boolean }) =>
+    ipcRenderer.invoke("dexnest:save-assistant-security-settings", payload),
+  unlockTrustedSession: (payload: { masterPassword?: string }) => ipcRenderer.invoke("dexnest:unlock-trusted-session", payload),
+  lockTrustedSession: () => ipcRenderer.invoke("dexnest:lock-trusted-session"),
   copyDropIncomingText: (itemId: string) => ipcRenderer.invoke("dexnest:copy-drop-incoming-text", itemId),
   chooseDropReceiveFolder: () => ipcRenderer.invoke("dexnest:choose-drop-receive-folder"),
   resetDropReceiveFolder: () => ipcRenderer.invoke("dexnest:reset-drop-receive-folder"),
