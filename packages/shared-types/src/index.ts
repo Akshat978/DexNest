@@ -10,7 +10,7 @@ export type DexNestActionHandlerType =
   | "routine";
 export type DexNestActionTrigger = "command" | "deck" | "voice" | "routine" | "module_ui";
 export type DexNestEventStatus = "success" | "failed" | "skipped" | "cancelled" | "pending";
-export type DexNestEventSource = DexNestActionTrigger | "system";
+export type DexNestEventSource = DexNestActionTrigger | "system" | "phone_pwa";
 
 export interface DexNestActionDefinition {
   id: string;

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
+import QRCode from "qrcode";
 import "@dexnest/shared-ui/tokens.css";
 import "./styles.css";
 
@@ -14,6 +15,16 @@ interface AppInfo {
   projectsConfigPath: string;
   commandResultsPath: string;
   pinnedActionsPath: string;
+  clipboardHistoryPath: string;
+  clipboardSnippetsPath: string;
+  dropShelfPath: string;
+  dropIncomingPath: string;
+  dropReceiveFolderPath: string;
+  dropOutgoingFolderPath: string;
+  dropTempFolderPath: string;
+  dropLocalUrl: string;
+  dropPhoneUrl: string;
+  lanIp: string | null;
   projectCount: number;
   performanceMode: string;
 }
@@ -97,6 +108,62 @@ interface ProjectCommandResult {
   errorMessage?: string | null;
 }
 
+interface ClipboardHistoryItem {
+  id: string;
+  text: string;
+  preview: string;
+  byteLength: number;
+  createdAt: string;
+}
+
+interface ClipboardSnippet {
+  id: string;
+  title: string;
+  text: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface ClipboardState {
+  history: ClipboardHistoryItem[];
+  snippets: ClipboardSnippet[];
+  snippetsPath: string;
+  historyPath: string;
+}
+
+interface DropShelfItem {
+  id: string;
+  type: "text" | "file";
+  text?: string;
+  preview?: string;
+  fileName?: string;
+  originalName?: string;
+  path?: string;
+  byteLength: number;
+  source: "manual" | "clipboard" | "phone" | "desktop";
+  direction: "outgoing" | "incoming";
+  createdAt: string;
+  expiresAt: string | null;
+}
+
+interface DropState {
+  shelf: DropShelfItem[];
+  outgoing: DropShelfItem[];
+  outgoingText: DropShelfItem[];
+  outgoingFiles: DropShelfItem[];
+  incoming: DropShelfItem[];
+  shelfPath: string;
+  incomingPath: string;
+  receiveFolderPath: string;
+  defaultReceiveFolderPath: string;
+  customReceiveFolderPath: string | null;
+  outgoingFolderPath: string;
+  tempFolderPath: string;
+  localUrl: string;
+  phoneUrl: string;
+  lanIp: string | null;
+}
+
 interface DexNestBridge {
   getAppInfo: () => Promise<AppInfo>;
   listActions: () => Promise<ActionDefinition[]>;
@@ -105,6 +172,12 @@ interface DexNestBridge {
   clearCommandResult: (actionId: string) => Promise<void>;
   listPinnedActions: () => Promise<string[]>;
   savePinnedActions: (actionIds: string[]) => Promise<string[]>;
+  getClipboardState: () => Promise<ClipboardState>;
+  getDropState: () => Promise<DropState>;
+  copyDropIncomingText: (itemId: string) => Promise<{ ok: boolean; error?: string }>;
+  chooseDropReceiveFolder: () => Promise<{ ok: boolean; path?: string; error?: string }>;
+  resetDropReceiveFolder: () => Promise<{ ok: boolean; path: string }>;
+  logDropAutoRefresh: (enabled: boolean) => Promise<void>;
   saveProject: (payload: unknown) => Promise<DexNestProject>;
   deleteProject: (projectId: string) => Promise<void>;
   listEvents: () => Promise<EventEntry[]>;
@@ -144,6 +217,18 @@ const fallbackBridge: DexNestBridge = {
     projectsConfigPath: "./local-data/settings/projects.json",
     commandResultsPath: "./local-data/settings/project-command-results.json",
     pinnedActionsPath: "./local-data/settings/pinned-actions.json",
+    clipboardHistoryPath: "./local-data/settings/clipboard-history.json",
+    clipboardSnippetsPath: "./local-data/settings/clipboard-snippets.json",
+    dropShelfPath: "./local-data/settings/drop-shelf.json",
+    dropIncomingPath: "./local-data/settings/drop-incoming.json",
+    dropReceiveFolderPath: "./local-data/files/drop/incoming",
+    defaultReceiveFolderPath: "./local-data/files/drop/incoming",
+    customReceiveFolderPath: null,
+    dropOutgoingFolderPath: "./local-data/files/drop/outgoing",
+    dropTempFolderPath: "./local-data/files/drop/temp",
+    dropLocalUrl: "http://127.0.0.1:43217/drop",
+    dropPhoneUrl: "http://127.0.0.1:43217/drop",
+    lanIp: null,
     projectCount: 0,
     performanceMode: "Bridge unavailable"
   }),
@@ -153,6 +238,28 @@ const fallbackBridge: DexNestBridge = {
   clearCommandResult: async () => undefined,
   listPinnedActions: async () => ["command.open_home", "dev.open_dashboard", "deck.test_endpoint"],
   savePinnedActions: async (actionIds) => actionIds,
+  getClipboardState: async () => ({ history: [], snippets: [], snippetsPath: "./local-data/settings/clipboard-snippets.json", historyPath: "./local-data/settings/clipboard-history.json" }),
+  getDropState: async () => ({
+    shelf: [],
+    outgoing: [],
+    outgoingText: [],
+    outgoingFiles: [],
+    incoming: [],
+    shelfPath: "./local-data/settings/drop-shelf.json",
+    incomingPath: "./local-data/settings/drop-incoming.json",
+    receiveFolderPath: "./local-data/files/drop/incoming",
+    defaultReceiveFolderPath: "./local-data/files/drop/incoming",
+    customReceiveFolderPath: null,
+    outgoingFolderPath: "./local-data/files/drop/outgoing",
+    tempFolderPath: "./local-data/files/drop/temp",
+    localUrl: "http://127.0.0.1:43217/drop",
+    phoneUrl: "http://127.0.0.1:43217/drop",
+    lanIp: null
+  }),
+  copyDropIncomingText: async () => ({ ok: true }),
+  chooseDropReceiveFolder: async () => ({ ok: false, error: "Bridge unavailable" }),
+  resetDropReceiveFolder: async () => ({ ok: true, path: "./local-data/files/drop/incoming" }),
+  logDropAutoRefresh: async () => undefined,
   saveProject: async (payload) => payload as DexNestProject,
   deleteProject: async () => undefined,
   listEvents: async () => [],
@@ -169,8 +276,8 @@ const views: Array<{ id: ViewId; label: string; accentClass: string; actionId: s
   { id: "command", label: "Command", accentClass: "accent-command", actionId: "command.open_home" },
   { id: "dev", label: "Dev", accentClass: "accent-dev", actionId: "dev.open_dashboard" },
   { id: "deck", label: "Deck", accentClass: "accent-deck", actionId: "deck.test_endpoint" },
-  { id: "clipboard", label: "Clipboard", accentClass: "accent-clipboard", actionId: "clipboard.open_placeholder" },
-  { id: "drop", label: "Drop", accentClass: "accent-drop", actionId: "drop.open_placeholder" },
+  { id: "clipboard", label: "Clipboard", accentClass: "accent-clipboard", actionId: "clipboard.open" },
+  { id: "drop", label: "Drop", accentClass: "accent-drop", actionId: "drop.open" },
   { id: "audit", label: "Audit", accentClass: "accent-command", actionId: "audit.open_history" },
   { id: "settings", label: "Settings", accentClass: "accent-command", actionId: "settings.open" }
 ];
@@ -179,8 +286,8 @@ const moduleCards = [
   ["command", "Command", "Action hub and dashboard.", "available"],
   ["dev", "Dev", "Project cards and local commands.", "placeholder"],
   ["deck", "Deck", "Stream Deck localhost action surface.", "placeholder"],
-  ["clipboard", "Clipboard", "Clipboard listener and snippets later.", "placeholder"],
-  ["drop", "Drop", "Local PC-phone bridge later.", "placeholder"]
+  ["clipboard", "Clipboard", "Manual history and snippets.", "available"],
+  ["drop", "Drop", "Local handoff shelf foundation.", "available"]
 ] as const;
 
 function viewFromAction(action?: ActionDefinition): ViewId | null {
@@ -199,6 +306,24 @@ function DexNestApp() {
   const [projects, setProjects] = useState<DexNestProject[]>([]);
   const [commandResults, setCommandResults] = useState<Record<string, ProjectCommandResult>>({});
   const [pinnedActionIds, setPinnedActionIds] = useState<string[]>([]);
+  const [clipboardState, setClipboardState] = useState<ClipboardState>({ history: [], snippets: [], snippetsPath: "", historyPath: "" });
+  const [dropState, setDropState] = useState<DropState>({
+    shelf: [],
+    outgoing: [],
+    outgoingText: [],
+    outgoingFiles: [],
+    incoming: [],
+    shelfPath: "",
+    incomingPath: "",
+    receiveFolderPath: "",
+    defaultReceiveFolderPath: "",
+    customReceiveFolderPath: null,
+    outgoingFolderPath: "",
+    tempFolderPath: "",
+    localUrl: "",
+    phoneUrl: "",
+    lanIp: null
+  });
   const [events, setEvents] = useState<EventEntry[]>([]);
 
   const activeLabel = useMemo(
@@ -211,12 +336,14 @@ function DexNestApp() {
   }, []);
 
   async function refreshShellData(): Promise<void> {
-    const [info, nextActions, nextProjects, nextCommandResults, nextPinnedActionIds, nextEvents] = await Promise.all([
+    const [info, nextActions, nextProjects, nextCommandResults, nextPinnedActionIds, nextClipboardState, nextDropState, nextEvents] = await Promise.all([
       getBridge().getAppInfo(),
       getBridge().listActions(),
       getBridge().listProjects(),
       getBridge().listCommandResults(),
       getBridge().listPinnedActions(),
+      getBridge().getClipboardState(),
+      getBridge().getDropState(),
       getBridge().listEvents()
     ]);
 
@@ -225,6 +352,8 @@ function DexNestApp() {
     setProjects(nextProjects);
     setCommandResults(nextCommandResults);
     setPinnedActionIds(nextPinnedActionIds);
+    setClipboardState(nextClipboardState);
+    setDropState(nextDropState);
     setEvents(nextEvents);
   }
 
@@ -234,12 +363,14 @@ function DexNestApp() {
   }
 
   async function refreshProjectsAndActions(): Promise<void> {
-    const [info, nextActions, nextProjects, nextCommandResults, nextPinnedActionIds, nextEvents] = await Promise.all([
+    const [info, nextActions, nextProjects, nextCommandResults, nextPinnedActionIds, nextClipboardState, nextDropState, nextEvents] = await Promise.all([
       getBridge().getAppInfo(),
       getBridge().listActions(),
       getBridge().listProjects(),
       getBridge().listCommandResults(),
       getBridge().listPinnedActions(),
+      getBridge().getClipboardState(),
+      getBridge().getDropState(),
       getBridge().listEvents()
     ]);
 
@@ -248,6 +379,8 @@ function DexNestApp() {
     setProjects(nextProjects);
     setCommandResults(nextCommandResults);
     setPinnedActionIds(nextPinnedActionIds);
+    setClipboardState(nextClipboardState);
+    setDropState(nextDropState);
     setEvents(nextEvents);
   }
 
@@ -348,8 +481,20 @@ function DexNestApp() {
               refreshEvents={refreshEvents}
             />
           )}
-          {activeView === "clipboard" && <PlaceholderView id="clipboard" title="Clipboard" onAction={handleAction} />}
-          {activeView === "drop" && <PlaceholderView id="drop" title="Drop" onAction={handleAction} />}
+          {activeView === "clipboard" && (
+            <ClipboardView
+              clipboardState={clipboardState}
+              onAction={runAction}
+            />
+          )}
+          {activeView === "drop" && (
+            <DropView
+              dropState={dropState}
+              endpoint={appInfo?.actionEndpoint}
+              onAction={runAction}
+              onRefresh={refreshShellData}
+            />
+          )}
           {activeView === "audit" && <AuditView events={events} onRefresh={handleAction} refreshEvents={refreshEvents} />}
           {activeView === "settings" && <SettingsView appInfo={appInfo} />}
         </main>
@@ -903,6 +1048,541 @@ function DevView({
   );
 }
 
+const emptySnippetForm = {
+  id: "",
+  title: "",
+  text: ""
+};
+
+function ClipboardView({
+  clipboardState,
+  onAction
+}: {
+  clipboardState: ClipboardState;
+  onAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>;
+}) {
+  const [activeTab, setActiveTab] = useState<"history" | "snippets" | "rules">("history");
+  const [snippetForm, setSnippetForm] = useState(emptySnippetForm);
+
+  async function saveCurrentClipboard(): Promise<void> {
+    await onAction("clipboard.save_current");
+  }
+
+  async function pasteAsPlainText(): Promise<void> {
+    await onAction("clipboard.copy_plain_text");
+  }
+
+  async function saveSnippet(): Promise<void> {
+    await onAction("clipboard.create_snippet", "module_ui", snippetForm);
+    setSnippetForm(emptySnippetForm);
+  }
+
+  async function deleteSnippet(snippetId: string): Promise<void> {
+    const confirmed = window.confirm("Delete this DexNest Clipboard snippet?");
+    if (!confirmed) {
+      return;
+    }
+
+    await onAction("clipboard.delete_snippet", "module_ui", { id: snippetId, confirmedDangerous: true });
+  }
+
+  return (
+    <section className="view-stack" aria-labelledby="clipboard-title">
+      <div className="section-heading">
+        <p>Manual local clipboard</p>
+        <h2 id="clipboard-title">Clipboard</h2>
+      </div>
+
+      <Panel title="Manual Clipboard Actions">
+        <div className="button-row">
+          <button type="button" onClick={() => void saveCurrentClipboard()}>
+            Save current clipboard
+          </button>
+          <button type="button" onClick={() => void pasteAsPlainText()}>
+            Paste as plain text
+          </button>
+        </div>
+        <p>No listener is running. Clipboard entries are saved only when you click.</p>
+      </Panel>
+
+      <div className="tabs" role="tablist" aria-label="Clipboard sections">
+        <button type="button" data-active={activeTab === "history"} onClick={() => setActiveTab("history")}>
+          History
+        </button>
+        <button type="button" data-active={activeTab === "snippets"} onClick={() => setActiveTab("snippets")}>
+          Snippets
+        </button>
+        <button type="button" data-active={activeTab === "rules"} onClick={() => setActiveTab("rules")}>
+          Rules
+        </button>
+      </div>
+
+      {activeTab === "history" && (
+        <Panel title="Clipboard History">
+          <p className="technical">{clipboardState.historyPath}</p>
+          <div className="item-list">
+            {clipboardState.history.length === 0 ? (
+              <p>No clipboard history yet.</p>
+            ) : (
+              clipboardState.history.map((item) => (
+                <article className="data-item accent-clipboard" key={item.id}>
+                  <div>
+                    <h3>{item.preview || "Saved clipboard text"}</h3>
+                    <p>{item.byteLength} bytes saved at {new Date(item.createdAt).toLocaleString()}</p>
+                    <p className="technical">{item.id}</p>
+                  </div>
+                </article>
+              ))
+            )}
+          </div>
+        </Panel>
+      )}
+
+      {activeTab === "snippets" && (
+        <Panel title="Snippets and Templates">
+          <p className="technical">{clipboardState.snippetsPath}</p>
+          <div className="project-form">
+            <label>
+              Title
+              <input value={snippetForm.title} onChange={(event) => setSnippetForm((current) => ({ ...current, title: event.target.value }))} />
+            </label>
+            <label>
+              Snippet text
+              <textarea className="technical" value={snippetForm.text} onChange={(event) => setSnippetForm((current) => ({ ...current, text: event.target.value }))} />
+            </label>
+          </div>
+          <div className="button-row">
+            <button type="button" onClick={() => void saveSnippet()}>
+              {snippetForm.id ? "Save snippet" : "Create snippet"}
+            </button>
+            {snippetForm.id && (
+              <button type="button" onClick={() => setSnippetForm(emptySnippetForm)}>
+                Cancel edit
+              </button>
+            )}
+          </div>
+          <div className="item-list">
+            {clipboardState.snippets.length === 0 ? (
+              <p>No snippets yet.</p>
+            ) : (
+              clipboardState.snippets.map((snippet) => (
+                <article className="data-item accent-clipboard" key={snippet.id}>
+                  <div>
+                    <h3>{snippet.title}</h3>
+                    <p>{previewForUi(snippet.text)}</p>
+                    <p className="technical">{snippet.id}</p>
+                  </div>
+                  <div className="button-row">
+                    <button type="button" onClick={() => setSnippetForm({ id: snippet.id, title: snippet.title, text: snippet.text })}>
+                      Edit
+                    </button>
+                    <button type="button" onClick={() => void deleteSnippet(snippet.id)}>
+                      Delete
+                    </button>
+                  </div>
+                </article>
+              ))
+            )}
+          </div>
+        </Panel>
+      )}
+
+      {activeTab === "rules" && (
+        <div className="dashboard-grid">
+          <Panel title="Per-App Rules">
+            <p>Placeholder only. No app monitoring or clipboard listener is active yet.</p>
+          </Panel>
+          <Panel title="Secret Protection">
+            <p>Placeholder only. Future rules can flag passwords, tokens, and sensitive snippets before saving.</p>
+          </Panel>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function DropView({
+  dropState,
+  endpoint,
+  onAction,
+  onRefresh
+}: {
+  dropState: DropState;
+  endpoint?: string;
+  onAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>;
+  onRefresh: () => Promise<void>;
+}) {
+  const [dropText, setDropText] = useState("");
+  const [qrDataUrl, setQrDataUrl] = useState("");
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [toasts, setToasts] = useState<Array<{ id: string; message: string; tone: "success" | "error" }>>([]);
+
+  useEffect(() => {
+    if (!dropState.phoneUrl) {
+      setQrDataUrl("");
+      return;
+    }
+
+    void QRCode.toDataURL(dropState.phoneUrl, { margin: 1, width: 180 }).then(setQrDataUrl);
+  }, [dropState.phoneUrl]);
+
+  useEffect(() => {
+    if (!autoRefresh) {
+      return;
+    }
+
+    const timer = window.setInterval(() => {
+      void onRefresh();
+    }, 3000);
+
+    return () => window.clearInterval(timer);
+  }, [autoRefresh, onRefresh]);
+
+  function showToast(message: string, tone: "success" | "error" = "success"): void {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setToasts((current) => [...current, { id, message, tone }]);
+    window.setTimeout(() => {
+      setToasts((current) => current.filter((toast) => toast.id !== id));
+    }, 3000);
+  }
+
+  async function toggleAutoRefresh(enabled: boolean): Promise<void> {
+    setAutoRefresh(enabled);
+    await getBridge().logDropAutoRefresh(enabled);
+    showToast(`Auto-refresh ${enabled ? "enabled" : "disabled"}`);
+  }
+
+  async function copyTextToClipboard(value: string, message: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(value);
+      showToast(message);
+    } catch {
+      showToast("Copy failed", "error");
+    }
+  }
+
+  async function createTextDrop(): Promise<void> {
+    const result = await onAction("drop.create_text_drop", "module_ui", { text: dropText }) as { ok?: boolean; error?: string };
+    if (result?.ok === false) {
+      showToast(result.error ?? "Text send failed", "error");
+      return;
+    }
+    setDropText("");
+    showToast("Text sent");
+  }
+
+  async function sendClipboardToDrop(): Promise<void> {
+    const result = await onAction("drop.send_clipboard_to_drop") as { ok?: boolean; error?: string };
+    showToast(result?.ok === false ? result.error ?? "Clipboard send failed" : "Text sent", result?.ok === false ? "error" : "success");
+  }
+
+  async function addOutgoingFile(): Promise<void> {
+    const result = await onAction("drop.add_outgoing_file") as { ok?: boolean; error?: string };
+    showToast(result?.ok === false ? result.error ?? "File add failed" : "File added", result?.ok === false ? "error" : "success");
+  }
+
+  async function removeOutgoingFile(fileId: string): Promise<void> {
+    const confirmed = window.confirm("Remove this outgoing Drop file copy?");
+    if (!confirmed) {
+      return;
+    }
+
+    const result = await onAction("drop.remove_outgoing_file", "module_ui", { id: fileId, confirmedDangerous: true }) as { ok?: boolean; error?: string };
+    showToast(result?.ok === false ? result.error ?? "File remove failed" : "File removed", result?.ok === false ? "error" : "success");
+  }
+
+  async function clearOutgoing(): Promise<void> {
+    const confirmed = window.confirm("Clear outgoing DexNest Drop text and file items?");
+    if (!confirmed) {
+      return;
+    }
+
+    const result = await onAction("drop.clear_outgoing", "module_ui", { confirmedDangerous: true }) as { ok?: boolean; error?: string };
+    showToast(result?.ok === false ? result.error ?? "Clear outgoing failed" : "Outgoing cleared", result?.ok === false ? "error" : "success");
+  }
+
+  async function clearIncoming(): Promise<void> {
+    const confirmed = window.confirm("Clear incoming DexNest Drop metadata? Received files stay on disk.");
+    if (!confirmed) {
+      return;
+    }
+
+    const result = await onAction("drop.clear_incoming", "module_ui", { confirmedDangerous: true }) as { ok?: boolean; error?: string };
+    showToast(result?.ok === false ? result.error ?? "Clear incoming failed" : "Incoming list cleared", result?.ok === false ? "error" : "success");
+  }
+
+  async function copyIncomingText(itemId: string): Promise<void> {
+    const result = await getBridge().copyDropIncomingText(itemId);
+    showToast(result.ok ? "Copied incoming text" : result.error ?? "Copy failed", result.ok ? "success" : "error");
+  }
+
+  async function chooseReceiveFolder(): Promise<void> {
+    const result = await getBridge().chooseDropReceiveFolder();
+    if (result.ok) {
+      await onRefresh();
+      showToast("Receive folder changed");
+    } else {
+      showToast(result.error ?? "Receive folder change cancelled", "error");
+    }
+  }
+
+  async function resetReceiveFolder(): Promise<void> {
+    const result = await getBridge().resetDropReceiveFolder();
+    await onRefresh();
+    showToast(result.ok ? "Receive folder changed" : "Receive folder reset failed", result.ok ? "success" : "error");
+  }
+
+  const outgoingCount = dropState.outgoingText.length + dropState.outgoingFiles.length;
+  const incomingText = dropState.incoming.filter((item) => item.type === "text");
+  const incomingFiles = dropState.incoming.filter((item) => item.type === "file");
+
+  return (
+    <section className="view-stack drop-view accent-drop" aria-labelledby="drop-title">
+      <div className="toast-stack" aria-live="polite">
+        {toasts.map((toast) => (
+          <div className="toast" data-tone={toast.tone} key={toast.id}>{toast.message}</div>
+        ))}
+      </div>
+
+      <section className="drop-hero" aria-labelledby="drop-title">
+        <div className="drop-hero__main">
+          <div className="section-heading">
+            <p>Two-way local Wi-Fi transfer</p>
+            <h2 id="drop-title">DexNest Drop</h2>
+          </div>
+          <div className="status-pills" aria-label="Drop status">
+            <span>Local only</span>
+            <span>Same Wi-Fi required</span>
+            <span>Server running</span>
+            <span>Auto-refresh {autoRefresh ? "on" : "off"}</span>
+          </div>
+          <div className="drop-connection">
+            <div>
+              <span>LAN IP</span>
+              <strong className="technical">{dropState.lanIp ?? "not detected"}</strong>
+            </div>
+            <div>
+              <span>Phone URL</span>
+              <strong className="technical">{dropState.phoneUrl || "Loading"}</strong>
+            </div>
+            <div>
+              <span>Local URL</span>
+              <strong className="technical">{dropState.localUrl || endpoint || "Loading"}</strong>
+            </div>
+          </div>
+          <div className="button-row">
+            <button className="button-primary" type="button" onClick={() => void onAction("drop.copy_phone_url").then(() => showToast("Drop URL copied"))}>
+              Copy phone URL
+            </button>
+            <button className="button-secondary" type="button" onClick={() => void onRefresh().then(() => showToast("Drop refreshed"))}>
+              Refresh
+            </button>
+            <button className="button-secondary" type="button" onClick={() => void toggleAutoRefresh(!autoRefresh)}>
+              Auto-refresh {autoRefresh ? "On" : "Off"}
+            </button>
+          </div>
+        </div>
+        <div className="drop-hero__qr">
+          {qrDataUrl ? <img className="qr-code" src={qrDataUrl} alt="DexNest Drop phone URL QR code" /> : <div className="qr-code qr-code--empty" />}
+          <p>Scan from Android Chrome on the same Wi-Fi. No cloud relay is used.</p>
+        </div>
+      </section>
+
+      <section className="drop-transfer-grid" aria-label="Drop transfer directions">
+        <article className="drop-panel">
+          <div className="drop-panel__header">
+            <div>
+              <p>PC to Phone</p>
+              <h3>Send to phone</h3>
+            </div>
+            <span>{outgoingCount} ready</span>
+          </div>
+          <textarea
+            className="technical"
+            placeholder="Write text to make available on your phone"
+            value={dropText}
+            onChange={(event) => setDropText(event.target.value)}
+          />
+          <div className="button-row">
+            <button className="button-primary" type="button" onClick={() => void createTextDrop()}>
+              Send text
+            </button>
+            <button className="button-secondary" type="button" onClick={() => void sendClipboardToDrop()}>
+              Send clipboard
+            </button>
+            <button className="button-secondary" type="button" onClick={() => void addOutgoingFile()}>
+              Add file
+            </button>
+            <button className="button-danger" type="button" onClick={() => void clearOutgoing()}>
+              Clear outgoing
+            </button>
+          </div>
+          <p>Text drops include expiry metadata. Files are copied into the outgoing shelf.</p>
+          <p className="technical">{dropState.outgoingFolderPath}</p>
+        </article>
+
+        <article className="drop-panel">
+          <div className="drop-panel__header">
+            <div>
+              <p>Phone to PC</p>
+              <h3>Receive from phone</h3>
+            </div>
+            <span>{dropState.incoming.length} incoming</span>
+          </div>
+          <div className="drop-folder-card">
+            <span>Current receive folder</span>
+            <strong className="technical">{dropState.receiveFolderPath}</strong>
+          </div>
+          <div className="button-row">
+            <button className="button-primary" type="button" onClick={() => void chooseReceiveFolder()}>
+              Choose receive folder
+            </button>
+            <button className="button-secondary" type="button" onClick={() => void onAction("drop.open_incoming_folder")}>
+              Open folder
+            </button>
+            <button className="button-secondary" type="button" onClick={() => void resetReceiveFolder()}>
+              Reset default
+            </button>
+            <button className="button-danger" type="button" onClick={() => void clearIncoming()}>
+              Clear incoming list
+            </button>
+          </div>
+          <p>Default folder:</p>
+          <p className="technical">{dropState.defaultReceiveFolderPath}</p>
+          {dropState.customReceiveFolderPath && (
+            <>
+              <p>Custom folder:</p>
+              <p className="technical">{dropState.customReceiveFolderPath}</p>
+            </>
+          )}
+          <p>PIN placeholder: not enforced in this MVP.</p>
+        </article>
+      </section>
+
+      <section className="drop-shelf-grid" aria-label="Drop shelves">
+        <article className="drop-shelf">
+          <div className="drop-shelf__header">
+            <h3>Outgoing text</h3>
+            <span>{dropState.outgoingText.length}</span>
+          </div>
+          {dropState.outgoingText.length === 0 ? (
+            <p className="empty-inline">No outgoing text drops yet.</p>
+          ) : (
+            dropState.outgoingText.map((item) => (
+              <div className="drop-card" key={item.id}>
+                <div>
+                  <p className="drop-card__eyebrow">Send to phone</p>
+                  <h4>{item.preview || "Text drop"}</h4>
+                  <p>{formatBytes(item.byteLength)} from {item.source}</p>
+                  <p>Expires: {item.expiresAt ? formatDate(item.expiresAt) : "not set"}</p>
+                  <p className="technical">{item.id}</p>
+                </div>
+                <button className="button-secondary" type="button" onClick={() => void copyTextToClipboard(item.id, "Drop ID copied")}>
+                  Copy ID
+                </button>
+              </div>
+            ))
+          )}
+        </article>
+
+        <article className="drop-shelf">
+          <div className="drop-shelf__header">
+            <h3>Outgoing files</h3>
+            <span>{dropState.outgoingFiles.length}</span>
+          </div>
+          {dropState.outgoingFiles.length === 0 ? (
+            <p className="empty-inline">No outgoing files yet.</p>
+          ) : (
+            dropState.outgoingFiles.map((item) => (
+              <div className="drop-card" key={item.id}>
+                <div>
+                  <p className="drop-card__eyebrow">Send to phone</p>
+                  <h4>{item.originalName ?? item.fileName ?? "Outgoing file"}</h4>
+                  <p>{formatBytes(item.byteLength)}. Phone can download this file.</p>
+                  <p className="technical">{item.id}</p>
+                </div>
+                <button className="button-danger" type="button" onClick={() => void removeOutgoingFile(item.id)}>
+                  Remove
+                </button>
+              </div>
+            ))
+          )}
+        </article>
+
+        <article className="drop-shelf">
+          <div className="drop-shelf__header">
+            <h3>Incoming text</h3>
+            <span>{incomingText.length}</span>
+          </div>
+          {incomingText.length === 0 ? (
+            <p className="empty-inline">No incoming phone text yet.</p>
+          ) : (
+            incomingText.map((item) => (
+              <div className="drop-card" key={item.id}>
+                <div>
+                  <p className="drop-card__eyebrow">Receive from phone</p>
+                  <h4>{item.preview ?? "Incoming text"}</h4>
+                  <p>{formatBytes(item.byteLength)} from phone</p>
+                  <p>{formatDate(item.createdAt)}</p>
+                  <p className="technical">{item.path ?? item.id}</p>
+                </div>
+                <button className="button-secondary" type="button" onClick={() => void copyIncomingText(item.id)}>
+                  Copy
+                </button>
+              </div>
+            ))
+          )}
+        </article>
+
+        <article className="drop-shelf">
+          <div className="drop-shelf__header">
+            <h3>Incoming files</h3>
+            <span>{incomingFiles.length}</span>
+          </div>
+          {incomingFiles.length === 0 ? (
+            <p className="empty-inline">No incoming phone files yet.</p>
+          ) : (
+            incomingFiles.map((item) => (
+              <div className="drop-card" key={item.id}>
+                <div>
+                  <p className="drop-card__eyebrow">Receive from phone</p>
+                  <h4>{item.originalName ?? item.fileName ?? "Incoming file"}</h4>
+                  <p>{formatBytes(item.byteLength)} from phone</p>
+                  <p>{formatDate(item.createdAt)}</p>
+                  <p className="technical">{item.path ?? item.id}</p>
+                </div>
+                <button className="button-secondary" type="button" onClick={() => void onAction("drop.open_incoming_folder")}>
+                  Open folder
+                </button>
+              </div>
+            ))
+          )}
+        </article>
+      </section>
+    </section>
+  );
+}
+
+function previewForUi(value: string): string {
+  return value.replace(/\s+/g, " ").trim().slice(0, 120);
+}
+
+function formatBytes(value: number): string {
+  if (value < 1024) {
+    return `${value} B`;
+  }
+
+  if (value < 1024 * 1024) {
+    return `${(value / 1024).toFixed(1)} KB`;
+  }
+
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatDate(value: string): string {
+  return new Date(value).toLocaleString();
+}
+
 function DeckView({
   actions,
   projects,
@@ -916,6 +1596,7 @@ function DeckView({
 }) {
   const projectActions = actions.filter((action) => action.id.startsWith("dev.project."));
   const [endpointStatuses, setEndpointStatuses] = useState<Record<string, string>>({});
+  const clipboardDropActions = actions.filter((action) => action.module === "clipboard" || action.module === "drop");
   const projectActionGroups = projects.map((project) => ({
     project,
     actions: projectActions.filter((action) => action.id.startsWith(`dev.project.${project.id}.`))
@@ -1027,6 +1708,34 @@ function DeckView({
           )}
         </div>
       </Panel>
+
+      <Panel title="Clipboard and Drop Actions">
+        <div className="action-list">
+          {clipboardDropActions.length === 0 ? (
+            <p>No Clipboard or Drop actions registered.</p>
+          ) : (
+            clipboardDropActions.map((action) => (
+              <article className={`action-row accent-${action.moduleId}`} key={action.id}>
+                <div>
+                  <h3>{action.title}</h3>
+                  <p className="technical">{action.id}</p>
+                  <p className="technical">{endpointForAction(action.id)}</p>
+                  {endpointStatuses[action.id] && <p>{endpointStatuses[action.id]}</p>}
+                </div>
+                <div>
+                  <span>{action.dangerLevel}</span>
+                  <button type="button" onClick={() => void runEndpointAction(action.id)}>
+                    Run/Test
+                  </button>
+                  <button type="button" onClick={() => void copyEndpoint(action.id)}>
+                    Copy endpoint
+                  </button>
+                </div>
+              </article>
+            ))
+          )}
+        </div>
+      </Panel>
     </section>
   );
 }
@@ -1110,6 +1819,15 @@ function SettingsView({ appInfo }: { appInfo: AppInfo | null }) {
     ["Database", appInfo?.dbPath ?? "Loading"],
     ["Local endpoint", appInfo?.actionEndpoint ?? "Loading"],
     ["Projects config", appInfo?.projectsConfigPath ?? "Loading"],
+    ["Clipboard history", appInfo?.clipboardHistoryPath ?? "Loading"],
+    ["Clipboard snippets", appInfo?.clipboardSnippetsPath ?? "Loading"],
+    ["Drop shelf", appInfo?.dropShelfPath ?? "Loading"],
+    ["Drop incoming metadata", appInfo?.dropIncomingPath ?? "Loading"],
+    ["Drop receive folder", appInfo?.dropReceiveFolderPath ?? "Loading"],
+    ["Drop outgoing folder", appInfo?.dropOutgoingFolderPath ?? "Loading"],
+    ["Drop temp folder", appInfo?.dropTempFolderPath ?? "Loading"],
+    ["Drop phone URL", appInfo?.dropPhoneUrl ?? "Loading"],
+    ["Detected LAN IP", appInfo?.lanIp ?? "Not detected"],
     ["Saved projects", String(appInfo?.projectCount ?? 0)],
     ["App version", "0.1.0"],
     ["Performance mode", appInfo?.performanceMode ?? "Loading"]

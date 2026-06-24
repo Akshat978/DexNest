@@ -422,6 +422,75 @@ button:focus-visible {
   gap: var(--space-2);
 }
 
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.tabs button[data-active="true"] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.item-list {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.data-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-4);
+  align-items: start;
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+}
+
+.data-item h3,
+.data-item p {
+  margin: 0;
+}
+
+.data-item p {
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.qr-code {
+  width: 11.25rem;
+  max-width: 100%;
+  padding: var(--space-2);
+  background: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.toast-stack {
+  position: fixed;
+  right: var(--space-4);
+  bottom: var(--space-4);
+  z-index: 20;
+  display: grid;
+  gap: var(--space-2);
+  width: min(24rem, calc(100vw - var(--space-6)));
+}
+
+.toast {
+  padding: var(--space-3);
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--success);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-panel);
+}
+
+.toast[data-tone="error"] {
+  border-color: var(--error);
+}
+
 .project-grid {
   display: grid;
   gap: var(--space-4);
@@ -603,6 +672,187 @@ button:focus-visible {
   padding: var(--space-3);
 }
 
+.button-primary {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.button-secondary {
+  color: var(--text);
+}
+
+.button-danger {
+  border-color: var(--error);
+}
+
+.drop-view p,
+.drop-card p,
+.drop-panel p,
+.drop-hero p {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.drop-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-5);
+  align-items: stretch;
+  padding: var(--space-5);
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-panel);
+}
+
+.drop-hero__main {
+  display: grid;
+  align-content: start;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.drop-hero__qr {
+  display: grid;
+  align-content: start;
+  justify-items: center;
+  gap: var(--space-3);
+  width: min-content;
+}
+
+.drop-hero__qr p {
+  max-width: 14rem;
+  text-align: center;
+}
+
+.status-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.status-pills span,
+.drop-panel__header span,
+.drop-shelf__header span {
+  width: fit-content;
+  padding: var(--space-1) var(--space-2);
+  color: var(--accent);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-tech);
+  font-size: 0.8rem;
+}
+
+.drop-connection {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.drop-connection div,
+.drop-folder-card {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.drop-connection span,
+.drop-folder-card span {
+  color: var(--text-muted);
+}
+
+.drop-connection strong,
+.drop-folder-card strong {
+  overflow-wrap: anywhere;
+}
+
+.qr-code--empty {
+  min-height: 11.25rem;
+  background: var(--surface-2);
+}
+
+.drop-transfer-grid,
+.drop-shelf-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+.drop-panel,
+.drop-shelf {
+  display: grid;
+  align-content: start;
+  gap: var(--space-4);
+  min-width: 0;
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-panel);
+}
+
+.drop-panel {
+  border-color: var(--accent);
+}
+
+.drop-panel__header,
+.drop-shelf__header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.drop-panel__header h3,
+.drop-shelf__header h3,
+.drop-card h4 {
+  margin: 0;
+}
+
+.drop-panel__header p {
+  margin-bottom: var(--space-1);
+}
+
+.drop-shelf {
+  gap: var(--space-3);
+}
+
+.drop-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  align-items: start;
+  padding: var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.drop-card > div {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.drop-card__eyebrow {
+  color: var(--accent);
+  font-family: var(--font-tech);
+  font-size: 0.8rem;
+}
+
+.empty-inline {
+  padding: var(--space-3);
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
 @media (max-width: 980px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -652,16 +902,27 @@ button:focus-visible {
   }
 
   .module-grid,
-  .dashboard-grid {
+  .dashboard-grid,
+  .drop-transfer-grid,
+  .drop-shelf-grid,
+  .drop-connection,
+  .drop-hero {
     grid-template-columns: 1fr;
+  }
+
+  .drop-hero__qr {
+    width: 100%;
+    justify-items: start;
   }
 
   .event-row,
   .settings-row,
   .action-row,
+  .data-item,
   .registry-controls,
   .project-card__header,
-  .command-row {
+  .command-row,
+  .drop-card {
     grid-template-columns: 1fr;
   }
 
