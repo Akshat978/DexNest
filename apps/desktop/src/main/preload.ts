@@ -23,8 +23,13 @@ contextBridge.exposeInMainWorld("dexNest", {
   getHeatmapState: () => ipcRenderer.invoke("dexnest:get-heatmap-state"),
   getRoutinesState: () => ipcRenderer.invoke("dexnest:get-routines-state"),
   getBackupState: () => ipcRenderer.invoke("dexnest:get-backup-state"),
+  getExternalDevicesState: () => ipcRenderer.invoke("dexnest:get-external-devices-state"),
   getAppHealth: () => ipcRenderer.invoke("dexnest:get-app-health"),
   getCommandStats: () => ipcRenderer.invoke("dexnest:get-command-stats"),
+  getPerformanceModeState: () => ipcRenderer.invoke("dexnest:get-performance-mode-state"),
+  getPerformanceModeSettings: () => ipcRenderer.invoke("dexnest:get-performance-mode-settings"),
+  savePerformanceModeSettings: (payload: Record<string, boolean>) => ipcRenderer.invoke("dexnest:save-performance-mode-settings", payload),
+  setPerformanceModeEnabled: (payload: { enabled: boolean; reason?: string }) => ipcRenderer.invoke("dexnest:set-performance-mode-enabled", payload),
   selectBackupZip: () => ipcRenderer.invoke("dexnest:select-backup-zip"),
   selectToolsFiles: (kind: "pdf" | "image" | "any") => ipcRenderer.invoke("dexnest:select-tools-files", kind),
   selectVaultFiles: () => ipcRenderer.invoke("dexnest:select-vault-files"),
@@ -66,13 +71,14 @@ contextBridge.exposeInMainWorld("dexNest", {
   }) => ipcRenderer.invoke("dexnest:log-action-result", payload),
   logUiEvent: (payload: { view: string; target: string; summary: string }) =>
     ipcRenderer.invoke("dexnest:log-ui-event", payload),
+  rendererReady: () => ipcRenderer.send("dexnest:renderer-ready"),
   onClipboardHotkeyResult: (callback: (payload: { message: string; tone: "success" | "error" }) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: { message: string; tone: "success" | "error" }) => callback(payload);
     ipcRenderer.on("dexnest:clipboard-hotkey-result", listener);
     return () => ipcRenderer.removeListener("dexnest:clipboard-hotkey-result", listener);
   },
-  onOpenView: (callback: (payload: { view: string }) => void) => {
-    const listener = (_event: Electron.IpcRendererEvent, payload: { view: string }) => callback(payload);
+  onOpenView: (callback: (payload: { view: string; focusAssistant?: boolean }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: { view: string; focusAssistant?: boolean }) => callback(payload);
     ipcRenderer.on("dexnest:open-view", listener);
     return () => ipcRenderer.removeListener("dexnest:open-view", listener);
   }

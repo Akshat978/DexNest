@@ -234,6 +234,10 @@ button:focus-visible {
   --accent: var(--accent-tools);
 }
 
+.accent-external_devices {
+  --accent: var(--accent-tools);
+}
+
 .accent-vault {
   --accent: var(--accent-vault);
 }
@@ -544,6 +548,18 @@ button:focus-visible {
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.performance-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: var(--space-3);
+  align-items: center;
+  min-width: 0;
+}
+
+.performance-card p {
+  margin: var(--space-2) 0 0;
 }
 
 .settings-grid {

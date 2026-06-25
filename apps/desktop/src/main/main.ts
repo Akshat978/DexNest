@@ -39,6 +39,8 @@ const receiptsRoot = join(localDataRoot, "files", "receipts");
 const capturesRoot = join(localDataRoot, "files", "captures");
 const projectsConfigPath = join(settingsRoot, "projects.json");
 const commandSettingsPath = join(settingsRoot, "command-settings.json");
+const keyboardShortcutsPath = join(settingsRoot, "keyboard-shortcuts.json");
+const streamDeckSettingsPath = join(settingsRoot, "stream-deck-settings.json");
 const commandResultsPath = join(settingsRoot, "project-command-results.json");
 const pinnedActionsPath = join(settingsRoot, "pinned-actions.json");
 const clipboardHistoryPath = join(settingsRoot, "clipboard-history.json");
@@ -74,6 +76,11 @@ const heatmapSettingsPath = join(settingsRoot, "heatmap-settings.json");
 const heatmapGoalsPath = join(settingsRoot, "heatmap-goals.json");
 const assistantSettingsPath = join(settingsRoot, "assistant-settings.json");
 const assistantSecuritySettingsPath = join(settingsRoot, "assistant-security-settings.json");
+const externalDevicesSettingsPath = join(settingsRoot, "external-devices-settings.json");
+const externalDevicesCachePath = join(settingsRoot, "external-devices-cache.json");
+const performanceModeSettingsPath = join(settingsRoot, "performance-mode-settings.json");
+const appLifecycleSettingsPath = join(settingsRoot, "app-lifecycle-settings.json");
+const searchIndexStatusPath = join(settingsRoot, "search-index-status.json");
 const backupsRoot = join(localDataRoot, "backups");
 const restoreStagingRoot = join(backupsRoot, "restore-staging");
 const actionPort = 43217;
@@ -96,6 +103,8 @@ for (const action of seededActions) {
 }
 
 let mainWindow: BrowserWindow | null = null;
+let rendererReady = false;
+let pendingOpenView: { view: string; focusAssistant?: boolean } | null = null;
 let tray: Tray | null = null;
 let actionServer: ReturnType<typeof createServer> | null = null;
 let secureVaultKey: Buffer | null = null;
@@ -118,8 +127,18 @@ let clipboardPasteReplayBusy = false;
 let clipboardArmedPasteText = "";
 let commandShortcutRegistered = false;
 let registeredCommandShortcut = "";
+let registeredKeyboardShortcuts: string[] = [];
 let vaultOcrQueueRunning = false;
 let vaultOcrQueuePaused = false;
+let isQuittingDexNest = false;
+let closePromptOpen = false;
+let trayCloseNoticeShownThisSession = false;
+let trayModeActive = false;
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+}
 
 interface DexNestProject {
   id: string;
@@ -167,7 +186,77 @@ interface CommandSettings {
   globalShortcutLastError: string | null;
   trayEnabled: boolean;
   trayStatus: "active" | "failed";
-  performanceModePlaceholder: boolean;
+}
+
+interface KeyboardShortcutMapping {
+  id: string;
+  label: string;
+  shortcut: string;
+  targetType: "action" | "routine";
+  actionId?: string;
+  routineId?: string;
+  enabled: boolean;
+  allowDangerous: boolean;
+  status: "active" | "disabled" | "failed" | "conflict" | "blocked";
+  lastError: string | null;
+}
+
+interface KeyboardShortcutSettings {
+  enabled: boolean;
+  mappings: KeyboardShortcutMapping[];
+  updatedAt: string;
+}
+
+interface StreamDeckSettings {
+  localOnly: boolean;
+  lanEnabled: boolean;
+  tokenEnabled: boolean;
+  token: string;
+  updatedAt: string;
+}
+
+type PerformanceModeReason = "manual" | "fullscreen" | "game-detected" | "scheduled" | "unknown";
+
+type AppCloseBehavior = "minimize_to_tray" | "ask" | "exit";
+
+interface AppLifecycleSettings {
+  closeBehavior: AppCloseBehavior;
+  showTrayCloseNotice: boolean;
+  minimizeToTrayOnStartup: boolean;
+  startDexNestWithWindows: boolean;
+  startMinimizedToTray: boolean;
+  loginItemStatus: "enabled" | "disabled" | "failed";
+  loginItemLastError: string | null;
+  updatedAt: string;
+}
+
+interface PerformanceModeSettings {
+  performanceModeEnabled: boolean;
+  pauseHeatmap: boolean;
+  pauseOcrJobs: boolean;
+  pauseSearchAutoIndex: boolean;
+  pauseBackups: boolean;
+  suppressNonUrgentNudges: boolean;
+  allowDropWhenOpen: boolean;
+  allowUserTriggeredAssistant: boolean;
+  autoEnableWhenFullscreen: boolean;
+  autoEnableWhenGameDetected: boolean;
+  showTrayStatus: boolean;
+}
+
+interface PerformanceModeState {
+  enabled: boolean;
+  reason: PerformanceModeReason;
+  enabledAt: string | null;
+  pausedWorkers: string[];
+  lastChangedAt: string;
+}
+
+interface SearchIndexStatus {
+  staleDueToPerformanceMode: boolean;
+  staleReason: string | null;
+  staleSince: string | null;
+  lastSkippedAutoIndexAt: string | null;
 }
 
 interface ProjectCommandResult {
@@ -472,6 +561,45 @@ interface SecureVaultState {
   autoLockMinutes: number;
   itemTypes: SecureVaultItemType[];
   items: SecureVaultUnlockedItem[];
+}
+
+interface ExternalDevicesSettings {
+  goveeEnabled: boolean;
+  goveeApiKeySecretId: string | null;
+  defaultDeviceAlias: string | null;
+  allowVoiceControl: boolean;
+  allowStreamDeckControl: boolean;
+  allowKeyboardShortcutControl: boolean;
+  requireConfirmationForPowerOff: boolean;
+  requireConfirmationForBrightnessBelow10: boolean;
+  requireConfirmationForScenes: boolean;
+  updatedAt: string | null;
+}
+
+interface ExternalDeviceCacheItem {
+  provider: "govee";
+  deviceId: string;
+  deviceName: string;
+  model: string;
+  controllable: boolean;
+  retrievable: boolean;
+  roomAlias: string;
+  userAlias: string;
+  lastSeen: string;
+  lastKnownPowerState?: "on" | "off" | "unknown";
+  lastKnownBrightness?: number | null;
+}
+
+interface ExternalDevicesState {
+  settingsPath: string;
+  cachePath: string;
+  settings: ExternalDevicesSettings;
+  secureVaultSetup: boolean;
+  secureVaultUnlocked: boolean;
+  apiKeyStored: boolean;
+  providerStatus: "disabled" | "ready" | "needs_secure_vault" | "locked" | "missing_api_key";
+  providerMessage: string;
+  devices: ExternalDeviceCacheItem[];
 }
 
 interface SearchIndexRecord {
@@ -986,6 +1114,20 @@ function previewText(value: string): string {
   return value.replace(/\s+/g, " ").trim().slice(0, 120);
 }
 
+function endpointPreviewText(value: string): string {
+  return value.replace(/\s+/g, " ").trim().slice(0, 80);
+}
+
+function looksSensitiveClipboardText(value: string): boolean {
+  const text = value.toLowerCase();
+  return [
+    /\b\d{3}[- ]?\d{3}[- ]?\d{3}\b/, // SIN-like values
+    /\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b/, // card-like values
+    /\b(password|passwd|passcode|token|api[_ -]?key|secret|recovery code|sin|passport|permit number|health card|uci)\b/,
+    /\b(bearer|sk-|ghp_|github_pat_|xoxb-|xoxp-)[a-z0-9_\-]{8,}\b/i
+  ].some((pattern) => pattern.test(text));
+}
+
 function normalizeSearchText(value: string): string {
   return value.toLowerCase().replace(/\s+/g, " ").trim();
 }
@@ -1190,7 +1332,15 @@ function appHealthState(source: DexNestActionTrigger = "module_ui", writeAudit =
   const heatmap = heatmapState();
   const clipboardSettings = loadClipboardSettings();
   const commandSettings = loadCommandSettings();
+  const keyboardSettings = loadKeyboardShortcutSettings();
+  const streamDeckSettings = loadStreamDeckSettings();
+  const lifecycle = appLifecycleState();
   const latestBackup = listBackups()[0] ?? null;
+  const performance = performanceModeState();
+  const performanceSettings = loadPerformanceModeSettings();
+  const searchIndexStatus = loadSearchIndexStatus();
+  const externalDevices = externalDevicesState();
+  const ocrQueuedCount = loadVaultOcrJobs().filter((job) => job.status === "queued").length;
   const localDataExists = existsSync(localDataRoot);
   const sqliteUnderLocalData = isPathInside(localDataRoot, localDb.dbPath);
   const vaultUnderLocalData = isPathInside(localDataRoot, vaultDocumentsRoot);
@@ -1256,12 +1406,28 @@ function appHealthState(source: DexNestActionTrigger = "module_ui", writeAudit =
       id: "performance",
       title: "Performance",
       checks: [
-        check("performance-mode", "Performance mode", "warn", "Performance mode is a placeholder."),
+        check("performance-mode", "Performance mode", performance.enabled ? "warn" : "pass", performance.enabled ? `Active: ${performance.reason}.` : "Inactive."),
+        check("paused-workers", "Paused workers", performance.pausedWorkers.length ? "warn" : "pass", performance.pausedWorkers.length ? performance.pausedWorkers.join(", ") : "No workers paused by Performance Mode."),
         check("command-shortcut", "Command global shortcut", !commandSettings.globalShortcutEnabled ? "warn" : commandSettings.globalShortcutStatus === "active" ? "pass" : "warn", `${commandSettings.globalShortcut} / ${commandSettings.globalShortcutStatus}${commandSettings.globalShortcutLastError ? ` / ${commandSettings.globalShortcutLastError}` : ""}`, commandSettings.globalShortcutStatus === "failed" ? "Switch DexNest Command shortcut to Ctrl+Alt+Space or Ctrl+Shift+Space." : undefined),
+        check("keyboard-shortcuts", "Keyboard shortcuts", !keyboardSettings.enabled ? "warn" : keyboardSettings.mappings.some((mapping) => mapping.status === "active") ? "pass" : "warn", `${keyboardSettings.mappings.filter((mapping) => mapping.status === "active").length} active shortcut(s).`, shortcutConflictDetails(keyboardSettings).join(" ") || undefined),
         check("tray-status", "Tray status", tray && commandSettings.trayStatus === "active" ? "pass" : "warn", tray && commandSettings.trayStatus === "active" ? "DexNest tray is active." : "DexNest tray is not active.", "Restart DexNest if the tray icon is missing."),
-        check("heatmap-state", "Heatmap status", heatmap.settings.enabled && !heatmap.settings.paused ? "warn" : "pass", heatmap.trackingStatus, heatmap.settings.enabled && !heatmap.settings.paused ? "Heatmap samples only at configured interval." : undefined),
+        check("heatmap-state", "Heatmap status", performanceModePauses("heatmap") ? "warn" : heatmap.settings.enabled && !heatmap.settings.paused ? "warn" : "pass", heatmap.trackingStatus, performanceModePauses("heatmap") ? "Heatmap sampling is paused until Performance Mode turns off." : heatmap.settings.enabled && !heatmap.settings.paused ? "Heatmap samples only at configured interval." : undefined),
+        check("ocr-queue-paused", "OCR queue", performanceModePauses("ocr") && ocrQueuedCount > 0 ? "warn" : "pass", performanceModePauses("ocr") ? `${ocrQueuedCount} queued OCR job(s); queue paused by Performance Mode.` : `${ocrQueuedCount} queued OCR job(s).`),
+        check("search-index-stale", "Search index stale", searchIndexStatus.staleDueToPerformanceMode ? "warn" : "pass", searchIndexStatus.staleDueToPerformanceMode ? `Stale since ${searchIndexStatus.staleSince ?? "unknown"}: ${searchIndexStatus.staleReason ?? "performance mode"}` : "Search index is not marked stale by Performance Mode.", "Run manual Search rebuild when Performance Mode is off."),
+        check("backups-skipped", "Scheduled backups", performance.enabled && performanceSettings.pauseBackups ? "warn" : "pass", performance.enabled && performanceSettings.pauseBackups ? "Scheduled backups are paused. Manual backup remains available." : "Scheduled backups not paused."),
         check("polling-sources", "Active polling sources", "pass", "No global polling. Drop auto-refresh runs only while Drop page is open."),
         check("heavy-workers", "No OCR/Search/AI workers", "pass", "No background OCR, Search indexing, AI, embeddings, or local LLM workers are running.")
+      ]
+    },
+    {
+      id: "lifecycle",
+      title: "Tray and Startup",
+      checks: [
+        check("tray-available", "Tray available", lifecycle.trayAvailable ? "pass" : "warn", lifecycle.trayAvailable ? "DexNest tray is available." : "Tray icon is not active.", "Restart DexNest if the tray icon is missing."),
+        check("close-behavior", "Close button behavior", lifecycle.closeBehavior === "exit" ? "warn" : "pass", lifecycle.closeBehavior.replaceAll("_", " "), lifecycle.closeBehavior === "exit" ? "DexNest will exit when X is clicked." : undefined),
+        check("auto-start", "Windows auto-start", lifecycle.startDexNestWithWindows ? lifecycle.loginItemStatus === "enabled" ? "pass" : "warn" : "pass", `${lifecycle.startDexNestWithWindows ? "enabled" : "disabled"} / ${lifecycle.loginItemStatus}${lifecycle.loginItemLastError ? ` / ${lifecycle.loginItemLastError}` : ""}`, lifecycle.loginItemStatus === "failed" ? "Toggle auto-start off and on again from Settings." : undefined),
+        check("start-minimized", "Start minimized to tray", lifecycle.startMinimizedToTray ? "pass" : "warn", lifecycle.startMinimizedToTray ? "Auto-start opens DexNest in the tray." : "Auto-start opens the window normally."),
+        check("tray-mode-active", "Current window mode", lifecycle.trayModeActive ? "warn" : "pass", lifecycle.trayModeActive ? "DexNest is currently hidden in tray mode." : "DexNest window mode is normal.")
       ]
     },
     {
@@ -1269,11 +1435,15 @@ function appHealthState(source: DexNestActionTrigger = "module_ui", writeAudit =
       title: "Integrations",
       checks: [
         check("drop-server", "Drop server status", actionServer ? "pass" : "fail", actionServer ? "Local action/Drop server is running." : "Local server is not running."),
+        check("stream-deck-security", "Stream Deck endpoint security", streamDeckSettings.lanEnabled ? "warn" : "pass", streamDeckSettings.lanEnabled ? "LAN control exposure is enabled." : `Localhost-only. PIN/token ${streamDeckSettings.tokenEnabled ? "enabled" : "disabled"}.`, streamDeckSettings.lanEnabled ? "Keep LAN exposure off unless you trust the network." : undefined),
         check("drop-lan-url", "Drop LAN URL", getLanIp() ? "pass" : "warn", dropPhoneUrl(), "LAN IP may be unavailable when offline or blocked by adapter settings."),
         check("ffmpeg", "ffmpeg", tools.detectedFfmpegPath || tools.ffmpegPath ? "pass" : "warn", tools.ffmpegPath || tools.detectedFfmpegPath || "Missing.", "Install ffmpeg or set the path in Tools settings for media conversions."),
         check("libreoffice", "LibreOffice", tools.detectedLibreOfficePath || tools.libreOfficePath ? "pass" : "warn", tools.libreOfficePath || tools.detectedLibreOfficePath || "Missing.", "Install LibreOffice or set soffice.exe path for Office conversions."),
         check("tesseract", "Tesseract OCR", tools.detectedTesseractPath || tools.tesseractPath ? "pass" : "warn", tools.tesseractPath || tools.detectedTesseractPath || "Missing.", "Install Tesseract OCR or set tesseract.exe path in Tools settings for OCR."),
         check("python-paddleocr", "Python/PaddleOCR", tools.detectedPythonPath || tools.pythonPath ? "pass" : "warn", tools.pythonPath || tools.detectedPythonPath || "Python missing.", "Use Python 3.12 for PaddleOCR, then run: py -3.12 -m pip install paddleocr paddlepaddle, or switch OCR engine to Tesseract."),
+        check("external-devices-settings", "External Devices settings", existsSync(externalDevicesSettingsPath) || !externalDevices.settings.goveeEnabled ? "pass" : "warn", externalDevices.settingsPath, "Save External Devices settings from Settings."),
+        check("govee-provider", "Govee provider", externalDevices.providerStatus === "ready" || externalDevices.providerStatus === "disabled" ? "pass" : "warn", externalDevices.providerMessage, "Unlock Secure Vault and save a Govee API key to enable device control."),
+        check("govee-cache", "Govee device cache", externalDevices.devices.length > 0 ? "pass" : "warn", `${externalDevices.devices.length} cached Govee device(s).`, "Refresh devices after saving a Govee API key."),
         check("search-index", "Search index", search.index.length > 0 ? "pass" : "warn", `${search.index.length} indexed record(s).`, "Run Search rebuild when you want local metadata search."),
         check("latest-backup", "Latest backup", latestBackup ? "pass" : "warn", latestBackup ? `${latestBackup.fileName} / ${formatLocalDateTime(latestBackup.createdAt)}` : "No backup found.", "Create a local backup from Settings.")
       ]
@@ -1941,6 +2111,404 @@ function secureVaultState(): SecureVaultState {
   };
 }
 
+function defaultExternalDevicesSettings(): ExternalDevicesSettings {
+  return {
+    goveeEnabled: false,
+    goveeApiKeySecretId: null,
+    defaultDeviceAlias: null,
+    allowVoiceControl: true,
+    allowStreamDeckControl: true,
+    allowKeyboardShortcutControl: true,
+    requireConfirmationForPowerOff: false,
+    requireConfirmationForBrightnessBelow10: false,
+    requireConfirmationForScenes: false,
+    updatedAt: null
+  };
+}
+
+function loadExternalDevicesSettings(): ExternalDevicesSettings {
+  return {
+    ...defaultExternalDevicesSettings(),
+    ...readJsonFile<Partial<ExternalDevicesSettings>>(externalDevicesSettingsPath, defaultExternalDevicesSettings())
+  };
+}
+
+function saveExternalDevicesSettings(input: Partial<ExternalDevicesSettings>): ExternalDevicesSettings {
+  const current = loadExternalDevicesSettings();
+  const next: ExternalDevicesSettings = {
+    ...current,
+    ...input,
+    goveeApiKeySecretId: input.goveeApiKeySecretId === undefined ? current.goveeApiKeySecretId : input.goveeApiKeySecretId,
+    defaultDeviceAlias: input.defaultDeviceAlias === undefined ? current.defaultDeviceAlias : input.defaultDeviceAlias,
+    updatedAt: new Date().toISOString()
+  };
+  return writeJsonFile(externalDevicesSettingsPath, next);
+}
+
+function loadExternalDevicesCache(): ExternalDeviceCacheItem[] {
+  return readJsonFile<ExternalDeviceCacheItem[]>(externalDevicesCachePath, []);
+}
+
+function saveExternalDevicesCache(devices: ExternalDeviceCacheItem[]): ExternalDeviceCacheItem[] {
+  return writeJsonFile(externalDevicesCachePath, devices);
+}
+
+function externalDevicesState(): ExternalDevicesState {
+  const settings = loadExternalDevicesSettings();
+  const secureSetup = Boolean(loadSecureVaultFile());
+  const secureUnlocked = Boolean(secureVaultKey);
+  const apiKeyStored = Boolean(settings.goveeApiKeySecretId);
+  let providerStatus: ExternalDevicesState["providerStatus"] = "ready";
+  let providerMessage = "Govee is ready for user-triggered actions.";
+  if (!settings.goveeEnabled) {
+    providerStatus = "disabled";
+    providerMessage = "Govee provider is disabled.";
+  } else if (!secureSetup) {
+    providerStatus = "needs_secure_vault";
+    providerMessage = "Set up Secure Vault before saving a Govee API key.";
+  } else if (!apiKeyStored) {
+    providerStatus = "missing_api_key";
+    providerMessage = "Save a Govee API key securely to enable device control.";
+  } else if (!secureUnlocked) {
+    providerStatus = "locked";
+    providerMessage = "Unlock Secure Vault to use the stored Govee API key.";
+  }
+  return {
+    settingsPath: externalDevicesSettingsPath,
+    cachePath: externalDevicesCachePath,
+    settings,
+    secureVaultSetup: secureSetup,
+    secureVaultUnlocked: secureUnlocked,
+    apiKeyStored,
+    providerStatus,
+    providerMessage,
+    devices: loadExternalDevicesCache()
+  };
+}
+
+function upsertGoveeApiKeySecret(apiKey: string): string {
+  const trimmed = apiKey.trim();
+  if (!trimmed) {
+    throw new Error("Govee API key is required.");
+  }
+  const file = loadSecureVaultFile();
+  if (!file) {
+    throw new Error("Set up DexNest Secure Vault before saving a Govee API key.");
+  }
+  const key = requireSecureVaultKey();
+  const settings = loadExternalDevicesSettings();
+  const now = new Date().toISOString();
+  const existing = settings.goveeApiKeySecretId ? file.items.find((item) => item.id === settings.goveeApiKeySecretId) : undefined;
+  const item: SecureVaultStoredItem = {
+    id: existing?.id ?? createId("secure-item"),
+    title: "Govee API Key",
+    type: "api_key",
+    username: "govee",
+    url: "https://developer.govee.com",
+    tags: ["external_devices", "govee"],
+    secret: encryptSecureValue(trimmed, key),
+    notes: encryptSecureValue("DexNest External Devices provider key.", key),
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+    lastCopiedAt: existing?.lastCopiedAt ?? null,
+    favorite: existing?.favorite ?? false
+  };
+  saveSecureVaultFile({
+    ...file,
+    items: existing
+      ? file.items.map((current) => current.id === existing.id ? item : current)
+      : [item, ...file.items]
+  });
+  touchSecureVaultActivity();
+  return item.id;
+}
+
+type ExternalDeviceFailureStatus =
+  | "locked"
+  | "disabled"
+  | "missing_requirement"
+  | "not_configured"
+  | "not_found"
+  | "conflict"
+  | "invalid_params"
+  | "rate_limited"
+  | "auth_failed"
+  | "provider_error"
+  | "failed";
+
+class ExternalDeviceActionError extends Error {
+  status: ExternalDeviceFailureStatus;
+  errorCode: string;
+  missingRequirement?: string;
+  details?: Record<string, unknown>;
+
+  constructor(status: ExternalDeviceFailureStatus, errorCode: string, message: string, options: { missingRequirement?: string; details?: Record<string, unknown> } = {}) {
+    super(message);
+    this.name = "ExternalDeviceActionError";
+    this.status = status;
+    this.errorCode = errorCode;
+    this.missingRequirement = options.missingRequirement;
+    this.details = options.details;
+  }
+}
+
+function safeGoveeDeviceSummary(device: ExternalDeviceCacheItem) {
+  return {
+    deviceName: device.deviceName,
+    userAlias: device.userAlias,
+    roomAlias: device.roomAlias,
+    model: device.model,
+    controllable: device.controllable
+  };
+}
+
+function readGoveeApiKey(): string {
+  const settings = loadExternalDevicesSettings();
+  if (!settings.goveeEnabled) {
+    throw new ExternalDeviceActionError("disabled", "provider_disabled", "Govee is disabled in External Devices settings.");
+  }
+  if (!settings.goveeApiKeySecretId) {
+    throw new ExternalDeviceActionError("missing_requirement", "missing_api_key", "Govee API key is not configured.", { missingRequirement: "govee_api_key" });
+  }
+  const file = loadSecureVaultFile();
+  if (!file) {
+    throw new ExternalDeviceActionError("not_configured", "secure_vault_not_setup", "Set up Secure Vault in DexNest before saving a Govee API key.", { missingRequirement: "secure_vault" });
+  }
+  let key: Buffer;
+  try {
+    key = requireSecureVaultKey();
+  } catch {
+    throw new ExternalDeviceActionError("locked", "secure_vault_locked", "Unlock Secure Vault in DexNest to use Govee actions.", { missingRequirement: "secure_vault_unlock" });
+  }
+  const item = file.items.find((candidate) => candidate.id === settings.goveeApiKeySecretId);
+  if (!item) {
+    throw new ExternalDeviceActionError("missing_requirement", "govee_api_key_missing", "Stored Govee API key reference was not found in Secure Vault.", { missingRequirement: "govee_api_key" });
+  }
+  touchSecureVaultActivity();
+  return decryptSecureValue(item.secret, key);
+}
+
+function safeGoveeError(error: unknown): string {
+  const message = error instanceof Error ? error.message : "Govee action failed.";
+  return message.replace(/Govee-API-Key[^\s,}]*/gi, "Govee-API-Key [redacted]");
+}
+
+function externalDeviceFailure(error: unknown, params: Record<string, unknown> = {}) {
+  const message = safeGoveeError(error);
+  if (error instanceof ExternalDeviceActionError) {
+    return {
+      status: error.status,
+      errorCode: error.errorCode,
+      message,
+      missingRequirement: error.missingRequirement,
+      details: error.details ?? {}
+    };
+  }
+  if (/secure vault is locked/i.test(message)) {
+    return { status: "locked" as const, errorCode: "secure_vault_locked", message: "Unlock Secure Vault in DexNest to use Govee actions.", missingRequirement: "secure_vault_unlock", details: {} };
+  }
+  if (/disabled/i.test(message)) {
+    return { status: "disabled" as const, errorCode: "provider_disabled", message, missingRequirement: undefined, details: {} };
+  }
+  if (/rate limit/i.test(message)) {
+    return { status: "rate_limited" as const, errorCode: "govee_rate_limited", message, missingRequirement: undefined, details: {} };
+  }
+  if (/rejected the api key/i.test(message)) {
+    return { status: "auth_failed" as const, errorCode: "govee_auth_failed", message, missingRequirement: "govee_api_key", details: {} };
+  }
+  if (/not found|no govee device/i.test(message)) {
+    return {
+      status: "not_found" as const,
+      errorCode: "govee_device_not_found",
+      message,
+      missingRequirement: undefined,
+      details: {
+        requestedAlias: typeof params.alias === "string" ? params.alias : undefined,
+        availableDevices: loadExternalDevicesCache().map(safeGoveeDeviceSummary)
+      }
+    };
+  }
+  return { status: "provider_error" as const, errorCode: "govee_provider_error", message, missingRequirement: undefined, details: {} };
+}
+
+function externalDeviceMetadata(input: Record<string, unknown> = {}): Record<string, unknown> {
+  return { provider: "govee", ...input };
+}
+
+function logExternalDeviceEvent(
+  actionId: string,
+  status: DexNestEventStatus,
+  source: DexNestActionTrigger,
+  summary: string,
+  metadata: Record<string, unknown> = {},
+  startedAt = Date.now(),
+  errorMessage?: string | null
+): void {
+  localDb.appendActionEvent({
+    module: "DexNest External Devices",
+    actionId,
+    eventType: actionId.replaceAll(".", "_"),
+    status,
+    source,
+    summary,
+    metadataJson: externalDeviceMetadata(metadata),
+    errorMessage: errorMessage ?? null,
+    durationMs: Date.now() - startedAt
+  });
+}
+
+function normalizeAlias(value: unknown): string {
+  return String(value ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function deviceAliases(device: ExternalDeviceCacheItem): string[] {
+  return [device.userAlias, device.roomAlias, device.deviceName, device.deviceId]
+    .map(normalizeAlias)
+    .filter(Boolean);
+}
+
+function findExternalDevice(params: Record<string, unknown>): ExternalDeviceCacheItem {
+  const devices = loadExternalDevicesCache();
+  const deviceId = String(params.deviceId ?? "").trim();
+  if (deviceId) {
+    const device = devices.find((item) => item.deviceId === deviceId);
+    if (!device) {
+      throw new ExternalDeviceActionError("not_found", "govee_device_not_found", "Govee device ID was not found in the local cache. Refresh devices first.", {
+        details: { availableDevices: devices.map(safeGoveeDeviceSummary) }
+      });
+    }
+    return device;
+  }
+  const alias = normalizeAlias(params.alias ?? loadExternalDevicesSettings().defaultDeviceAlias ?? "");
+  if (!alias) {
+    throw new ExternalDeviceActionError("invalid_params", "missing_device_alias", "Provide a deviceId or alias for the Govee action.", {
+      missingRequirement: "device_alias",
+      details: { availableDevices: devices.map(safeGoveeDeviceSummary) }
+    });
+  }
+  const matches = devices.filter((device) => deviceAliases(device).includes(alias));
+  if (matches.length === 1) {
+    return matches[0];
+  }
+  if (matches.length > 1) {
+    throw new ExternalDeviceActionError("conflict", "govee_alias_conflict", `Multiple Govee devices match alias ${alias}. Use a more specific alias.`, {
+      details: { requestedAlias: alias, matches: matches.map(safeGoveeDeviceSummary) }
+    });
+  }
+  throw new ExternalDeviceActionError("not_found", "govee_device_not_found", `No Govee device matched alias ${alias}.`, {
+    details: { requestedAlias: alias, availableDevices: devices.map(safeGoveeDeviceSummary) }
+  });
+}
+
+type GoveeCommandName = "turn" | "brightness" | "color" | "colorTem";
+
+async function goveeRequest<T>(path: string, method: "GET" | "PUT", apiKey: string, body?: unknown): Promise<T> {
+  const response = await fetchWithTimeout(`https://developer-api.govee.com/v1${path}`, {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      "Govee-API-Key": apiKey
+    },
+    body: body === undefined ? undefined : JSON.stringify(body)
+  }, 8000);
+  if (response.status === 401 || response.status === 403) {
+    throw new ExternalDeviceActionError("auth_failed", "govee_auth_failed", "Govee rejected the API key. Verify the key in Settings.", { missingRequirement: "govee_api_key" });
+  }
+  if (response.status === 429) {
+    throw new ExternalDeviceActionError("rate_limited", "govee_rate_limited", "Govee rate limit reached. Wait and try again.");
+  }
+  if (!response.ok) {
+    throw new ExternalDeviceActionError("provider_error", "govee_http_error", `Govee responded with HTTP ${response.status}.`);
+  }
+  return await response.json() as T;
+}
+
+async function goveeListDevices(apiKey: string): Promise<ExternalDeviceCacheItem[]> {
+  const data = await goveeRequest<{ data?: { devices?: Array<{ device?: string; deviceName?: string; model?: string; controllable?: boolean; retrievable?: boolean }> } }>("/devices", "GET", apiKey);
+  const existing = loadExternalDevicesCache();
+  const existingById = new Map(existing.map((device) => [device.deviceId, device]));
+  const now = new Date().toISOString();
+  return (data.data?.devices ?? [])
+    .filter((device) => Boolean(device.device && device.model))
+    .map((device) => {
+      const previous = existingById.get(String(device.device));
+      return {
+        provider: "govee" as const,
+        deviceId: String(device.device),
+        deviceName: String(device.deviceName ?? "Govee device"),
+        model: String(device.model),
+        controllable: Boolean(device.controllable),
+        retrievable: Boolean(device.retrievable),
+        roomAlias: previous?.roomAlias ?? "",
+        userAlias: previous?.userAlias ?? "",
+        lastSeen: now,
+        lastKnownPowerState: previous?.lastKnownPowerState ?? "unknown",
+        lastKnownBrightness: previous?.lastKnownBrightness ?? null
+      };
+    });
+}
+
+async function goveeControl(device: ExternalDeviceCacheItem, command: GoveeCommandName, value: unknown): Promise<void> {
+  const apiKey = readGoveeApiKey();
+  await goveeRequest("/devices/control", "PUT", apiKey, {
+    device: device.deviceId,
+    model: device.model,
+    cmd: {
+      name: command,
+      value
+    }
+  });
+}
+
+function updateCachedGoveeDevice(deviceId: string, patch: Partial<ExternalDeviceCacheItem>): ExternalDeviceCacheItem[] {
+  const devices = loadExternalDevicesCache();
+  return saveExternalDevicesCache(devices.map((device) => device.deviceId === deviceId ? { ...device, ...patch, lastSeen: new Date().toISOString() } : device));
+}
+
+function colorValue(input: unknown): { r: number; g: number; b: number } {
+  const raw = String(input ?? "").toLowerCase().trim();
+  const named: Record<string, { r: number; g: number; b: number }> = {
+    blue: { r: 0, g: 80, b: 255 },
+    red: { r: 255, g: 0, b: 0 },
+    green: { r: 0, g: 255, b: 80 },
+    white: { r: 255, g: 255, b: 255 },
+    warm: { r: 255, g: 180, b: 90 },
+    purple: { r: 160, g: 60, b: 255 },
+    pink: { r: 255, g: 80, b: 180 },
+    yellow: { r: 255, g: 220, b: 0 },
+    orange: { r: 255, g: 120, b: 0 }
+  };
+  if (named[raw]) {
+    return named[raw];
+  }
+  const hex = raw.match(/^#?([a-f0-9]{6})$/i);
+  if (hex) {
+    const value = hex[1];
+    return {
+      r: Number.parseInt(value.slice(0, 2), 16),
+      g: Number.parseInt(value.slice(2, 4), 16),
+      b: Number.parseInt(value.slice(4, 6), 16)
+    };
+  }
+  throw new Error("Use a supported color name or #RRGGBB value.");
+}
+
+function brightnessValue(input: unknown): number {
+  const value = Math.round(Number(input));
+  if (!Number.isFinite(value) || value < 1 || value > 100) {
+    throw new Error("Brightness must be between 1 and 100.");
+  }
+  return value;
+}
+
+function kelvinValue(input: unknown): number {
+  const value = Math.round(Number(input));
+  if (!Number.isFinite(value) || value < 2000 || value > 9000) {
+    throw new Error("Color temperature must be between 2000K and 9000K.");
+  }
+  return value;
+}
+
 function findVaultDocument(documentId: string): VaultDocumentRecord | null {
   return loadVaultDocuments().find((document) => document.id === documentId) ?? null;
 }
@@ -2029,8 +2597,7 @@ function defaultCommandSettings(): CommandSettings {
     globalShortcutStatus: "disabled",
     globalShortcutLastError: null,
     trayEnabled: true,
-    trayStatus: "failed",
-    performanceModePlaceholder: false
+    trayStatus: "failed"
   };
 }
 
@@ -2050,6 +2617,443 @@ function loadCommandSettings(): CommandSettings {
 
 function saveCommandSettings(settings: CommandSettings): CommandSettings {
   return writeJsonFile(commandSettingsPath, settings);
+}
+
+function defaultKeyboardShortcutSettings(): KeyboardShortcutSettings {
+  return {
+    enabled: true,
+    updatedAt: new Date().toISOString(),
+    mappings: [
+      {
+        id: "shortcut-open-command",
+        label: "Open Command",
+        shortcut: "CommandOrControl+Space",
+        targetType: "action",
+        actionId: "command.open_palette",
+        enabled: false,
+        allowDangerous: false,
+        status: "disabled",
+        lastError: "DexNest Command uses the dedicated Global Command shortcut setting."
+      },
+      {
+        id: "shortcut-ask-dexnest",
+        label: "Ask DexNest",
+        shortcut: "CommandOrControl+Alt+A",
+        targetType: "action",
+        actionId: "search.open",
+        enabled: true,
+        allowDangerous: false,
+        status: "disabled",
+        lastError: null
+      },
+      {
+        id: "shortcut-performance-toggle",
+        label: "Toggle Performance Mode",
+        shortcut: "CommandOrControl+Alt+P",
+        targetType: "action",
+        actionId: "system.performance.toggle",
+        enabled: true,
+        allowDangerous: false,
+        status: "disabled",
+        lastError: null
+      },
+      {
+        id: "shortcut-send-clipboard-phone",
+        label: "Send clipboard to phone",
+        shortcut: "CommandOrControl+Alt+S",
+        targetType: "action",
+        actionId: "drop.send_clipboard_to_drop",
+        enabled: true,
+        allowDangerous: false,
+        status: "disabled",
+        lastError: null
+      },
+      {
+        id: "shortcut-lock-sensitive",
+        label: "Lock sensitive session",
+        shortcut: "CommandOrControl+Alt+L",
+        targetType: "action",
+        actionId: "system.lifecycle.lock_sensitive_session",
+        enabled: true,
+        allowDangerous: false,
+        status: "disabled",
+        lastError: null
+      },
+      {
+        id: "shortcut-paste-plain",
+        label: "Paste as plain text",
+        shortcut: "CommandOrControl+Alt+V",
+        targetType: "action",
+        actionId: "clipboard.copy_plain_text",
+        enabled: false,
+        allowDangerous: false,
+        status: "disabled",
+        lastError: null
+      }
+    ]
+  };
+}
+
+function defaultStreamDeckSettings(): StreamDeckSettings {
+  return {
+    localOnly: true,
+    lanEnabled: false,
+    tokenEnabled: false,
+    token: "",
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function loadKeyboardShortcutSettings(): KeyboardShortcutSettings {
+  const saved = readJsonFile<Partial<KeyboardShortcutSettings>>(keyboardShortcutsPath, defaultKeyboardShortcutSettings());
+  const defaults = defaultKeyboardShortcutSettings();
+  const savedMappings = Array.isArray(saved.mappings) ? saved.mappings : [];
+  const mappingById = new Map(savedMappings.map((mapping) => [mapping.id, mapping]));
+  const defaultIds = new Set(defaults.mappings.map((mapping) => mapping.id));
+  const mappings = [
+    ...defaults.mappings.map((mapping) => ({ ...mapping, ...(mappingById.get(mapping.id) ?? {}) })),
+    ...savedMappings.filter((mapping) => !defaultIds.has(mapping.id))
+  ].map((mapping) => ({
+    ...mapping,
+    shortcut: String(mapping.shortcut ?? ""),
+    targetType: mapping.targetType === "routine" ? "routine" as const : "action" as const,
+    enabled: Boolean(mapping.enabled),
+    allowDangerous: Boolean(mapping.allowDangerous),
+    status: mapping.status ?? "disabled",
+    lastError: mapping.lastError ?? null
+  }));
+  return {
+    enabled: typeof saved.enabled === "boolean" ? saved.enabled : defaults.enabled,
+    mappings,
+    updatedAt: saved.updatedAt ?? defaults.updatedAt
+  };
+}
+
+function saveKeyboardShortcutSettings(settings: KeyboardShortcutSettings): KeyboardShortcutSettings {
+  const saved = writeJsonFile(keyboardShortcutsPath, { ...settings, updatedAt: new Date().toISOString() });
+  registerKeyboardShortcuts();
+  return saved;
+}
+
+function loadStreamDeckSettings(): StreamDeckSettings {
+  return {
+    ...defaultStreamDeckSettings(),
+    ...readJsonFile<Partial<StreamDeckSettings>>(streamDeckSettingsPath, defaultStreamDeckSettings())
+  };
+}
+
+function saveStreamDeckSettings(input: Partial<StreamDeckSettings>): StreamDeckSettings {
+  const current = loadStreamDeckSettings();
+  const next: StreamDeckSettings = {
+    localOnly: true,
+    lanEnabled: typeof input.lanEnabled === "boolean" ? input.lanEnabled : current.lanEnabled,
+    tokenEnabled: typeof input.tokenEnabled === "boolean" ? input.tokenEnabled : current.tokenEnabled,
+    token: typeof input.token === "string" && input.token.trim() !== "set" ? input.token.trim() : current.token,
+    updatedAt: new Date().toISOString()
+  };
+  return writeJsonFile(streamDeckSettingsPath, next);
+}
+
+function shortcutConflictDetails(settings = loadKeyboardShortcutSettings()): string[] {
+  const conflicts: string[] = [];
+  const seen = new Map<string, string>();
+  for (const mapping of settings.mappings.filter((item) => item.enabled && item.shortcut.trim())) {
+    const normalized = mapping.shortcut.trim();
+    if (normalizeCommandShortcut(normalized) === normalized && loadCommandSettings().globalShortcutEnabled && loadCommandSettings().globalShortcut === normalized) {
+      conflicts.push(`${mapping.label} conflicts with DexNest Command shortcut.`);
+    }
+    if (loadClipboardSettings().multiCopyHotkeyEnabled && loadClipboardSettings().multiCopyHotkey === normalized) {
+      conflicts.push(`${mapping.label} conflicts with Clipboard multi-copy hotkey.`);
+    }
+    const existing = seen.get(normalized);
+    if (existing) {
+      conflicts.push(`${mapping.label} conflicts with ${existing}.`);
+    }
+    seen.set(normalized, mapping.label);
+  }
+  return conflicts;
+}
+
+function defaultAppLifecycleSettings(): AppLifecycleSettings {
+  return {
+    closeBehavior: "ask",
+    showTrayCloseNotice: true,
+    minimizeToTrayOnStartup: false,
+    startDexNestWithWindows: false,
+    startMinimizedToTray: true,
+    loginItemStatus: "disabled",
+    loginItemLastError: null,
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function normalizeCloseBehavior(value: unknown): AppCloseBehavior {
+  return value === "minimize_to_tray" || value === "exit" || value === "ask" ? value : "ask";
+}
+
+function loadAppLifecycleSettings(): AppLifecycleSettings {
+  const saved = readJsonFile<Partial<AppLifecycleSettings>>(appLifecycleSettingsPath, defaultAppLifecycleSettings());
+  return {
+    ...defaultAppLifecycleSettings(),
+    ...saved,
+    closeBehavior: normalizeCloseBehavior(saved.closeBehavior)
+  };
+}
+
+function currentLoginItemStatus(): Pick<AppLifecycleSettings, "loginItemStatus" | "loginItemLastError"> {
+  try {
+    const status = app.getLoginItemSettings();
+    return {
+      loginItemStatus: status.openAtLogin ? "enabled" : "disabled",
+      loginItemLastError: null
+    };
+  } catch (error) {
+    return {
+      loginItemStatus: "failed",
+      loginItemLastError: error instanceof Error ? error.message : "Could not read Windows startup registration."
+    };
+  }
+}
+
+function applyLoginItemSettings(settings: AppLifecycleSettings): AppLifecycleSettings {
+  try {
+    app.setLoginItemSettings({
+      openAtLogin: settings.startDexNestWithWindows,
+      openAsHidden: settings.startDexNestWithWindows && settings.startMinimizedToTray,
+      args: settings.startDexNestWithWindows && settings.startMinimizedToTray ? ["--hidden"] : []
+    });
+    const status = currentLoginItemStatus();
+    return {
+      ...settings,
+      ...status,
+      loginItemStatus: settings.startDexNestWithWindows && status.loginItemStatus !== "enabled" ? "failed" : status.loginItemStatus,
+      loginItemLastError: settings.startDexNestWithWindows && status.loginItemStatus !== "enabled" ? "Windows did not report DexNest as registered for startup." : status.loginItemLastError
+    };
+  } catch (error) {
+    return {
+      ...settings,
+      loginItemStatus: "failed",
+      loginItemLastError: error instanceof Error ? error.message : "Could not update Windows startup registration."
+    };
+  }
+}
+
+function saveAppLifecycleSettings(input: Partial<AppLifecycleSettings>, source: DexNestActionTrigger | "system" = "module_ui"): AppLifecycleSettings {
+  const current = loadAppLifecycleSettings();
+  const next: AppLifecycleSettings = {
+    ...current,
+    closeBehavior: normalizeCloseBehavior(input.closeBehavior ?? current.closeBehavior),
+    showTrayCloseNotice: typeof input.showTrayCloseNotice === "boolean" ? input.showTrayCloseNotice : current.showTrayCloseNotice,
+    minimizeToTrayOnStartup: typeof input.minimizeToTrayOnStartup === "boolean" ? input.minimizeToTrayOnStartup : current.minimizeToTrayOnStartup,
+    startDexNestWithWindows: typeof input.startDexNestWithWindows === "boolean" ? input.startDexNestWithWindows : current.startDexNestWithWindows,
+    startMinimizedToTray: typeof input.startMinimizedToTray === "boolean" ? input.startMinimizedToTray : current.startMinimizedToTray,
+    updatedAt: new Date().toISOString()
+  };
+  const withLoginStatus = applyLoginItemSettings(next);
+  const saved = writeJsonFile(appLifecycleSettingsPath, withLoginStatus);
+  localDb.appendActionEvent({
+    module: "DexNest System",
+    actionId: "system.lifecycle.update_settings",
+    eventType: "app_lifecycle_settings_updated",
+    status: saved.loginItemStatus === "failed" ? "failed" : "success",
+    source,
+    summary: "Updated DexNest startup and tray lifecycle settings.",
+    metadataJson: {
+      closeBehavior: saved.closeBehavior,
+      startDexNestWithWindows: saved.startDexNestWithWindows,
+      startMinimizedToTray: saved.startMinimizedToTray,
+      loginItemStatus: saved.loginItemStatus
+    },
+    errorMessage: saved.loginItemLastError
+  });
+  return saved;
+}
+
+function appLifecycleState(): AppLifecycleSettings & { trayAvailable: boolean; trayModeActive: boolean } {
+  const settings = loadAppLifecycleSettings();
+  const loginStatus = currentLoginItemStatus();
+  const normalizedLoginStatus = settings.startDexNestWithWindows && loginStatus.loginItemStatus !== "enabled"
+    ? { loginItemStatus: "failed" as const, loginItemLastError: loginStatus.loginItemLastError ?? "Windows did not report DexNest as registered for startup." }
+    : loginStatus;
+  return {
+    ...settings,
+    ...normalizedLoginStatus,
+    trayAvailable: Boolean(tray),
+    trayModeActive
+  };
+}
+
+function defaultPerformanceModeSettings(): PerformanceModeSettings {
+  return {
+    performanceModeEnabled: false,
+    pauseHeatmap: true,
+    pauseOcrJobs: true,
+    pauseSearchAutoIndex: true,
+    pauseBackups: true,
+    suppressNonUrgentNudges: true,
+    allowDropWhenOpen: true,
+    allowUserTriggeredAssistant: true,
+    autoEnableWhenFullscreen: false,
+    autoEnableWhenGameDetected: false,
+    showTrayStatus: true
+  };
+}
+
+let performanceModeRuntime: PerformanceModeState = {
+  enabled: false,
+  reason: "unknown",
+  enabledAt: null,
+  pausedWorkers: [],
+  lastChangedAt: new Date().toISOString()
+};
+
+function loadPerformanceModeSettings(): PerformanceModeSettings {
+  return {
+    ...defaultPerformanceModeSettings(),
+    ...readJsonFile<Partial<PerformanceModeSettings>>(performanceModeSettingsPath, defaultPerformanceModeSettings())
+  };
+}
+
+function pausedWorkersForPerformance(settings = loadPerformanceModeSettings()): string[] {
+  if (!settings.performanceModeEnabled) {
+    return [];
+  }
+  return [
+    settings.pauseHeatmap ? "heatmap" : null,
+    settings.pauseOcrJobs ? "vault_ocr" : null,
+    settings.pauseSearchAutoIndex ? "search_auto_index" : null,
+    settings.pauseBackups ? "scheduled_backups" : null,
+    settings.suppressNonUrgentNudges ? "non_urgent_nudges" : null,
+    settings.allowUserTriggeredAssistant ? null : "assistant_ollama"
+  ].filter((item): item is string => Boolean(item));
+}
+
+function performanceModeState(): PerformanceModeState {
+  const settings = loadPerformanceModeSettings();
+  performanceModeRuntime = {
+    ...performanceModeRuntime,
+    enabled: settings.performanceModeEnabled,
+    pausedWorkers: pausedWorkersForPerformance(settings)
+  };
+  if (!settings.performanceModeEnabled) {
+    performanceModeRuntime.enabledAt = null;
+  } else if (!performanceModeRuntime.enabledAt) {
+    performanceModeRuntime.enabledAt = new Date().toISOString();
+  }
+  return performanceModeRuntime;
+}
+
+function savePerformanceModeSettings(input: Partial<PerformanceModeSettings>): PerformanceModeSettings {
+  const current = loadPerformanceModeSettings();
+  const nextInput: PerformanceModeSettings = { ...current };
+  for (const key of Object.keys(defaultPerformanceModeSettings()) as Array<keyof PerformanceModeSettings>) {
+    if (typeof input[key] === "boolean") {
+      nextInput[key] = input[key] as boolean;
+    }
+  }
+  const next = writeJsonFile<PerformanceModeSettings>(performanceModeSettingsPath, nextInput);
+  performanceModeRuntime = {
+    enabled: next.performanceModeEnabled,
+    reason: performanceModeRuntime.reason,
+    enabledAt: next.performanceModeEnabled ? performanceModeRuntime.enabledAt ?? new Date().toISOString() : null,
+    pausedWorkers: pausedWorkersForPerformance(next),
+    lastChangedAt: new Date().toISOString()
+  };
+  return next;
+}
+
+function setPerformanceModeEnabled(enabled: boolean, reason: PerformanceModeReason = "manual", source: DexNestActionTrigger | "system" = "module_ui"): { settings: PerformanceModeSettings; state: PerformanceModeState } {
+  const startedAt = Date.now();
+  const settings = savePerformanceModeSettings({ performanceModeEnabled: enabled });
+  performanceModeRuntime = {
+    enabled,
+    reason,
+    enabledAt: enabled ? new Date().toISOString() : null,
+    pausedWorkers: pausedWorkersForPerformance(settings),
+    lastChangedAt: new Date().toISOString()
+  };
+  if (settings.pauseHeatmap) {
+    startHeatmapTimer();
+  }
+  if (!enabled) {
+    vaultOcrQueuePaused = false;
+    void processVaultOcrQueue("system");
+  }
+  createDexNestTray();
+  localDb.appendActionEvent({
+    module: "DexNest System",
+    actionId: "system.performance.set_enabled",
+    eventType: enabled ? "performance_mode_enabled" : "performance_mode_disabled",
+    status: "success",
+    source: source === "system" ? "system" : source,
+    summary: `Performance Mode ${enabled ? "enabled" : "disabled"}.`,
+    metadataJson: { enabled, reason, pausedWorkers: performanceModeRuntime.pausedWorkers },
+    durationMs: Date.now() - startedAt
+  });
+  return { settings, state: performanceModeState() };
+}
+
+function performanceModePauses(worker: "heatmap" | "ocr" | "search_auto_index" | "backups" | "assistant" | "nudges"): boolean {
+  const settings = loadPerformanceModeSettings();
+  if (!settings.performanceModeEnabled) {
+    return false;
+  }
+  if (worker === "heatmap") {
+    return settings.pauseHeatmap;
+  }
+  if (worker === "ocr") {
+    return settings.pauseOcrJobs;
+  }
+  if (worker === "search_auto_index") {
+    return settings.pauseSearchAutoIndex;
+  }
+  if (worker === "backups") {
+    return settings.pauseBackups;
+  }
+  if (worker === "assistant") {
+    return !settings.allowUserTriggeredAssistant;
+  }
+  return settings.suppressNonUrgentNudges;
+}
+
+function defaultSearchIndexStatus(): SearchIndexStatus {
+  return {
+    staleDueToPerformanceMode: false,
+    staleReason: null,
+    staleSince: null,
+    lastSkippedAutoIndexAt: null
+  };
+}
+
+function loadSearchIndexStatus(): SearchIndexStatus {
+  return {
+    ...defaultSearchIndexStatus(),
+    ...readJsonFile<Partial<SearchIndexStatus>>(searchIndexStatusPath, defaultSearchIndexStatus())
+  };
+}
+
+function saveSearchIndexStatus(status: SearchIndexStatus): SearchIndexStatus {
+  return writeJsonFile<SearchIndexStatus>(searchIndexStatusPath, status);
+}
+
+function markSearchIndexStale(reason: string): void {
+  const now = new Date().toISOString();
+  const current = loadSearchIndexStatus();
+  saveSearchIndexStatus({
+    staleDueToPerformanceMode: true,
+    staleReason: reason,
+    staleSince: current.staleSince ?? now,
+    lastSkippedAutoIndexAt: now
+  });
+  localDb.appendActionEvent({
+    module: "DexNest Search",
+    actionId: "search.auto_index.skipped",
+    eventType: "search_auto_index_skipped",
+    status: "skipped",
+    source: "system",
+    summary: "Skipped automatic Search index rebuild because Performance Mode is active.",
+    metadataJson: { reason }
+  });
 }
 
 function loadPinnedActions(): string[] {
@@ -2295,7 +3299,43 @@ function updateClipboardHotkeyStatus(status: ClipboardSettings["multiCopyLastHot
   });
 }
 
-function focusDexNestWindow(view: string = "command", source: DexNestActionTrigger | "tray" | "system" = "system"): void {
+function flushPendingOpenView(): void {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isLoading() || !rendererReady || !pendingOpenView) {
+    return;
+  }
+  const payload = pendingOpenView;
+  pendingOpenView = null;
+  mainWindow.webContents.send("dexnest:open-view", payload);
+}
+
+function dispatchOpenView(payload: { view: string; focusAssistant?: boolean }): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    pendingOpenView = payload;
+    createWindow();
+    return;
+  }
+
+  pendingOpenView = payload;
+  if (mainWindow.webContents.isLoading()) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      setTimeout(flushPendingOpenView, 50);
+    });
+    return;
+  }
+  setTimeout(flushPendingOpenView, 0);
+}
+
+function focusDexNestWindow(
+  view: string = "command",
+  source: DexNestActionTrigger | "tray" | "system" = "system",
+  options: {
+    actionId?: string;
+    eventType?: string;
+    summary?: string;
+    focusAssistant?: boolean;
+    writeAudit?: boolean;
+  } = {}
+): void {
   if (!mainWindow || mainWindow.isDestroyed()) {
     createWindow();
   }
@@ -2310,23 +3350,139 @@ function focusDexNestWindow(view: string = "command", source: DexNestActionTrigg
   if (!mainWindow.isVisible()) {
     mainWindow.show();
   }
+  trayModeActive = false;
   mainWindow.focus();
-  const sendView = () => mainWindow?.webContents.send("dexnest:open-view", { view });
-  if (mainWindow.webContents.isLoading()) {
-    mainWindow.webContents.once("did-finish-load", sendView);
-  } else {
-    sendView();
+  dispatchOpenView({ view, focusAssistant: options.focusAssistant });
+
+  if (options.writeAudit === false) {
+    return;
   }
 
   localDb.appendActionEvent({
     module: "DexNest Command",
-    actionId: view === "command" ? "command.open_palette" : `tray.open_${view}`,
-    eventType: source === "tray" ? "tray_action_used" : "command_shortcut_opened",
+    actionId: options.actionId ?? (view === "command" ? "command.open_palette" : `tray.open_${view}`),
+    eventType: options.eventType ?? (source === "tray" ? "tray_action_used" : "command_shortcut_opened"),
     status: "success",
-    source: source === "tray" ? "system" : source,
-    summary: source === "tray" ? `Opened DexNest ${view} from tray.` : "Opened DexNest Command from global shortcut.",
-    metadataJson: { view }
+    source,
+    summary: options.summary ?? (source === "tray" ? `Opened DexNest ${view} from tray.` : "Opened DexNest Command from global shortcut."),
+    metadataJson: { view, focusAssistant: Boolean(options.focusAssistant) }
   });
+}
+
+function askDexNestFromTray(): void {
+  focusDexNestWindow("search", "tray");
+  setTimeout(() => {
+    dispatchOpenView({ view: "search", focusAssistant: true });
+  }, 100);
+}
+
+function showTrayCloseNotice(): void {
+  const settings = loadAppLifecycleSettings();
+  if (!settings.showTrayCloseNotice || trayCloseNoticeShownThisSession || !tray) {
+    return;
+  }
+  trayCloseNoticeShownThisSession = true;
+  try {
+    if (process.platform === "win32") {
+      tray.displayBalloon({
+        title: "DexNest",
+        content: "DexNest is still running in the tray."
+      });
+    }
+  } catch {
+    // Tray notices are best-effort only.
+  }
+}
+
+function hideDexNestToTray(source: DexNestActionTrigger | "system" = "system"): void {
+  createDexNestTray();
+  mainWindow?.hide();
+  trayModeActive = true;
+  showTrayCloseNotice();
+  localDb.appendActionEvent({
+    module: "DexNest System",
+    actionId: "system.lifecycle.minimize_to_tray",
+    eventType: "app_minimized_to_tray",
+    status: "success",
+    source,
+    summary: "DexNest was minimized to the tray.",
+    metadataJson: { closeBehavior: loadAppLifecycleSettings().closeBehavior }
+  });
+}
+
+function quitDexNestFully(source: DexNestActionTrigger | "system" = "system"): void {
+  isQuittingDexNest = true;
+  localDb.appendActionEvent({
+    module: "DexNest System",
+    actionId: "system.lifecycle.quit_full",
+    eventType: "app_exit_requested",
+    status: "success",
+    source,
+    summary: "DexNest full quit was requested.",
+    metadataJson: { trayModeActive }
+  });
+  app.quit();
+}
+
+async function handleWindowCloseRequest(): Promise<void> {
+  if (!mainWindow || closePromptOpen) {
+    return;
+  }
+
+  const settings = loadAppLifecycleSettings();
+  if (settings.closeBehavior === "exit") {
+    quitDexNestFully("system");
+    return;
+  }
+
+  if (settings.closeBehavior === "minimize_to_tray") {
+    hideDexNestToTray("system");
+    return;
+  }
+
+  closePromptOpen = true;
+  try {
+    const response = await dialog.showMessageBox(mainWindow, {
+      type: "question",
+      title: "Close DexNest?",
+      message: "Close DexNest?",
+      detail: "Choose whether DexNest should keep running in the tray or exit fully.",
+      buttons: ["Minimize to tray", "Exit DexNest", "Cancel"],
+      defaultId: 0,
+      cancelId: 2,
+      checkboxLabel: "Remember my choice",
+      checkboxChecked: false,
+      noLink: true
+    });
+
+    if (response.response === 2) {
+      localDb.appendActionEvent({
+        module: "DexNest System",
+        actionId: "system.lifecycle.close_cancelled",
+        eventType: "app_close_cancelled",
+        status: "cancelled",
+        source: "system",
+        summary: "DexNest close was cancelled.",
+        metadataJson: {}
+      });
+      return;
+    }
+
+    if (response.checkboxChecked) {
+      saveAppLifecycleSettings({
+        closeBehavior: response.response === 0 ? "minimize_to_tray" : "exit"
+      }, "system");
+    }
+
+    if (response.response === 0) {
+      hideDexNestToTray("system");
+      return;
+    }
+
+    quitDexNestFully("system");
+  } finally {
+    closePromptOpen = false;
+  }
 }
 
 function unregisterCommandShortcut(): void {
@@ -2368,24 +3524,156 @@ function registerCommandShortcut(): void {
   });
 }
 
+function unregisterKeyboardShortcuts(): void {
+  for (const shortcut of registeredKeyboardShortcuts) {
+    globalShortcut.unregister(shortcut);
+  }
+  registeredKeyboardShortcuts = [];
+}
+
+function routineHasDangerousSteps(routineId: string): boolean {
+  const routine = loadRoutines().find((item) => item.id === routineId);
+  if (!routine) {
+    return false;
+  }
+  return routine.steps.some((step) => {
+    const stepAction = findAction(step.actionId);
+    return stepAction?.dangerLevel === "danger" || stepAction?.dangerLevel === "critical" || stepAction?.requiresConfirmation;
+  });
+}
+
+function validateKeyboardShortcutMapping(mapping: KeyboardShortcutMapping, settings: KeyboardShortcutSettings): { ok: boolean; status: KeyboardShortcutMapping["status"]; error: string | null } {
+  if (!settings.enabled || !mapping.enabled) {
+    return { ok: false, status: "disabled", error: null };
+  }
+  if (!mapping.shortcut.trim()) {
+    return { ok: false, status: "failed", error: "Shortcut is required." };
+  }
+  if (mapping.targetType === "action") {
+    const action = mapping.actionId ? findAction(mapping.actionId) : undefined;
+    if (!action) {
+      return { ok: false, status: "failed", error: "Action was not found." };
+    }
+    if (action.dangerLevel === "critical") {
+      return { ok: false, status: "blocked", error: "Critical actions cannot be global shortcuts." };
+    }
+    if ((action.dangerLevel === "danger" || action.requiresConfirmation) && !mapping.allowDangerous) {
+      return { ok: false, status: "blocked", error: "Dangerous actions require explicit warning before shortcut assignment." };
+    }
+  }
+  if (mapping.targetType === "routine") {
+    if (!mapping.routineId || !loadRoutines().some((routine) => routine.id === mapping.routineId)) {
+      return { ok: false, status: "failed", error: "Routine was not found." };
+    }
+    if (routineHasDangerousSteps(mapping.routineId) && !mapping.allowDangerous) {
+      return { ok: false, status: "blocked", error: "Routine includes an action that requires confirmation." };
+    }
+  }
+  const duplicateCount = settings.mappings.filter((item) => item.enabled && item.shortcut === mapping.shortcut).length;
+  if (duplicateCount > 1) {
+    return { ok: false, status: "conflict", error: "Shortcut is assigned more than once." };
+  }
+  if (loadCommandSettings().globalShortcutEnabled && loadCommandSettings().globalShortcut === mapping.shortcut) {
+    return { ok: false, status: "conflict", error: "Shortcut conflicts with DexNest Command shortcut." };
+  }
+  if (loadClipboardSettings().multiCopyHotkeyEnabled && loadClipboardSettings().multiCopyHotkey === mapping.shortcut) {
+    return { ok: false, status: "conflict", error: "Shortcut conflicts with Clipboard multi-copy hotkey." };
+  }
+  return { ok: true, status: "active", error: null };
+}
+
+async function runKeyboardShortcutMapping(mapping: KeyboardShortcutMapping): Promise<void> {
+  const startedAt = Date.now();
+  localDb.appendActionEvent({
+    module: "DexNest System",
+    actionId: "system.keyboard_shortcut.triggered",
+    eventType: "keyboard_shortcut_triggered",
+    status: "success",
+    source: "keyboard_shortcut",
+    summary: "DexNest keyboard shortcut triggered.",
+    metadataJson: {
+      mappingId: mapping.id,
+      targetType: mapping.targetType,
+      actionId: mapping.actionId ?? null,
+      routineId: mapping.routineId ?? null
+    }
+  });
+  if (mapping.actionId === "system.performance.toggle") {
+    const current = performanceModeState();
+    setPerformanceModeEnabled(!current.enabled, "manual", "keyboard_shortcut");
+    return;
+  }
+  if (mapping.actionId === "search.open") {
+    focusDexNestWindow("search", "keyboard_shortcut");
+    setTimeout(() => {
+      dispatchOpenView({ view: "search", focusAssistant: true });
+    }, 100);
+    return;
+  }
+  const result = mapping.targetType === "routine"
+    ? await runRegisteredAction("deck.routine.run", "keyboard_shortcut", { routineId: mapping.routineId })
+    : await runRegisteredAction(mapping.actionId ?? "", "keyboard_shortcut", {});
+  if (!result.ok) {
+    const errorMessage = "error" in result && typeof result.error === "string" ? result.error : "Shortcut action failed.";
+    localDb.appendActionEvent({
+      module: "DexNest System",
+      actionId: "system.keyboard_shortcut.failed",
+      eventType: "keyboard_shortcut_action_failed",
+      status: "failed",
+      source: "keyboard_shortcut",
+      summary: "DexNest keyboard shortcut action failed.",
+      metadataJson: { mappingId: mapping.id, targetType: mapping.targetType },
+      errorMessage,
+      durationMs: Date.now() - startedAt
+    });
+  }
+}
+
+function registerKeyboardShortcuts(): void {
+  unregisterKeyboardShortcuts();
+  const settings = loadKeyboardShortcutSettings();
+  const nextMappings = settings.mappings.map((mapping) => {
+    const validation = validateKeyboardShortcutMapping(mapping, settings);
+    if (!validation.ok) {
+      return { ...mapping, status: validation.status, lastError: validation.error };
+    }
+    const registered = globalShortcut.register(mapping.shortcut, () => {
+      void runKeyboardShortcutMapping(mapping);
+    });
+    if (registered) {
+      registeredKeyboardShortcuts.push(mapping.shortcut);
+    }
+    return {
+      ...mapping,
+      status: registered ? "active" as const : "failed" as const,
+      lastError: registered ? null : `Electron could not register ${mapping.shortcut}. Another app may reserve it.`
+    };
+  });
+  writeJsonFile(keyboardShortcutsPath, { ...settings, mappings: nextMappings, updatedAt: new Date().toISOString() });
+}
+
 function createTrayIcon(): Electron.NativeImage {
   const svg = encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" rx="8" fill="#000000"/><circle cx="16" cy="16" r="9" fill="none" stroke="#22D3EE" stroke-width="3"/><circle cx="16" cy="16" r="3" fill="#22D3EE"/></svg>`);
   return nativeImage.createFromDataURL(`data:image/svg+xml;charset=utf-8,${svg}`);
 }
 
-function togglePerformancePlaceholder(): void {
-  const settings = loadCommandSettings();
-  const next = saveCommandSettings({ ...settings, performanceModePlaceholder: !settings.performanceModePlaceholder });
+function togglePerformanceModeFromTray(): void {
+  const state = performanceModeState();
+  setPerformanceModeEnabled(!state.enabled, "manual", "system");
+}
+
+function lockSensitiveSessionFromTray(): void {
+  lockSecureVault();
+  lockTrustedSession();
   localDb.appendActionEvent({
-    module: "DexNest Command",
-    actionId: "command.performance_mode_placeholder",
-    eventType: "tray_action_used",
+    module: "DexNest System",
+    actionId: "system.lifecycle.lock_sensitive_session",
+    eventType: "sensitive_session_locked",
     status: "success",
     source: "system",
-    summary: `Performance Mode placeholder ${next.performanceModePlaceholder ? "enabled" : "disabled"}.`,
-    metadataJson: { enabled: next.performanceModePlaceholder }
+    summary: "Locked DexNest sensitive sessions from the tray.",
+    metadataJson: {}
   });
-  createDexNestTray();
 }
 
 function createDexNestTray(): void {
@@ -2396,26 +3684,35 @@ function createDexNestTray(): void {
 
   try {
     tray = new Tray(createTrayIcon());
-    tray.setToolTip("DexNest");
+    const performance = performanceModeState();
+    const performanceSettings = loadPerformanceModeSettings();
+    tray.setToolTip(performanceSettings.showTrayStatus && performance.enabled ? "DexNest - Performance Mode ON" : "DexNest");
     const nudgeCount = currentNudges().length;
     const menu = Menu.buildFromTemplate([
-      { label: mainWindow?.isVisible() ? "Hide DexNest" : "Show DexNest", click: () => mainWindow?.isVisible() ? mainWindow.hide() : focusDexNestWindow("command", "tray") },
+      { label: mainWindow?.isVisible() ? "Hide DexNest" : "Show DexNest", click: () => mainWindow?.isVisible() ? hideDexNestToTray("tray") : focusDexNestWindow("command", "tray") },
       { type: "separator" },
       { label: `${nudgeCount} active nudge${nudgeCount === 1 ? "" : "s"}`, enabled: false },
+      ...(performanceSettings.showTrayStatus ? [{ label: `Performance Mode: ${performance.enabled ? "ON" : "OFF"}`, enabled: false } as Electron.MenuItemConstructorOptions] : []),
+      { type: "separator" },
+      { label: "Show DexNest", click: () => focusDexNestWindow("command", "tray") },
+      { label: "Ask DexNest", click: () => askDexNestFromTray() },
+      { label: "Open Search", click: () => focusDexNestWindow("search", "tray") },
+      { label: "Open Drop", click: () => focusDexNestWindow("drop", "tray") },
+      { label: "Open Clipboard", click: () => focusDexNestWindow("clipboard", "tray") },
       { type: "separator" },
       { label: "Open Command", click: () => focusDexNestWindow("command", "tray") },
-      { label: "Open Clipboard", click: () => focusDexNestWindow("clipboard", "tray") },
-      { label: "Open Drop", click: () => focusDexNestWindow("drop", "tray") },
       { label: "Open Dev", click: () => focusDexNestWindow("dev", "tray") },
       { label: "Open Journal", click: () => focusDexNestWindow("journal", "tray") },
       { label: "Open Settings", click: () => focusDexNestWindow("settings", "tray") },
       { type: "separator" },
-      { label: `${loadCommandSettings().performanceModePlaceholder ? "Disable" : "Enable"} Performance Mode placeholder`, click: () => togglePerformancePlaceholder() },
+      { label: `${performance.enabled ? "Disable" : "Enable"} Performance Mode`, click: () => togglePerformanceModeFromTray() },
+      { label: "Lock sensitive session", click: () => lockSensitiveSessionFromTray() },
       { type: "separator" },
-      { label: "Quit DexNest", click: () => app.quit() }
+      { label: "Quit DexNest", click: () => quitDexNestFully("system") }
     ]);
     tray.setContextMenu(menu);
     tray.on("click", () => focusDexNestWindow("command", "tray"));
+    tray.on("double-click", () => focusDexNestWindow("command", "tray"));
     saveCommandSettings({ ...loadCommandSettings(), trayStatus: "active" });
   } catch {
     saveCommandSettings({ ...loadCommandSettings(), trayStatus: "failed" });
@@ -3396,6 +4693,21 @@ function maybeAggregateHeatmapOnInterval(settings: HeatmapSettings, startedAt = 
 async function logHeatmapSample(source: DexNestActionTrigger | "system" = "module_ui"): Promise<{ ok: boolean; event?: HeatmapEvent; snapshot: ActiveWindowSnapshot; heatmapState: ReturnType<typeof heatmapState> }> {
   const startedAt = Date.now();
   const settings = loadHeatmapSettings();
+  if (performanceModePauses("heatmap")) {
+    const snapshot: ActiveWindowSnapshot = { appName: "Performance Mode", windowTitle: "Heatmap paused", active: false, idleSeconds: 0, isFullscreen: false, detectionStatus: "ok" };
+    localDb.appendActionEvent({
+      module: "DexNest Heatmap",
+      actionId: "heatmap.log_current_app",
+      eventType: "heatmap_sample_skipped",
+      status: "skipped",
+      source,
+      summary: "Skipped Heatmap sample because Performance Mode is active.",
+      metadataJson: { reason: "performance_mode" },
+      errorMessage: null,
+      durationMs: Date.now() - startedAt
+    });
+    return { ok: true, snapshot, heatmapState: heatmapState() };
+  }
   const rawSnapshot = await detectActiveWindow();
   if (settings.pauseDuringFullscreen && rawSnapshot.isFullscreen) {
     localDb.appendActionEvent({
@@ -3453,7 +4765,7 @@ function stopHeatmapTimer(): void {
 function startHeatmapTimer(): void {
   stopHeatmapTimer();
   const settings = loadHeatmapSettings();
-  if (!settings.enabled || settings.paused) {
+  if (!settings.enabled || settings.paused || performanceModePauses("heatmap")) {
     return;
   }
 
@@ -3484,6 +4796,7 @@ const assistantAllowedIntents = [
   "dev_run_command",
   "journal_open_today",
   "capture_note",
+  "external_device_control",
   "unknown"
 ] as const;
 
@@ -3682,12 +4995,13 @@ function assistantIntentPrompt(query: string): string {
     "- dev_run_command: run a dev command (typecheck, build, test, start).",
     "- journal_open_today: open today's journal.",
     "- capture_note: save/remember a note, add to inbox.",
+    "- external_device_control: control configured local external devices like Govee lights or lamps (turn on room lights, set room lights to 40 percent, make lights blue).",
     "- unknown: anything else.",
     "",
     "Distinctions:",
     "- 'Where is my passport' = finder_search. 'What is my passport number' = smart_lookup. 'Find my passport document' = search_query.",
     "",
-    "targetModule must be one of: Search, Finder, Calendar, Drop, Dev, Journal, Capture, Command, Unknown.",
+    "targetModule must be one of: Search, Finder, Calendar, Drop, Dev, Journal, Capture, External Devices, Command, Unknown.",
     "sensitivity: 'sensitive' for passport/SIN/UCI/work permit/health card numbers or expiry; 'personal' for personal but non-secret; otherwise 'none'.",
     "requiresConfirmation: true for calendar/drop/dev/capture or any sensitive lookup.",
     "",
@@ -3699,6 +5013,18 @@ function assistantIntentPrompt(query: string): string {
 }
 
 async function runOllamaIntent(input: { query?: unknown }): Promise<{ ok: boolean; intent?: Record<string, unknown>; error?: string }> {
+  if (performanceModePauses("assistant")) {
+    localDb.appendActionEvent({
+      module: "DexNest Assistant",
+      actionId: "assistant.llm_intent",
+      eventType: "assistant_ollama_skipped",
+      status: "skipped",
+      source: "module_ui",
+      summary: "Assistant local LLM request skipped because Performance Mode is active.",
+      metadataJson: { reason: "performance_mode" }
+    });
+    return { ok: false, error: "Assistant local LLM paused by Performance Mode." };
+  }
   const settings = loadAssistantSettings();
   if (!settings.localIntentEngineEnabled) {
     return { ok: false, error: "Local intent engine is disabled." };
@@ -4191,6 +5517,121 @@ function sendDropEvent(response: ServerResponse, payload: Record<string, unknown
   response.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
+function isLocalRequest(request: IncomingMessage): boolean {
+  const address = request.socket.remoteAddress ?? "";
+  return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1" || address === "localhost";
+}
+
+function tokenFromRequest(request: IncomingMessage, url: URL): string {
+  const headerToken = request.headers["x-dexnest-token"];
+  return Array.isArray(headerToken) ? headerToken[0] ?? "" : String(headerToken ?? url.searchParams.get("token") ?? "");
+}
+
+function authorizeControlEndpoint(request: IncomingMessage, url: URL): { ok: boolean; statusCode: number; error?: string } {
+  const settings = loadStreamDeckSettings();
+  if (!settings.lanEnabled && !isLocalRequest(request)) {
+    return { ok: false, statusCode: 403, error: "DexNest Stream Deck control endpoints are localhost-only. Enable LAN exposure in Settings to allow remote control." };
+  }
+  if (settings.tokenEnabled && settings.token && tokenFromRequest(request, url) !== settings.token) {
+    return { ok: false, statusCode: 401, error: "DexNest Stream Deck token is required." };
+  }
+  return { ok: true, statusCode: 200 };
+}
+
+function deckActionSummary(action: DexNestActionDefinition) {
+  return {
+    actionId: action.id,
+    id: action.id,
+    title: action.title,
+    module: action.module,
+    moduleId: action.moduleId,
+    dangerLevel: action.dangerLevel,
+    requiresConfirmation: action.requiresConfirmation,
+    reversible: action.reversible,
+    enabled: action.enabled,
+    category: action.category,
+    accent: `accent-${action.moduleId}`
+  };
+}
+
+function safeEndpointResponse(
+  result: {
+    ok?: boolean;
+    actionId?: string;
+    error?: string;
+    message?: string;
+    status?: string;
+    preview?: unknown;
+    provider?: string;
+    errorCode?: string;
+    missingRequirement?: string;
+    source?: DexNestActionTrigger;
+    details?: Record<string, unknown>;
+  },
+  startedAt: number,
+  action?: DexNestActionDefinition
+) {
+  const sensitiveAction = action?.module === "vault" || action?.id.includes("secure") || action?.id.includes("smart_lookup") || action?.id.includes("clipboard");
+  const provider = result.provider ?? (action?.module === "external_devices" ? "govee" : undefined);
+  return {
+    ok: Boolean(result.ok),
+    status: result.status ?? (result.ok ? "success" : "failed"),
+    actionId: result.actionId ?? action?.id ?? null,
+    message: result.ok && provider === "govee"
+      ? "Govee action completed."
+      : result.ok
+      ? sensitiveAction ? "Action completed. Open DexNest to view result." : result.message ?? "Action completed."
+      : result.message ?? result.error ?? "Action failed.",
+    durationMs: Date.now() - startedAt,
+    ...(provider ? { provider } : {}),
+    ...(result.errorCode ? { errorCode: result.errorCode } : {}),
+    ...(result.missingRequirement ? { missingRequirement: result.missingRequirement } : {}),
+    ...(result.source ? { source: result.source } : {}),
+    ...(result.details ? result.details : {}),
+    ...(result.preview ? { preview: result.preview } : {})
+  };
+}
+
+function endpointStatusCode(result: { ok?: boolean; status?: string }): number {
+  if (result.ok) {
+    return 200;
+  }
+  if (result.status === "confirmation_required") {
+    return 409;
+  }
+  if (result.status === "locked") {
+    return 423;
+  }
+  if (result.status === "not_found") {
+    return 404;
+  }
+  if (result.status === "invalid_params") {
+    return 400;
+  }
+  if (result.status === "auth_failed") {
+    return 401;
+  }
+  if (result.status === "rate_limited") {
+    return 429;
+  }
+  if (result.status === "disabled" || result.status === "missing_requirement" || result.status === "not_configured" || result.status === "conflict") {
+    return 409;
+  }
+  if (result.status === "provider_error") {
+    return 502;
+  }
+  return 500;
+}
+
+function pinnedActionDetails() {
+  const actions = [...actionRegistry.list(), ...getProjectActionDefinitions()];
+  const actionMap = new Map(actions.map((action) => [action.id, action]));
+  return loadPinnedActions()
+    .map((actionId) => actionMap.get(actionId))
+    .filter((action): action is DexNestActionDefinition => Boolean(action))
+    .map(deckActionSummary);
+}
+
 function broadcastDropUpdate(message: string, eventType = "drop_updated"): void {
   const payload = {
     eventType,
@@ -4642,6 +6083,8 @@ function searchState(query: SearchQueryInput = {}) {
     savedSearches,
     indexPath: searchIndexPath,
     indexFolderPath: searchIndexRoot,
+    indexStatusPath: searchIndexStatusPath,
+    indexStatus: loadSearchIndexStatus(),
     savedSearchesPath,
     resultCount: runSearchQuery(query, index).length,
     ocrTextFileCount,
@@ -4958,9 +6401,15 @@ function buildSearchIndexRecords(): SearchIndexRecord[] {
 
 // Rebuild the local Search index. The index is rebuildable and not a source of
 // truth, so it is safe to refresh on demand after Vault metadata changes.
-function reindexSearchIndex(): SearchIndexRecord[] {
+function reindexSearchIndex(reason = "auto"): SearchIndexRecord[] {
+  if (reason !== "manual" && performanceModePauses("search_auto_index")) {
+    markSearchIndexStale(reason);
+    return loadSearchIndex();
+  }
   try {
-    return saveSearchIndex(buildSearchIndexRecords());
+    const records = saveSearchIndex(buildSearchIndexRecords());
+    saveSearchIndexStatus(defaultSearchIndexStatus());
+    return records;
   } catch (error) {
     console.error("DexNest: search reindex after Vault change failed.", error);
     return loadSearchIndex();
@@ -5399,6 +6848,9 @@ function currentNudges(): Nudge[] {
         return false;
       }
       if (nudge.status === "snoozed" && nudge.snoozeUntil && Date.parse(nudge.snoozeUntil) > now) {
+        return false;
+      }
+      if (performanceModePauses("nudges") && nudge.priority !== "urgent") {
         return false;
       }
       return true;
@@ -6004,7 +7456,9 @@ function heatmapState() {
     eventsPath: heatmapEventsPath,
     settingsPath: heatmapSettingsPath,
     goalsPath: heatmapGoalsPath,
-    trackingStatus: settings.enabled && !settings.paused && heatmapSampleTimer ? "running" : settings.enabled ? "paused" : "disabled",
+    trackingStatus: settings.enabled && performanceModePauses("heatmap")
+      ? "paused by Performance Mode"
+      : settings.enabled && !settings.paused && heatmapSampleTimer ? "running" : settings.enabled ? "paused" : "disabled",
     detectionNote: process.platform === "win32"
       ? "Windows active window metadata is sampled with a local one-shot Win32 call."
       : "Active window detection is currently Windows-only; manual placeholder logging is used here."
@@ -6075,6 +7529,10 @@ async function runHeatmapAction(action: DexNestActionDefinition, source: DexNest
         privateTitleKeywords: Array.isArray(input.privateTitleKeywords) ? input.privateTitleKeywords : settings.privateTitleKeywords
       });
       startHeatmapTimer();
+      if (performanceModePauses("heatmap")) {
+        logHeatmapAudit(action.id, "heatmap_paused_by_performance", "skipped", source, "Heatmap tracking is paused by Performance Mode.", { sampleIntervalSeconds: updated.sampleIntervalSeconds }, startedAt);
+        return { ok: true, actionId: action.id, heatmapState: heatmapState() };
+      }
       logHeatmapAudit(action.id, "heatmap_started", "success", source, "Started Heatmap tracking.", { sampleIntervalSeconds: updated.sampleIntervalSeconds }, startedAt);
       return { ok: true, actionId: action.id, heatmapState: heatmapState() };
     }
@@ -6578,6 +8036,10 @@ function runVaultAction(action: DexNestActionDefinition, source: DexNestActionTr
     }
 
     if (action.id === "vault.ocr.run_queue") {
+      if (performanceModePauses("ocr")) {
+        void processVaultOcrQueue(source);
+        return { ok: false, actionId: action.id, error: "Vault OCR queue is paused by Performance Mode.", vaultState: vaultState() };
+      }
       vaultOcrQueuePaused = false;
       void processVaultOcrQueue(source);
       logVaultEvent(action.id, "success", source, "Started Vault GPU OCR queue.", { queuedCount: loadVaultOcrJobs().filter((job) => job.status === "queued").length, engine: "paddleocr", device: "gpu" }, startedAt);
@@ -6598,6 +8060,11 @@ function runVaultAction(action: DexNestActionDefinition, source: DexNestActionTr
       for (const job of failed) {
         updateVaultDocumentOcr(job.documentId, { ocrStatus: "queued", ocrError: null, ocrUpdatedAt: now });
       }
+      if (performanceModePauses("ocr")) {
+        void processVaultOcrQueue(source);
+        logVaultEvent(action.id, "skipped", source, "Retried failed Vault OCR jobs, but Performance Mode paused the queue.", { retriedCount: failed.length, engine: "paddleocr", device: "gpu" }, startedAt);
+        return { ok: true, actionId: action.id, vaultState: vaultState() };
+      }
       vaultOcrQueuePaused = false;
       void processVaultOcrQueue(source);
       logVaultEvent(action.id, "success", source, "Retried failed Vault OCR jobs.", { retriedCount: failed.length, engine: "paddleocr", device: "gpu" }, startedAt);
@@ -6608,6 +8075,11 @@ function runVaultAction(action: DexNestActionDefinition, source: DexNestActionTr
       const document = verifiedVaultDocument(String(params.documentId ?? ""));
       const job = queueVaultOcrJob(document, true);
       if (job) {
+        if (performanceModePauses("ocr")) {
+          void processVaultOcrQueue(source);
+          logVaultEvent(action.id, "skipped", source, "Queued Vault document for OCR, but Performance Mode paused the queue.", { documentId: document.id, fileType: document.fileType, engine: "paddleocr", device: "gpu", queued: true }, startedAt);
+          return { ok: true, actionId: action.id, vaultState: vaultState() };
+        }
         vaultOcrQueuePaused = false;
         void processVaultOcrQueue(source);
       }
@@ -7457,8 +8929,17 @@ async function processVaultOcrQueue(source: DexNestActionTrigger | "system" = "s
   if (vaultOcrQueueRunning || vaultOcrQueuePaused) {
     return;
   }
-  if (loadCommandSettings().performanceModePlaceholder) {
+  if (performanceModePauses("ocr")) {
     vaultOcrQueuePaused = true;
+    localDb.appendActionEvent({
+      module: "DexNest Vault",
+      actionId: "vault.ocr.run_queue",
+      eventType: "vault_ocr_queue_paused_by_performance",
+      status: "skipped",
+      source: source === "system" ? "system" : source,
+      summary: "Vault OCR queue is paused by Performance Mode.",
+      metadataJson: { queuedCount: loadVaultOcrJobs().filter((job) => job.status === "queued").length, engine: "paddleocr", device: "gpu" }
+    });
     return;
   }
 
@@ -8020,6 +9501,7 @@ function runClipboardAction(action: DexNestActionDefinition, source: DexNestActi
     };
     saveClipboardSettings(nextSettings);
     registerClipboardHotkey();
+    registerKeyboardShortcuts();
     if (!nextSettings.multiCopyHotkeyEnabled) {
       stopArmedMultiCopyPasteDetection();
     }
@@ -8263,18 +9745,75 @@ function runDropAction(action: DexNestActionDefinition, source: DexNestActionTri
   }
 
   if (action.id === "drop.send_clipboard_to_drop") {
-    const text = clipboard.readText();
+    const explicitText = typeof params.text === "string" ? params.text : "";
+    const confirmed = params.confirmed === true || params.confirmedDangerous === true;
+    if (source === "stream_deck_http" && !explicitText && !confirmed) {
+      const text = clipboard.readText();
+      const trimmed = text.trim();
+      const protectedValue = isProtectedClipboardText(text);
+      const sensitive = protectedValue || looksSensitiveClipboardText(text);
+      const preview = {
+        kind: trimmed ? "text" : "unknown",
+        charCount: trimmed.length,
+        safePreview: trimmed && !sensitive ? endpointPreviewText(trimmed) : ""
+      };
+      logActionEvent(action, "cancelled", source, "Clipboard-to-Drop requires confirmation from Stream Deck HTTP.", {
+        clipboardKind: preview.kind,
+        charCount: preview.charCount,
+        confirmationRequired: true,
+        sensitivePreviewHidden: sensitive
+      });
+      return {
+        ok: false,
+        status: "confirmation_required",
+        actionId: action.id,
+        message: "Open DexNest to confirm sending current clipboard to Drop.",
+        error: "Open DexNest to confirm sending current clipboard to Drop.",
+        preview
+      };
+    }
+
+    const text = explicitText || clipboard.readText();
     if (!text.trim()) {
       logActionEvent(action, "skipped", source, "Clipboard-to-Drop skipped because clipboard text was empty.", { byteLength: 0 });
       return { ok: false, actionId: action.id, error: "Clipboard text is empty." };
     }
+    if (!explicitText && isProtectedClipboardText(text)) {
+      logActionEvent(action, "skipped", source, "Clipboard-to-Drop skipped for a Secure Vault protected value.", {
+        protectedSource: "secure_vault",
+        confirmationRequired: source === "stream_deck_http"
+      });
+      return { ok: false, actionId: action.id, error: clipboardProtectedError() };
+    }
+    if (source === "stream_deck_http" && !explicitText && looksSensitiveClipboardText(text)) {
+      logActionEvent(action, "cancelled", source, "Clipboard-to-Drop blocked because the clipboard looked sensitive.", {
+        clipboardKind: "text",
+        charCount: text.trim().length,
+        confirmationRequired: true,
+        sensitivePreviewHidden: true
+      });
+      return {
+        ok: false,
+        status: "confirmation_required",
+        actionId: action.id,
+        message: "Clipboard looks sensitive. Open DexNest Drop to confirm sending it.",
+        error: "Clipboard looks sensitive. Open DexNest Drop to confirm sending it.",
+        preview: {
+          kind: "text",
+          charCount: text.trim().length,
+          safePreview: ""
+        }
+      };
+    }
 
-    const item = createDropTextItem(text, "clipboard", "outgoing");
+    const item = createDropTextItem(text, explicitText ? "manual" : "clipboard", "outgoing");
     saveDropShelf([item, ...loadDropShelf()]);
-    logActionEvent(action, "success", source, `Sent clipboard text to outgoing Drop, ${item.byteLength} bytes.`, {
+    logActionEvent(action, "success", source, `${explicitText ? "Sent explicit text" : "Sent clipboard text"} to outgoing Drop, ${item.byteLength} bytes.`, {
       dropId: item.id,
       byteLength: item.byteLength,
-      expiresAt: item.expiresAt
+      expiresAt: item.expiresAt,
+      explicitText: Boolean(explicitText),
+      confirmedFromEndpoint: source === "stream_deck_http" ? confirmed : false
     });
     broadcastDropUpdate("Clipboard sent to phone.", "drop.outgoing_text_created");
     return { ok: true, actionId: action.id, item };
@@ -9786,7 +11325,7 @@ async function runSearchAction(action: DexNestActionDefinition, source: DexNestA
     }
 
     if (action.id === "search.rebuild_index") {
-      const records = saveSearchIndex(buildSearchIndexRecords());
+      const records = reindexSearchIndex("manual");
       const ocrTextFileCount = records.filter((record) => record.entityType === "tools_ocr_text").length;
       logSearchEvent(
         action.id,
@@ -10037,6 +11576,250 @@ async function runSearchAction(action: DexNestActionDefinition, source: DexNestA
   return null;
 }
 
+function navigationTargetForAction(actionId: string): { view: string; focusAssistant?: boolean; message: string } | null {
+  const targets: Record<string, { view: string; focusAssistant?: boolean; message: string }> = {
+    "command.open_home": { view: "command", message: "DexNest opened Command." },
+    "command.open_palette": { view: "command", message: "DexNest opened Command Palette." },
+    "search.open": { view: "search", focusAssistant: true, message: "DexNest opened Search." },
+    "drop.open": { view: "drop", message: "DexNest opened Drop." },
+    "clipboard.open": { view: "clipboard", message: "DexNest opened Clipboard." },
+    "dev.open_dashboard": { view: "dev", message: "DexNest opened Dev." },
+    "vault.open": { view: "vault", message: "DexNest opened Vault." },
+    "settings.open": { view: "settings", message: "DexNest opened Settings." },
+    "audit.open_history": { view: "audit", message: "DexNest opened Audit." },
+    "system.health.open": { view: "settings", message: "DexNest opened App Health." },
+    "system.performance.open": { view: "settings", message: "DexNest opened Performance Mode settings." }
+  };
+  return targets[actionId] ?? null;
+}
+
+function openNavigationAction(action: DexNestActionDefinition, source: DexNestActionTrigger, startedAt: number) {
+  const target = navigationTargetForAction(action.id);
+  if (!target) {
+    return null;
+  }
+
+  focusDexNestWindow(target.view, source, {
+    actionId: action.id,
+    eventType: "navigation_action_opened",
+    summary: target.message,
+    focusAssistant: target.focusAssistant,
+    writeAudit: false
+  });
+
+  logActionEvent(action, "success", source, target.message, {
+    view: target.view,
+    focusAssistant: Boolean(target.focusAssistant)
+  }, null, Date.now() - startedAt);
+
+  return { ok: true, actionId: action.id, message: target.message };
+}
+
+async function runExternalDevicesAction(action: DexNestActionDefinition, source: DexNestActionTrigger, payload: unknown = {}) {
+  const startedAt = Date.now();
+  const params = typeof payload === "object" && payload !== null ? payload as Record<string, unknown> : {};
+  const settings = loadExternalDevicesSettings();
+
+  try {
+    if (source === "voice" && !settings.allowVoiceControl) {
+      throw new ExternalDeviceActionError("disabled", "voice_control_disabled", "Govee voice control is disabled in Settings.");
+    }
+    if (source === "stream_deck_http" && !settings.allowStreamDeckControl) {
+      throw new ExternalDeviceActionError("disabled", "stream_deck_control_disabled", "Govee Stream Deck endpoint control is disabled in Settings.");
+    }
+    if (source === "keyboard_shortcut" && !settings.allowKeyboardShortcutControl) {
+      throw new ExternalDeviceActionError("disabled", "keyboard_shortcut_control_disabled", "Govee keyboard shortcut control is disabled in Settings.");
+    }
+
+    if (action.id === "external.govee.apply_scene") {
+      logExternalDeviceEvent(action.id, "skipped", source, "Govee scene application is a placeholder for this MVP.", {
+        actionType: "apply_scene",
+        sceneProvided: Boolean(params.scene)
+      }, startedAt);
+      return {
+        ok: false,
+        status: "not_configured",
+        actionId: action.id,
+        provider: "govee",
+        errorCode: "govee_scene_placeholder",
+        error: "Govee scene support is a placeholder until the local API mapping is confirmed.",
+        message: "Govee scene support is a placeholder until the local API mapping is confirmed.",
+        source,
+        externalDevicesState: externalDevicesState()
+      };
+    }
+
+    if (action.id === "external.govee.update_settings") {
+      const apiKey = typeof params.apiKey === "string" ? params.apiKey.trim() : "";
+      const next: Partial<ExternalDevicesSettings> = {
+        goveeEnabled: typeof params.goveeEnabled === "boolean" ? params.goveeEnabled : settings.goveeEnabled,
+        defaultDeviceAlias: typeof params.defaultDeviceAlias === "string" ? params.defaultDeviceAlias.trim() || null : settings.defaultDeviceAlias,
+        allowVoiceControl: typeof params.allowVoiceControl === "boolean" ? params.allowVoiceControl : settings.allowVoiceControl,
+        allowStreamDeckControl: typeof params.allowStreamDeckControl === "boolean" ? params.allowStreamDeckControl : settings.allowStreamDeckControl,
+        allowKeyboardShortcutControl: typeof params.allowKeyboardShortcutControl === "boolean" ? params.allowKeyboardShortcutControl : settings.allowKeyboardShortcutControl,
+        requireConfirmationForPowerOff: typeof params.requireConfirmationForPowerOff === "boolean" ? params.requireConfirmationForPowerOff : settings.requireConfirmationForPowerOff,
+        requireConfirmationForBrightnessBelow10: typeof params.requireConfirmationForBrightnessBelow10 === "boolean" ? params.requireConfirmationForBrightnessBelow10 : settings.requireConfirmationForBrightnessBelow10,
+        requireConfirmationForScenes: typeof params.requireConfirmationForScenes === "boolean" ? params.requireConfirmationForScenes : settings.requireConfirmationForScenes
+      };
+      if (apiKey) {
+        next.goveeApiKeySecretId = upsertGoveeApiKeySecret(apiKey);
+      }
+      const saved = saveExternalDevicesSettings(next);
+      logExternalDeviceEvent(action.id, "success", source, "Updated DexNest Govee provider settings.", {
+        actionType: "update_settings",
+        goveeEnabled: saved.goveeEnabled,
+        apiKeyStored: Boolean(saved.goveeApiKeySecretId),
+        allowVoiceControl: saved.allowVoiceControl,
+        allowStreamDeckControl: saved.allowStreamDeckControl,
+        allowKeyboardShortcutControl: saved.allowKeyboardShortcutControl
+      }, startedAt);
+      return { ok: true, actionId: action.id, externalDevicesState: externalDevicesState(), message: "Govee settings saved." };
+    }
+
+    if (action.id === "external.govee.update_alias") {
+      const deviceId = String(params.deviceId ?? "").trim();
+      if (!deviceId) {
+        throw new Error("Device ID is required to update a Govee alias.");
+      }
+      const userAlias = typeof params.userAlias === "string" ? params.userAlias.trim() : "";
+      const roomAlias = typeof params.roomAlias === "string" ? params.roomAlias.trim() : "";
+      const devices = updateCachedGoveeDevice(deviceId, { userAlias, roomAlias });
+      const device = devices.find((item) => item.deviceId === deviceId);
+      logExternalDeviceEvent(action.id, "success", source, "Updated local Govee device alias.", {
+        actionType: "update_alias",
+        deviceName: device?.deviceName ?? null,
+        hasUserAlias: Boolean(userAlias),
+        hasRoomAlias: Boolean(roomAlias)
+      }, startedAt);
+      return { ok: true, actionId: action.id, externalDevicesState: externalDevicesState(), message: "Govee alias saved." };
+    }
+
+    if (action.id === "external.govee.remove_api_key") {
+      if (settings.goveeApiKeySecretId) {
+        const file = loadSecureVaultFile();
+        if (!file) {
+          throw new Error("Secure Vault is not set up.");
+        }
+        const key = requireSecureVaultKey();
+        verifySecureVaultKey(file, key);
+        saveSecureVaultFile({ ...file, items: file.items.filter((item) => item.id !== settings.goveeApiKeySecretId) });
+        touchSecureVaultActivity();
+      }
+      const saved = saveExternalDevicesSettings({ goveeApiKeySecretId: null });
+      logExternalDeviceEvent(action.id, "success", source, "Removed Govee API key reference from External Devices settings.", {
+        actionType: "remove_api_key",
+        goveeEnabled: saved.goveeEnabled
+      }, startedAt);
+      return { ok: true, actionId: action.id, externalDevicesState: externalDevicesState(), message: "Govee API key reference removed." };
+    }
+
+    if (action.id === "external.govee.test_connection") {
+      const devices = await goveeListDevices(readGoveeApiKey());
+      logExternalDeviceEvent(action.id, "success", source, "Tested Govee connection.", {
+        actionType: "test_connection",
+        deviceCount: devices.length
+      }, startedAt);
+      return { ok: true, actionId: action.id, message: `Govee connection OK. ${devices.length} device(s) visible.`, deviceCount: devices.length, externalDevicesState: externalDevicesState() };
+    }
+
+    if (action.id === "external.govee.refresh_devices") {
+      const devices = saveExternalDevicesCache(await goveeListDevices(readGoveeApiKey()));
+      logExternalDeviceEvent(action.id, "success", source, "Refreshed Govee device cache.", {
+        actionType: "refresh_devices",
+        deviceCount: devices.length
+      }, startedAt);
+      return { ok: true, actionId: action.id, message: `Refreshed ${devices.length} Govee device(s).`, devices, externalDevicesState: externalDevicesState() };
+    }
+
+    const device = findExternalDevice(params);
+    if (!device.controllable) {
+      throw new ExternalDeviceActionError("disabled", "govee_device_not_controllable", `${device.userAlias || device.deviceName} is not marked controllable by Govee.`);
+    }
+    const alias = device.userAlias || device.roomAlias || device.deviceName;
+
+    if (action.id === "external.govee.turn_on") {
+      await goveeControl(device, "turn", "on");
+      updateCachedGoveeDevice(device.deviceId, { lastKnownPowerState: "on" });
+      logExternalDeviceEvent(action.id, "success", source, "Turned on Govee device.", { actionType: "turn_on", deviceAlias: alias, deviceName: device.deviceName }, startedAt);
+      return { ok: true, actionId: action.id, message: `Turned on ${alias}.`, externalDevicesState: externalDevicesState() };
+    }
+
+    if (action.id === "external.govee.turn_off") {
+      if (settings.requireConfirmationForPowerOff && params.confirmedDangerous !== true) {
+        logExternalDeviceEvent(action.id, "cancelled", source, "Govee power-off requires confirmation.", { actionType: "turn_off", deviceAlias: alias, confirmationRequired: true }, startedAt);
+        return { ok: false, status: "confirmation_required", actionId: action.id, error: "Power-off requires confirmation.", message: "Power-off requires confirmation." };
+      }
+      await goveeControl(device, "turn", "off");
+      updateCachedGoveeDevice(device.deviceId, { lastKnownPowerState: "off" });
+      logExternalDeviceEvent(action.id, "success", source, "Turned off Govee device.", { actionType: "turn_off", deviceAlias: alias, deviceName: device.deviceName }, startedAt);
+      return { ok: true, actionId: action.id, message: `Turned off ${alias}.`, externalDevicesState: externalDevicesState() };
+    }
+
+    if (action.id === "external.govee.toggle") {
+      const next = device.lastKnownPowerState === "on" ? "off" : "on";
+      if (next === "off" && settings.requireConfirmationForPowerOff && params.confirmedDangerous !== true) {
+        logExternalDeviceEvent(action.id, "cancelled", source, "Govee toggle to off requires confirmation.", { actionType: "toggle", deviceAlias: alias, nextPowerState: next, confirmationRequired: true }, startedAt);
+        return { ok: false, status: "confirmation_required", actionId: action.id, error: "Power-off requires confirmation.", message: "Power-off requires confirmation." };
+      }
+      await goveeControl(device, "turn", next);
+      updateCachedGoveeDevice(device.deviceId, { lastKnownPowerState: next });
+      logExternalDeviceEvent(action.id, "success", source, "Toggled Govee device.", { actionType: "toggle", deviceAlias: alias, nextPowerState: next }, startedAt);
+      return { ok: true, actionId: action.id, message: `Set ${alias} ${next}.`, externalDevicesState: externalDevicesState() };
+    }
+
+    if (action.id === "external.govee.set_brightness") {
+      const brightness = brightnessValue(params.brightness);
+      if (settings.requireConfirmationForBrightnessBelow10 && brightness < 10 && params.confirmedDangerous !== true) {
+        logExternalDeviceEvent(action.id, "cancelled", source, "Low Govee brightness requires confirmation.", { actionType: "set_brightness", deviceAlias: alias, brightness, confirmationRequired: true }, startedAt);
+        return { ok: false, status: "confirmation_required", actionId: action.id, error: "Brightness below 10 requires confirmation.", message: "Brightness below 10 requires confirmation." };
+      }
+      await goveeControl(device, "brightness", brightness);
+      updateCachedGoveeDevice(device.deviceId, { lastKnownBrightness: brightness });
+      logExternalDeviceEvent(action.id, "success", source, "Set Govee brightness.", { actionType: "set_brightness", deviceAlias: alias, brightness }, startedAt);
+      return { ok: true, actionId: action.id, message: `Set ${alias} brightness to ${brightness}.`, externalDevicesState: externalDevicesState() };
+    }
+
+    if (action.id === "external.govee.set_color") {
+      const color = colorValue(params.color);
+      await goveeControl(device, "color", color);
+      logExternalDeviceEvent(action.id, "success", source, "Set Govee color.", { actionType: "set_color", deviceAlias: alias, colorProvided: true }, startedAt);
+      return { ok: true, actionId: action.id, message: `Set ${alias} color.`, externalDevicesState: externalDevicesState() };
+    }
+
+    if (action.id === "external.govee.set_color_temperature") {
+      const kelvin = kelvinValue(params.kelvin);
+      await goveeControl(device, "colorTem", kelvin);
+      logExternalDeviceEvent(action.id, "success", source, "Set Govee color temperature.", { actionType: "set_color_temperature", deviceAlias: alias, kelvin }, startedAt);
+      return { ok: true, actionId: action.id, message: `Set ${alias} to ${kelvin}K.`, externalDevicesState: externalDevicesState() };
+    }
+  } catch (error) {
+    const failure = externalDeviceFailure(error, params);
+    const message = failure.message;
+    const requestedAlias = typeof params.alias === "string" ? params.alias : undefined;
+    logExternalDeviceEvent(action.id, "failed", source, message, {
+      actionType: action.id.replace("external.govee.", ""),
+      errorCode: failure.errorCode,
+      status: failure.status,
+      requestedAlias
+    }, startedAt, message);
+    return {
+      ok: false,
+      status: failure.status,
+      actionId: action.id,
+      error: message,
+      message,
+      provider: "govee",
+      errorCode: failure.errorCode,
+      missingRequirement: failure.missingRequirement,
+      source,
+      details: failure.details,
+      externalDevicesState: externalDevicesState()
+    };
+  }
+
+  return null;
+}
+
 async function runRegisteredAction(actionId: string, source: DexNestActionTrigger, payload: unknown = {}) {
   const startedAt = Date.now();
   const action = findAction(actionId);
@@ -10077,8 +11860,14 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
     return {
       ok: false,
       actionId,
+      status: "confirmation_required",
       error: `${action.title} requires confirmation.`
     };
+  }
+
+  const navigationResult = openNavigationAction(action, source, startedAt);
+  if (navigationResult) {
+    return navigationResult;
   }
 
   const projectMatch = actionId.match(/^dev\.project\.([a-z0-9-]+)\.(.+)$/);
@@ -10116,6 +11905,7 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
       globalShortcut: typeof input.globalShortcut === "string" ? normalizeCommandShortcut(input.globalShortcut) : settings.globalShortcut
     });
     registerCommandShortcut();
+    registerKeyboardShortcuts();
     const refreshedSettings = loadCommandSettings();
     localDb.appendActionEvent({
       module: "DexNest Command",
@@ -10179,6 +11969,13 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
     }
   }
 
+  if (action.module === "external_devices") {
+    const result = await runExternalDevicesAction(action, source, payload);
+    if (result) {
+      return result;
+    }
+  }
+
   if (action.module === "journal") {
     const result = runJournalAction(action, source, payload);
     if (result) {
@@ -10224,6 +12021,134 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
   if (action.module === "system" && action.id.startsWith("system.health.")) {
     const health = appHealthState(source, action.id === "system.health.run_checks");
     return { ok: true, actionId, health };
+  }
+
+  if (action.module === "system" && action.id.startsWith("system.performance.")) {
+    const input = typeof payload === "object" && payload !== null ? payload as Partial<PerformanceModeSettings> & { reason?: PerformanceModeReason } : {};
+    if (action.id === "system.performance.open") {
+      logActionEvent(action, "success", source, "Opened DexNest Performance Mode settings.", {}, null, Date.now() - startedAt);
+      return { ok: true, actionId, performanceModeState: performanceModeState(), performanceModeSettings: loadPerformanceModeSettings() };
+    }
+    if (action.id === "system.performance.enable" || action.id === "system.performance.disable") {
+      const result = setPerformanceModeEnabled(action.id === "system.performance.enable", input.reason ?? "manual", source);
+      return { ok: true, actionId, performanceModeState: result.state, performanceModeSettings: result.settings };
+    }
+    if (action.id === "system.performance.toggle") {
+      const current = performanceModeState();
+      const result = setPerformanceModeEnabled(!current.enabled, input.reason ?? "manual", source);
+      return { ok: true, actionId, performanceModeState: result.state, performanceModeSettings: result.settings };
+    }
+    if (action.id === "system.performance.update_settings") {
+      const settings = savePerformanceModeSettings(input);
+      localDb.appendActionEvent({
+        module: "DexNest System",
+        actionId,
+        eventType: "performance_mode_settings_updated",
+        status: "success",
+        source,
+        summary: "Updated DexNest Performance Mode settings.",
+        metadataJson: {
+          performanceModeEnabled: settings.performanceModeEnabled,
+          pausedWorkers: pausedWorkersForPerformance(settings),
+          autoEnableWhenFullscreen: settings.autoEnableWhenFullscreen,
+          autoEnableWhenGameDetected: settings.autoEnableWhenGameDetected
+        },
+        durationMs: Date.now() - startedAt
+      });
+      createDexNestTray();
+      return { ok: true, actionId, performanceModeState: performanceModeState(), performanceModeSettings: settings };
+    }
+  }
+
+  if (action.module === "system" && action.id.startsWith("system.lifecycle.")) {
+    const input = typeof payload === "object" && payload !== null ? payload as Partial<AppLifecycleSettings> : {};
+    if (action.id === "system.lifecycle.update_settings") {
+      const settings = saveAppLifecycleSettings(input, source);
+      createDexNestTray();
+      return {
+        ok: settings.loginItemStatus !== "failed",
+        actionId,
+        appLifecycleSettings: appLifecycleState(),
+        error: settings.loginItemLastError ?? undefined
+      };
+    }
+    if (action.id === "system.lifecycle.test_tray_notice") {
+      trayCloseNoticeShownThisSession = false;
+      showTrayCloseNotice();
+      localDb.appendActionEvent({
+        module: "DexNest System",
+        actionId,
+        eventType: "tray_notice_tested",
+        status: "success",
+        source,
+        summary: "Tested DexNest tray notification.",
+        metadataJson: { trayAvailable: Boolean(tray) },
+        durationMs: Date.now() - startedAt
+      });
+      return { ok: true, actionId };
+    }
+    if (action.id === "system.lifecycle.quit_full") {
+      quitDexNestFully(source);
+      return { ok: true, actionId };
+    }
+    if (action.id === "system.lifecycle.lock_sensitive_session") {
+      lockSensitiveSessionFromTray();
+      return { ok: true, actionId };
+    }
+  }
+
+  if (action.module === "system" && action.id.startsWith("system.keyboard_shortcuts.")) {
+    const input = typeof payload === "object" && payload !== null ? payload as Partial<KeyboardShortcutSettings> : {};
+    let settings: KeyboardShortcutSettings;
+    if (action.id === "system.keyboard_shortcuts.reset_defaults") {
+      settings = saveKeyboardShortcutSettings(defaultKeyboardShortcutSettings());
+    } else if (action.id === "system.keyboard_shortcuts.disable_all") {
+      const current = loadKeyboardShortcutSettings();
+      settings = saveKeyboardShortcutSettings({ ...current, enabled: false, mappings: current.mappings.map((mapping) => ({ ...mapping, enabled: false })) });
+    } else {
+      const current = loadKeyboardShortcutSettings();
+      settings = saveKeyboardShortcutSettings({
+        enabled: typeof input.enabled === "boolean" ? input.enabled : current.enabled,
+        mappings: Array.isArray(input.mappings) ? input.mappings as KeyboardShortcutMapping[] : current.mappings,
+        updatedAt: new Date().toISOString()
+      });
+    }
+    localDb.appendActionEvent({
+      module: "DexNest System",
+      actionId,
+      eventType: "keyboard_shortcuts_updated",
+      status: "success",
+      source,
+      summary: "Updated DexNest keyboard shortcut settings.",
+      metadataJson: {
+        enabled: settings.enabled,
+        mappingCount: settings.mappings.length,
+        activeCount: settings.mappings.filter((mapping) => mapping.status === "active").length,
+        conflictCount: shortcutConflictDetails(settings).length
+      },
+      durationMs: Date.now() - startedAt
+    });
+    return { ok: true, actionId, keyboardShortcutSettings: settings };
+  }
+
+  if (action.module === "system" && action.id === "system.stream_deck.update_settings") {
+    const input = typeof payload === "object" && payload !== null ? payload as Partial<StreamDeckSettings> : {};
+    const settings = saveStreamDeckSettings(input);
+    localDb.appendActionEvent({
+      module: "DexNest Deck",
+      actionId,
+      eventType: "stream_deck_settings_updated",
+      status: "success",
+      source,
+      summary: "Updated DexNest Stream Deck endpoint settings.",
+      metadataJson: {
+        lanEnabled: settings.lanEnabled,
+        tokenEnabled: settings.tokenEnabled,
+        hasToken: Boolean(settings.token)
+      },
+      durationMs: Date.now() - startedAt
+    });
+    return { ok: true, actionId, streamDeckSettings: { ...settings, token: settings.token ? "set" : "" } };
   }
 
   if (action.module === "capture") {
@@ -10514,6 +12439,133 @@ function startActionEndpoint(): void {
       return;
     }
 
+    const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
+    const auth = authorizeControlEndpoint(request, url);
+    if (!auth.ok) {
+      sendJson(response, auth.statusCode, { ok: false, status: "failed", message: auth.error });
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/health") {
+      sendJson(response, 200, {
+        ok: true,
+        status: "success",
+        message: "DexNest Stream Deck control endpoint is running.",
+        localOnly: !loadStreamDeckSettings().lanEnabled,
+        tokenEnabled: loadStreamDeckSettings().tokenEnabled,
+        lanEnabled: loadStreamDeckSettings().lanEnabled,
+        baseUrl: `http://127.0.0.1:${actionPort}`,
+        timestamp: new Date().toISOString()
+      });
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/actions") {
+      sendJson(response, 200, {
+        ok: true,
+        status: "success",
+        message: "DexNest actions listed.",
+        actions: [...actionRegistry.list(), ...getProjectActionDefinitions()].map(deckActionSummary)
+      });
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/actions/pinned") {
+      sendJson(response, 200, {
+        ok: true,
+        status: "success",
+        message: "DexNest pinned actions listed.",
+        actions: pinnedActionDetails()
+      });
+      return;
+    }
+
+    if (request.method === "GET" && url.pathname === "/routines") {
+      sendJson(response, 200, {
+        ok: true,
+        status: "success",
+        message: "DexNest routines listed.",
+        routines: loadRoutines().map((routine) => ({
+          id: routine.id,
+          name: routine.name,
+          description: routine.description,
+          enabled: routine.enabled,
+          stepCount: routine.steps.length,
+          lastRunAt: routine.lastRunAt ?? null,
+          hasDangerousSteps: routineHasDangerousSteps(routine.id)
+        }))
+      });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/actions/run") {
+      const startedAt = Date.now();
+      const body = await readBody(request) as { actionId?: string; params?: unknown; confirmedDangerous?: boolean };
+      const actionId = String(body.actionId ?? "");
+      const action = findAction(actionId);
+      if (!action) {
+        sendJson(response, 404, { ok: false, status: "failed", actionId, message: "Action not found.", durationMs: Date.now() - startedAt });
+        return;
+      }
+      const result = await runRegisteredAction(actionId, "stream_deck_http", { ...(typeof body.params === "object" && body.params !== null ? body.params as Record<string, unknown> : {}), confirmedDangerous: body.confirmedDangerous === true });
+      sendJson(response, endpointStatusCode(result), safeEndpointResponse(result, startedAt, action));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/routines/run") {
+      const startedAt = Date.now();
+      const body = await readBody(request) as { routineId?: string; confirmedDangerous?: boolean };
+      const routineId = String(body.routineId ?? "");
+      if (routineHasDangerousSteps(routineId) && body.confirmedDangerous !== true) {
+        sendJson(response, 409, { ok: false, status: "confirmation_required", actionId: "deck.routine.run", message: "Routine includes an action requiring confirmation. Open DexNest or pass confirmedDangerous after explicit confirmation.", durationMs: Date.now() - startedAt });
+        return;
+      }
+      const result = await runRegisteredAction("deck.routine.run", "stream_deck_http", { routineId, confirmedDangerous: body.confirmedDangerous === true });
+      sendJson(response, endpointStatusCode(result), safeEndpointResponse(result, startedAt, findAction("deck.routine.run")));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/performance/toggle") {
+      const startedAt = Date.now();
+      const current = performanceModeState();
+      const result = setPerformanceModeEnabled(!current.enabled, "manual", "stream_deck_http");
+      sendJson(response, 200, { ok: true, status: "success", actionId: "system.performance.toggle", message: `Performance Mode ${result.state.enabled ? "enabled" : "disabled"}.`, durationMs: Date.now() - startedAt });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/assistant/ask") {
+      const startedAt = Date.now();
+      askDexNestFromTray();
+      localDb.appendActionEvent({
+        module: "DexNest Assistant",
+        actionId: "assistant.command_received",
+        eventType: "assistant_stream_deck_opened",
+        status: "success",
+        source: "stream_deck_http",
+        summary: "Opened Ask DexNest from Stream Deck endpoint.",
+        metadataJson: {},
+        durationMs: Date.now() - startedAt
+      });
+      sendJson(response, 200, { ok: true, status: "success", actionId: "assistant.command_received", message: "Ask DexNest opened. Open DexNest to view or enter sensitive results.", durationMs: Date.now() - startedAt });
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/drop/send-clipboard") {
+      const startedAt = Date.now();
+      const action = findAction("drop.send_clipboard_to_drop");
+      const payload = await readBody(request);
+      const result = await runRegisteredAction("drop.send_clipboard_to_drop", "stream_deck_http", typeof payload === "object" && payload !== null ? payload : {});
+      sendJson(response, endpointStatusCode(result), safeEndpointResponse(result, startedAt, action));
+      return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/sensitive/lock") {
+      const startedAt = Date.now();
+      lockSensitiveSessionFromTray();
+      sendJson(response, 200, { ok: true, status: "success", actionId: "system.lifecycle.lock_sensitive_session", message: "Sensitive session locked.", durationMs: Date.now() - startedAt });
+      return;
+    }
+
     const match = request.url?.match(/^\/actions\/([^/?#]+)$/);
 
     if (request.method !== "POST" || !match) {
@@ -10525,20 +12577,21 @@ function startActionEndpoint(): void {
     const action = findAction(actionId);
 
     if (!action) {
-      const result = await runRegisteredAction(actionId, "deck");
+      const result = await runRegisteredAction(actionId, "stream_deck_http");
       sendJson(response, 404, result);
       return;
     }
 
     try {
+      const startedAt = Date.now();
       const payload = await readBody(request);
-      const result = await runRegisteredAction(actionId, "deck", payload);
-      sendJson(response, result.ok ? 200 : 500, result);
+      const result = await runRegisteredAction(actionId, "stream_deck_http", payload);
+      sendJson(response, endpointStatusCode(result), safeEndpointResponse(result, startedAt, action));
     } catch (error) {
       logActionEvent(
         action,
         "failed",
-        "deck",
+        "stream_deck_http",
         `${action.title} failed.`,
         {},
         error instanceof Error ? error.message : "Invalid DexNest action request."
@@ -10696,9 +12749,26 @@ function openToolsFile(filePath: string): { ok: boolean; error?: string } {
   return { ok: true };
 }
 
+function shouldStartHiddenToTray(): boolean {
+  const settings = loadAppLifecycleSettings();
+  return process.argv.includes("--hidden") || settings.minimizeToTrayOnStartup;
+}
+
+function syncAppLifecycleLoginItemStatus(): void {
+  const settings = loadAppLifecycleSettings();
+  const next = settings.startDexNestWithWindows ? applyLoginItemSettings(settings) : { ...settings, ...currentLoginItemStatus() };
+  writeJsonFile(appLifecycleSettingsPath, { ...next, updatedAt: settings.updatedAt });
+}
+
 function registerIpcHandlers(): void {
+  ipcMain.on("dexnest:renderer-ready", () => {
+    rendererReady = true;
+    flushPendingOpenView();
+  });
+
   ipcMain.handle("dexnest:get-app-info", () => {
     const commandSettings = loadCommandSettings();
+    const lifecycle = appLifecycleState();
     return {
     appName: "DexNest",
     dataRoot: localDataRoot,
@@ -10706,6 +12776,11 @@ function registerIpcHandlers(): void {
     actionEndpoint: `http://127.0.0.1:${actionPort}`,
     projectsConfigPath,
     commandSettingsPath,
+    keyboardShortcutsPath,
+    keyboardShortcutSettings: loadKeyboardShortcutSettings(),
+    keyboardShortcutConflicts: shortcutConflictDetails(),
+    streamDeckSettingsPath,
+    streamDeckSettings: { ...loadStreamDeckSettings(), token: loadStreamDeckSettings().token ? "set" : "" },
     commandShortcutEnabled: commandSettings.globalShortcutEnabled,
     commandShortcut: commandSettings.globalShortcut,
     commandShortcutStatus: commandSettings.globalShortcutStatus,
@@ -10754,6 +12829,14 @@ function registerIpcHandlers(): void {
     heatmapEventsPath,
     heatmapSettingsPath,
     heatmapGoalsPath,
+    externalDevicesSettingsPath,
+    externalDevicesCachePath,
+    externalDevicesState: externalDevicesState(),
+    performanceModeSettingsPath,
+    appLifecycleSettingsPath,
+    appLifecycleSettings: lifecycle,
+    performanceModeState: performanceModeState(),
+    performanceModeSettings: loadPerformanceModeSettings(),
     backupFolderPath: backupsRoot,
     restoreStagingPath: restoreStagingRoot,
     packageMode: app.isPackaged ? "packaged" : "development",
@@ -10765,9 +12848,20 @@ function registerIpcHandlers(): void {
     dropPhoneUrl: dropPhoneUrl(),
     lanIp: getLanIp(),
     projectCount: loadProjects().length,
-    performanceMode: commandSettings.performanceModePlaceholder ? "Enabled placeholder" : "Not enabled"
+    performanceMode: performanceModeState().enabled ? "Enabled" : "Not enabled"
     };
   });
+
+  ipcMain.handle("dexnest:get-performance-mode-state", () => performanceModeState());
+  ipcMain.handle("dexnest:get-performance-mode-settings", () => loadPerformanceModeSettings());
+  ipcMain.handle("dexnest:save-performance-mode-settings", (_event, input: Partial<PerformanceModeSettings>) => {
+    const settings = savePerformanceModeSettings(input ?? {});
+    createDexNestTray();
+    return { settings, state: performanceModeState() };
+  });
+  ipcMain.handle("dexnest:set-performance-mode-enabled", (_event, input: { enabled?: boolean; reason?: PerformanceModeReason }) =>
+    setPerformanceModeEnabled(Boolean(input?.enabled), input?.reason ?? "manual", "module_ui")
+  );
 
   ipcMain.handle("dexnest:list-actions", () => [...actionRegistry.list(), ...getProjectActionDefinitions()]);
 
@@ -10808,6 +12902,8 @@ function registerIpcHandlers(): void {
   ipcMain.handle("dexnest:get-routines-state", () => routinesState());
 
   ipcMain.handle("dexnest:get-backup-state", () => backupState());
+
+  ipcMain.handle("dexnest:get-external-devices-state", () => externalDevicesState());
 
   ipcMain.handle("dexnest:select-backup-zip", () => selectBackupZip());
 
@@ -10970,12 +13066,15 @@ function registerIpcHandlers(): void {
 }
 
 function createWindow(): void {
+  const startHidden = shouldStartHiddenToTray();
+  rendererReady = false;
   mainWindow = new BrowserWindow({
     width: 1180,
     height: 760,
     minWidth: 900,
     minHeight: 620,
     title: "DexNest",
+    show: !startHidden,
     webPreferences: {
       preload: join(currentDir, "preload.cjs"),
       contextIsolation: true,
@@ -10999,12 +13098,45 @@ function createWindow(): void {
     console.error("[DexNest renderer gone]", details);
   });
 
+  mainWindow.on("close", (event) => {
+    if (isQuittingDexNest) {
+      return;
+    }
+    event.preventDefault();
+    void handleWindowCloseRequest();
+  });
+
   mainWindow.on("closed", () => {
     mainWindow = null;
+    rendererReady = false;
+  });
+
+  if (startHidden) {
+    mainWindow.once("ready-to-show", () => {
+      trayModeActive = true;
+    });
+  }
+}
+
+if (gotSingleInstanceLock) {
+  app.on("second-instance", () => {
+    focusDexNestWindow("command", "system");
+    localDb.appendActionEvent({
+      module: "DexNest System",
+      actionId: "system.lifecycle.second_instance",
+      eventType: "second_instance_focused",
+      status: "success",
+      source: "system",
+      summary: "Focused the existing DexNest instance instead of opening a duplicate.",
+      metadataJson: {}
+    });
   });
 }
 
 app.whenReady().then(() => {
+  if (!gotSingleInstanceLock) {
+    return;
+  }
   localDb.initialize();
   ensureDropRoot();
   ensureToolsRoot();
@@ -11014,6 +13146,7 @@ app.whenReady().then(() => {
   ensureSearchRoot();
   ensureBackupRoot();
   registerIpcHandlers();
+  syncAppLifecycleLoginItemStatus();
   cleanupClipboardHistory(false, "system");
   startActionEndpoint();
   refreshNudges("system", false);
@@ -11022,8 +13155,12 @@ app.whenReady().then(() => {
   registerClipboardHotkey();
   scheduleActiveMultiCopyAutoClear();
   createWindow();
-  registerCommandShortcut();
-  createDexNestTray();
+    registerCommandShortcut();
+    registerKeyboardShortcuts();
+    createDexNestTray();
+  if (shouldStartHiddenToTray()) {
+    trayModeActive = true;
+  }
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -11039,10 +13176,12 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  isQuittingDexNest = true;
   stopHeatmapTimer();
   stopClipboardListener();
   unregisterClipboardHotkey();
   unregisterCommandShortcut();
+  unregisterKeyboardShortcuts();
   stopArmedMultiCopyPasteDetection();
   if (tray) {
     tray.destroy();

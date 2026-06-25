@@ -14,6 +14,7 @@ export type DexNestModuleId =
   | "finance"
   | "heatmap"
   | "backup"
+  | "external_devices"
   | "system"
   | "voice"
   | "assistant";
@@ -26,7 +27,16 @@ export type DexNestActionHandlerType =
   | "http_endpoint"
   | "file_operation"
   | "routine";
-export type DexNestActionTrigger = "command" | "deck" | "voice" | "routine" | "module_ui";
+export type DexNestActionTrigger =
+  | "command"
+  | "deck"
+  | "stream_deck_http"
+  | "keyboard_shortcut"
+  | "tray"
+  | "assistant"
+  | "voice"
+  | "routine"
+  | "module_ui";
 export type DexNestEventStatus = "success" | "failed" | "skipped" | "cancelled" | "pending";
 export type DexNestEventSource = DexNestActionTrigger | "system" | "phone_pwa";
 

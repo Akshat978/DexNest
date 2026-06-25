@@ -8,6 +8,7 @@ import "./styles.css";
 type ViewId = "command" | "dev" | "deck" | "clipboard" | "drop" | "tools" | "vault" | "search" | "capture" | "journal" | "calendar" | "finder" | "finance" | "heatmap" | "audit" | "settings";
 type ActionStatus = "success" | "failed" | "skipped" | "cancelled" | "pending";
 type ToastTone = "success" | "error";
+type AppCloseBehavior = "minimize_to_tray" | "ask" | "exit";
 
 interface ToastMessage {
   id: string;
@@ -22,6 +23,11 @@ interface AppInfo {
   actionEndpoint: string;
   projectsConfigPath: string;
   commandSettingsPath: string;
+  keyboardShortcutsPath: string;
+  keyboardShortcutSettings: KeyboardShortcutSettings;
+  keyboardShortcutConflicts: string[];
+  streamDeckSettingsPath: string;
+  streamDeckSettings: StreamDeckSettings;
   commandShortcutEnabled: boolean;
   commandShortcut: string;
   commandShortcutStatus: "active" | "disabled" | "failed";
@@ -70,6 +76,14 @@ interface AppInfo {
   heatmapEventsPath: string;
   heatmapSettingsPath: string;
   heatmapGoalsPath: string;
+  externalDevicesSettingsPath: string;
+  externalDevicesCachePath: string;
+  externalDevicesState: ExternalDevicesState;
+  performanceModeSettingsPath: string;
+  appLifecycleSettingsPath: string;
+  appLifecycleSettings: AppLifecycleSettings;
+  performanceModeState: PerformanceModeState;
+  performanceModeSettings: PerformanceModeSettings;
   backupFolderPath: string;
   restoreStagingPath: string;
   packageMode: string;
@@ -99,6 +113,45 @@ interface ActionDefinition {
   reversible: boolean;
   enabled: boolean;
   status: string;
+}
+
+interface ExternalDevicesSettings {
+  goveeEnabled: boolean;
+  goveeApiKeySecretId: string | null;
+  defaultDeviceAlias: string | null;
+  allowVoiceControl: boolean;
+  allowStreamDeckControl: boolean;
+  allowKeyboardShortcutControl: boolean;
+  requireConfirmationForPowerOff: boolean;
+  requireConfirmationForBrightnessBelow10: boolean;
+  requireConfirmationForScenes: boolean;
+  updatedAt: string | null;
+}
+
+interface ExternalDeviceCacheItem {
+  provider: "govee";
+  deviceId: string;
+  deviceName: string;
+  model: string;
+  controllable: boolean;
+  retrievable: boolean;
+  roomAlias: string;
+  userAlias: string;
+  lastSeen: string;
+  lastKnownPowerState?: "on" | "off" | "unknown";
+  lastKnownBrightness?: number | null;
+}
+
+interface ExternalDevicesState {
+  settingsPath: string;
+  cachePath: string;
+  settings: ExternalDevicesSettings;
+  secureVaultSetup: boolean;
+  secureVaultUnlocked: boolean;
+  apiKeyStored: boolean;
+  providerStatus: "disabled" | "ready" | "needs_secure_vault" | "locked" | "missing_api_key";
+  providerMessage: string;
+  devices: ExternalDeviceCacheItem[];
 }
 
 interface EventEntry {
@@ -471,6 +524,7 @@ type VoiceIntentName =
   | "journal_open_today"
   | "search_query"
   | "capture_note"
+  | "external_device_control"
   | "unknown";
 
 type VoiceConfidence = "high" | "medium" | "low";
@@ -513,6 +567,77 @@ interface AssistantSecurityState {
   secureVaultSetup: boolean;
 }
 
+interface AppLifecycleSettings {
+  closeBehavior: AppCloseBehavior;
+  showTrayCloseNotice: boolean;
+  minimizeToTrayOnStartup: boolean;
+  startDexNestWithWindows: boolean;
+  startMinimizedToTray: boolean;
+  loginItemStatus: "enabled" | "disabled" | "failed";
+  loginItemLastError: string | null;
+  updatedAt: string;
+  trayAvailable: boolean;
+  trayModeActive: boolean;
+}
+
+interface KeyboardShortcutMapping {
+  id: string;
+  label: string;
+  shortcut: string;
+  targetType: "action" | "routine";
+  actionId?: string;
+  routineId?: string;
+  enabled: boolean;
+  allowDangerous: boolean;
+  status: "active" | "disabled" | "failed" | "conflict" | "blocked";
+  lastError: string | null;
+}
+
+interface KeyboardShortcutSettings {
+  enabled: boolean;
+  mappings: KeyboardShortcutMapping[];
+  updatedAt: string;
+}
+
+interface StreamDeckSettings {
+  localOnly: boolean;
+  lanEnabled: boolean;
+  tokenEnabled: boolean;
+  token: string;
+  updatedAt: string;
+}
+
+type PerformanceModeReason = "manual" | "fullscreen" | "game-detected" | "scheduled" | "unknown";
+
+interface PerformanceModeSettings {
+  performanceModeEnabled: boolean;
+  pauseHeatmap: boolean;
+  pauseOcrJobs: boolean;
+  pauseSearchAutoIndex: boolean;
+  pauseBackups: boolean;
+  suppressNonUrgentNudges: boolean;
+  allowDropWhenOpen: boolean;
+  allowUserTriggeredAssistant: boolean;
+  autoEnableWhenFullscreen: boolean;
+  autoEnableWhenGameDetected: boolean;
+  showTrayStatus: boolean;
+}
+
+interface PerformanceModeState {
+  enabled: boolean;
+  reason: PerformanceModeReason;
+  enabledAt: string | null;
+  pausedWorkers: string[];
+  lastChangedAt: string;
+}
+
+interface SearchIndexStatus {
+  staleDueToPerformanceMode: boolean;
+  staleReason: string | null;
+  staleSince: string | null;
+  lastSkippedAutoIndexAt: string | null;
+}
+
 interface AssistantChatMessage {
   id: string;
   role: "user" | "assistant";
@@ -543,6 +668,8 @@ interface SearchState {
   savedSearches: SavedSearch[];
   indexPath: string;
   indexFolderPath: string;
+  indexStatusPath: string;
+  indexStatus: SearchIndexStatus;
   savedSearchesPath: string;
   resultCount: number;
   ocrTextFileCount: number;
@@ -978,8 +1105,13 @@ interface DexNestBridge {
   getHeatmapState: () => Promise<HeatmapState>;
   getRoutinesState: () => Promise<RoutinesState>;
   getBackupState: () => Promise<BackupState>;
+  getExternalDevicesState: () => Promise<ExternalDevicesState>;
   getAppHealth: () => Promise<AppHealthState>;
   getCommandStats: () => Promise<CommandStats>;
+  getPerformanceModeState: () => Promise<PerformanceModeState>;
+  getPerformanceModeSettings: () => Promise<PerformanceModeSettings>;
+  savePerformanceModeSettings: (payload: Partial<PerformanceModeSettings>) => Promise<{ settings: PerformanceModeSettings; state: PerformanceModeState }>;
+  setPerformanceModeEnabled: (payload: { enabled: boolean; reason?: PerformanceModeReason }) => Promise<{ settings: PerformanceModeSettings; state: PerformanceModeState }>;
   selectToolsFiles: (kind: "pdf" | "image" | "any") => Promise<ToolsSelectedFile[]>;
   selectVaultFiles: () => Promise<ToolsSelectedFile[]>;
   selectFinanceReceipt: () => Promise<ToolsSelectedFile[]>;
@@ -1034,7 +1166,10 @@ interface DexNestBridge {
     heatmapState?: HeatmapState;
     routinesState?: RoutinesState;
     backupState?: BackupState;
+    externalDevicesState?: ExternalDevicesState;
     health?: AppHealthState;
+    keyboardShortcutSettings?: KeyboardShortcutSettings;
+    streamDeckSettings?: StreamDeckSettings;
     preview?: BackupPreview;
     path?: string;
     fileName?: string;
@@ -1054,8 +1189,9 @@ interface DexNestBridge {
   }) => Promise<void>;
   logUiEvent: (payload: { view: string; target: string; summary: string }) => Promise<void>;
   selectBackupZip: () => Promise<string | null>;
+  rendererReady?: () => void;
   onClipboardHotkeyResult?: (callback: (payload: { message: string; tone: ToastTone }) => void) => () => void;
-  onOpenView?: (callback: (payload: { view: string }) => void) => () => void;
+  onOpenView?: (callback: (payload: { view: string; focusAssistant?: boolean }) => void) => () => void;
 }
 
 declare global {
@@ -1063,6 +1199,78 @@ declare global {
     dexNest?: DexNestBridge;
   }
 }
+
+const defaultPerformanceModeSettings: PerformanceModeSettings = {
+  performanceModeEnabled: false,
+  pauseHeatmap: true,
+  pauseOcrJobs: true,
+  pauseSearchAutoIndex: true,
+  pauseBackups: true,
+  suppressNonUrgentNudges: true,
+  allowDropWhenOpen: true,
+  allowUserTriggeredAssistant: true,
+  autoEnableWhenFullscreen: false,
+  autoEnableWhenGameDetected: false,
+  showTrayStatus: true
+};
+
+const defaultPerformanceModeState: PerformanceModeState = {
+  enabled: false,
+  reason: "unknown",
+  enabledAt: null,
+  pausedWorkers: [],
+  lastChangedAt: new Date().toISOString()
+};
+
+const defaultExternalDevicesState: ExternalDevicesState = {
+  settingsPath: "./local-data/settings/external-devices-settings.json",
+  cachePath: "./local-data/settings/external-devices-cache.json",
+  settings: {
+    goveeEnabled: false,
+    goveeApiKeySecretId: null,
+    defaultDeviceAlias: null,
+    allowVoiceControl: true,
+    allowStreamDeckControl: true,
+    allowKeyboardShortcutControl: true,
+    requireConfirmationForPowerOff: false,
+    requireConfirmationForBrightnessBelow10: false,
+    requireConfirmationForScenes: false,
+    updatedAt: null
+  },
+  secureVaultSetup: false,
+  secureVaultUnlocked: false,
+  apiKeyStored: false,
+  providerStatus: "disabled",
+  providerMessage: "Govee provider is disabled.",
+  devices: []
+};
+
+const defaultAppLifecycleSettings: AppLifecycleSettings = {
+  closeBehavior: "ask",
+  showTrayCloseNotice: true,
+  minimizeToTrayOnStartup: false,
+  startDexNestWithWindows: false,
+  startMinimizedToTray: true,
+  loginItemStatus: "disabled",
+  loginItemLastError: null,
+  updatedAt: new Date().toISOString(),
+  trayAvailable: false,
+  trayModeActive: false
+};
+
+const defaultKeyboardShortcutSettings: KeyboardShortcutSettings = {
+  enabled: true,
+  updatedAt: new Date().toISOString(),
+  mappings: []
+};
+
+const defaultStreamDeckSettings: StreamDeckSettings = {
+  localOnly: true,
+  lanEnabled: false,
+  tokenEnabled: false,
+  token: "",
+  updatedAt: new Date().toISOString()
+};
 
 const fallbackBridge: DexNestBridge = {
   getAppInfo: async () => ({
@@ -1072,6 +1280,11 @@ const fallbackBridge: DexNestBridge = {
     actionEndpoint: "http://127.0.0.1:43217",
     projectsConfigPath: "./local-data/settings/projects.json",
     commandSettingsPath: "./local-data/settings/command-settings.json",
+    keyboardShortcutsPath: "./local-data/settings/keyboard-shortcuts.json",
+    keyboardShortcutSettings: defaultKeyboardShortcutSettings,
+    keyboardShortcutConflicts: [],
+    streamDeckSettingsPath: "./local-data/settings/stream-deck-settings.json",
+    streamDeckSettings: defaultStreamDeckSettings,
     commandShortcutEnabled: true,
     commandShortcut: "CommandOrControl+Space",
     commandShortcutStatus: "disabled",
@@ -1122,6 +1335,14 @@ const fallbackBridge: DexNestBridge = {
     heatmapEventsPath: "./local-data/settings/heatmap-events.json",
     heatmapSettingsPath: "./local-data/settings/heatmap-settings.json",
     heatmapGoalsPath: "./local-data/settings/heatmap-goals.json",
+    externalDevicesSettingsPath: "./local-data/settings/external-devices-settings.json",
+    externalDevicesCachePath: "./local-data/settings/external-devices-cache.json",
+    externalDevicesState: defaultExternalDevicesState,
+    performanceModeSettingsPath: "./local-data/settings/performance-mode-settings.json",
+    appLifecycleSettingsPath: "./local-data/settings/app-lifecycle-settings.json",
+    appLifecycleSettings: defaultAppLifecycleSettings,
+    performanceModeState: defaultPerformanceModeState,
+    performanceModeSettings: defaultPerformanceModeSettings,
     backupFolderPath: "./local-data/backups",
     restoreStagingPath: "./local-data/backups/restore-staging",
     packageMode: "development",
@@ -1246,6 +1467,8 @@ const fallbackBridge: DexNestBridge = {
     savedSearches: [],
     indexPath: "./local-data/index/search-index.json",
     indexFolderPath: "./local-data/index",
+    indexStatusPath: "./local-data/settings/search-index-status.json",
+    indexStatus: { staleDueToPerformanceMode: false, staleReason: null, staleSince: null, lastSkippedAutoIndexAt: null },
     savedSearchesPath: "./local-data/settings/saved-searches.json",
     resultCount: 0,
     ocrTextFileCount: 0,
@@ -1356,6 +1579,7 @@ const fallbackBridge: DexNestBridge = {
     },
     backups: []
   }),
+  getExternalDevicesState: async () => defaultExternalDevicesState,
   getAppHealth: async () => ({
     overallStatus: "warn",
     checkedAt: new Date().toISOString(),
@@ -1377,6 +1601,16 @@ const fallbackBridge: DexNestBridge = {
     ]
   }),
   getCommandStats: async () => emptyCommandStats,
+  getPerformanceModeState: async () => defaultPerformanceModeState,
+  getPerformanceModeSettings: async () => defaultPerformanceModeSettings,
+  savePerformanceModeSettings: async (payload) => ({
+    settings: { ...defaultPerformanceModeSettings, ...payload },
+    state: { ...defaultPerformanceModeState, enabled: Boolean(payload.performanceModeEnabled), pausedWorkers: Boolean(payload.performanceModeEnabled) ? ["bridge_unavailable"] : [] }
+  }),
+  setPerformanceModeEnabled: async (payload) => ({
+    settings: { ...defaultPerformanceModeSettings, performanceModeEnabled: payload.enabled },
+    state: { ...defaultPerformanceModeState, enabled: payload.enabled, reason: payload.reason ?? "manual", pausedWorkers: payload.enabled ? ["bridge_unavailable"] : [] }
+  }),
   selectBackupZip: async () => null,
   selectToolsFiles: async () => [],
   selectVaultFiles: async () => [],
@@ -1411,7 +1645,8 @@ const fallbackBridge: DexNestBridge = {
   listEvents: async () => [],
   runAction: async () => ({ ok: true }),
   logActionResult: async () => undefined,
-  logUiEvent: async () => undefined
+  logUiEvent: async () => undefined,
+  rendererReady: () => undefined
 };
 
 function getBridge(): DexNestBridge {
@@ -1584,6 +1819,50 @@ function findDevRunAction(input: string, actions: ActionDefinition[]): ActionDef
   return candidates.find((action) => /dexnest|desknest/i.test(action.title)) ?? candidates[0];
 }
 
+function externalDeviceRouteFromText(text: string, actions: ActionDefinition[]): VoiceRouteResult | null {
+  if (!/\b(light|lights|lamp|lamps|govee|device|devices)\b/i.test(text)) {
+    return null;
+  }
+  const normalized = normalizeVoiceCommand(text);
+  const hasAction = (actionId: string) => actions.some((action) => action.id === actionId);
+  let actionId = "";
+  const params: Record<string, unknown> = {};
+  if (/\b(turn|switch)\s+on\b/i.test(normalized)) {
+    actionId = "external.govee.turn_on";
+  } else if (/\b(turn|switch)\s+off\b/i.test(normalized)) {
+    actionId = "external.govee.turn_off";
+  } else if (/\btoggle\b/i.test(normalized)) {
+    actionId = "external.govee.toggle";
+  } else if (/\b(dim|brightness|percent|%)\b/i.test(normalized)) {
+    actionId = "external.govee.set_brightness";
+    const percent = normalized.match(/\b(\d{1,3})\s*(?:percent|%)?\b/);
+    params.brightness = percent ? Number(percent[1]) : /\bdim\b/i.test(normalized) ? 25 : 60;
+  } else if (/\b(warm|temperature|kelvin|cool white|white)\b/i.test(normalized)) {
+    actionId = "external.govee.set_color_temperature";
+    params.kelvin = /\bwarm\b/i.test(normalized) ? 2700 : 5000;
+  } else if (/\b(blue|red|green|purple|pink|yellow|orange)\b/i.test(normalized)) {
+    actionId = "external.govee.set_color";
+    params.color = normalized.match(/\b(blue|red|green|purple|pink|yellow|orange)\b/i)?.[1].toLowerCase() ?? "blue";
+  }
+  if (!actionId || !hasAction(actionId)) {
+    return null;
+  }
+  const aliasMatch = normalized.match(/\b(?:turn|switch|toggle|set|make|dim|brighten)\s+(?:the\s+)?(.+?)(?:\s+(?:on|off|to|blue|red|green|purple|pink|yellow|orange|warm|cool|white|\d|percent|%|brightness)|$)/i);
+  const alias = aliasMatch?.[1]?.replace(/\b(govee|device|devices)\b/gi, "").trim() || "room lights";
+  params.alias = alias || "room lights";
+  params.confirmedDangerous = true;
+  return {
+    intent: "external_device_control",
+    targetModule: "external_devices",
+    actionId,
+    params,
+    confidence: "high",
+    requiresConfirmation: false,
+    sensitivity: "none",
+    explanation: "Routes to the registered DexNest External Devices Govee action."
+  };
+}
+
 function routeVoiceCommand(input: string, actions: ActionDefinition[]): VoiceRouteResult {
   const trimmed = input.trim();
   const normalized = normalizeVoiceCommand(trimmed);
@@ -1613,6 +1892,11 @@ function routeVoiceCommand(input: string, actions: ActionDefinition[]): VoiceRou
       sensitivity: sensitiveQuestion ? "sensitive" : "personal",
       explanation: "Routes to local Smart Lookup using the existing Search index. Sensitive answers stay masked."
     };
+  }
+
+  const externalRoute = externalDeviceRouteFromText(trimmed, actions);
+  if (externalRoute) {
+    return externalRoute;
   }
 
   if (/\b(add|create|schedule|remind me|meeting|appointment|call|birthday)\b/i.test(trimmed) && /\b(today|tomorrow|in\s+\d{1,3}\s+days?|next\s+\w+|at\s+\d{1,2}|birthday|meeting|appointment|call)\b/i.test(trimmed)) {
@@ -1816,6 +2100,8 @@ function buildRouteForIntent(intent: VoiceIntentName, text: string, actions: Act
         sensitivity: "personal",
         explanation: "Sends the current Windows clipboard to DexNest Drop for phone pickup."
       };
+    case "external_device_control":
+      return externalDeviceRouteFromText(trimmed, actions);
     case "dev_run_command": {
       const devRunAction = findDevRunAction(trimmed, actions);
       if (!devRunAction) {
@@ -1890,7 +2176,7 @@ function validateLlmIntent(raw: Record<string, unknown> | undefined, text: strin
     return null;
   }
   const intentValue = typeof raw.intent === "string" ? raw.intent : "unknown";
-  const allowed: VoiceIntentName[] = ["smart_lookup", "search_query", "finder_search", "calendar_create_candidate", "drop_send_clipboard", "open_module", "dev_run_command", "journal_open_today", "capture_note", "unknown"];
+  const allowed: VoiceIntentName[] = ["smart_lookup", "search_query", "finder_search", "calendar_create_candidate", "drop_send_clipboard", "open_module", "dev_run_command", "journal_open_today", "capture_note", "external_device_control", "unknown"];
   if (!allowed.includes(intentValue as VoiceIntentName) || intentValue === "unknown") {
     return null;
   }
@@ -1942,6 +2228,8 @@ function assistantPendingText(route: VoiceRouteResult): string {
       return "I found an event candidate. Review and add it to your Calendar?";
     case "capture_note":
       return "Save this note to your DexNest Capture inbox?";
+    case "external_device_control":
+      return "Run this External Devices action?";
     default:
       return "Ready to run. Confirm?";
   }
@@ -1969,6 +2257,8 @@ function assistantSuccessText(route: VoiceRouteResult, resultCount: number): str
       return `Opened DexNest ${route.targetModule}.`;
     case "capture_note":
       return "Saved to your Capture inbox.";
+    case "external_device_control":
+      return "External Devices action completed.";
     default:
       return "Done.";
   }
@@ -2132,6 +2422,8 @@ function DexNestApp() {
     savedSearches: [],
     indexPath: "",
     indexFolderPath: "",
+    indexStatusPath: "",
+    indexStatus: { staleDueToPerformanceMode: false, staleReason: null, staleSince: null, lastSkippedAutoIndexAt: null },
     savedSearchesPath: "",
     resultCount: 0,
     ocrTextFileCount: 0,
@@ -2247,6 +2539,8 @@ function DexNestApp() {
   });
   const [commandStats, setCommandStats] = useState<CommandStats>(emptyCommandStats);
   const [events, setEvents] = useState<EventEntry[]>([]);
+  const [performanceModeState, setPerformanceModeState] = useState<PerformanceModeState>(defaultPerformanceModeState);
+  const [performanceModeSettings, setPerformanceModeSettings] = useState<PerformanceModeSettings>(defaultPerformanceModeSettings);
   const [assistantSettings, setAssistantSettings] = useState<AssistantSettings>({
     localIntentEngineEnabled: false,
     ollamaUrl: "http://127.0.0.1:11434",
@@ -2308,8 +2602,13 @@ function DexNestApp() {
         return;
       }
       setActiveView(view);
+      if (payload.focusAssistant) {
+        setAssistantFocusSignal((value) => value + 1);
+        void refreshAssistantSecurity();
+      }
       void refreshShellData();
     });
+    getBridge().rendererReady?.();
 
     return () => {
       unsubscribe?.();
@@ -2317,7 +2616,7 @@ function DexNestApp() {
   }, []);
 
   async function refreshShellData(): Promise<void> {
-    const [info, nextActions, nextProjects, nextCommandResults, nextPinnedActionIds, nextClipboardState, nextDropState, nextToolsState, nextVaultState, nextSearchState, nextJournalState, nextCalendarState, nextFinderState, nextFinanceState, nextCaptureState, nextHeatmapState, nextRoutinesState, nextBackupState, nextCommandStats, nextEvents] = await Promise.all([
+    const [info, nextActions, nextProjects, nextCommandResults, nextPinnedActionIds, nextClipboardState, nextDropState, nextToolsState, nextVaultState, nextSearchState, nextJournalState, nextCalendarState, nextFinderState, nextFinanceState, nextCaptureState, nextHeatmapState, nextRoutinesState, nextBackupState, nextPerformanceState, nextPerformanceSettings, nextCommandStats, nextEvents] = await Promise.all([
       getBridge().getAppInfo(),
       getBridge().listActions(),
       getBridge().listProjects(),
@@ -2336,6 +2635,8 @@ function DexNestApp() {
       getBridge().getHeatmapState(),
       getBridge().getRoutinesState(),
       getBridge().getBackupState(),
+      getBridge().getPerformanceModeState(),
+      getBridge().getPerformanceModeSettings(),
       getBridge().getCommandStats(),
       getBridge().listEvents()
     ]);
@@ -2358,6 +2659,8 @@ function DexNestApp() {
     setHeatmapState(nextHeatmapState);
     setRoutinesState(nextRoutinesState);
     setBackupState(nextBackupState);
+    setPerformanceModeState(nextPerformanceState);
+    setPerformanceModeSettings(nextPerformanceSettings);
     setCommandStats(nextCommandStats);
     setEvents(nextEvents);
   }
@@ -2368,7 +2671,7 @@ function DexNestApp() {
   }
 
   async function refreshProjectsAndActions(): Promise<void> {
-    const [info, nextActions, nextProjects, nextCommandResults, nextPinnedActionIds, nextClipboardState, nextDropState, nextToolsState, nextVaultState, nextSearchState, nextJournalState, nextCalendarState, nextFinderState, nextFinanceState, nextCaptureState, nextHeatmapState, nextRoutinesState, nextCommandStats, nextEvents] = await Promise.all([
+    const [info, nextActions, nextProjects, nextCommandResults, nextPinnedActionIds, nextClipboardState, nextDropState, nextToolsState, nextVaultState, nextSearchState, nextJournalState, nextCalendarState, nextFinderState, nextFinanceState, nextCaptureState, nextHeatmapState, nextRoutinesState, nextPerformanceState, nextPerformanceSettings, nextCommandStats, nextEvents] = await Promise.all([
       getBridge().getAppInfo(),
       getBridge().listActions(),
       getBridge().listProjects(),
@@ -2386,6 +2689,8 @@ function DexNestApp() {
       getBridge().getCaptureState(),
       getBridge().getHeatmapState(),
       getBridge().getRoutinesState(),
+      getBridge().getPerformanceModeState(),
+      getBridge().getPerformanceModeSettings(),
       getBridge().getCommandStats(),
       getBridge().listEvents()
     ]);
@@ -2407,6 +2712,8 @@ function DexNestApp() {
     setCaptureState(nextCaptureState);
     setHeatmapState(nextHeatmapState);
     setRoutinesState(nextRoutinesState);
+    setPerformanceModeState(nextPerformanceState);
+    setPerformanceModeSettings(nextPerformanceSettings);
     setCommandStats(nextCommandStats);
     setEvents(nextEvents);
   }
@@ -2524,8 +2831,14 @@ function DexNestApp() {
               calendarState={calendarState}
               commandStats={commandStats}
               events={events}
+              performanceModeState={performanceModeState}
+              performanceModeSettings={performanceModeSettings}
               onOpenAssistant={openAssistantFromCommand}
               onAction={runUiAction}
+              onPerformanceToggle={async (enabled) => {
+                await getBridge().setPerformanceModeEnabled({ enabled, reason: "manual" });
+                await refreshShellData();
+              }}
               onPinnedActionsChange={savePinnedActionIds}
             />
           )}
@@ -2542,6 +2855,8 @@ function DexNestApp() {
               actions={actions}
               projects={projects}
               routinesState={routinesState}
+              pinnedActionIds={pinnedActionIds}
+              appInfo={appInfo}
               endpoint={appInfo?.actionEndpoint}
               onAction={runAction}
               onRefresh={refreshShellData}
@@ -2639,7 +2954,18 @@ function DexNestApp() {
               appInfo={appInfo}
               backupState={backupState}
               calendarState={calendarState}
+              performanceModeState={performanceModeState}
+              performanceModeSettings={performanceModeSettings}
               onAction={runUiAction}
+              onPerformanceChanged={async (settings, enabled) => {
+                if (settings) {
+                  await getBridge().savePerformanceModeSettings(settings);
+                }
+                if (typeof enabled === "boolean") {
+                  await getBridge().setPerformanceModeEnabled({ enabled, reason: "manual" });
+                }
+                await refreshShellData();
+              }}
               onRefresh={refreshShellData}
             />
           )}
@@ -2820,7 +3146,10 @@ function AskDexNest({
       let route = ruleRoute;
       let routerUsed: AssistantRouterUsed = "rules";
 
+      // Obvious light commands should hit the registered Govee action directly;
+      // Ollama is only useful when DexNest cannot classify the phrasing.
       const engineEligible = assistantSettings.localIntentEngineEnabled
+        && ruleRoute.intent !== "external_device_control"
         && (ruleRoute.intent === "unknown" || ruleRoute.confidence !== "high");
       if (engineEligible) {
         const llm = await getBridge().assistantLlmIntent({ query: text });
@@ -2830,6 +3159,14 @@ function AskDexNest({
             route = validated;
             routerUsed = "local-llm";
           }
+        } else if ((llm.error ?? "").includes("Performance Mode")) {
+          appendAssistantMessage({
+            id: createClientId("assistant-reply"),
+            role: "assistant",
+            text: llm.error ?? "Assistant local LLM paused by Performance Mode.",
+            resolved: "info"
+          });
+          return;
         }
       }
 
@@ -3251,8 +3588,11 @@ function CommandView({
   calendarState,
   commandStats,
   events,
+  performanceModeState,
+  performanceModeSettings,
   onOpenAssistant,
   onAction,
+  onPerformanceToggle,
   onPinnedActionsChange
 }: {
   appInfo: AppInfo | null;
@@ -3262,8 +3602,11 @@ function CommandView({
   calendarState: CalendarState;
   commandStats: CommandStats;
   events: EventEntry[];
+  performanceModeState: PerformanceModeState;
+  performanceModeSettings: PerformanceModeSettings;
   onOpenAssistant: () => void;
   onAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>;
+  onPerformanceToggle: (enabled: boolean) => Promise<void>;
   onPinnedActionsChange: (actionIds: string[]) => Promise<void>;
 }) {
   const [moduleFilter, setModuleFilter] = useState("all");
@@ -3271,6 +3614,7 @@ function CommandView({
   const [paletteQuery, setPaletteQuery] = useState("");
   const [paletteIndex, setPaletteIndex] = useState(0);
   const [paletteMessage, setPaletteMessage] = useState("");
+  const [performanceBusy, setPerformanceBusy] = useState(false);
   const modules = [...new Set(actions.map((action) => action.module).filter(Boolean))].sort();
   const pinnedActions = pinnedActionIds
     .map((actionId) => actions.find((action) => action.id === actionId))
@@ -3385,6 +3729,15 @@ function CommandView({
     await onPinnedActionsChange(nextPinnedActionIds);
   }
 
+  async function toggleCommandPerformanceMode(): Promise<void> {
+    setPerformanceBusy(true);
+    try {
+      await onPerformanceToggle(!performanceModeState.enabled);
+    } finally {
+      setPerformanceBusy(false);
+    }
+  }
+
   const statCards = [
     ["Journal week", commandStats.journalEntriesThisWeek],
     ["Calendar upcoming", commandStats.calendarUpcoming],
@@ -3409,6 +3762,33 @@ function CommandView({
   return (
     <section className="view-stack" aria-labelledby="command-title">
       <PageHeader eyebrow="Offline-first spine" title="Command Home" titleId="command-title" />
+
+      <Panel title="Performance Mode">
+        <div className="performance-card">
+          <div>
+            <div className="status-row">
+              <StatusBadge tone={performanceModeState.enabled ? "warning" : "success"}>
+                {performanceModeState.enabled ? "ON" : "OFF"}
+              </StatusBadge>
+              <StatusBadge tone="info">Gaming Mode</StatusBadge>
+            </div>
+            <p>{performanceModeState.enabled ? `Reason: ${performanceModeState.reason}` : "Heavy DexNest workers are available when you start them."}</p>
+            <p className="technical">
+              {performanceModeState.pausedWorkers.length ? `Paused: ${performanceModeState.pausedWorkers.join(", ")}` : "No workers paused."}
+            </p>
+            {performanceModeSettings.autoEnableWhenFullscreen && <p>Fullscreen auto-enable is a safe placeholder for later.</p>}
+          </div>
+          <button
+            type="button"
+            className={performanceBusy ? "is-busy" : undefined}
+            disabled={performanceBusy}
+            onClick={() => void toggleCommandPerformanceMode()}
+          >
+            {performanceBusy && <Spinner size="sm" />}
+            {performanceBusy ? "Updating..." : performanceModeState.enabled ? "Turn off" : "Turn on"}
+          </button>
+        </div>
+      </Panel>
 
       <Panel title="Command Palette">
         <div className="command-palette">
@@ -8278,6 +8658,9 @@ function SearchView({
     .slice(0, 6);
 
   async function rebuildIndex(): Promise<void> {
+    if (!window.confirm("Rebuild the local DexNest Search index now? This is user-triggered and allowed during Performance Mode.")) {
+      return;
+    }
     setStatus("Rebuilding index...");
     const result = await onAction("search.rebuild_index", "module_ui", currentParams);
     if (result.ok) {
@@ -8603,6 +8986,12 @@ function SearchView({
           <div className="action-list action-list--compact">
             <p>{searchState.index.length} indexed records. Manual rebuild only. Secure Vault contents are skipped.</p>
             <p>{searchState.ocrTextFileCount} OCR-backed records indexed.</p>
+            {searchState.indexStatus.staleDueToPerformanceMode && (
+              <p>
+                <StatusBadge tone="warning">stale</StatusBadge>{" "}
+                Auto-index was skipped by Performance Mode{searchState.indexStatus.staleSince ? ` since ${formatLocalDateTime(searchState.indexStatus.staleSince)}` : ""}. Rebuild manually when ready.
+              </p>
+            )}
             <p><PathText>{searchState.indexPath}</PathText></p>
             <div className="button-row">
               <button type="button" onClick={() => void openIndexFolder()}>Open index folder</button>
@@ -8699,6 +9088,8 @@ function DeckView({
   actions,
   projects,
   routinesState,
+  pinnedActionIds,
+  appInfo,
   endpoint,
   onAction,
   onRefresh,
@@ -8707,6 +9098,8 @@ function DeckView({
   actions: ActionDefinition[];
   projects: DexNestProject[];
   routinesState: RoutinesState;
+  pinnedActionIds: string[];
+  appInfo: AppInfo | null;
   endpoint?: string;
   onAction: (actionId: string, source?: string, params?: unknown) => Promise<{
     ok: boolean;
@@ -8719,11 +9112,14 @@ function DeckView({
   const projectActions = actions.filter((action) => action.id.startsWith("dev.project."));
   const [endpointStatuses, setEndpointStatuses] = useState<Record<string, string>>({});
   const [visibleEndpoints, setVisibleEndpoints] = useState<Record<string, boolean>>({});
+  const [lastResponse, setLastResponse] = useState("");
   const [deckToasts, setDeckToasts] = useState<ToastMessage[]>([]);
   const [actionSearch, setActionSearch] = useState("");
   const [moduleFilter, setModuleFilter] = useState("all");
   const [dangerFilter, setDangerFilter] = useState("all");
   const [projectFilter, setProjectFilter] = useState("all");
+  const [pinnedOnly, setPinnedOnly] = useState(false);
+  const [routineOnly, setRoutineOnly] = useState(false);
   const [routineStatus, setRoutineStatus] = useState("");
   const [routineForm, setRoutineForm] = useState<{
     id?: string;
@@ -8753,8 +9149,10 @@ function DeckView({
     const matchesModule = moduleFilter === "all" || action.module === moduleFilter;
     const matchesDanger = dangerFilter === "all" || action.dangerLevel === dangerFilter;
     const matchesProject = projectFilter === "all" || projectMatch?.[1] === projectFilter;
-    return matchesSearch && matchesModule && matchesDanger && matchesProject;
-  }).sort((a, b) => a.id.localeCompare(b.id)), [actions, actionSearchTerm, dangerFilter, moduleFilter, projectFilter]);
+    const matchesPinned = !pinnedOnly || pinnedActionIds.includes(action.id);
+    const matchesRoutine = !routineOnly || action.id.startsWith("deck.routine.");
+    return matchesSearch && matchesModule && matchesDanger && matchesProject && matchesPinned && matchesRoutine;
+  }).sort((a, b) => a.id.localeCompare(b.id)), [actions, actionSearchTerm, dangerFilter, moduleFilter, pinnedActionIds, pinnedOnly, projectFilter, routineOnly]);
   const projectActionGroups = useMemo(() => projects.map((project) => ({
     project,
     actions: filteredActions.filter((action) => action.id.startsWith(`dev.project.${project.id}.`))
@@ -8781,6 +9179,32 @@ function DeckView({
 
   function endpointForAction(actionId: string): string {
     return `${endpoint ?? "http://127.0.0.1:43217"}/actions/${actionId}`;
+  }
+
+  function controlEndpoint(path: string): string {
+    return `${endpoint ?? "http://127.0.0.1:43217"}${path}`;
+  }
+
+  async function copyText(value: string, message = "Copied."): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(value);
+      showDeckToast(message, "success");
+    } catch {
+      showDeckToast("Copy failed.", "error");
+    }
+  }
+
+  async function testControlEndpoint(path: string, init?: RequestInit): Promise<void> {
+    try {
+      const response = await fetch(controlEndpoint(path), init);
+      const text = await response.text();
+      setLastResponse(`${response.status} ${text.slice(0, 600)}`);
+      showDeckToast(response.ok ? "Endpoint responded." : "Endpoint failed.", response.ok ? "success" : "error");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Endpoint failed.";
+      setLastResponse(message);
+      showDeckToast(message, "error");
+    }
   }
 
   async function runEndpointAction(actionId: string): Promise<void> {
@@ -8814,6 +9238,7 @@ function DeckView({
         setEndpointStatuses((current) => ({ ...current, [actionId]: `Failed: HTTP ${response.status}` }));
         showDeckToast(`${action?.title ?? actionId} failed.`, "error");
       } else {
+        setLastResponse(await response.clone().text().catch(() => "Action completed."));
         setEndpointStatuses((current) => ({ ...current, [actionId]: "Success" }));
         showDeckToast(`${action?.title ?? actionId} ran successfully.`, "success");
       }
@@ -9009,15 +9434,40 @@ function DeckView({
 
       <div className="deck-top-grid">
         <Panel title="Deck endpoint">
-          <div className="deck-endpoint-strip">
-            <PathText>{endpoint ? `${endpoint}/actions/deck.test_endpoint` : "Loading endpoint"}</PathText>
-            <button type="button" onClick={() => void runEndpointAction("deck.test_endpoint")}>
-              Run test action
-            </button>
+          <div className="settings-grid">
+            <article><span>Status</span><strong>{endpoint ? "running" : "loading"}</strong><p>Stream Deck control layer.</p></article>
+            <article><span>Security</span><strong>{appInfo?.streamDeckSettings.lanEnabled ? "LAN enabled" : "local only"}</strong><p>PIN/token {appInfo?.streamDeckSettings.tokenEnabled ? "enabled" : "disabled"}.</p></article>
+            <article><span>Base URL</span><strong className="technical">{endpoint ?? "Loading"}</strong><p>Use localhost by default.</p></article>
           </div>
+          <div className="deck-endpoint-strip">
+            <PathText>{endpoint ? `${endpoint}/health` : "Loading endpoint"}</PathText>
+            <button type="button" onClick={() => void testControlEndpoint("/health")}>Test /health</button>
+            <button type="button" onClick={() => void copyText(controlEndpoint("/actions"), "Actions endpoint copied.")}>Copy /actions</button>
+            <button type="button" onClick={() => void copyText(controlEndpoint("/actions/pinned"), "Pinned endpoint copied.")}>Copy pinned</button>
+            <button type="button" onClick={() => void copyText(controlEndpoint("/routines"), "Routines endpoint copied.")}>Copy routines</button>
+            <button type="button" onClick={() => void runEndpointAction("deck.test_endpoint")}>Run test action</button>
+          </div>
+          {lastResponse && <p className="technical technical--truncate">Last response: {lastResponse}</p>}
         </Panel>
         <Panel title="Pinned Deck Buttons">
-          <EmptyState>Pinned Stream Deck-style buttons will live here.</EmptyState>
+          <div className="deck-mini-list">
+            {pinnedActionIds.length === 0 ? (
+              <EmptyState>No pinned actions yet.</EmptyState>
+            ) : (
+              pinnedActionIds.map((actionId) => {
+                const action = actions.find((item) => item.id === actionId);
+                if (!action) return null;
+                return (
+                  <article className={`deck-step-row accent-${action.moduleId}`} key={action.id}>
+                    <strong>{action.title}</strong>
+                    <PathText>{action.id}</PathText>
+                    <StatusBadge tone={dangerTone(action)}>{action.dangerLevel}</StatusBadge>
+                    <button type="button" onClick={() => void runEndpointAction(action.id)}>Run</button>
+                  </article>
+                );
+              })
+            )}
+          </div>
         </Panel>
       </div>
 
@@ -9156,6 +9606,14 @@ function DeckView({
               {projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}
             </select>
           </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={pinnedOnly} onChange={(event) => setPinnedOnly(event.target.checked)} />
+            <span>Pinned only</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={routineOnly} onChange={(event) => setRoutineOnly(event.target.checked)} />
+            <span>Routine actions only</span>
+          </label>
         </div>
         <div className="deck-panel-scroll">
           {browserActions.length === 0 ? (
@@ -9265,13 +9723,19 @@ function SettingsView({
   appInfo,
   backupState,
   calendarState,
+  performanceModeState,
+  performanceModeSettings,
   onAction,
+  onPerformanceChanged,
   onRefresh
 }: {
   appInfo: AppInfo | null;
   backupState: BackupState;
   calendarState: CalendarState;
+  performanceModeState: PerformanceModeState;
+  performanceModeSettings: PerformanceModeSettings;
   onAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>;
+  onPerformanceChanged: (settings?: Partial<PerformanceModeSettings>, enabled?: boolean) => Promise<void>;
   onRefresh: () => Promise<void>;
 }) {
   const [backupOptions, setBackupOptions] = useState<BackupOptions>(backupState.defaultOptions);
@@ -9280,6 +9744,20 @@ function SettingsView({
   const [backupMessage, setBackupMessage] = useState("");
   const [healthState, setHealthState] = useState<AppHealthState | null>(null);
   const [healthStatus, setHealthStatus] = useState("");
+  const [performanceForm, setPerformanceForm] = useState<PerformanceModeSettings>(performanceModeSettings);
+  const [performanceBusy, setPerformanceBusy] = useState(false);
+  const [performanceSaving, setPerformanceSaving] = useState(false);
+  const [lifecycleForm, setLifecycleForm] = useState<AppLifecycleSettings>(appInfo?.appLifecycleSettings ?? defaultAppLifecycleSettings);
+  const [lifecycleSaving, setLifecycleSaving] = useState(false);
+  const [lifecycleBusy, setLifecycleBusy] = useState(false);
+  const [keyboardForm, setKeyboardForm] = useState<KeyboardShortcutSettings>(appInfo?.keyboardShortcutSettings ?? defaultKeyboardShortcutSettings);
+  const [streamDeckForm, setStreamDeckForm] = useState<StreamDeckSettings>(appInfo?.streamDeckSettings ?? defaultStreamDeckSettings);
+  const [controlsSaving, setControlsSaving] = useState(false);
+  const [externalState, setExternalState] = useState<ExternalDevicesState>(appInfo?.externalDevicesState ?? defaultExternalDevicesState);
+  const [externalForm, setExternalForm] = useState<ExternalDevicesSettings>(appInfo?.externalDevicesState.settings ?? defaultExternalDevicesState.settings);
+  const [goveeApiKeyInput, setGoveeApiKeyInput] = useState("");
+  const [externalStatus, setExternalStatus] = useState("");
+  const [externalBusy, setExternalBusy] = useState(false);
   const [nudgeSettingsForm, setNudgeSettingsForm] = useState({
     enabled: calendarState.nudgeSettings.enabled,
     vaultExpiryReminderDays: calendarState.nudgeSettings.vaultExpiryReminderDays.join(", "),
@@ -9291,6 +9769,29 @@ function SettingsView({
   useEffect(() => {
     setBackupOptions(backupState.defaultOptions);
   }, [backupState.defaultOptions]);
+
+  useEffect(() => {
+    setPerformanceForm(performanceModeSettings);
+  }, [performanceModeSettings]);
+
+  useEffect(() => {
+    if (appInfo?.appLifecycleSettings) {
+      setLifecycleForm(appInfo.appLifecycleSettings);
+    }
+  }, [appInfo?.appLifecycleSettings]);
+
+  useEffect(() => {
+    if (appInfo?.keyboardShortcutSettings) {
+      setKeyboardForm(appInfo.keyboardShortcutSettings);
+    }
+    if (appInfo?.streamDeckSettings) {
+      setStreamDeckForm(appInfo.streamDeckSettings);
+    }
+    if (appInfo?.externalDevicesState) {
+      setExternalState(appInfo.externalDevicesState);
+      setExternalForm(appInfo.externalDevicesState.settings);
+    }
+  }, [appInfo?.keyboardShortcutSettings, appInfo?.streamDeckSettings, appInfo?.externalDevicesState]);
 
   useEffect(() => {
     setNudgeSettingsForm({
@@ -9311,9 +9812,17 @@ function SettingsView({
     ["Database", appInfo?.dbPath ?? "Loading"],
     ["Local endpoint", appInfo?.actionEndpoint ?? "Loading"],
     ["Command settings", appInfo?.commandSettingsPath ?? "Loading"],
+    ["Keyboard shortcuts", appInfo?.keyboardShortcutsPath ?? "Loading"],
+    ["Stream Deck settings", appInfo?.streamDeckSettingsPath ?? "Loading"],
     ["Global Command shortcut", appInfo ? `${appInfo.commandShortcutEnabled ? "enabled" : "disabled"} / ${appInfo.commandShortcut}` : "Loading"],
     ["Command shortcut status", appInfo ? `${appInfo.commandShortcutStatus}${appInfo.commandShortcutLastError ? ` / ${appInfo.commandShortcutLastError}` : ""}` : "Loading"],
     ["Tray status", appInfo?.trayStatus ?? "Loading"],
+    ["App lifecycle settings", appInfo?.appLifecycleSettingsPath ?? "Loading"],
+    ["Close behavior", appInfo?.appLifecycleSettings.closeBehavior.replaceAll("_", " ") ?? "Loading"],
+    ["Windows auto-start", appInfo ? `${appInfo.appLifecycleSettings.startDexNestWithWindows ? "enabled" : "disabled"} / ${appInfo.appLifecycleSettings.loginItemStatus}` : "Loading"],
+    ["Tray window mode", appInfo?.appLifecycleSettings.trayModeActive ? "hidden in tray" : "normal window"],
+    ["Performance mode", performanceModeState.enabled ? `ON / ${performanceModeState.reason}` : "OFF"],
+    ["Performance settings", appInfo?.performanceModeSettingsPath ?? "Loading"],
     ["Backup folder", appInfo?.backupFolderPath ?? backupState.backupFolderPath ?? "Loading"],
     ["Restore staging", appInfo?.restoreStagingPath ?? backupState.restoreStagingPath ?? "Loading"],
     ["Package mode", appInfo?.packageMode ?? "Loading"],
@@ -9353,18 +9862,172 @@ function SettingsView({
     ["Heatmap events", appInfo?.heatmapEventsPath ?? "Loading"],
     ["Heatmap settings", appInfo?.heatmapSettingsPath ?? "Loading"],
     ["Heatmap goals", appInfo?.heatmapGoalsPath ?? "Loading"],
+    ["External Devices settings", appInfo?.externalDevicesSettingsPath ?? externalState.settingsPath],
+    ["External Devices cache", appInfo?.externalDevicesCachePath ?? externalState.cachePath],
+    ["Govee provider", `${externalState.settings.goveeEnabled ? "enabled" : "disabled"} / ${externalState.providerStatus}`],
     ["Detected local timezone", appInfo?.localTimeZone ?? "Loading"],
     ["Current local date/time", appInfo?.localDateTimePreview ?? formatLocalDateTime(new Date())],
     ["Current local date", appInfo?.localToday ? formatLocalDate(appInfo.localToday) : formatLocalDate(getLocalTodayDateString())],
     ["Drop phone URL", appInfo?.dropPhoneUrl ?? "Loading"],
     ["Detected LAN IP", appInfo?.lanIp ?? "Not detected"],
     ["Saved projects", String(appInfo?.projectCount ?? 0)],
-    ["App version", "0.1.0"],
-    ["Performance mode", appInfo?.performanceMode ?? "Loading"]
+    ["App version", "0.1.0"]
   ];
 
   function updateBackupOption(key: keyof BackupOptions, value: boolean): void {
     setBackupOptions((current) => ({ ...current, [key]: value }));
+  }
+
+  function updatePerformanceOption(key: keyof PerformanceModeSettings, value: boolean): void {
+    setPerformanceForm((current) => ({ ...current, [key]: value }));
+  }
+
+  async function savePerformanceOptions(): Promise<void> {
+    setPerformanceSaving(true);
+    try {
+      await onPerformanceChanged(performanceForm);
+      setHealthStatus("Performance Mode settings saved.");
+    } finally {
+      setPerformanceSaving(false);
+    }
+  }
+
+  async function togglePerformanceMode(): Promise<void> {
+    const nextEnabled = !performanceModeState.enabled;
+    setPerformanceBusy(true);
+    try {
+      await onPerformanceChanged(undefined, nextEnabled);
+      setHealthStatus(`Performance Mode ${nextEnabled ? "enabled" : "disabled"}.`);
+    } finally {
+      setPerformanceBusy(false);
+    }
+  }
+
+  function updateLifecycleOption<K extends keyof AppLifecycleSettings>(key: K, value: AppLifecycleSettings[K]): void {
+    setLifecycleForm((current) => ({ ...current, [key]: value }));
+  }
+
+  async function saveLifecycleOptions(): Promise<void> {
+    setLifecycleSaving(true);
+    try {
+      const result = await onAction("system.lifecycle.update_settings", "module_ui", lifecycleForm) as { ok?: boolean; error?: string };
+      setHealthStatus(result.ok === false ? result.error ?? "Startup and tray settings saved with warnings." : "Startup and tray settings saved.");
+      await onRefresh();
+      await runHealthCheck();
+    } finally {
+      setLifecycleSaving(false);
+    }
+  }
+
+  async function testTrayNotification(): Promise<void> {
+    setLifecycleBusy(true);
+    try {
+      const result = await onAction("system.lifecycle.test_tray_notice", "module_ui", {}) as { ok?: boolean; error?: string };
+      setHealthStatus(result.ok === false ? result.error ?? "Tray notification failed." : "Tray notification sent.");
+      await onRefresh();
+    } finally {
+      setLifecycleBusy(false);
+    }
+  }
+
+  async function quitDexNestFromSettings(): Promise<void> {
+    if (!window.confirm("Quit DexNest fully? This bypasses close-to-tray and exits the app.")) {
+      return;
+    }
+    await onAction("system.lifecycle.quit_full", "module_ui", { confirmedDangerous: true });
+  }
+
+  function updateKeyboardMapping(id: string, patch: Partial<KeyboardShortcutMapping>): void {
+    setKeyboardForm((current) => ({
+      ...current,
+      mappings: current.mappings.map((mapping) => mapping.id === id ? { ...mapping, ...patch } : mapping)
+    }));
+  }
+
+  async function saveControlSettings(): Promise<void> {
+    setControlsSaving(true);
+    try {
+      await onAction("system.keyboard_shortcuts.update_settings", "module_ui", keyboardForm);
+      await onAction("system.stream_deck.update_settings", "module_ui", streamDeckForm);
+      setHealthStatus("Controls and shortcuts saved.");
+      await onRefresh();
+      await runHealthCheck();
+    } finally {
+      setControlsSaving(false);
+    }
+  }
+
+  async function resetKeyboardShortcuts(): Promise<void> {
+    const result = await onAction("system.keyboard_shortcuts.reset_defaults", "module_ui", {}) as { ok?: boolean; keyboardShortcutSettings?: KeyboardShortcutSettings; error?: string };
+    if (result.keyboardShortcutSettings) {
+      setKeyboardForm(result.keyboardShortcutSettings);
+    }
+    setHealthStatus(result.ok === false ? result.error ?? "Shortcut reset failed." : "Keyboard shortcuts reset.");
+    await onRefresh();
+  }
+
+  async function disableAllKeyboardShortcuts(): Promise<void> {
+    const result = await onAction("system.keyboard_shortcuts.disable_all", "module_ui", {}) as { ok?: boolean; keyboardShortcutSettings?: KeyboardShortcutSettings; error?: string };
+    if (result.keyboardShortcutSettings) {
+      setKeyboardForm(result.keyboardShortcutSettings);
+    }
+    setHealthStatus(result.ok === false ? result.error ?? "Shortcut disable failed." : "Keyboard shortcuts disabled.");
+    await onRefresh();
+  }
+
+  async function refreshExternalDevicesState(): Promise<void> {
+    const next = await getBridge().getExternalDevicesState();
+    setExternalState(next);
+    setExternalForm(next.settings);
+  }
+
+  async function saveExternalDevicesSettings(): Promise<void> {
+    setExternalBusy(true);
+    try {
+      const result = await onAction("external.govee.update_settings", "module_ui", {
+        ...externalForm,
+        apiKey: goveeApiKeyInput
+      }) as { ok?: boolean; error?: string; externalDevicesState?: ExternalDevicesState; message?: string };
+      setGoveeApiKeyInput("");
+      if (result.externalDevicesState) {
+        setExternalState(result.externalDevicesState);
+        setExternalForm(result.externalDevicesState.settings);
+      } else {
+        await refreshExternalDevicesState();
+      }
+      setExternalStatus(result.ok === false ? result.error ?? "Govee settings failed." : result.message ?? "Govee settings saved.");
+      await onRefresh();
+    } finally {
+      setExternalBusy(false);
+    }
+  }
+
+  async function runExternalAction(actionId: string, params: Record<string, unknown> = {}): Promise<void> {
+    setExternalBusy(true);
+    try {
+      const result = await onAction(actionId, "module_ui", params) as { ok?: boolean; error?: string; message?: string; externalDevicesState?: ExternalDevicesState };
+      if (result.externalDevicesState) {
+        setExternalState(result.externalDevicesState);
+        setExternalForm(result.externalDevicesState.settings);
+      } else {
+        await refreshExternalDevicesState();
+      }
+      setExternalStatus(result.ok === false ? result.error ?? "Govee action failed." : result.message ?? "Govee action completed.");
+      await onRefresh();
+    } finally {
+      setExternalBusy(false);
+    }
+  }
+
+  function updateExternalOption<K extends keyof ExternalDevicesSettings>(key: K, value: ExternalDevicesSettings[K]): void {
+    setExternalForm((current) => ({ ...current, [key]: value }));
+  }
+
+  function updateExternalDeviceAlias(deviceId: string, patch: Partial<Pick<ExternalDeviceCacheItem, "userAlias" | "roomAlias">>): void {
+    setExternalState((current) => ({
+      ...current,
+      devices: current.devices.map((device) => device.deviceId === deviceId ? { ...device, ...patch } : device)
+    }));
   }
 
   async function createBackupNow(): Promise<void> {
@@ -9510,6 +10173,360 @@ function SettingsView({
           </div>
         </div>
         <p>Some apps may reserve shortcuts. Use a fallback if Ctrl+Space cannot register.</p>
+      </Panel>
+
+      <Panel title="Controls and Shortcuts">
+        <div className="settings-grid">
+          <article>
+            <span>Keyboard shortcuts</span>
+            <strong>{keyboardForm.enabled ? "Enabled" : "Disabled"}</strong>
+            <p>{keyboardForm.mappings.filter((mapping) => mapping.status === "active").length} active mapping(s).</p>
+          </article>
+          <article>
+            <span>Stream Deck endpoint</span>
+            <strong>{appInfo?.actionEndpoint ?? "Loading"}</strong>
+            <p>Localhost-only by default.</p>
+          </article>
+          <article>
+            <span>Security</span>
+            <strong>{streamDeckForm.lanEnabled ? "LAN enabled" : "Local only"}</strong>
+            <p>PIN/token {streamDeckForm.tokenEnabled ? "enabled" : "disabled"}.</p>
+          </article>
+        </div>
+        <div className="registry-controls">
+          <label className="checkbox-row">
+            <input type="checkbox" checked={keyboardForm.enabled} onChange={(event) => setKeyboardForm((current) => ({ ...current, enabled: event.target.checked }))} />
+            <span>Enable configurable keyboard shortcuts</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={streamDeckForm.tokenEnabled} onChange={(event) => setStreamDeckForm((current) => ({ ...current, tokenEnabled: event.target.checked }))} />
+            <span>Require local PIN/token for Stream Deck endpoint</span>
+          </label>
+          <label>
+            Local token
+            <input
+              value={streamDeckForm.token === "set" ? "" : streamDeckForm.token}
+              onChange={(event) => setStreamDeckForm((current) => ({ ...current, token: event.target.value }))}
+              placeholder={appInfo?.streamDeckSettings.token === "set" ? "Token already set; enter replacement" : "Optional local token"}
+            />
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={streamDeckForm.lanEnabled} onChange={(event) => setStreamDeckForm((current) => ({ ...current, lanEnabled: event.target.checked }))} />
+            <span>Allow LAN control endpoint exposure</span>
+          </label>
+        </div>
+        <div className="deck-panel-scroll">
+          {keyboardForm.mappings.length === 0 ? (
+            <EmptyState>No keyboard shortcuts configured.</EmptyState>
+          ) : (
+            keyboardForm.mappings.map((mapping) => (
+              <article className="deck-action-row accent-command" key={mapping.id}>
+                <div className="deck-action-row__main">
+                  <strong>{mapping.label}</strong>
+                  <span className="technical">{mapping.targetType === "routine" ? mapping.routineId : mapping.actionId}</span>
+                  {mapping.lastError && <span>{mapping.lastError}</span>}
+                </div>
+                <div className="deck-action-row__meta">
+                  <StatusBadge tone={mapping.status === "active" ? "success" : mapping.status === "blocked" || mapping.status === "failed" || mapping.status === "conflict" ? "warning" : "neutral"}>{mapping.status}</StatusBadge>
+                  <label>
+                    Shortcut
+                    <input value={mapping.shortcut} onChange={(event) => updateKeyboardMapping(mapping.id, { shortcut: event.target.value })} />
+                  </label>
+                  <label className="checkbox-row">
+                    <input type="checkbox" checked={mapping.enabled} onChange={(event) => updateKeyboardMapping(mapping.id, { enabled: event.target.checked })} />
+                    <span>Enabled</span>
+                  </label>
+                  <button type="button" onClick={() => updateKeyboardMapping(mapping.id, { shortcut: "", enabled: false })}>Clear</button>
+                </div>
+              </article>
+            ))
+          )}
+        </div>
+        {appInfo?.keyboardShortcutConflicts && appInfo.keyboardShortcutConflicts.length > 0 && (
+          <p className="inline-status">{appInfo.keyboardShortcutConflicts.join(" ")}</p>
+        )}
+        <div className="button-row">
+          <button type="button" className={controlsSaving ? "is-busy" : undefined} disabled={controlsSaving} onClick={() => void saveControlSettings()}>
+            {controlsSaving && <Spinner size="sm" />}
+            {controlsSaving ? "Saving..." : "Save controls and shortcuts"}
+          </button>
+          <button type="button" onClick={() => void resetKeyboardShortcuts()}>Reset shortcuts</button>
+          <button type="button" onClick={() => void disableAllKeyboardShortcuts()}>Disable all shortcuts</button>
+        </div>
+        <div className="settings-list">
+          <div className="settings-row"><span>Health</span><strong className="technical">{appInfo?.actionEndpoint ? `${appInfo.actionEndpoint}/health` : "Loading"}</strong></div>
+          <div className="settings-row"><span>Run action</span><strong className="technical">{appInfo?.actionEndpoint ? `${appInfo.actionEndpoint}/actions/run` : "Loading"}</strong></div>
+          <div className="settings-row"><span>Run routine</span><strong className="technical">{appInfo?.actionEndpoint ? `${appInfo.actionEndpoint}/routines/run` : "Loading"}</strong></div>
+        </div>
+      </Panel>
+
+      <Panel title="External Devices">
+        <div className="settings-grid">
+          <article>
+            <span>Govee provider</span>
+            <strong>{externalState.settings.goveeEnabled ? "Enabled" : "Disabled"}</strong>
+            <p>{externalState.providerMessage}</p>
+          </article>
+          <article>
+            <span>API key</span>
+            <strong>{externalState.apiKeyStored ? "Stored securely" : "Not saved"}</strong>
+            <p>{externalState.secureVaultUnlocked ? "Secure Vault is unlocked." : externalState.secureVaultSetup ? "Unlock Secure Vault to use Govee." : "Set up Secure Vault first."}</p>
+          </article>
+          <article>
+            <span>Cached devices</span>
+            <strong>{externalState.devices.length}</strong>
+            <p className="technical">{externalState.cachePath}</p>
+          </article>
+        </div>
+
+        <div className="registry-controls">
+          <label className="checkbox-row">
+            <input type="checkbox" checked={externalForm.goveeEnabled} onChange={(event) => updateExternalOption("goveeEnabled", event.target.checked)} />
+            <span>Enable Govee provider</span>
+          </label>
+          <label>
+            Govee API key
+            <input
+              type="password"
+              value={goveeApiKeyInput}
+              onChange={(event) => setGoveeApiKeyInput(event.target.value)}
+              placeholder={externalState.apiKeyStored ? "Stored securely; enter replacement" : "Paste Govee API key"}
+            />
+          </label>
+          <label>
+            Default alias
+            <input value={externalForm.defaultDeviceAlias ?? ""} onChange={(event) => updateExternalOption("defaultDeviceAlias", event.target.value || null)} placeholder="room lights" />
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={externalForm.allowVoiceControl} onChange={(event) => updateExternalOption("allowVoiceControl", event.target.checked)} />
+            <span>Allow Ask DexNest and Voice control</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={externalForm.allowStreamDeckControl} onChange={(event) => updateExternalOption("allowStreamDeckControl", event.target.checked)} />
+            <span>Allow Stream Deck endpoint control</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={externalForm.allowKeyboardShortcutControl} onChange={(event) => updateExternalOption("allowKeyboardShortcutControl", event.target.checked)} />
+            <span>Allow keyboard shortcut control</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={externalForm.requireConfirmationForPowerOff} onChange={(event) => updateExternalOption("requireConfirmationForPowerOff", event.target.checked)} />
+            <span>Require confirmation for power off</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={externalForm.requireConfirmationForBrightnessBelow10} onChange={(event) => updateExternalOption("requireConfirmationForBrightnessBelow10", event.target.checked)} />
+            <span>Require confirmation below 10% brightness</span>
+          </label>
+        </div>
+
+        <div className="button-row">
+          <button type="button" className={externalBusy ? "is-busy" : undefined} disabled={externalBusy} onClick={() => void saveExternalDevicesSettings()}>
+            {externalBusy && <Spinner size="sm" />}
+            Save Govee settings
+          </button>
+          <button type="button" disabled={externalBusy} onClick={() => void runExternalAction("external.govee.test_connection")}>Test connection</button>
+          <button type="button" disabled={externalBusy} onClick={() => void runExternalAction("external.govee.refresh_devices")}>Refresh devices</button>
+          <button
+            type="button"
+            className="button-danger"
+            disabled={externalBusy || !externalState.apiKeyStored}
+            onClick={() => {
+              if (window.confirm("Remove the Govee API key reference from DexNest External Devices settings?")) {
+                void runExternalAction("external.govee.remove_api_key", { confirmedDangerous: true });
+              }
+            }}
+          >
+            Remove API key
+          </button>
+          {externalStatus && <span className="inline-status">{externalStatus}</span>}
+        </div>
+
+        <div className="deck-panel-scroll">
+          {externalState.devices.length === 0 ? (
+            <EmptyState>No Govee devices cached yet. Save an API key, then refresh devices.</EmptyState>
+          ) : (
+            externalState.devices.map((device) => (
+              <article className="deck-action-row accent-tools" key={device.deviceId}>
+                <div className="deck-action-row__main">
+                  <strong>{device.userAlias || device.roomAlias || device.deviceName}</strong>
+                  <span>{device.deviceName} / {device.model}</span>
+                  <span className="technical">{device.deviceId}</span>
+                  <span>Last seen {formatLocalDateTime(device.lastSeen)}</span>
+                </div>
+                <div className="deck-action-row__meta">
+                  <StatusBadge tone={device.controllable ? "success" : "warning"}>{device.controllable ? "controllable" : "limited"}</StatusBadge>
+                  <label>
+                    User alias
+                    <input
+                      value={device.userAlias}
+                      onChange={(event) => updateExternalDeviceAlias(device.deviceId, { userAlias: event.target.value })}
+                      onBlur={() => void runExternalAction("external.govee.update_alias", { deviceId: device.deviceId, userAlias: device.userAlias, roomAlias: device.roomAlias })}
+                      placeholder="room lights"
+                    />
+                  </label>
+                  <label>
+                    Room alias
+                    <input
+                      value={device.roomAlias}
+                      onChange={(event) => updateExternalDeviceAlias(device.deviceId, { roomAlias: event.target.value })}
+                      onBlur={() => void runExternalAction("external.govee.update_alias", { deviceId: device.deviceId, userAlias: device.userAlias, roomAlias: device.roomAlias })}
+                      placeholder="bedroom"
+                    />
+                  </label>
+                  <div className="button-row">
+                    <button type="button" disabled={externalBusy} onClick={() => void runExternalAction("external.govee.turn_on", { deviceId: device.deviceId })}>On</button>
+                    <button type="button" disabled={externalBusy} onClick={() => void runExternalAction("external.govee.turn_off", { deviceId: device.deviceId, confirmedDangerous: true })}>Off</button>
+                    <button type="button" disabled={externalBusy} onClick={() => void runExternalAction("external.govee.toggle", { deviceId: device.deviceId, confirmedDangerous: true })}>Toggle</button>
+                    <button type="button" disabled={externalBusy} onClick={() => void runExternalAction("external.govee.set_brightness", { deviceId: device.deviceId, brightness: 40 })}>40%</button>
+                    <button type="button" disabled={externalBusy} onClick={() => void runExternalAction("external.govee.set_color", { deviceId: device.deviceId, color: "blue" })}>Blue</button>
+                    <button type="button" disabled={externalBusy} onClick={() => void runExternalAction("external.govee.set_color_temperature", { deviceId: device.deviceId, kelvin: 2700 })}>Warm</button>
+                  </div>
+                </div>
+              </article>
+            ))
+          )}
+        </div>
+        <div className="settings-list">
+          <div className="settings-row"><span>Settings</span><strong className="technical">{externalState.settingsPath}</strong></div>
+          <div className="settings-row"><span>Cache</span><strong className="technical">{externalState.cachePath}</strong></div>
+          <div className="settings-row"><span>Action example</span><strong className="technical">external.govee.turn_on {"{ alias: \"room lights\" }"}</strong></div>
+        </div>
+      </Panel>
+
+      <Panel title="Startup and Tray">
+        <div className="settings-grid">
+          <article>
+            <span>Close button</span>
+            <strong>{lifecycleForm.closeBehavior.replaceAll("_", " ")}</strong>
+            <p>Controls what happens when you click X.</p>
+          </article>
+          <article>
+            <span>Windows startup</span>
+            <strong>{lifecycleForm.startDexNestWithWindows ? "Enabled" : "Disabled"}</strong>
+            <p>{lifecycleForm.loginItemLastError ?? `Registration: ${lifecycleForm.loginItemStatus}`}</p>
+          </article>
+          <article>
+            <span>Tray mode</span>
+            <strong>{appInfo?.appLifecycleSettings.trayModeActive ? "Hidden" : "Window"}</strong>
+            <p>{appInfo?.appLifecycleSettings.trayAvailable ? "Tray is available." : "Tray is not active."}</p>
+          </article>
+        </div>
+        <div className="registry-controls">
+          <label>
+            Close button behavior
+            <select
+              value={lifecycleForm.closeBehavior}
+              onChange={(event) => updateLifecycleOption("closeBehavior", event.target.value as AppCloseBehavior)}
+            >
+              <option value="ask">Ask every time</option>
+              <option value="minimize_to_tray">Minimize to tray</option>
+              <option value="exit">Exit app</option>
+            </select>
+          </label>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={lifecycleForm.startDexNestWithWindows}
+              onChange={(event) => updateLifecycleOption("startDexNestWithWindows", event.target.checked)}
+            />
+            <span>Start DexNest when Windows starts</span>
+          </label>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={lifecycleForm.startMinimizedToTray}
+              disabled={!lifecycleForm.startDexNestWithWindows}
+              onChange={(event) => updateLifecycleOption("startMinimizedToTray", event.target.checked)}
+            />
+            <span>Start minimized to tray</span>
+          </label>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={lifecycleForm.minimizeToTrayOnStartup}
+              onChange={(event) => updateLifecycleOption("minimizeToTrayOnStartup", event.target.checked)}
+            />
+            <span>Always start DexNest hidden in tray</span>
+          </label>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={lifecycleForm.showTrayCloseNotice}
+              onChange={(event) => updateLifecycleOption("showTrayCloseNotice", event.target.checked)}
+            />
+            <span>Show tray notice when DexNest keeps running</span>
+          </label>
+        </div>
+        <div className="button-row">
+          <button type="button" className={lifecycleSaving ? "is-busy" : undefined} disabled={lifecycleSaving} onClick={() => void saveLifecycleOptions()}>
+            {lifecycleSaving && <Spinner size="sm" />}
+            {lifecycleSaving ? "Saving..." : "Save startup and tray settings"}
+          </button>
+          <button type="button" disabled={lifecycleBusy} onClick={() => void testTrayNotification()}>
+            {lifecycleBusy && <Spinner size="sm" />}
+            Test tray notification
+          </button>
+          <button type="button" className="button-danger" onClick={() => void quitDexNestFromSettings()}>
+            Quit DexNest fully
+          </button>
+        </div>
+        <p className="technical">{appInfo?.appLifecycleSettingsPath ?? "./local-data/settings/app-lifecycle-settings.json"}</p>
+      </Panel>
+
+      <Panel title="Performance Mode">
+        <div className="performance-card">
+          <div>
+            <div className="status-row">
+              <StatusBadge tone={performanceModeState.enabled ? "warning" : "success"}>
+                {performanceModeState.enabled ? "ON" : "OFF"}
+              </StatusBadge>
+              <StatusBadge tone="info">Gaming Mode</StatusBadge>
+            </div>
+            <p>{performanceModeState.enabled ? `Reason: ${performanceModeState.reason}` : "DexNest workers are available when user-triggered."}</p>
+            <p className="technical">{performanceModeState.pausedWorkers.length ? performanceModeState.pausedWorkers.join(", ") : "No workers paused."}</p>
+          </div>
+          <button
+            type="button"
+            className={`${performanceModeState.enabled ? "button-danger" : "button-primary"}${performanceBusy ? " is-busy" : ""}`}
+            disabled={performanceBusy}
+            onClick={() => void togglePerformanceMode()}
+          >
+            {performanceBusy && <Spinner size="sm" />}
+            {performanceBusy ? "Updating..." : performanceModeState.enabled ? "Turn off" : "Turn on"}
+          </button>
+        </div>
+        <div className="settings-grid">
+          {([
+            ["pauseHeatmap", "Pause Heatmap tracking"],
+            ["pauseOcrJobs", "Pause OCR queues"],
+            ["pauseSearchAutoIndex", "Pause automatic Search reindex"],
+            ["pauseBackups", "Pause scheduled backups"],
+            ["suppressNonUrgentNudges", "Suppress non-urgent nudges"],
+            ["allowDropWhenOpen", "Allow Drop when explicitly opened"],
+            ["allowUserTriggeredAssistant", "Allow user-triggered Ask DexNest/Ollama"],
+            ["showTrayStatus", "Show tray status"]
+          ] as Array<[keyof PerformanceModeSettings, string]>).map(([key, label]) => (
+            <label className="checkbox-row" key={key}>
+              <input type="checkbox" checked={Boolean(performanceForm[key])} onChange={(event) => updatePerformanceOption(key, event.target.checked)} />
+              <span>{label}</span>
+            </label>
+          ))}
+          <label className="checkbox-row">
+            <input type="checkbox" checked={performanceForm.autoEnableWhenFullscreen} onChange={(event) => updatePerformanceOption("autoEnableWhenFullscreen", event.target.checked)} />
+            <span>Auto-enable when fullscreen (coming soon)</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={performanceForm.autoEnableWhenGameDetected} onChange={(event) => updatePerformanceOption("autoEnableWhenGameDetected", event.target.checked)} />
+            <span>Auto-enable when game detected (coming soon)</span>
+          </label>
+        </div>
+        <div className="button-row">
+          <button type="button" className={performanceSaving ? "is-busy" : undefined} disabled={performanceSaving} onClick={() => void savePerformanceOptions()}>
+            {performanceSaving && <Spinner size="sm" />}
+            {performanceSaving ? "Saving..." : "Save Performance settings"}
+          </button>
+        </div>
+        <p className="technical">{appInfo?.performanceModeSettingsPath ?? "./local-data/settings/performance-mode-settings.json"}</p>
       </Panel>
 
       <Panel title="App Health">
