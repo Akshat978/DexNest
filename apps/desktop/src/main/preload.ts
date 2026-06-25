@@ -46,6 +46,20 @@ contextBridge.exposeInMainWorld("dexNest", {
     ipcRenderer.invoke("dexnest:save-assistant-settings", payload),
   testOllama: (payload: { ollamaUrl?: string; ollamaModel?: string }) => ipcRenderer.invoke("dexnest:test-ollama", payload),
   assistantLlmIntent: (payload: { query: string }) => ipcRenderer.invoke("dexnest:assistant-llm-intent", payload),
+  getSpeechState: () => ipcRenderer.invoke("dexnest:get-speech-state"),
+  getVoiceWorkflowSettings: () => ipcRenderer.invoke("dexnest:get-voice-workflow-settings"),
+  saveVoiceWorkflowSettings: (payload: Record<string, unknown>) => ipcRenderer.invoke("dexnest:save-voice-workflow-settings", payload),
+  saveSpeechSettings: (payload: Record<string, unknown>) => ipcRenderer.invoke("dexnest:save-speech-settings", payload),
+  checkSpeechModel: () => ipcRenderer.invoke("dexnest:check-speech-model"),
+  installSpeechModel: () => ipcRenderer.invoke("dexnest:install-speech-model"),
+  warmSpeechEngine: () => ipcRenderer.invoke("dexnest:warm-speech-engine"),
+  openSpeechModelFolder: () => ipcRenderer.invoke("dexnest:open-speech-model-folder"),
+  transcribeSpeech: (payload: { audioBytes?: ArrayBuffer | Uint8Array | number[]; mimeType?: string; source?: string; sourceModule?: string; language?: string; manualOverride?: boolean }) =>
+    ipcRenderer.invoke("dexnest:transcribe-speech", payload),
+  getAmbientVoiceState: () => ipcRenderer.invoke("dexnest:get-ambient-voice-state"),
+  saveAmbientVoiceSettings: (payload: Record<string, unknown>) => ipcRenderer.invoke("dexnest:save-ambient-voice-settings", payload),
+  updateAmbientVoiceState: (payload: Record<string, unknown>) => ipcRenderer.invoke("dexnest:update-ambient-voice-state", payload),
+  startAmbientListening: (payload?: { source?: string }) => ipcRenderer.invoke("dexnest:start-ambient-listening", payload ?? {}),
   getAssistantSecurityState: () => ipcRenderer.invoke("dexnest:get-assistant-security-state"),
   saveAssistantSecuritySettings: (payload: { trustedSessionEnabled?: boolean; autoRevealWhileUnlocked?: boolean; sessionTimeoutMinutes?: number; speakSensitiveAnswers?: boolean; lockOnAppClose?: boolean }) =>
     ipcRenderer.invoke("dexnest:save-assistant-security-settings", payload),
@@ -77,8 +91,8 @@ contextBridge.exposeInMainWorld("dexNest", {
     ipcRenderer.on("dexnest:clipboard-hotkey-result", listener);
     return () => ipcRenderer.removeListener("dexnest:clipboard-hotkey-result", listener);
   },
-  onOpenView: (callback: (payload: { view: string; focusAssistant?: boolean }) => void) => {
-    const listener = (_event: Electron.IpcRendererEvent, payload: { view: string; focusAssistant?: boolean }) => callback(payload);
+  onOpenView: (callback: (payload: { view: string; focusAssistant?: boolean; startListening?: boolean; source?: string }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: { view: string; focusAssistant?: boolean; startListening?: boolean; source?: string }) => callback(payload);
     ipcRenderer.on("dexnest:open-view", listener);
     return () => ipcRenderer.removeListener("dexnest:open-view", listener);
   }

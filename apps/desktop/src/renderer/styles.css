@@ -318,6 +318,54 @@ button:focus-visible {
   padding-bottom: var(--space-7);
 }
 
+.ambient-indicator {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-panel);
+}
+
+.ambient-indicator::before {
+  content: "";
+  width: 0.55rem;
+  height: 0.55rem;
+  background: var(--text-disabled);
+  border-radius: var(--radius-sm);
+}
+
+.ambient-indicator[data-state="listening"]::before,
+.ambient-indicator[data-state="processing"]::before,
+.ambient-indicator[data-state="speaking"]::before {
+  background: var(--accent-voice);
+}
+
+.ambient-indicator[data-state="paused"]::before {
+  background: var(--warning);
+}
+
+.ambient-indicator strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-tech);
+}
+
+.ambient-note {
+  color: var(--text-muted);
+}
+
 .view-stack {
   display: grid;
   gap: var(--space-5);
@@ -1640,6 +1688,13 @@ kbd {
   overflow-wrap: anywhere;
 }
 
+.clipboard-slot-preview {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .clipboard-history-list {
   display: grid;
   gap: var(--space-2);
@@ -2689,4 +2744,31 @@ kbd {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
+}
+
+/* Journal continuous voice mode card (Phase 23.4). */
+.journal-voice {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.journal-voice[data-active="true"] {
+  border-left-color: var(--accent-journal);
+}
+
+.journal-voice[data-status="listening"] {
+  border-left-color: var(--accent-voice);
+}
+
+.journal-voice[data-status="paused"] {
+  border-left-color: var(--warning);
+}
+
+.journal-voice .button-row button {
+  width: auto;
 }

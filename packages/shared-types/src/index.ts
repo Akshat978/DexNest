@@ -34,6 +34,8 @@ export type DexNestActionTrigger =
   | "keyboard_shortcut"
   | "tray"
   | "assistant"
+  | "ambient_voice"
+  | "push_to_talk"
   | "voice"
   | "routine"
   | "module_ui";

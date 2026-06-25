@@ -8,6 +8,7 @@ release/
 .env
 .env.*
 local-data/
+sidecars/**/.venv/
 *.db
 *.sqlite
 *.db-wal

@@ -9,6 +9,11 @@ type ViewId = "command" | "dev" | "deck" | "clipboard" | "drop" | "tools" | "vau
 type ActionStatus = "success" | "failed" | "skipped" | "cancelled" | "pending";
 type ToastTone = "success" | "error";
 type AppCloseBehavior = "minimize_to_tray" | "ask" | "exit";
+type AmbientVoiceStatus = "idle" | "listening" | "processing" | "speaking" | "paused";
+type SpeechEngine = "faster_whisper" | "whisper_cpp" | "windows_fallback";
+type SpeechDevice = "auto" | "cuda" | "cpu";
+type SpeechComputeType = "auto" | "int8" | "float16";
+type SpeechStatus = "success" | "failed" | "cancelled";
 
 interface ToastMessage {
   id: string;
@@ -76,8 +81,17 @@ interface AppInfo {
   heatmapEventsPath: string;
   heatmapSettingsPath: string;
   heatmapGoalsPath: string;
+  speechSettingsPath: string;
+  voiceWorkflowSettingsPath: string;
+  voiceWorkflowSettings: VoiceWorkflowSettings;
+  speechModelsRoot: string;
+  speechDebugAudioRoot: string;
+  speechState: SpeechServiceState;
+  ambientVoiceSettingsPath: string;
+  ambientVoiceState: AmbientVoiceState;
   externalDevicesSettingsPath: string;
   externalDevicesCachePath: string;
+  externalDevicesGroupsPath: string;
   externalDevicesState: ExternalDevicesState;
   performanceModeSettingsPath: string;
   appLifecycleSettingsPath: string;
@@ -128,6 +142,240 @@ interface ExternalDevicesSettings {
   updatedAt: string | null;
 }
 
+interface AmbientVoiceSettings {
+  ambientVoiceEnabled: boolean;
+  wakeWordEnabled: boolean;
+  wakeWord: string;
+  pushToTalkEnabled: boolean;
+  pushToTalkShortcut: string;
+  pushToTalkShortcutStatus: "active" | "disabled" | "failed" | "paused";
+  pushToTalkShortcutLastError: string | null;
+  visibleListeningIndicator: boolean;
+  playStartSound: boolean;
+  playStopSound: boolean;
+  autoSendAfterSpeech: boolean;
+  stopListeningAfterCommand: boolean;
+  pauseInPerformanceMode: boolean;
+  allowDeviceControl: boolean;
+  allowClipboardActions: boolean;
+  allowDevActions: boolean;
+  allowSensitiveLookups: boolean;
+  speakResponses: boolean;
+  speakSensitiveAnswers: boolean;
+  voiceName?: string | null;
+  voiceRate: number;
+  voiceVolume: number;
+  shortResponsesOnly: boolean;
+  muteInPerformanceMode: boolean;
+  maxListeningSeconds: number;
+  commandCooldownMs: number;
+  updatedAt: string;
+}
+
+interface AmbientVoiceState {
+  settingsPath: string;
+  settings: AmbientVoiceSettings;
+  currentState: AmbientVoiceStatus;
+  lastRecognizedCommand: string;
+  lastActionResult: string;
+  lastSource: string;
+  lastChangedAt: string;
+  pausedByPerformanceMode: boolean;
+  wakeWordStatus: "placeholder" | "disabled";
+}
+
+interface SpeechSettings {
+  speechEngine: SpeechEngine;
+  fallbackToWindows: boolean;
+  modelName: string;
+  modelSizeOptions: string[];
+  device: SpeechDevice;
+  computeType: SpeechComputeType;
+  maxRecordingSeconds: number;
+  silenceStopEnabled: boolean;
+  vadEnabled: boolean;
+  initialSilenceTimeoutMs?: number;
+  endSilenceTimeoutMs?: number;
+  minSpeechMs?: number;
+  silenceThreshold?: number | "auto";
+  autoStopOnSilence?: boolean;
+  micPrewarmEnabled?: boolean;
+  keepAudioForDebug: boolean;
+  pauseInPerformanceMode: boolean;
+  autoSendAfterSpeech: boolean;
+  showTranscriptBeforeSend: boolean;
+  useSharedSpeechEverywhere: boolean;
+  pythonPath?: string | null;
+  updatedAt: string | null;
+}
+
+interface VoiceWorkflowSettings {
+  continueCaptureMode: boolean;
+  autoSaveCaptureVoiceNotes: boolean;
+  confirmBeforeSavingCapture: boolean;
+  confirmSensitiveCapture: boolean;
+  autoCreateHighConfidenceCalendarVoiceEvents: boolean;
+  defaultMeetingDurationMinutes: number;
+  defaultReminderTime: string;
+  askBeforeRecurringEvents: boolean;
+  updatedAt: string;
+}
+
+interface SpeechCaptureMetrics {
+  micClickToRecordingMs: number;
+  recordingDurationMs: number;
+  speechDetectedAtMs: number | null;
+  silenceStopDelayMs: number | null;
+  transcriptionLatencyMs?: number;
+  vadOutcome: "speech" | "no_speech" | "max_recording";
+}
+
+// --- Renderer microphone pre-warm manager (Phase 23A.1) --------------------
+// Holds a MediaStream + AudioContext ready so a mic click starts recording in
+// <150ms instead of waiting for getUserMedia. Only ever initialized on an
+// explicit trigger (settings open / mic click), never silently in the
+// background, and released when Performance Mode blocks speech.
+type MicStreamStatus = "unavailable" | "requesting" | "ready" | "recording" | "blocked" | "error";
+
+interface MicWarmState {
+  permission: "unknown" | "granted" | "denied" | "prompt";
+  streamStatus: MicStreamStatus;
+  audioContextStatus: AudioContextState | "none";
+  lastStartLatencyMs: number | null;
+  error: string | null;
+}
+
+const micWarm: { stream: MediaStream | null; audioContext: AudioContext | null; state: MicWarmState } = {
+  stream: null,
+  audioContext: null,
+  state: {
+    permission: "unknown",
+    streamStatus: "unavailable",
+    audioContextStatus: "none",
+    lastStartLatencyMs: null,
+    error: null
+  }
+};
+const micWarmListeners = new Set<() => void>();
+
+function getMicWarmState(): MicWarmState {
+  return { ...micWarm.state };
+}
+
+function subscribeMicWarm(listener: () => void): () => void {
+  micWarmListeners.add(listener);
+  return () => micWarmListeners.delete(listener);
+}
+
+function setMicWarmState(patch: Partial<MicWarmState>): void {
+  micWarm.state = { ...micWarm.state, ...patch };
+  for (const listener of micWarmListeners) {
+    listener();
+  }
+}
+
+async function refreshMicPermission(): Promise<void> {
+  try {
+    const status = await (navigator.permissions?.query?.({ name: "microphone" as PermissionName }));
+    if (status) {
+      setMicWarmState({ permission: status.state as MicWarmState["permission"] });
+    }
+  } catch {
+    // permissions API may not support "microphone" — leave as-is.
+  }
+}
+
+// Pre-warm the mic stream + AudioContext. Safe to call repeatedly; no-op when
+// already ready. Returns true when the stream is ready to record.
+async function prewarmMic(): Promise<boolean> {
+  if (micWarm.stream && micWarm.stream.getAudioTracks().some((track) => track.readyState === "live")) {
+    setMicWarmState({ streamStatus: "ready" });
+    return true;
+  }
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+    setMicWarmState({ streamStatus: "unavailable", error: "Microphone recording is not available in this renderer." });
+    return false;
+  }
+  setMicWarmState({ streamStatus: "requesting", error: null });
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    micWarm.stream = stream;
+    if (!micWarm.audioContext || micWarm.audioContext.state === "closed") {
+      micWarm.audioContext = new AudioContext();
+    }
+    if (micWarm.audioContext.state === "suspended") {
+      await micWarm.audioContext.resume().catch(() => undefined);
+    }
+    setMicWarmState({ streamStatus: "ready", permission: "granted", audioContextStatus: micWarm.audioContext.state, error: null });
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Microphone permission was not granted.";
+    setMicWarmState({ streamStatus: "error", permission: /denied|notallowed/i.test(message) ? "denied" : micWarm.state.permission, error: message });
+    return false;
+  }
+}
+
+// Release the mic stream + AudioContext (e.g. Performance Mode blocks speech).
+function releaseMic(blocked = false): void {
+  if (micWarm.stream) {
+    micWarm.stream.getTracks().forEach((track) => track.stop());
+    micWarm.stream = null;
+  }
+  if (micWarm.audioContext && micWarm.audioContext.state !== "closed") {
+    void micWarm.audioContext.close().catch(() => undefined);
+  }
+  micWarm.audioContext = null;
+  setMicWarmState({ streamStatus: blocked ? "blocked" : "unavailable", audioContextStatus: "closed" });
+}
+
+interface SpeechModelStatus {
+  ok: boolean;
+  installed: boolean;
+  message: string;
+  engine: SpeechEngine;
+  model: string;
+  modelPath: string;
+  pythonPath: string | null;
+  deviceDetected: "cuda" | "cpu" | "unknown";
+  fasterWhisperAvailable: boolean;
+  lastLatencyMs?: number | null;
+  lastError?: string | null;
+}
+
+interface SpeechWorkerDiagnostics {
+  engine: string;
+  model: string;
+  device: string;
+  computeType: string;
+  loadLatencyMs: number | null;
+  lastTranscriptionMs: number | null;
+  lastError: string | null;
+}
+
+interface SpeechServiceState {
+  settingsPath: string;
+  modelRoot: string;
+  debugAudioRoot: string;
+  settings: SpeechSettings;
+  modelStatus: SpeechModelStatus;
+  windowsFallbackAvailable: boolean;
+  performancePaused: boolean;
+  engineState?: string;
+  warmDiagnostics?: SpeechWorkerDiagnostics;
+}
+
+interface SpeechTranscriptionResult {
+  transcript: string;
+  engine: SpeechEngine;
+  model: string;
+  language: string;
+  durationMs: number;
+  confidence?: number;
+  status: SpeechStatus;
+  error?: string;
+  speechState?: SpeechServiceState;
+}
+
 interface ExternalDeviceCacheItem {
   provider: "govee";
   deviceId: string;
@@ -142,9 +390,20 @@ interface ExternalDeviceCacheItem {
   lastKnownBrightness?: number | null;
 }
 
+interface ExternalDeviceGroup {
+  id: string;
+  name: string;
+  aliases: string[];
+  provider: "govee";
+  deviceIds: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface ExternalDevicesState {
   settingsPath: string;
   cachePath: string;
+  groupsPath: string;
   settings: ExternalDevicesSettings;
   secureVaultSetup: boolean;
   secureVaultUnlocked: boolean;
@@ -152,6 +411,7 @@ interface ExternalDevicesState {
   providerStatus: "disabled" | "ready" | "needs_secure_vault" | "locked" | "missing_api_key";
   providerMessage: string;
   devices: ExternalDeviceCacheItem[];
+  groups: ExternalDeviceGroup[];
 }
 
 interface EventEntry {
@@ -278,10 +538,15 @@ interface ClipboardState {
   }>;
   slots: Array<{
     slot: number;
+    slotId?: number;
+    type?: "text";
+    value?: string;
     text: string;
     preview: string;
     byteLength: number;
+    createdAt?: string;
     updatedAt: string;
+    source?: "keyboard_shortcut" | "clipboard_ui" | "command" | "module_ui";
   }>;
   snippetsPath: string;
   historyPath: string;
@@ -517,7 +782,11 @@ interface SmartLookupResult {
 type VoiceIntentName =
   | "smart_lookup"
   | "calendar_create_candidate"
+  | "calendar_show_today"
+  | "calendar_show_upcoming"
   | "finder_search"
+  | "finder_add"
+  | "finder_reverse_lookup"
   | "drop_send_clipboard"
   | "open_module"
   | "dev_run_command"
@@ -525,6 +794,8 @@ type VoiceIntentName =
   | "search_query"
   | "capture_note"
   | "external_device_control"
+  | "performance_mode"
+  | "security_action"
   | "unknown";
 
 type VoiceConfidence = "high" | "medium" | "low";
@@ -542,7 +813,7 @@ interface VoiceRouteResult {
   suggestions?: string[];
 }
 
-type AssistantRouterUsed = "rules" | "local-llm";
+type AssistantRouterUsed = "fast_path" | "rules" | "local-llm" | "fallback";
 
 interface AssistantSettings {
   localIntentEngineEnabled: boolean;
@@ -646,9 +917,10 @@ interface AssistantChatMessage {
   route?: VoiceRouteResult;
   routerUsed?: AssistantRouterUsed;
   awaitingConfirm?: boolean;
-  resolved?: "ran" | "cancelled" | "failed" | "info";
+  resolved?: "ran" | "cancelled" | "failed" | "info" | "blocked";
   smartResults?: SmartLookupResult[];
   searchResults?: SearchResult[];
+  finderResults?: FinderItem[];
 }
 
 interface SavedSearch {
@@ -1125,6 +1397,19 @@ interface DexNestBridge {
   saveAssistantSettings: (payload: Partial<AssistantSettings>) => Promise<AssistantSettings>;
   testOllama: (payload: { ollamaUrl?: string; ollamaModel?: string }) => Promise<{ ok: boolean; models?: string[]; modelAvailable?: boolean; error?: string }>;
   assistantLlmIntent: (payload: { query: string }) => Promise<{ ok: boolean; intent?: Record<string, unknown>; error?: string }>;
+  getAmbientVoiceState: () => Promise<AmbientVoiceState>;
+  saveAmbientVoiceSettings: (payload: Partial<AmbientVoiceSettings>) => Promise<{ settings: AmbientVoiceSettings; state: AmbientVoiceState }>;
+  updateAmbientVoiceState: (payload: Partial<Pick<AmbientVoiceState, "currentState" | "lastRecognizedCommand" | "lastActionResult" | "lastSource">>) => Promise<AmbientVoiceState>;
+  startAmbientListening: (payload?: { source?: string }) => Promise<AmbientVoiceState>;
+  getSpeechState: () => Promise<SpeechServiceState>;
+  getVoiceWorkflowSettings: () => Promise<VoiceWorkflowSettings>;
+  saveVoiceWorkflowSettings: (payload: Partial<VoiceWorkflowSettings>) => Promise<VoiceWorkflowSettings>;
+  saveSpeechSettings: (payload: Partial<SpeechSettings>) => Promise<{ settings: SpeechSettings; speechState: SpeechServiceState }>;
+  checkSpeechModel: () => Promise<{ ok: boolean; status: SpeechModelStatus; speechState: SpeechServiceState }>;
+  installSpeechModel: () => Promise<{ ok: boolean; status: SpeechModelStatus; speechState: SpeechServiceState }>;
+  warmSpeechEngine: () => Promise<{ ok: boolean; error?: string; speechState: SpeechServiceState }>;
+  openSpeechModelFolder: () => Promise<{ ok: boolean; path?: string; error?: string }>;
+  transcribeSpeech: (payload: { audioBytes?: number[]; mimeType?: string; source?: string; sourceModule?: string; language?: string; manualOverride?: boolean }) => Promise<SpeechTranscriptionResult>;
   getAssistantSecurityState: () => Promise<AssistantSecurityState>;
   saveAssistantSecuritySettings: (payload: Partial<AssistantSecuritySettings>) => Promise<AssistantSecurityState>;
   unlockTrustedSession: (payload: { masterPassword?: string }) => Promise<{ ok: boolean; error?: string; state: AssistantSecurityState }>;
@@ -1148,7 +1433,7 @@ interface DexNestBridge {
     durationMs?: number | null;
     outputs?: ToolsOutputItem[];
     info?: PdfInfoItem[];
-    results?: SearchResult[];
+    results?: SearchResult[] | FinderItem[];
     searchState?: SearchState;
     savedSearch?: SavedSearch;
     journalState?: JournalState;
@@ -1191,7 +1476,7 @@ interface DexNestBridge {
   selectBackupZip: () => Promise<string | null>;
   rendererReady?: () => void;
   onClipboardHotkeyResult?: (callback: (payload: { message: string; tone: ToastTone }) => void) => () => void;
-  onOpenView?: (callback: (payload: { view: string; focusAssistant?: boolean }) => void) => () => void;
+  onOpenView?: (callback: (payload: { view: string; focusAssistant?: boolean; startListening?: boolean; source?: string }) => void) => () => void;
 }
 
 declare global {
@@ -1225,6 +1510,7 @@ const defaultPerformanceModeState: PerformanceModeState = {
 const defaultExternalDevicesState: ExternalDevicesState = {
   settingsPath: "./local-data/settings/external-devices-settings.json",
   cachePath: "./local-data/settings/external-devices-cache.json",
+  groupsPath: "./local-data/settings/external-devices-groups.json",
   settings: {
     goveeEnabled: false,
     goveeApiKeySecretId: null,
@@ -1242,7 +1528,103 @@ const defaultExternalDevicesState: ExternalDevicesState = {
   apiKeyStored: false,
   providerStatus: "disabled",
   providerMessage: "Govee provider is disabled.",
-  devices: []
+  devices: [],
+  groups: []
+};
+
+const defaultAmbientVoiceSettings: AmbientVoiceSettings = {
+  ambientVoiceEnabled: false,
+  wakeWordEnabled: false,
+  wakeWord: "Nest",
+  pushToTalkEnabled: true,
+  pushToTalkShortcut: "CommandOrControl+Alt+N",
+  pushToTalkShortcutStatus: "disabled",
+  pushToTalkShortcutLastError: null,
+  visibleListeningIndicator: true,
+  playStartSound: true,
+  playStopSound: true,
+  autoSendAfterSpeech: true,
+  stopListeningAfterCommand: true,
+  pauseInPerformanceMode: true,
+  allowDeviceControl: true,
+  allowClipboardActions: true,
+  allowDevActions: true,
+  allowSensitiveLookups: true,
+  speakResponses: false,
+  speakSensitiveAnswers: false,
+  voiceName: null,
+  voiceRate: 1,
+  voiceVolume: 1,
+  shortResponsesOnly: true,
+  muteInPerformanceMode: true,
+  maxListeningSeconds: 8,
+  commandCooldownMs: 1200,
+  updatedAt: new Date().toISOString()
+};
+
+const defaultAmbientVoiceState: AmbientVoiceState = {
+  settingsPath: "./local-data/settings/ambient-voice-settings.json",
+  settings: defaultAmbientVoiceSettings,
+  currentState: "idle",
+  lastRecognizedCommand: "",
+  lastActionResult: "",
+  lastSource: "system",
+  lastChangedAt: new Date().toISOString(),
+  pausedByPerformanceMode: false,
+  wakeWordStatus: "disabled"
+};
+
+const defaultSpeechSettings: SpeechSettings = {
+  speechEngine: "faster_whisper",
+  fallbackToWindows: true,
+  modelName: "base.en",
+  modelSizeOptions: ["tiny.en", "base.en", "small.en"],
+  device: "cpu",
+  computeType: "int8",
+  maxRecordingSeconds: 8,
+  silenceStopEnabled: true,
+  vadEnabled: true,
+  keepAudioForDebug: false,
+  pauseInPerformanceMode: true,
+  autoSendAfterSpeech: true,
+  showTranscriptBeforeSend: false,
+  useSharedSpeechEverywhere: true,
+  pythonPath: null,
+  updatedAt: null
+};
+
+const defaultSpeechState: SpeechServiceState = {
+  settingsPath: "./local-data/settings/speech-settings.json",
+  modelRoot: "./local-data/models/speech",
+  debugAudioRoot: "./local-data/debug/audio",
+  settings: defaultSpeechSettings,
+  modelStatus: {
+    ok: false,
+    installed: false,
+    message: "Run Check local model for current status.",
+    engine: "faster_whisper",
+    model: "base.en",
+    modelPath: "./local-data/models/speech/base.en",
+    pythonPath: null,
+    deviceDetected: "unknown",
+    fasterWhisperAvailable: false,
+    lastLatencyMs: null,
+    lastError: null
+  },
+  windowsFallbackAvailable: false,
+  performancePaused: false
+};
+
+const defaultVoiceWorkflowSettings: VoiceWorkflowSettings = {
+  continueCaptureMode: false,
+  autoSaveCaptureVoiceNotes: true,
+  confirmBeforeSavingCapture: false,
+  confirmSensitiveCapture: true,
+  autoCreateHighConfidenceCalendarVoiceEvents: false,
+  defaultMeetingDurationMinutes: 30,
+  defaultReminderTime: "09:00",
+  askBeforeRecurringEvents: true,
+  updatedAt: new Date().toISOString()
 };
 
 const defaultAppLifecycleSettings: AppLifecycleSettings = {
@@ -1335,8 +1717,17 @@ const fallbackBridge: DexNestBridge = {
     heatmapEventsPath: "./local-data/settings/heatmap-events.json",
     heatmapSettingsPath: "./local-data/settings/heatmap-settings.json",
     heatmapGoalsPath: "./local-data/settings/heatmap-goals.json",
+    speechSettingsPath: "./local-data/settings/speech-settings.json",
+    voiceWorkflowSettingsPath: "./local-data/settings/voice-workflow-settings.json",
+    voiceWorkflowSettings: defaultVoiceWorkflowSettings,
+    speechModelsRoot: "./local-data/models/speech",
+    speechDebugAudioRoot: "./local-data/debug/audio",
+    speechState: defaultSpeechState,
+    ambientVoiceSettingsPath: "./local-data/settings/ambient-voice-settings.json",
+    ambientVoiceState: defaultAmbientVoiceState,
     externalDevicesSettingsPath: "./local-data/settings/external-devices-settings.json",
     externalDevicesCachePath: "./local-data/settings/external-devices-cache.json",
+    externalDevicesGroupsPath: "./local-data/settings/external-devices-groups.json",
     externalDevicesState: defaultExternalDevicesState,
     performanceModeSettingsPath: "./local-data/settings/performance-mode-settings.json",
     appLifecycleSettingsPath: "./local-data/settings/app-lifecycle-settings.json",
@@ -1625,6 +2016,19 @@ const fallbackBridge: DexNestBridge = {
   saveAssistantSettings: async () => ({ localIntentEngineEnabled: false, ollamaUrl: "http://127.0.0.1:11434", ollamaModel: "qwen2.5:3b", fallbackToRules: true }),
   testOllama: async () => ({ ok: false, error: "Bridge unavailable" }),
   assistantLlmIntent: async () => ({ ok: false, error: "Bridge unavailable" }),
+  getAmbientVoiceState: async () => defaultAmbientVoiceState,
+  saveAmbientVoiceSettings: async () => ({ settings: defaultAmbientVoiceSettings, state: defaultAmbientVoiceState }),
+  updateAmbientVoiceState: async () => defaultAmbientVoiceState,
+  startAmbientListening: async () => defaultAmbientVoiceState,
+  getSpeechState: async () => defaultSpeechState,
+  getVoiceWorkflowSettings: async () => defaultVoiceWorkflowSettings,
+  saveVoiceWorkflowSettings: async (payload) => ({ ...defaultVoiceWorkflowSettings, ...payload, updatedAt: new Date().toISOString() }),
+  saveSpeechSettings: async (payload) => ({ settings: { ...defaultSpeechSettings, ...payload }, speechState: defaultSpeechState }),
+  checkSpeechModel: async () => ({ ok: false, status: defaultSpeechState.modelStatus, speechState: defaultSpeechState }),
+  installSpeechModel: async () => ({ ok: false, status: defaultSpeechState.modelStatus, speechState: defaultSpeechState }),
+  warmSpeechEngine: async () => ({ ok: false, error: "Bridge unavailable", speechState: defaultSpeechState }),
+  openSpeechModelFolder: async () => ({ ok: false, error: "Bridge unavailable" }),
+  transcribeSpeech: async () => ({ transcript: "", engine: "faster_whisper", model: "base.en", language: "en", durationMs: 0, status: "failed", error: "Bridge unavailable", speechState: defaultSpeechState }),
   getAssistantSecurityState: async () => ({
     settings: { trustedSessionEnabled: true, autoRevealWhileUnlocked: true, sessionTimeoutMinutes: 10, speakSensitiveAnswers: false, lockOnAppClose: true },
     sessionUnlocked: false,
@@ -1726,7 +2130,66 @@ function normalizeVoiceCommand(value: string): string {
 }
 
 function extractVoiceTime(input: string): string | null {
-  const match = input.match(/\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i);
+  return parseCalendarVoiceTime(input);
+}
+
+const weekdayIndexes: Record<string, number> = {
+  sunday: 0,
+  monday: 1,
+  tuesday: 2,
+  wednesday: 3,
+  thursday: 4,
+  friday: 5,
+  saturday: 6
+};
+
+function addLocalDays(dateString: string, days: number): string {
+  const date = parseLocalDateInput(dateString);
+  date.setDate(date.getDate() + days);
+  return toLocalDateInputValue(date);
+}
+
+function resolveWeekdayDate(input: string, baseDate = getLocalTodayDateString()): string | null {
+  const normalized = input.toLowerCase();
+  const match = normalized.match(/\b(this|next)?\s*(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
+  if (!match) {
+    return null;
+  }
+  const modifier = match[1] ?? "";
+  const target = weekdayIndexes[match[2]];
+  const current = parseLocalDateInput(baseDate).getDay();
+  let offset = (target - current + 7) % 7;
+  if (modifier === "next" || (modifier !== "this" && offset === 0)) {
+    offset += 7;
+  }
+  return addLocalDays(baseDate, offset);
+}
+
+function resolveCalendarVoiceDate(input: string): string | null {
+  if (/\btonight\b/i.test(input)) {
+    return getLocalTodayDateString();
+  }
+  const relative = resolveRelativeLocalDate(input);
+  if (relative) {
+    return relative;
+  }
+  return resolveWeekdayDate(input);
+}
+
+function parseCalendarVoiceTime(input: string, settings = defaultVoiceWorkflowSettings): string | null {
+  const normalized = input.toLowerCase();
+  if (/\b(tonight|evening)\b/.test(normalized)) {
+    return "19:00";
+  }
+  if (/\bafternoon\b/.test(normalized)) {
+    return "15:00";
+  }
+  if (/\bmorning\b/.test(normalized)) {
+    return settings.defaultReminderTime || "09:00";
+  }
+
+  const match = input.match(/\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i)
+    ?? input.match(/^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*$/i);
   if (!match) {
     return null;
   }
@@ -1736,46 +2199,203 @@ function extractVoiceTime(input: string): string | null {
   const meridian = match[3]?.toLowerCase();
   if (meridian === "pm" && hour < 12) {
     hour += 12;
-  }
-  if (meridian === "am" && hour === 12) {
+  } else if (meridian === "am" && hour === 12) {
     hour = 0;
+  } else if (!meridian && hour >= 1 && hour <= 7) {
+    hour += 12;
   }
   if (hour > 23 || minute > 59) {
     return null;
   }
-
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function addMinutesToTime(time: string, minutes: number): string {
+  const [hourPart, minutePart] = time.split(":");
+  const date = new Date();
+  date.setHours(Number(hourPart), Number(minutePart), 0, 0);
+  date.setMinutes(date.getMinutes() + minutes);
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
 function cleanVoiceCalendarTitle(input: string): string {
   return input
     .replace(/\b(add|create|schedule)\b/gi, "")
-    .replace(/\b(remind me to|remind me|please)\b/gi, "")
-    .replace(/\b(today|tomorrow|in\s+\d{1,3}\s+days?|next\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday))\b/gi, "")
+    .replace(/\b(remind me to|remind me about|remind me|add reminder to|please)\b/gi, "")
+    .replace(/\b(today|tomorrow|tonight|morning|afternoon|evening|in\s+\d{1,3}\s+days?|(?:this|next)?\s*(sunday|monday|tuesday|wednesday|thursday|friday|saturday))\b/gi, "")
     .replace(/\bon\s+(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2}\b/gi, "")
     .replace(/\bat\s+\d{1,2}(?::\d{2})?\s*(am|pm)?\b/gi, "")
+    .replace(/\bis\s*$/gi, "")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function buildVoiceCalendarParams(input: string): Record<string, unknown> {
-  const date = resolveRelativeLocalDate(input) ?? getLocalTodayDateString();
-  const startTime = extractVoiceTime(input);
-  const title = cleanVoiceCalendarTitle(input) || "Voice Calendar event";
+type CalendarVoiceEventType = "birthday" | "meeting" | "appointment" | "call" | "reminder";
+
+interface CalendarVoiceCandidate {
+  id: string;
+  title: string;
+  date: string;
+  startTime: string | null;
+  endTime: string | null;
+  allDay: boolean;
+  recurrence: string | null;
+  reminderLevel: "soft" | "normal" | "urgent";
+  notes: string;
+  sourcePhrasePreview: string;
+  confidence: VoiceConfidence;
+  missingFields: string[];
+  sensitivity: VoiceSensitivity;
+  eventType: CalendarVoiceEventType;
+}
+
+function detectCalendarVoiceType(input: string): CalendarVoiceEventType {
   const lower = input.toLowerCase();
-  const type = lower.includes("birthday") ? "birthday" : lower.includes("call") ? "call" : lower.includes("appointment") ? "appointment" : lower.includes("meeting") ? "meeting" : "reminder";
+  if (lower.includes("birthday")) {
+    return "birthday";
+  }
+  if (lower.includes("meeting")) {
+    return "meeting";
+  }
+  if (lower.includes("appointment") || lower.includes("dentist")) {
+    return "appointment";
+  }
+  if (lower.includes("call")) {
+    return "call";
+  }
+  return "reminder";
+}
+
+function parseCalendarVoiceCandidate(input: string, settings = defaultVoiceWorkflowSettings): CalendarVoiceCandidate | null {
+  const trimmed = input.trim();
+  if (!/\b(add|create|schedule|remind me|reminder|meeting|appointment|birthday|call|dentist)\b/i.test(trimmed)) {
+    return null;
+  }
+
+  const eventType = detectCalendarVoiceType(trimmed);
+  const resolvedDate = resolveCalendarVoiceDate(trimmed);
+  const startTime = parseCalendarVoiceTime(trimmed, settings);
+  const allDay = eventType === "birthday";
+  const missingFields: string[] = [];
+  if (!resolvedDate) {
+    missingFields.push("date");
+  }
+  if (!allDay && !startTime) {
+    missingFields.push("time");
+  }
+  const date = resolvedDate ?? getLocalTodayDateString();
+  const title = cleanVoiceCalendarTitle(trimmed)
+    || (eventType === "birthday" ? "Birthday" : eventType === "call" ? "Call reminder" : "Voice Calendar event");
+  const sensitive = assistantSensitiveRegex.test(trimmed);
+  const confidence: VoiceConfidence = missingFields.length === 0 && title !== "Voice Calendar event"
+    ? "high"
+    : missingFields.length <= 1
+      ? "medium"
+      : "low";
+  const duration = Math.max(5, settings.defaultMeetingDurationMinutes || 30);
 
   return {
+    id: createClientId("calendar-voice-candidate"),
     title,
     date,
-    startTime,
-    allDay: !startTime || type === "birthday",
+    startTime: allDay ? null : startTime,
+    endTime: allDay || !startTime ? null : addMinutesToTime(startTime, duration),
+    allDay,
+    recurrence: eventType === "birthday" ? "yearly-placeholder" : null,
+    reminderLevel: /urgent/i.test(trimmed) ? "urgent" : "normal",
+    notes: "Created from DexNest Voice command candidate.",
+    sourcePhrasePreview: sensitive ? "" : trimmed.replace(/\s+/g, " ").slice(0, 140),
+    confidence,
+    missingFields,
+    sensitivity: sensitive ? "sensitive" : "personal",
+    eventType
+  };
+}
+
+function calendarCandidateToActionParams(candidate: CalendarVoiceCandidate): Record<string, unknown> {
+  return {
+    title: candidate.title,
+    date: candidate.date,
+    startTime: candidate.allDay ? null : candidate.startTime,
+    endTime: candidate.allDay ? null : candidate.endTime,
+    allDay: candidate.allDay,
+    sourceModule: "voice",
+    sourceId: candidate.id,
+    recurrence: candidate.recurrence || null,
+    reminderLevel: candidate.reminderLevel,
+    notes: candidate.notes
+  };
+}
+
+function buildVoiceCalendarParams(input: string, settings = defaultVoiceWorkflowSettings): Record<string, unknown> {
+  const candidate = parseCalendarVoiceCandidate(input, settings);
+  return candidate ? calendarCandidateToActionParams(candidate) : {
+    title: cleanVoiceCalendarTitle(input) || "Voice Calendar event",
+    date: getLocalTodayDateString(),
+    startTime: null,
+    allDay: true,
     sourceModule: "voice",
     sourceId: `voice-${Date.now()}`,
-    recurrence: type === "birthday" ? "yearly-placeholder" : null,
-    reminderLevel: lower.includes("urgent") ? "urgent" : "normal",
+    recurrence: null,
+    reminderLevel: "normal",
     notes: "Created from DexNest Voice command candidate."
   };
+}
+
+function parseCalendarLookupIntent(input: string): "calendar_show_today" | "calendar_show_upcoming" | null {
+  const normalized = normalizeVoiceCommand(input);
+  if (/\b(what do i have today|show today'?s calendar|show today calendar|calendar today|what is today)\b/.test(normalized)) {
+    return "calendar_show_today";
+  }
+  if (/\b(what is tomorrow|show upcoming events|upcoming events|next event|what'?s next|what is my next event)\b/.test(normalized)) {
+    return "calendar_show_upcoming";
+  }
+  return null;
+}
+
+function shouldAutoCreateCalendarCandidate(candidate: CalendarVoiceCandidate, settings: VoiceWorkflowSettings): boolean {
+  if (!settings.autoCreateHighConfidenceCalendarVoiceEvents || candidate.confidence !== "high" || candidate.missingFields.length > 0) {
+    return false;
+  }
+  return !(candidate.recurrence && settings.askBeforeRecurringEvents);
+}
+
+function updatedCalendarCandidate(candidate: CalendarVoiceCandidate, patch: Partial<CalendarVoiceCandidate>, settings = defaultVoiceWorkflowSettings): CalendarVoiceCandidate {
+  const next = { ...candidate, ...patch };
+  const missingFields: string[] = [];
+  if (!next.date) {
+    missingFields.push("date");
+  }
+  if (!next.allDay && !next.startTime) {
+    missingFields.push("time");
+  }
+  const startTime = next.allDay ? null : next.startTime;
+  return {
+    ...next,
+    startTime,
+    endTime: next.allDay ? null : (next.endTime || (startTime ? addMinutesToTime(startTime, settings.defaultMeetingDurationMinutes || 30) : null)),
+    missingFields,
+    confidence: missingFields.length === 0 ? "high" : missingFields.length === 1 ? "medium" : "low"
+  };
+}
+
+function parseCalendarFollowUpPatch(input: string, candidate: CalendarVoiceCandidate, settings = defaultVoiceWorkflowSettings): Partial<CalendarVoiceCandidate> | null {
+  const patch: Partial<CalendarVoiceCandidate> = {};
+  if (candidate.missingFields.includes("time") || /\b(at\s+)?\d{1,2}(?::\d{2})?\s*(am|pm)?\b|\bmorning|afternoon|evening|tonight\b/i.test(input)) {
+    const time = parseCalendarVoiceTime(input, settings);
+    if (time) {
+      patch.startTime = time;
+      patch.endTime = addMinutesToTime(time, settings.defaultMeetingDurationMinutes || 30);
+      patch.allDay = false;
+    }
+  }
+  if (candidate.missingFields.includes("date") || /\b(today|tomorrow|tonight|in\s+\d{1,3}\s+days?|this|next|sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/i.test(input)) {
+    const date = resolveCalendarVoiceDate(input);
+    if (date) {
+      patch.date = date;
+    }
+  }
+  return Object.keys(patch).length > 0 ? patch : null;
 }
 
 function extractFinderQuery(input: string): string {
@@ -1819,6 +2439,37 @@ function findDevRunAction(input: string, actions: ActionDefinition[]): ActionDef
   return candidates.find((action) => /dexnest|desknest/i.test(action.title)) ?? candidates[0];
 }
 
+function performanceModeRouteFromText(text: string, actions: ActionDefinition[]): VoiceRouteResult | null {
+  const normalized = normalizeVoiceCommand(text);
+  const hasAction = (actionId: string) => actions.some((action) => action.id === actionId);
+  const performancePhrase = /\b(performance mode|gaming mode)\b/i.test(normalized);
+  if (!performancePhrase) {
+    return null;
+  }
+
+  let actionId = "";
+  if (/\b(toggle|switch)\b/i.test(normalized)) {
+    actionId = "system.performance.toggle";
+  } else if (/\b(turn on|enable|start)\b/i.test(normalized) || /\b(performance mode on|gaming mode on)\b/i.test(normalized)) {
+    actionId = "system.performance.enable";
+  } else if (/\b(turn off|disable|stop)\b/i.test(normalized) || /\b(performance mode off|gaming mode off)\b/i.test(normalized)) {
+    actionId = "system.performance.disable";
+  }
+  if (!actionId || !hasAction(actionId)) {
+    return null;
+  }
+  return {
+    intent: "performance_mode",
+    targetModule: "system",
+    actionId,
+    params: { reason: "assistant" },
+    confidence: "high",
+    requiresConfirmation: false,
+    sensitivity: "none",
+    explanation: "Routes directly to the registered DexNest Performance Mode action."
+  };
+}
+
 function externalDeviceRouteFromText(text: string, actions: ActionDefinition[]): VoiceRouteResult | null {
   if (!/\b(light|lights|lamp|lamps|govee|device|devices)\b/i.test(text)) {
     return null;
@@ -1833,10 +2484,10 @@ function externalDeviceRouteFromText(text: string, actions: ActionDefinition[]):
     actionId = "external.govee.turn_off";
   } else if (/\btoggle\b/i.test(normalized)) {
     actionId = "external.govee.toggle";
-  } else if (/\b(dim|brightness|percent|%)\b/i.test(normalized)) {
+  } else if (/\b(dim|brighten|brightness|percent|%)\b/i.test(normalized)) {
     actionId = "external.govee.set_brightness";
     const percent = normalized.match(/\b(\d{1,3})\s*(?:percent|%)?\b/);
-    params.brightness = percent ? Number(percent[1]) : /\bdim\b/i.test(normalized) ? 25 : 60;
+    params.brightness = percent ? Number(percent[1]) : /\bdim\b/i.test(normalized) ? 25 : /\bbrighten\b/i.test(normalized) ? 75 : 60;
   } else if (/\b(warm|temperature|kelvin|cool white|white)\b/i.test(normalized)) {
     actionId = "external.govee.set_color_temperature";
     params.kelvin = /\bwarm\b/i.test(normalized) ? 2700 : 5000;
@@ -1847,10 +2498,7 @@ function externalDeviceRouteFromText(text: string, actions: ActionDefinition[]):
   if (!actionId || !hasAction(actionId)) {
     return null;
   }
-  const aliasMatch = normalized.match(/\b(?:turn|switch|toggle|set|make|dim|brighten)\s+(?:the\s+)?(.+?)(?:\s+(?:on|off|to|blue|red|green|purple|pink|yellow|orange|warm|cool|white|\d|percent|%|brightness)|$)/i);
-  const alias = aliasMatch?.[1]?.replace(/\b(govee|device|devices)\b/gi, "").trim() || "room lights";
-  params.alias = alias || "room lights";
-  params.confirmedDangerous = true;
+  params.alias = extractGoveeAlias(normalized);
   return {
     intent: "external_device_control",
     targetModule: "external_devices",
@@ -1863,7 +2511,28 @@ function externalDeviceRouteFromText(text: string, actions: ActionDefinition[]):
   };
 }
 
-function routeVoiceCommand(input: string, actions: ActionDefinition[]): VoiceRouteResult {
+// Extracts the device/group alias from a normalized light command by stripping
+// command verbs, on/off keywords, colors, numbers and modifiers — leaving the
+// device noun phrase. Works regardless of word order ("turn off lights" and
+// "turn lights off" both yield "lights"). Falls back to a sensible group alias.
+function extractGoveeAlias(normalized: string): string {
+  const stopWords = new RegExp(
+    "\\b(please|can|could|you|the|a|an|to|by|at|of|my|turn|switch|toggle|set|make|change|dim|brighten|"
+    + "on|off|up|down|warm|cool|cold|white|bright|dark|darker|brighter|color|colour|temperature|kelvin|"
+    + "brightness|percent|percentage|degrees?|govee|device|devices)\\b",
+    "gi"
+  );
+  const colorWords = /\b(blue|red|green|purple|pink|yellow|orange|cyan|magenta|teal)\b/gi;
+  const alias = normalized
+    .replace(stopWords, " ")
+    .replace(colorWords, " ")
+    .replace(/[0-9%]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return alias || "room lights";
+}
+
+function routeVoiceCommand(input: string, actions: ActionDefinition[], workflowSettings = defaultVoiceWorkflowSettings): VoiceRouteResult {
   const trimmed = input.trim();
   const normalized = normalizeVoiceCommand(trimmed);
   const sensitiveQuestion = /\b(sin|social insurance|passport|health card|work permit|permit number|document number|uci|expiry|expires|valid until)\b/i.test(trimmed);
@@ -1879,6 +2548,11 @@ function routeVoiceCommand(input: string, actions: ActionDefinition[]): VoiceRou
       explanation: "Type or speak a DexNest command.",
       suggestions: ["Open Dev", "Search work permit", "Send clipboard to phone"]
     };
+  }
+
+  const performanceRoute = performanceModeRouteFromText(trimmed, actions);
+  if (performanceRoute) {
+    return performanceRoute;
   }
 
   if (/^(what|when|show|find).*\b(sin|social insurance|passport|health card|work permit|permit number|document number|uci|expiry|expires|valid until)\b/i.test(trimmed)) {
@@ -1899,15 +2573,79 @@ function routeVoiceCommand(input: string, actions: ActionDefinition[]): VoiceRou
     return externalRoute;
   }
 
-  if (/\b(add|create|schedule|remind me|meeting|appointment|call|birthday)\b/i.test(trimmed) && /\b(today|tomorrow|in\s+\d{1,3}\s+days?|next\s+\w+|at\s+\d{1,2}|birthday|meeting|appointment|call)\b/i.test(trimmed)) {
+  const calendarLookupIntent = parseCalendarLookupIntent(trimmed);
+  if (calendarLookupIntent) {
+    return buildRouteForIntent(calendarLookupIntent, trimmed, actions, workflowSettings) ?? {
+      intent: calendarLookupIntent,
+      targetModule: "calendar",
+      actionId: calendarLookupIntent === "calendar_show_today" ? "calendar.show_today" : "calendar.show_upcoming",
+      params: {},
+      confidence: "high",
+      requiresConfirmation: false,
+      sensitivity: "personal",
+      explanation: "Opens the requested local DexNest Calendar view."
+    };
+  }
+
+  if (isStartCaptureCommand(trimmed)) {
+    return {
+      intent: "capture_note",
+      targetModule: "capture",
+      actionId: "voice.workflow.start",
+      params: { workflowMode: "capture_note", targetModule: "capture" },
+      confidence: "high",
+      requiresConfirmation: false,
+      sensitivity: "personal",
+      explanation: "Starts DexNest Capture voice mode using the shared local Speech Service."
+    };
+  }
+
+  const finderAdd = parseFinderAddPhrase(trimmed);
+  if (finderAdd) {
+    return {
+      intent: "finder_add",
+      targetModule: "finder",
+      actionId: "finder.create_item",
+      params: {
+        itemName: finderAdd.itemName,
+        location: finderAdd.location,
+        room: finderAdd.room,
+        container: finderAdd.container,
+        notes: finderAdd.notes,
+        confidence: finderAdd.confidence === "high" ? "sure" : "maybe",
+        updateExisting: true
+      },
+      confidence: finderAdd.confidence,
+      requiresConfirmation: finderAdd.confidence !== "high",
+      sensitivity: "personal",
+      explanation: "Creates or updates a DexNest Finder item-location memory."
+    };
+  }
+
+  const finderLookup = parseFinderLookupPhrase(trimmed);
+  if (finderLookup) {
+    return {
+      intent: finderLookup.kind === "location" ? "finder_reverse_lookup" : "finder_search",
+      targetModule: "finder",
+      actionId: finderLookup.kind === "location" ? "finder.reverse_lookup" : "finder.search_items",
+      params: { query: finderLookup.query },
+      confidence: finderLookup.query ? "high" : "low",
+      requiresConfirmation: false,
+      sensitivity: "personal",
+      explanation: finderLookup.kind === "location" ? "Runs a DexNest Finder reverse lookup." : "Searches DexNest Finder item-location records."
+    };
+  }
+
+  const calendarCandidate = parseCalendarVoiceCandidate(trimmed, workflowSettings);
+  if (calendarCandidate) {
     return {
       intent: "calendar_create_candidate",
       targetModule: "calendar",
-      actionId: "calendar.create_event",
-      params: buildVoiceCalendarParams(trimmed),
-      confidence: "medium",
+      actionId: "voice.workflow.calendar_candidate",
+      params: { candidate: calendarCandidate },
+      confidence: calendarCandidate.confidence,
       requiresConfirmation: true,
-      sensitivity: "personal",
+      sensitivity: calendarCandidate.sensitivity,
       explanation: "Creates an editable Calendar event candidate. DexNest will not add it until you confirm."
     };
   }
@@ -2021,7 +2759,345 @@ function routeVoiceCommand(input: string, actions: ActionDefinition[]): VoiceRou
   };
 }
 
+// Fast deterministic command router (Phase 23 Part D). Handles obvious commands
+// instantly without ever calling Ollama. Returns null for anything it is not
+// confident about, so the rules router + optional LLM can take over.
+function fastCommandRouter(text: string, actions: ActionDefinition[], workflowSettings = defaultVoiceWorkflowSettings): VoiceRouteResult | null {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const normalized = normalizeVoiceCommand(trimmed);
+  const hasAction = (actionId: string) => actions.some((action) => action.id === actionId);
+
+  // Part E: Performance / gaming mode.
+  const performanceRoute = performanceModeRouteFromText(trimmed, actions);
+  if (performanceRoute) {
+    return performanceRoute;
+  }
+
+  // Part F/G: Govee lights, lamps and groups.
+  const externalRoute = externalDeviceRouteFromText(trimmed, actions);
+  if (externalRoute) {
+    return externalRoute;
+  }
+
+  // Part H: Security — lock sensitive session / lock vault / open secure vault.
+  if (/\block\b/.test(normalized) && /\b(sensitive|session)\b/.test(normalized) && hasAction("assistant.lock_session")) {
+    return {
+      intent: "security_action",
+      targetModule: "search",
+      actionId: "assistant.lock_session",
+      params: {},
+      confidence: "high",
+      requiresConfirmation: false,
+      sensitivity: "none",
+      explanation: "Locks the trusted sensitive session."
+    };
+  }
+  if (/\block\b/.test(normalized) && /\b(secure\s+)?vault\b/.test(normalized) && hasAction("vault.secure.lock")) {
+    return {
+      intent: "security_action",
+      targetModule: "vault",
+      actionId: "vault.secure.lock",
+      params: {},
+      confidence: "high",
+      requiresConfirmation: false,
+      sensitivity: "none",
+      explanation: "Locks the DexNest Secure Vault."
+    };
+  }
+  if (/\b(open|show|go to)\b/.test(normalized) && /\bsecure vault\b/.test(normalized) && hasAction("vault.open")) {
+    return {
+      intent: "security_action",
+      targetModule: "vault",
+      actionId: "vault.open",
+      params: {},
+      confidence: "high",
+      requiresConfirmation: false,
+      sensitivity: "none",
+      explanation: "Opens the DexNest Vault."
+    };
+  }
+
+  // Part H: Open today's journal.
+  if (/\b(open|show|go to|start)\b.*\b(today'?s journal|journal today|journal)\b/.test(normalized) && hasAction("journal.open_today")) {
+    return buildRouteForIntent("journal_open_today", trimmed, actions, workflowSettings);
+  }
+
+  const calendarLookupIntent = parseCalendarLookupIntent(trimmed);
+  if (calendarLookupIntent && hasAction(calendarLookupIntent === "calendar_show_today" ? "calendar.show_today" : "calendar.show_upcoming")) {
+    return buildRouteForIntent(calendarLookupIntent, trimmed, actions, workflowSettings);
+  }
+
+  const calendarCandidate = parseCalendarVoiceCandidate(trimmed, workflowSettings);
+  if (calendarCandidate && hasAction("voice.workflow.calendar_candidate")) {
+    return buildRouteForIntent("calendar_create_candidate", trimmed, actions, workflowSettings);
+  }
+
+  // Part H: Open module ("open calendar", "open vault", …).
+  if (isStartCaptureCommand(trimmed) && hasAction("voice.workflow.start")) {
+    return buildRouteForIntent("capture_note", trimmed, actions, workflowSettings);
+  }
+
+  const finderAdd = parseFinderAddPhrase(trimmed);
+  if (finderAdd && hasAction("finder.create_item")) {
+    return buildRouteForIntent("finder_add", trimmed, actions, workflowSettings);
+  }
+
+  const finderLookup = parseFinderLookupPhrase(trimmed);
+  if (finderLookup && hasAction(finderLookup.kind === "location" ? "finder.reverse_lookup" : "finder.search_items")) {
+    return buildRouteForIntent(finderLookup.kind === "location" ? "finder_reverse_lookup" : "finder_search", trimmed, actions, workflowSettings);
+  }
+
+  if (/\b(open|show|go to)\b/.test(normalized)) {
+    const target = detectModuleAliasFromText(trimmed);
+    if (target && hasAction(target.actionId)) {
+      return buildRouteForIntent("open_module", trimmed, actions, workflowSettings);
+    }
+  }
+
+  // Part H: Smart Lookup for sensitive document fields.
+  if (/^(what|when|where|show|find|tell me)\b/.test(normalized) && assistantSensitiveRegex.test(trimmed)) {
+    return buildRouteForIntent("smart_lookup", trimmed, actions, workflowSettings);
+  }
+
+  // Part H: Finder location questions.
+  if (/\b(where is|where did i put|where are|what is in|what's in)\b/.test(normalized)) {
+    return buildRouteForIntent("finder_search", trimmed, actions, workflowSettings);
+  }
+
+  // Part H: Keyword search.
+  if (/^\s*(search|find document|find file|find docs?|look up|find my)\b/.test(normalized)) {
+    return buildRouteForIntent("search_query", trimmed, actions, workflowSettings);
+  }
+
+  // Part H: Send clipboard to phone (still confirmed downstream).
+  if (/\bsend clipboard to phone\b/.test(normalized) || (/\b(send|share)\b/.test(normalized) && /\bclipboard\b/.test(normalized) && /\b(phone|drop)\b/.test(normalized))) {
+    return buildRouteForIntent("drop_send_clipboard", trimmed, actions, workflowSettings);
+  }
+
+  // Part H: Dev run commands (still confirmed downstream).
+  if (/\brun\b/.test(normalized)) {
+    const devRoute = buildRouteForIntent("dev_run_command", trimmed, actions, workflowSettings);
+    if (devRoute) {
+      return devRoute;
+    }
+  }
+
+  return null;
+}
+
 const assistantSensitiveRegex = /\b(sin|social insurance|passport|health card|work permit|permit number|document number|uci|expiry|expires|valid until)\b/i;
+
+// --- Journal continuous voice mode helpers (Phase 23.4) --------------------
+type JournalVoiceControl = "save" | "pause" | "resume" | "cancel";
+
+function isStartJournalCommand(text: string): boolean {
+  return /\b(start (?:today'?s )?journal|start my journal|open today'?s journal and start dictation|begin journal entry|start diary|begin diary|journal mode|start dictation)\b/i.test(text.trim());
+}
+
+// Detect control commands spoken/typed while in journal dictation mode.
+function matchJournalControl(text: string): JournalVoiceControl | null {
+  const t = text.toLowerCase().trim();
+  if (/\b(save journal|save entry|finish journal|finish diary|stop journal|stop diary|save and stop)\b/.test(t)) {
+    return "save";
+  }
+  if (/\b(cancel journal|cancel dictation|stop without saving|discard journal)\b/.test(t)) {
+    return "cancel";
+  }
+  if (/\b(pause journal|pause dictation)\b/.test(t)) {
+    return "pause";
+  }
+  if (/\b(resume journal|resume dictation|continue journal)\b/.test(t)) {
+    return "resume";
+  }
+  return null;
+}
+
+// Build a short local title from the first dictation chunk (no Ollama).
+function autoTitleFromChunk(chunk: string): string {
+  const words = chunk.trim().replace(/[.?!,]+$/, "").split(/\s+/).slice(0, 6).join(" ");
+  return words.slice(0, 48) || "Journal entry";
+}
+
+type JournalVoiceStatus = "idle" | "starting" | "listening" | "transcribing" | "appending" | "paused" | "saved" | "cancelled" | "error";
+
+interface JournalVoiceState {
+  mode: "none" | "journal_dictation";
+  status: JournalVoiceStatus;
+  startedAt: number | null;
+  source: string;
+  activeEntryId: string | null;
+  chunksCount: number;
+  lastSavedAt: number | null;
+  lastTranscriptPreview: string;
+  sensitivity: "none" | "sensitive";
+  error: string;
+}
+
+const defaultJournalVoiceState: JournalVoiceState = {
+  mode: "none",
+  status: "idle",
+  startedAt: null,
+  source: "voice",
+  activeEntryId: null,
+  chunksCount: 0,
+  lastSavedAt: null,
+  lastTranscriptPreview: "",
+  sensitivity: "none",
+  error: ""
+};
+
+type VoiceWorkflowMode = "none" | "assistant_command" | "journal_dictation" | "capture_note" | "finder_add" | "calendar_create";
+type VoiceWorkflowStatus = "idle" | "starting" | "listening" | "transcribing" | "saving" | "saved" | "candidate" | "lookup_complete" | "paused" | "cancelled" | "error";
+
+interface FinderVoiceCandidate {
+  itemName: string;
+  location: string;
+  room: string;
+  container: string;
+  notes: string;
+  confidence: VoiceConfidence;
+  sourceText: string;
+}
+
+interface VoiceWorkflowState {
+  mode: VoiceWorkflowMode;
+  status: VoiceWorkflowStatus;
+  startedAt: number | null;
+  source: string;
+  targetModule: "capture" | "finder" | "calendar" | "";
+  activeEntityId: string | null;
+  chunksCount: number;
+  lastSavedAt: number | null;
+  lastTranscriptPreview: string;
+  error: string;
+  confidence?: VoiceConfidence;
+  missingFields?: string[];
+  candidate?: FinderVoiceCandidate | null;
+  calendarCandidate?: CalendarVoiceCandidate | null;
+}
+
+const defaultVoiceWorkflowState: VoiceWorkflowState = {
+  mode: "none",
+  status: "idle",
+  startedAt: null,
+  source: "voice",
+  targetModule: "",
+  activeEntityId: null,
+  chunksCount: 0,
+  lastSavedAt: null,
+  lastTranscriptPreview: "",
+  error: "",
+  confidence: undefined,
+  missingFields: [],
+  candidate: null,
+  calendarCandidate: null
+};
+
+type FinderLookupKind = "item" | "location";
+
+interface FinderVoiceLookup {
+  kind: FinderLookupKind;
+  query: string;
+}
+
+function isSensitiveCaptureText(text: string): boolean {
+  return assistantSensitiveRegex.test(text) || /\b(password|api key|token|recovery code|sin number|social insurance)\b/i.test(text);
+}
+
+function isStartCaptureCommand(text: string): boolean {
+  return /\b(capture this|remember this|new note|quick note|save a note|add to inbox|start capture)\b/i.test(text.trim());
+}
+
+function matchCaptureControl(text: string): "save" | "stop" | "cancel" | null {
+  const normalized = normalizeVoiceCommand(text);
+  if (/\b(cancel capture|discard capture)\b/.test(normalized)) {
+    return "cancel";
+  }
+  if (/\b(save capture|save note|finish capture)\b/.test(normalized)) {
+    return "save";
+  }
+  if (/\b(stop capture|stop listening)\b/.test(normalized)) {
+    return "stop";
+  }
+  return null;
+}
+
+function titleFromVoiceText(text: string, fallback: string): string {
+  return text.trim().replace(/[.?!,]+$/g, "").split(/\s+/).slice(0, 7).join(" ").slice(0, 64) || fallback;
+}
+
+function cleanFinderItemName(value: string): string {
+  return value
+    .replace(/^\b(remember|my|the|a|an|i put|i kept)\b\s*/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function cleanFinderLocation(value: string): string {
+  return value
+    .replace(/\b(right now|please|for me)\b/gi, "")
+    .replace(/[.?!]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function inferFinderRoom(location: string): string {
+  const match = location.match(/\b(kitchen|bedroom|office|bathroom|living room|garage|basement|closet|desk|drawer)\b/i);
+  return match?.[1]?.toLowerCase() ?? "";
+}
+
+function inferFinderContainer(location: string): string {
+  const match = location.match(/\b([a-z0-9 -]*(drawer|box|folder|shelf|cabinet|suitcase|bag|backpack|desk|closet|wallet)[a-z0-9 -]*)\b/i);
+  return match?.[1]?.trim().toLowerCase() ?? "";
+}
+
+function parseFinderAddPhrase(text: string): FinderVoiceCandidate | null {
+  const trimmed = text.trim().replace(/[“”]/g, "\"");
+  const patterns = [
+    /\bremember\s+(.{2,80}?)\s+(?:is|are)\s+(?:in|on|beside|under|inside|at)\s+(.{2,100})$/i,
+    /\b(?:my\s+)?(.{2,80}?)\s+(?:is|are)\s+(?:in|on|beside|under|inside|at)\s+(.{2,100})$/i,
+    /\bi\s+(?:put|kept)\s+(.{2,80}?)\s+(?:in|on|beside|under|inside|at)\s+(.{2,100})$/i
+  ];
+  for (const pattern of patterns) {
+    const match = trimmed.match(pattern);
+    if (!match) {
+      continue;
+    }
+    const itemName = cleanFinderItemName(match[1] ?? "");
+    const location = cleanFinderLocation(match[2] ?? "");
+    if (!itemName || !location) {
+      continue;
+    }
+    const vague = /\b(this|that|it|something|stuff|thing)\b/i.test(itemName) || itemName.length < 3 || location.length < 4;
+    const confidence: VoiceConfidence = vague ? "medium" : "high";
+    return {
+      itemName,
+      location,
+      room: inferFinderRoom(location),
+      container: inferFinderContainer(location),
+      notes: "Added from DexNest voice workflow.",
+      confidence,
+      sourceText: trimmed
+    };
+  }
+  return null;
+}
+
+function parseFinderLookupPhrase(text: string): FinderVoiceLookup | null {
+  const normalized = normalizeVoiceCommand(text);
+  const locationMatch = normalized.match(/\b(?:what is in|what's in|what do i keep in)\s+(.{2,80})$/i);
+  if (locationMatch?.[1]) {
+    return { kind: "location", query: cleanFinderLocation(locationMatch[1]) };
+  }
+  const itemMatch = normalized.match(/\b(?:where is my|where is the|where did i put my|where did i put the|find my|find the)\s+(.{2,80})$/i);
+  if (itemMatch?.[1]) {
+    return { kind: "item", query: cleanFinderItemName(itemMatch[1]) };
+  }
+  return null;
+}
 
 function detectModuleAliasFromText(text: string): { module: ViewId; actionId: string } | null {
   const normalized = normalizeVoiceCommand(text);
@@ -2036,7 +3112,7 @@ function detectModuleAliasFromText(text: string): { module: ViewId; actionId: st
 // Deterministically build a safe route for a known intent. DexNest — not the
 // LLM — chooses the actionId and params here, so the model can only pick an
 // intent category. Returns null when no safe registered action can be built.
-function buildRouteForIntent(intent: VoiceIntentName, text: string, actions: ActionDefinition[]): VoiceRouteResult | null {
+function buildRouteForIntent(intent: VoiceIntentName, text: string, actions: ActionDefinition[], workflowSettings = defaultVoiceWorkflowSettings): VoiceRouteResult | null {
   const trimmed = text.trim();
   const sensitive = assistantSensitiveRegex.test(trimmed);
 
@@ -2066,7 +3142,8 @@ function buildRouteForIntent(intent: VoiceIntentName, text: string, actions: Act
       };
     }
     case "finder_search": {
-      const query = extractFinderQuery(trimmed) || trimmed;
+      const lookup = parseFinderLookupPhrase(trimmed);
+      const query = lookup?.query || extractFinderQuery(trimmed) || trimmed;
       return {
         intent,
         targetModule: "finder",
@@ -2078,16 +3155,82 @@ function buildRouteForIntent(intent: VoiceIntentName, text: string, actions: Act
         explanation: "Searches DexNest Finder item-location records."
       };
     }
+    case "finder_reverse_lookup": {
+      const lookup = parseFinderLookupPhrase(trimmed);
+      const query = lookup?.query || extractFinderQuery(trimmed) || trimmed;
+      return {
+        intent,
+        targetModule: "finder",
+        actionId: "finder.reverse_lookup",
+        params: { query },
+        confidence: query ? "high" : "low",
+        requiresConfirmation: false,
+        sensitivity: "personal",
+        explanation: "Runs a DexNest Finder reverse lookup for a location or container."
+      };
+    }
+    case "finder_add": {
+      const candidate = parseFinderAddPhrase(trimmed);
+      if (!candidate) {
+        return null;
+      }
+      return {
+        intent,
+        targetModule: "finder",
+        actionId: "finder.create_item",
+        params: {
+          itemName: candidate.itemName,
+          location: candidate.location,
+          room: candidate.room,
+          container: candidate.container,
+          notes: candidate.notes,
+          confidence: candidate.confidence === "high" ? "sure" : "maybe",
+          updateExisting: true
+        },
+        confidence: candidate.confidence,
+        requiresConfirmation: candidate.confidence !== "high",
+        sensitivity: "personal",
+        explanation: "Creates or updates a DexNest Finder item-location memory."
+      };
+    }
     case "calendar_create_candidate":
+      {
+        const candidate = parseCalendarVoiceCandidate(trimmed, workflowSettings);
+        if (!candidate) {
+          return null;
+        }
+        return {
+          intent,
+          targetModule: "calendar",
+          actionId: "voice.workflow.calendar_candidate",
+          params: { candidate },
+          confidence: candidate.confidence,
+          requiresConfirmation: true,
+          sensitivity: candidate.sensitivity,
+          explanation: "Creates an editable Calendar event candidate. DexNest will not add it until you confirm."
+        };
+      }
+    case "calendar_show_today":
       return {
         intent,
         targetModule: "calendar",
-        actionId: "calendar.create_event",
-        params: buildVoiceCalendarParams(trimmed),
-        confidence: "medium",
-        requiresConfirmation: true,
+        actionId: "calendar.show_today",
+        params: {},
+        confidence: "high",
+        requiresConfirmation: false,
         sensitivity: "personal",
-        explanation: "Creates an editable Calendar event candidate. DexNest will not add it until you confirm."
+        explanation: "Opens today's local DexNest Calendar events."
+      };
+    case "calendar_show_upcoming":
+      return {
+        intent,
+        targetModule: "calendar",
+        actionId: "calendar.show_upcoming",
+        params: {},
+        confidence: "high",
+        requiresConfirmation: false,
+        sensitivity: "personal",
+        explanation: "Opens upcoming local DexNest Calendar events."
       };
     case "drop_send_clipboard":
       return {
@@ -2146,16 +3289,15 @@ function buildRouteForIntent(intent: VoiceIntentName, text: string, actions: Act
       };
     }
     case "capture_note": {
-      const note = extractCaptureNote(trimmed) || trimmed;
       return {
         intent,
         targetModule: "capture",
-        actionId: "capture.create_note",
-        params: { title: note.slice(0, 60) || "Assistant capture", text: note, type: "note", source: "command" },
-        confidence: "medium",
-        requiresConfirmation: true,
+        actionId: "voice.workflow.start",
+        params: { workflowMode: "capture_note", targetModule: "capture" },
+        confidence: "high",
+        requiresConfirmation: false,
         sensitivity: "personal",
-        explanation: "Creates a Capture inbox item after confirmation."
+        explanation: "Starts DexNest Capture voice mode using the shared local Speech Service."
       };
     }
     default:
@@ -2171,16 +3313,16 @@ function maxSensitivity(a: VoiceSensitivity, b: VoiceSensitivity): VoiceSensitiv
 // Validate a raw LLM intent object against the registered action list and the
 // allowed intent enum. The LLM's actionId/params are intentionally discarded;
 // only the intent category (plus a sensitivity hint) is trusted.
-function validateLlmIntent(raw: Record<string, unknown> | undefined, text: string, actions: ActionDefinition[]): VoiceRouteResult | null {
+function validateLlmIntent(raw: Record<string, unknown> | undefined, text: string, actions: ActionDefinition[], workflowSettings = defaultVoiceWorkflowSettings): VoiceRouteResult | null {
   if (!raw) {
     return null;
   }
   const intentValue = typeof raw.intent === "string" ? raw.intent : "unknown";
-  const allowed: VoiceIntentName[] = ["smart_lookup", "search_query", "finder_search", "calendar_create_candidate", "drop_send_clipboard", "open_module", "dev_run_command", "journal_open_today", "capture_note", "external_device_control", "unknown"];
+  const allowed: VoiceIntentName[] = ["smart_lookup", "search_query", "finder_search", "finder_add", "finder_reverse_lookup", "calendar_create_candidate", "calendar_show_today", "calendar_show_upcoming", "drop_send_clipboard", "open_module", "dev_run_command", "journal_open_today", "capture_note", "external_device_control", "unknown"];
   if (!allowed.includes(intentValue as VoiceIntentName) || intentValue === "unknown") {
     return null;
   }
-  const built = buildRouteForIntent(intentValue as VoiceIntentName, text, actions);
+  const built = buildRouteForIntent(intentValue as VoiceIntentName, text, actions, workflowSettings);
   if (!built || !built.actionId) {
     return null;
   }
@@ -2227,9 +3369,13 @@ function assistantPendingText(route: VoiceRouteResult): string {
     case "calendar_create_candidate":
       return "I found an event candidate. Review and add it to your Calendar?";
     case "capture_note":
-      return "Save this note to your DexNest Capture inbox?";
+      return "Start DexNest Capture voice mode?";
+    case "finder_add":
+      return `Save this Finder memory?`;
     case "external_device_control":
       return "Run this External Devices action?";
+    case "performance_mode":
+      return "Change DexNest Performance Mode?";
     default:
       return "Ready to run. Confirm?";
   }
@@ -2243,10 +3389,16 @@ function assistantSuccessText(route: VoiceRouteResult, resultCount: number): str
         : "I could not find a confident answer in your indexed documents.";
     case "finder_search":
       return resultCount > 0 ? "I found this in Finder." : "Finder search ran. Open Finder to see matches.";
+    case "finder_reverse_lookup":
+      return resultCount > 0 ? "I found items in that Finder location." : "No Finder items matched that location.";
     case "search_query":
       return resultCount > 0 ? `I found ${resultCount} matching document${resultCount === 1 ? "" : "s"}.` : "Search ran. No strong matches in the current index.";
     case "calendar_create_candidate":
       return "Added the event to your Calendar.";
+    case "calendar_show_today":
+      return "Opened today's Calendar.";
+    case "calendar_show_upcoming":
+      return "Opened upcoming Calendar events.";
     case "drop_send_clipboard":
       return "Sent your clipboard to DexNest Drop.";
     case "dev_run_command":
@@ -2256,9 +3408,27 @@ function assistantSuccessText(route: VoiceRouteResult, resultCount: number): str
     case "open_module":
       return `Opened DexNest ${route.targetModule}.`;
     case "capture_note":
-      return "Saved to your Capture inbox.";
+      return "Capture voice mode started.";
+    case "finder_add":
+      return "Saved to Finder.";
     case "external_device_control":
       return "External Devices action completed.";
+    case "performance_mode":
+      if (route.actionId === "system.performance.enable") {
+        return "Performance Mode is on.";
+      }
+      if (route.actionId === "system.performance.disable") {
+        return "Performance Mode is off.";
+      }
+      return "Performance Mode toggled.";
+    case "security_action":
+      if (route.actionId === "assistant.lock_session") {
+        return "Sensitive session locked.";
+      }
+      if (route.actionId === "vault.secure.lock") {
+        return "Secure Vault locked.";
+      }
+      return "Opened the Vault.";
     default:
       return "Done.";
   }
@@ -2282,6 +3452,23 @@ function assistantAnswerText(route: VoiceRouteResult, smartResults: SmartLookupR
   return assistantSuccessText(route, resultCount);
 }
 
+function finderItemLookupAnswer(query: string, results: FinderItem[]): string {
+  const top = results[0];
+  if (!top) {
+    return `I could not find ${query || "that item"} in Finder. Want to add it?`;
+  }
+  return `${top.itemName} is in ${top.location}${top.container ? ` / ${top.container}` : ""}${top.room ? ` / ${top.room}` : ""}.`;
+}
+
+function finderReverseLookupAnswer(query: string, results: FinderItem[]): string {
+  if (results.length === 0) {
+    return `I could not find anything in ${query || "that location"} yet.`;
+  }
+  const names = results.slice(0, 5).map((item) => item.itemName).join(", ");
+  const suffix = results.length > 5 ? `, and ${results.length - 5} more` : "";
+  return `I found ${results.length} item${results.length === 1 ? "" : "s"} in ${query}: ${names}${suffix}.`;
+}
+
 // Redacts the user's question from debug routing details for sensitive intents,
 // so sensitive transcripts/values never surface in the debug panel.
 function assistantDebugParams(route: VoiceRouteResult): Record<string, unknown> {
@@ -2294,7 +3481,10 @@ function assistantDebugParams(route: VoiceRouteResult): Record<string, unknown> 
 
 // State-changing or sensitive intents must be confirmed in chat before running.
 function assistantNeedsConfirm(route: VoiceRouteResult, actions: ActionDefinition[]): boolean {
-  if (["drop_send_clipboard", "dev_run_command", "calendar_create_candidate", "capture_note"].includes(route.intent)) {
+  if (["drop_send_clipboard", "dev_run_command"].includes(route.intent)) {
+    return true;
+  }
+  if (route.intent === "finder_add" && route.confidence !== "high") {
     return true;
   }
   if (route.targetModule.toLowerCase() === "dev") {
@@ -2555,6 +3745,19 @@ function DexNestApp() {
     secureVaultSetup: false
   });
   const [assistantFocusSignal, setAssistantFocusSignal] = useState(0);
+  const [assistantListenSignal, setAssistantListenSignal] = useState(0);
+  const [assistantListenSource, setAssistantListenSource] = useState("voice");
+  const [ambientVoiceState, setAmbientVoiceState] = useState<AmbientVoiceState>(defaultAmbientVoiceState);
+  const [speechState, setSpeechState] = useState<SpeechServiceState>(defaultSpeechState);
+  const [voiceWorkflowSettings, setVoiceWorkflowSettings] = useState<VoiceWorkflowSettings>(defaultVoiceWorkflowSettings);
+  const [voiceWorkflow, setVoiceWorkflow] = useState<VoiceWorkflowState>(defaultVoiceWorkflowState);
+  const [journalVoice, setJournalVoice] = useState<JournalVoiceState>(defaultJournalVoiceState);
+  const journalLoopActiveRef = useRef(false);
+  const captureLoopActiveRef = useRef(false);
+  const captureVoiceDraftRef = useRef("");
+  const journalDraftRef = useRef<{ id: string; rawText: string; title: string }>({ id: "", rawText: "", title: "" });
+  const speechStateRef = useRef(speechState);
+  useEffect(() => { speechStateRef.current = speechState; }, [speechState]);
 
   const activeLabel = useMemo(
     () => views.find((view) => view.id === activeView)?.label ?? "Command",
@@ -2571,11 +3774,487 @@ function DexNestApp() {
     setAssistantSecurityState(state);
   }
 
+  async function refreshAmbientVoice(): Promise<void> {
+    const state = await getBridge().getAmbientVoiceState();
+    setAmbientVoiceState(state);
+  }
+
+  async function refreshSpeechState(): Promise<void> {
+    const state = await getBridge().getSpeechState();
+    setSpeechState(state);
+  }
+
   function openAssistantFromCommand(): void {
     setActiveView("search");
     setAssistantFocusSignal((value) => value + 1);
     void refreshAssistantSecurity();
   }
+
+  // --- Journal continuous voice mode (Phase 23.4) --------------------------
+  function journalSpeechBlocked(): boolean {
+    return Boolean(speechStateRef.current.performancePaused);
+  }
+
+  function logJournalVoiceMeta(summary: string): void {
+    // Metadata-only audit — never the transcript or journal text.
+    void getBridge().logUiEvent({ view: "journal", target: "journal_voice_mode", summary });
+  }
+
+  async function startJournalVoice(source = "voice"): Promise<void> {
+    if (journalSpeechBlocked()) {
+      setJournalVoice({ ...defaultJournalVoiceState, status: "error", error: "Speech is paused by Performance Mode." });
+      return;
+    }
+    setActiveView("journal");
+    setJournalVoice({ ...defaultJournalVoiceState, mode: "journal_dictation", status: "starting", startedAt: Date.now(), source });
+
+    // Open or create today's entry.
+    let entryId = journalState.todayEntry?.id ?? "";
+    let rawText = journalState.todayEntry?.rawText ?? "";
+    let title = journalState.todayEntry?.title ?? "";
+    if (!entryId) {
+      const result = await runAction("journal.create_entry", source, { date: journalState.today, title: "", rawText: "" }) as { ok?: boolean; entry?: { id: string } };
+      entryId = result.entry?.id ?? "";
+      if (!entryId) {
+        setJournalVoice({ ...defaultJournalVoiceState, status: "error", error: "Could not open today's journal entry." });
+        return;
+      }
+    }
+    journalDraftRef.current = { id: entryId, rawText, title };
+    setJournalVoice((current) => ({ ...current, status: "listening", activeEntryId: entryId }));
+    journalLoopActiveRef.current = true;
+    logJournalVoiceMeta("Journal voice mode started.");
+    void runJournalVoiceLoop(source);
+  }
+
+  async function runJournalVoiceLoop(source: string): Promise<void> {
+    while (journalLoopActiveRef.current) {
+      if (journalSpeechBlocked()) {
+        journalLoopActiveRef.current = false;
+        setJournalVoice((current) => ({ ...current, status: "paused", error: "Speech is paused by Performance Mode." }));
+        return;
+      }
+      setJournalVoice((current) => (current.status === "listening" ? current : { ...current, status: "listening" }));
+      let result: (SpeechTranscriptionResult & { metrics?: SpeechCaptureMetrics }) | null = null;
+      try {
+        result = await runSharedSpeechCapture({ speechState: speechStateRef.current, source, sourceModule: "journal_dictation" });
+      } catch {
+        result = null;
+      }
+      if (!journalLoopActiveRef.current) {
+        return;
+      }
+      // No speech this chunk — keep listening.
+      if (!result || result.status !== "success" || !result.transcript.trim()) {
+        continue;
+      }
+      const transcript = result.transcript.trim();
+      const control = matchJournalControl(transcript);
+      if (control === "save") {
+        await saveAndStopJournalVoice();
+        return;
+      }
+      if (control === "cancel") {
+        await cancelJournalVoice(true);
+        return;
+      }
+      if (control === "pause") {
+        pauseJournalVoice();
+        return;
+      }
+      if (control === "resume") {
+        continue;
+      }
+
+      // Append the chunk to today's entry and auto-save.
+      setJournalVoice((current) => ({ ...current, status: "appending" }));
+      const draft = journalDraftRef.current;
+      const nextRaw = draft.rawText ? `${draft.rawText}\n${transcript}` : transcript;
+      const nextTitle = draft.title.trim() ? draft.title : autoTitleFromChunk(transcript);
+      await runAction("journal.update_entry", source, { id: draft.id, rawText: nextRaw, title: nextTitle });
+      journalDraftRef.current = { id: draft.id, rawText: nextRaw, title: nextTitle };
+      const sensitive = assistantSensitiveRegex.test(transcript);
+      setJournalVoice((current) => ({
+        ...current,
+        status: "saved",
+        chunksCount: current.chunksCount + 1,
+        lastSavedAt: Date.now(),
+        sensitivity: sensitive ? "sensitive" : "none",
+        // Never store a preview of sensitive content.
+        lastTranscriptPreview: sensitive ? "" : transcript.replace(/\s+/g, " ").slice(0, 80)
+      }));
+      logJournalVoiceMeta("Journal chunk appended and saved.");
+    }
+  }
+
+  function pauseJournalVoice(): void {
+    journalLoopActiveRef.current = false;
+    setJournalVoice((current) => ({ ...current, status: "paused" }));
+    logJournalVoiceMeta("Journal voice mode paused.");
+  }
+
+  function resumeJournalVoice(): void {
+    if (journalVoice.mode !== "journal_dictation") {
+      return;
+    }
+    if (journalSpeechBlocked()) {
+      setJournalVoice((current) => ({ ...current, status: "paused", error: "Speech is paused by Performance Mode." }));
+      return;
+    }
+    journalLoopActiveRef.current = true;
+    setJournalVoice((current) => ({ ...current, status: "listening", error: "" }));
+    logJournalVoiceMeta("Journal voice mode resumed.");
+    void runJournalVoiceLoop(journalVoice.source);
+  }
+
+  async function saveAndStopJournalVoice(): Promise<void> {
+    journalLoopActiveRef.current = false;
+    // Each chunk is already saved; just finalize state.
+    setJournalVoice((current) => ({ ...current, mode: "none", status: "saved", lastSavedAt: Date.now() }));
+    logJournalVoiceMeta("Journal voice mode saved and stopped.");
+    await refreshShellData();
+  }
+
+  async function cancelJournalVoice(skipConfirm = false): Promise<void> {
+    if (!skipConfirm && !window.confirm("Stop journal voice mode? Chunks already saved are kept.")) {
+      return;
+    }
+    journalLoopActiveRef.current = false;
+    setJournalVoice((current) => ({ ...current, mode: "none", status: "cancelled" }));
+    logJournalVoiceMeta("Journal voice mode cancelled.");
+    await refreshShellData();
+  }
+
+  function handleJournalControl(control: JournalVoiceControl): void {
+    if (control === "save") {
+      void saveAndStopJournalVoice();
+    } else if (control === "pause") {
+      pauseJournalVoice();
+    } else if (control === "resume") {
+      resumeJournalVoice();
+    } else if (control === "cancel") {
+      void cancelJournalVoice();
+    }
+  }
+
+  function logVoiceWorkflowMeta(actionId: string, source: string, metadata: Record<string, unknown> = {}): void {
+    void runAction(actionId, source, metadata);
+  }
+
+  function captureSpeechBlocked(): boolean {
+    return Boolean(speechStateRef.current.performancePaused);
+  }
+
+  async function startCaptureVoice(source = "voice"): Promise<void> {
+    if (captureSpeechBlocked()) {
+      setVoiceWorkflow({ ...defaultVoiceWorkflowState, mode: "capture_note", targetModule: "capture", status: "error", error: "Speech is paused by Performance Mode.", source });
+      return;
+    }
+    setActiveView("capture");
+    captureVoiceDraftRef.current = "";
+    captureLoopActiveRef.current = true;
+    setVoiceWorkflow({
+      ...defaultVoiceWorkflowState,
+      mode: "capture_note",
+      status: "starting",
+      startedAt: Date.now(),
+      source,
+      targetModule: "capture"
+    });
+    logVoiceWorkflowMeta("voice.workflow.start", source, { workflowMode: "capture_note", targetModule: "capture", status: "started" });
+    void runCaptureVoiceLoop(source);
+  }
+
+  async function runCaptureVoiceLoop(source: string): Promise<void> {
+    while (captureLoopActiveRef.current) {
+      if (captureSpeechBlocked()) {
+        captureLoopActiveRef.current = false;
+        setVoiceWorkflow((current) => ({ ...current, status: "paused", error: "Speech is paused by Performance Mode." }));
+        logVoiceWorkflowMeta("voice.workflow.stop", source, { workflowMode: "capture_note", status: "paused", sensitivityCategory: "none" });
+        return;
+      }
+      setVoiceWorkflow((current) => ({ ...current, status: "listening", error: "" }));
+      let result: (SpeechTranscriptionResult & { metrics?: SpeechCaptureMetrics }) | null = null;
+      try {
+        result = await runSharedSpeechCapture({ speechState: speechStateRef.current, source, sourceModule: "capture_voice" });
+      } catch {
+        result = null;
+      }
+      if (!captureLoopActiveRef.current) {
+        return;
+      }
+      if (!result || result.status !== "success" || !result.transcript.trim()) {
+        setVoiceWorkflow((current) => ({ ...current, status: "error", error: result?.error ?? "No speech captured." }));
+        if (!voiceWorkflowSettings.continueCaptureMode) {
+          captureLoopActiveRef.current = false;
+          return;
+        }
+        continue;
+      }
+      const transcript = result.transcript.trim();
+      const control = matchCaptureControl(transcript);
+      if (control === "cancel") {
+        cancelCaptureVoice();
+        return;
+      }
+      if (control === "stop") {
+        stopCaptureVoice();
+        return;
+      }
+      if (control === "save") {
+        await saveCaptureVoiceDraft(source);
+        return;
+      }
+
+      const sensitive = isSensitiveCaptureText(transcript);
+      captureVoiceDraftRef.current = captureVoiceDraftRef.current ? `${captureVoiceDraftRef.current}\n${transcript}` : transcript;
+      setVoiceWorkflow((current) => ({
+        ...current,
+        status: "transcribing",
+        chunksCount: current.chunksCount + 1,
+        lastTranscriptPreview: sensitive ? "" : transcript.replace(/\s+/g, " ").slice(0, 100),
+        error: sensitive ? "Sensitive capture detected. Review before saving." : ""
+      }));
+
+      const needsReview = !voiceWorkflowSettings.autoSaveCaptureVoiceNotes
+        || voiceWorkflowSettings.confirmBeforeSavingCapture
+        || (sensitive && voiceWorkflowSettings.confirmSensitiveCapture);
+      if (needsReview) {
+        captureLoopActiveRef.current = false;
+        setVoiceWorkflow((current) => ({ ...current, status: "candidate" }));
+        logVoiceWorkflowMeta("voice.workflow.start", source, {
+          workflowMode: "capture_note",
+          status: "candidate",
+          chunksCount: 1,
+          sensitivityCategory: sensitive ? "sensitive" : "personal"
+        });
+        return;
+      }
+
+      await saveCaptureVoiceDraft(source);
+      if (!voiceWorkflowSettings.continueCaptureMode) {
+        captureLoopActiveRef.current = false;
+        return;
+      }
+      captureVoiceDraftRef.current = "";
+      setVoiceWorkflow((current) => ({ ...current, status: "listening" }));
+    }
+  }
+
+  async function saveCaptureVoiceDraft(source = voiceWorkflow.source || "voice"): Promise<void> {
+    const text = captureVoiceDraftRef.current.trim();
+    if (!text) {
+      setVoiceWorkflow((current) => ({ ...current, status: "error", error: "No Capture voice draft to save." }));
+      return;
+    }
+    setVoiceWorkflow((current) => ({ ...current, status: "saving" }));
+    const result = await runAction("capture.create_note", source, {
+      title: titleFromVoiceText(text, "Voice capture"),
+      text,
+      type: "note",
+      source: "command",
+      tags: "voice,capture"
+    }) as { ok?: boolean; item?: CaptureItem; error?: string };
+    if (result.ok === false) {
+      setVoiceWorkflow((current) => ({ ...current, status: "error", error: result.error ?? "Capture save failed." }));
+      return;
+    }
+    const savedAt = Date.now();
+    setVoiceWorkflow((current) => ({
+      ...current,
+      status: "saved",
+      activeEntityId: result.item?.id ?? current.activeEntityId,
+      lastSavedAt: savedAt,
+      error: ""
+    }));
+    logVoiceWorkflowMeta("voice.workflow.capture_saved", source, {
+      workflowMode: "capture_note",
+      targetModule: "capture",
+      chunksCount: voiceWorkflow.chunksCount || 1,
+      sensitivityCategory: isSensitiveCaptureText(text) ? "sensitive" : "personal"
+    });
+    captureVoiceDraftRef.current = "";
+    await refreshShellData();
+  }
+
+  function stopCaptureVoice(): void {
+    captureLoopActiveRef.current = false;
+    setVoiceWorkflow((current) => ({ ...current, mode: "none", status: "cancelled", error: "" }));
+    logVoiceWorkflowMeta("voice.workflow.stop", voiceWorkflow.source || "voice", { workflowMode: "capture_note", status: "stopped" });
+  }
+
+  function cancelCaptureVoice(): void {
+    captureLoopActiveRef.current = false;
+    captureVoiceDraftRef.current = "";
+    setVoiceWorkflow((current) => ({ ...current, mode: "none", status: "cancelled", lastTranscriptPreview: "", error: "" }));
+    logVoiceWorkflowMeta("voice.workflow.stop", voiceWorkflow.source || "voice", { workflowMode: "capture_note", status: "cancelled" });
+  }
+
+  async function saveVoiceWorkflowOptions(input: Partial<VoiceWorkflowSettings>): Promise<void> {
+    const saved = await getBridge().saveVoiceWorkflowSettings(input);
+    setVoiceWorkflowSettings(saved);
+  }
+
+  function setFinderVoiceCandidate(candidate: FinderVoiceCandidate, source = "voice"): void {
+    setActiveView("finder");
+    setVoiceWorkflow({
+      ...defaultVoiceWorkflowState,
+      mode: "finder_add",
+      status: "candidate",
+      startedAt: Date.now(),
+      source,
+      targetModule: "finder",
+      chunksCount: 1,
+      lastTranscriptPreview: candidate.sourceText.replace(/\s+/g, " ").slice(0, 100),
+      candidate
+    });
+    logVoiceWorkflowMeta("voice.workflow.finder_candidate", source, {
+      workflowMode: "finder_add",
+      targetModule: "finder",
+      confidence: candidate.confidence,
+      sensitivityCategory: "personal"
+    });
+  }
+
+  async function saveFinderVoiceCandidate(): Promise<void> {
+    const candidate = voiceWorkflow.candidate;
+    if (!candidate) {
+      return;
+    }
+    const result = await runAction("finder.create_item", voiceWorkflow.source || "voice", {
+      itemName: candidate.itemName,
+      location: candidate.location,
+      room: candidate.room,
+      container: candidate.container,
+      notes: candidate.notes,
+      confidence: candidate.confidence === "high" ? "sure" : "maybe",
+      updateExisting: true
+    }) as { ok?: boolean; item?: FinderItem; error?: string };
+    setVoiceWorkflow((current) => ({
+      ...current,
+      status: result.ok === false ? "error" : "saved",
+      activeEntityId: result.item?.id ?? null,
+      lastSavedAt: result.ok === false ? current.lastSavedAt : Date.now(),
+      error: result.ok === false ? (result.error ?? "Finder save failed.") : ""
+    }));
+    await refreshShellData();
+  }
+
+  function cancelFinderVoiceCandidate(): void {
+    setVoiceWorkflow({ ...defaultVoiceWorkflowState, status: "cancelled" });
+    logVoiceWorkflowMeta("voice.workflow.stop", voiceWorkflow.source || "voice", { workflowMode: "finder_add", status: "cancelled" });
+  }
+
+  function setCalendarVoiceCandidate(candidate: CalendarVoiceCandidate, source = "voice"): void {
+    setActiveView("calendar");
+    setVoiceWorkflow({
+      ...defaultVoiceWorkflowState,
+      mode: "calendar_create",
+      status: "candidate",
+      startedAt: Date.now(),
+      source,
+      targetModule: "calendar",
+      chunksCount: 1,
+      lastTranscriptPreview: candidate.sensitivity === "sensitive" ? "" : candidate.sourcePhrasePreview,
+      confidence: candidate.confidence,
+      missingFields: candidate.missingFields,
+      calendarCandidate: candidate
+    });
+    logVoiceWorkflowMeta("voice.workflow.calendar_candidate", source, {
+      workflowMode: "calendar_create",
+      targetModule: "calendar",
+      confidence: candidate.confidence,
+      missingFieldCount: candidate.missingFields.length,
+      eventType: candidate.eventType,
+      sensitivityCategory: candidate.sensitivity,
+      parsedDate: Boolean(candidate.date),
+      parsedTime: Boolean(candidate.startTime)
+    });
+  }
+
+  function updateCalendarVoiceCandidate(patch: Partial<CalendarVoiceCandidate>): void {
+    setVoiceWorkflow((current) => {
+      if (!current.calendarCandidate) {
+        return current;
+      }
+      const candidate = updatedCalendarCandidate(current.calendarCandidate, patch, voiceWorkflowSettings);
+      return {
+        ...current,
+        calendarCandidate: candidate,
+        confidence: candidate.confidence,
+        missingFields: candidate.missingFields,
+        error: ""
+      };
+    });
+  }
+
+  async function confirmCalendarVoiceCandidate(): Promise<void> {
+    const candidate = voiceWorkflow.calendarCandidate;
+    if (!candidate) {
+      return;
+    }
+    if (candidate.missingFields.length > 0 && !window.confirm(`This Calendar candidate is missing: ${candidate.missingFields.join(", ")}. Add it anyway?`)) {
+      return;
+    }
+    setVoiceWorkflow((current) => ({ ...current, status: "saving" }));
+    const result = await runAction("calendar.create_event", voiceWorkflow.source || "voice", calendarCandidateToActionParams(candidate)) as { ok?: boolean; event?: CalendarEvent; error?: string };
+    if (result.ok === false) {
+      setVoiceWorkflow((current) => ({ ...current, status: "error", error: result.error ?? "Calendar event save failed." }));
+      logVoiceWorkflowMeta("voice.workflow.calendar_confirmed", voiceWorkflow.source || "voice", {
+        workflowMode: "calendar_create",
+        status: "failed",
+        confidence: candidate.confidence,
+        missingFieldCount: candidate.missingFields.length,
+        eventType: candidate.eventType,
+        sensitivityCategory: candidate.sensitivity
+      });
+      return;
+    }
+    setVoiceWorkflow((current) => ({
+      ...current,
+      status: "saved",
+      activeEntityId: result.event?.id ?? current.activeEntityId,
+      lastSavedAt: Date.now(),
+      error: ""
+    }));
+    logVoiceWorkflowMeta("voice.workflow.calendar_confirmed", voiceWorkflow.source || "voice", {
+      workflowMode: "calendar_create",
+      status: "saved",
+      confidence: candidate.confidence,
+      missingFieldCount: candidate.missingFields.length,
+      eventType: candidate.eventType,
+      sensitivityCategory: candidate.sensitivity
+    });
+    await refreshShellData();
+  }
+
+  function cancelCalendarVoiceCandidate(): void {
+    const candidate = voiceWorkflow.calendarCandidate;
+    setVoiceWorkflow({ ...defaultVoiceWorkflowState, mode: "calendar_create", status: "cancelled" });
+    logVoiceWorkflowMeta("voice.workflow.calendar_cancelled", voiceWorkflow.source || "voice", {
+      workflowMode: "calendar_create",
+      status: "cancelled",
+      confidence: candidate?.confidence ?? "low",
+      missingFieldCount: candidate?.missingFields.length ?? 0,
+      eventType: candidate?.eventType ?? "reminder",
+      sensitivityCategory: candidate?.sensitivity ?? "personal"
+    });
+  }
+
+  // Pause journal dictation if Performance Mode blocks speech while active.
+  useEffect(() => {
+    if (journalVoice.mode === "journal_dictation" && journalVoice.status !== "paused" && speechState.performancePaused) {
+      pauseJournalVoice();
+      setJournalVoice((current) => ({ ...current, error: "Speech is paused by Performance Mode." }));
+    }
+  }, [speechState.performancePaused, journalVoice.mode, journalVoice.status]);
+
+  useEffect(() => {
+    if (voiceWorkflow.mode === "capture_note" && !["paused", "saved", "cancelled", "error"].includes(voiceWorkflow.status) && speechState.performancePaused) {
+      captureLoopActiveRef.current = false;
+      setVoiceWorkflow((current) => ({ ...current, status: "paused", error: "Speech is paused by Performance Mode." }));
+    }
+  }, [speechState.performancePaused, voiceWorkflow.mode, voiceWorkflow.status]);
 
   // Tracks any user-initiated async work so the global loading indicator can reflect it.
   // Note: background refreshes (e.g. Drop's 3s auto-poll) intentionally bypass this so the
@@ -2593,6 +4272,8 @@ function DexNestApp() {
     void track(refreshShellData()).finally(() => setInitialLoadDone(true));
     void refreshAssistantSettings();
     void refreshAssistantSecurity();
+    void refreshAmbientVoice();
+    void refreshSpeechState();
   }, []);
 
   useEffect(() => {
@@ -2606,6 +4287,11 @@ function DexNestApp() {
         setAssistantFocusSignal((value) => value + 1);
         void refreshAssistantSecurity();
       }
+      if (payload.startListening) {
+        setAssistantListenSource(payload.source ?? "push_to_talk");
+        setAssistantListenSignal((value) => value + 1);
+        void refreshAmbientVoice();
+      }
       void refreshShellData();
     });
     getBridge().rendererReady?.();
@@ -2616,7 +4302,7 @@ function DexNestApp() {
   }, []);
 
   async function refreshShellData(): Promise<void> {
-    const [info, nextActions, nextProjects, nextCommandResults, nextPinnedActionIds, nextClipboardState, nextDropState, nextToolsState, nextVaultState, nextSearchState, nextJournalState, nextCalendarState, nextFinderState, nextFinanceState, nextCaptureState, nextHeatmapState, nextRoutinesState, nextBackupState, nextPerformanceState, nextPerformanceSettings, nextCommandStats, nextEvents] = await Promise.all([
+    const [info, nextActions, nextProjects, nextCommandResults, nextPinnedActionIds, nextClipboardState, nextDropState, nextToolsState, nextVaultState, nextSearchState, nextJournalState, nextCalendarState, nextFinderState, nextFinanceState, nextCaptureState, nextHeatmapState, nextRoutinesState, nextBackupState, nextPerformanceState, nextPerformanceSettings, nextCommandStats, nextEvents, nextAmbientVoiceState, nextSpeechState, nextVoiceWorkflowSettings] = await Promise.all([
       getBridge().getAppInfo(),
       getBridge().listActions(),
       getBridge().listProjects(),
@@ -2638,7 +4324,10 @@ function DexNestApp() {
       getBridge().getPerformanceModeState(),
       getBridge().getPerformanceModeSettings(),
       getBridge().getCommandStats(),
-      getBridge().listEvents()
+      getBridge().listEvents(),
+      getBridge().getAmbientVoiceState(),
+      getBridge().getSpeechState(),
+      getBridge().getVoiceWorkflowSettings()
     ]);
 
     setAppInfo(info);
@@ -2663,6 +4352,9 @@ function DexNestApp() {
     setPerformanceModeSettings(nextPerformanceSettings);
     setCommandStats(nextCommandStats);
     setEvents(nextEvents);
+    setAmbientVoiceState(nextAmbientVoiceState);
+    setSpeechState(nextSpeechState);
+    setVoiceWorkflowSettings(nextVoiceWorkflowSettings);
   }
 
   async function refreshEvents(): Promise<void> {
@@ -2671,7 +4363,7 @@ function DexNestApp() {
   }
 
   async function refreshProjectsAndActions(): Promise<void> {
-    const [info, nextActions, nextProjects, nextCommandResults, nextPinnedActionIds, nextClipboardState, nextDropState, nextToolsState, nextVaultState, nextSearchState, nextJournalState, nextCalendarState, nextFinderState, nextFinanceState, nextCaptureState, nextHeatmapState, nextRoutinesState, nextPerformanceState, nextPerformanceSettings, nextCommandStats, nextEvents] = await Promise.all([
+    const [info, nextActions, nextProjects, nextCommandResults, nextPinnedActionIds, nextClipboardState, nextDropState, nextToolsState, nextVaultState, nextSearchState, nextJournalState, nextCalendarState, nextFinderState, nextFinanceState, nextCaptureState, nextHeatmapState, nextRoutinesState, nextPerformanceState, nextPerformanceSettings, nextCommandStats, nextEvents, nextAmbientVoiceState, nextSpeechState] = await Promise.all([
       getBridge().getAppInfo(),
       getBridge().listActions(),
       getBridge().listProjects(),
@@ -2692,7 +4384,9 @@ function DexNestApp() {
       getBridge().getPerformanceModeState(),
       getBridge().getPerformanceModeSettings(),
       getBridge().getCommandStats(),
-      getBridge().listEvents()
+      getBridge().listEvents(),
+      getBridge().getAmbientVoiceState(),
+      getBridge().getSpeechState()
     ]);
 
     setAppInfo(info);
@@ -2716,6 +4410,8 @@ function DexNestApp() {
     setPerformanceModeSettings(nextPerformanceSettings);
     setCommandStats(nextCommandStats);
     setEvents(nextEvents);
+    setAmbientVoiceState(nextAmbientVoiceState);
+    setSpeechState(nextSpeechState);
   }
 
   async function runAction(actionId: string, source = "module_ui", params: unknown = {}) {
@@ -2822,6 +4518,37 @@ function DexNestApp() {
         </header>
 
         <main className="content">
+          {journalVoice.mode === "journal_dictation" && (
+            <div className="ambient-indicator" data-state={journalVoice.status === "paused" ? "paused" : journalVoice.status === "appending" || journalVoice.status === "saved" ? "processing" : "listening"}>
+              <span>
+                {speechState.performancePaused
+                  ? "Journal mode paused by Performance Mode"
+                  : journalVoice.status === "paused"
+                    ? "Journal mode paused"
+                    : journalVoice.status === "appending" || journalVoice.status === "saved"
+                      ? "Saving journal…"
+                      : "Journal mode listening"}
+              </span>
+              <strong>{journalVoice.chunksCount} chunk{journalVoice.chunksCount === 1 ? "" : "s"}</strong>
+            </div>
+          )}
+          {journalVoice.mode !== "journal_dictation" && voiceWorkflow.mode !== "none" && (
+            <div className="ambient-indicator" data-state={voiceWorkflow.status === "paused" ? "paused" : voiceWorkflow.status === "saved" || voiceWorkflow.status === "lookup_complete" ? "processing" : voiceWorkflow.status === "error" ? "paused" : "listening"}>
+              <span>
+                {voiceWorkflow.mode === "capture_note"
+                  ? voiceWorkflow.status === "saved" ? "Saved to Capture inbox" : voiceWorkflow.status === "paused" ? "Capture mode paused" : "Capture mode listening"
+                  : voiceWorkflow.status === "saved" ? "Finder memory saved" : voiceWorkflow.status === "lookup_complete" ? "Finder lookup complete" : "Finder memory candidate"}
+              </span>
+              <strong>{voiceWorkflow.error || voiceWorkflow.lastTranscriptPreview || `${voiceWorkflow.chunksCount} chunk${voiceWorkflow.chunksCount === 1 ? "" : "s"}`}</strong>
+            </div>
+          )}
+          {journalVoice.mode !== "journal_dictation" && voiceWorkflow.mode === "none" && ambientVoiceState.settings.visibleListeningIndicator && (
+            <div className="ambient-indicator" data-state={ambientVoiceState.currentState}>
+              <span>{ambientVoiceState.pausedByPerformanceMode ? "Nest paused by Performance Mode" : `Nest ${ambientVoiceState.currentState}`}</span>
+              {ambientVoiceState.lastRecognizedCommand && <strong>{ambientVoiceState.lastRecognizedCommand}</strong>}
+            </div>
+          )}
+
           {activeView === "command" && (
             <CommandView
               appInfo={appInfo}
@@ -2900,7 +4627,39 @@ function DexNestApp() {
               onAssistantSettingsChange={refreshAssistantSettings}
               securityState={assistantSecurityState}
               onSecurityChange={refreshAssistantSecurity}
+              ambientVoiceState={ambientVoiceState}
+              onAmbientVoiceChange={refreshAmbientVoice}
+              speechState={speechState}
+              voiceWorkflowSettings={voiceWorkflowSettings}
+              onSpeechStateChange={setSpeechState}
               assistantFocusSignal={assistantFocusSignal}
+              assistantListenSignal={assistantListenSignal}
+              assistantListenSource={assistantListenSource}
+              journalVoiceActive={journalVoice.mode === "journal_dictation"}
+              onStartJournalVoice={startJournalVoice}
+              onJournalControl={handleJournalControl}
+              onStartCaptureVoice={startCaptureVoice}
+              onFinderVoiceCandidate={setFinderVoiceCandidate}
+              onCalendarVoiceCandidate={setCalendarVoiceCandidate}
+              onFinderLookupComplete={(summary, source) => setVoiceWorkflow({
+                ...defaultVoiceWorkflowState,
+                mode: "finder_add",
+                status: "lookup_complete",
+                source,
+                targetModule: "finder",
+                chunksCount: 1,
+                lastSavedAt: Date.now(),
+                lastTranscriptPreview: summary.slice(0, 100)
+              })}
+              onFinderMemorySaved={(source) => setVoiceWorkflow((current) => ({
+                ...current,
+                mode: "finder_add",
+                status: "saved",
+                source,
+                targetModule: "finder",
+                lastSavedAt: Date.now(),
+                error: ""
+              }))}
               onAction={runUiAction}
               onRefresh={refreshShellData}
             />
@@ -2908,6 +4667,15 @@ function DexNestApp() {
           {activeView === "capture" && (
             <CaptureView
               captureState={captureState}
+              speechState={speechState}
+              voiceWorkflow={voiceWorkflow}
+              voiceWorkflowSettings={voiceWorkflowSettings}
+              onSpeechStateChange={setSpeechState}
+              onStartVoiceCapture={startCaptureVoice}
+              onSaveVoiceCapture={() => saveCaptureVoiceDraft("module_ui")}
+              onStopVoiceCapture={stopCaptureVoice}
+              onCancelVoiceCapture={cancelCaptureVoice}
+              onVoiceWorkflowSettingsChange={saveVoiceWorkflowOptions}
               onAction={runUiAction}
               onRefresh={refreshShellData}
             />
@@ -2916,6 +4684,14 @@ function DexNestApp() {
             <JournalView
               journalState={journalState}
               calendarState={calendarState}
+              speechState={speechState}
+              onSpeechStateChange={setSpeechState}
+              journalVoice={journalVoice}
+              onStartJournalVoice={startJournalVoice}
+              onPauseJournalVoice={pauseJournalVoice}
+              onResumeJournalVoice={resumeJournalVoice}
+              onSaveStopJournalVoice={saveAndStopJournalVoice}
+              onCancelJournalVoice={cancelJournalVoice}
               onAction={runUiAction}
               onRefresh={refreshShellData}
             />
@@ -2923,6 +4699,14 @@ function DexNestApp() {
           {activeView === "calendar" && (
             <CalendarView
               calendarState={calendarState}
+              speechState={speechState}
+              voiceWorkflow={voiceWorkflow}
+              voiceWorkflowSettings={voiceWorkflowSettings}
+              onSpeechStateChange={setSpeechState}
+              onCalendarCandidateChange={updateCalendarVoiceCandidate}
+              onConfirmCalendarCandidate={confirmCalendarVoiceCandidate}
+              onCancelCalendarCandidate={cancelCalendarVoiceCandidate}
+              onVoiceWorkflowSettingsChange={saveVoiceWorkflowOptions}
               onAction={runUiAction}
               onRefresh={refreshShellData}
             />
@@ -2930,6 +4714,11 @@ function DexNestApp() {
           {activeView === "finder" && (
             <FinderView
               finderState={finderState}
+              speechState={speechState}
+              voiceWorkflow={voiceWorkflow}
+              onSpeechStateChange={setSpeechState}
+              onSaveVoiceCandidate={saveFinderVoiceCandidate}
+              onCancelVoiceCandidate={cancelFinderVoiceCandidate}
               onAction={runUiAction}
               onRefresh={refreshShellData}
             />
@@ -2956,6 +4745,14 @@ function DexNestApp() {
               calendarState={calendarState}
               performanceModeState={performanceModeState}
               performanceModeSettings={performanceModeSettings}
+              ambientVoiceState={ambientVoiceState}
+              speechState={speechState}
+              onSpeechStateChanged={setSpeechState}
+              onAmbientVoiceChanged={async (settings) => {
+                await getBridge().saveAmbientVoiceSettings(settings);
+                await refreshAmbientVoice();
+                await refreshShellData();
+              }}
               onAction={runUiAction}
               onPerformanceChanged={async (settings, enabled) => {
                 if (settings) {
@@ -2991,16 +4788,46 @@ function AskDexNest({
   onAssistantSettingsChange,
   securityState,
   onSecurityChange,
+  ambientVoiceState,
+  onAmbientVoiceChange,
+  speechState,
+  voiceWorkflowSettings,
+  onSpeechStateChange,
   onAction,
-  focusSignal
+  focusSignal,
+  listenSignal,
+  listenSource,
+  journalVoiceActive,
+  onStartJournalVoice,
+  onJournalControl,
+  onStartCaptureVoice,
+  onFinderVoiceCandidate,
+  onCalendarVoiceCandidate,
+  onFinderLookupComplete,
+  onFinderMemorySaved
 }: {
   actions: ActionDefinition[];
   assistantSettings: AssistantSettings;
   onAssistantSettingsChange: () => Promise<void>;
   securityState: AssistantSecurityState;
   onSecurityChange: () => Promise<void>;
+  ambientVoiceState: AmbientVoiceState;
+  onAmbientVoiceChange: () => Promise<void>;
+  speechState: SpeechServiceState;
+  voiceWorkflowSettings: VoiceWorkflowSettings;
+  onSpeechStateChange: (state: SpeechServiceState) => void;
   onAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>;
   focusSignal: number;
+  listenSignal: number;
+  listenSource: string;
+  journalVoiceActive: boolean;
+  onStartJournalVoice: (source?: string) => Promise<void>;
+  onJournalControl: (control: JournalVoiceControl) => void;
+  onStartCaptureVoice: (source?: string) => Promise<void>;
+  onFinderVoiceCandidate: (candidate: FinderVoiceCandidate, source?: string) => void;
+  onCalendarVoiceCandidate: (candidate: CalendarVoiceCandidate, source?: string) => void;
+  onFinderLookupComplete: (summary: string, source: string) => void;
+  onFinderMemorySaved: (source: string) => void;
 }) {
   const [voiceInput, setVoiceInput] = useState("");
   const [voiceListening, setVoiceListening] = useState(false);
@@ -3010,6 +4837,7 @@ function AskDexNest({
   const [assistantBusy, setAssistantBusy] = useState(false);
   const [assistantDebug, setAssistantDebug] = useState(false);
   const [revealedAssistantIds, setRevealedAssistantIds] = useState<string[]>([]);
+  const [pendingCalendarCandidate, setPendingCalendarCandidate] = useState<CalendarVoiceCandidate | null>(null);
   const [assistantSettingsOpen, setAssistantSettingsOpen] = useState(false);
   const [assistantEngineEnabled, setAssistantEngineEnabled] = useState(assistantSettings.localIntentEngineEnabled);
   const [assistantOllamaUrl, setAssistantOllamaUrl] = useState(assistantSettings.ollamaUrl);
@@ -3057,6 +4885,26 @@ function AskDexNest({
     }
   }, [focusSignal]);
 
+  useEffect(() => {
+    if (listenSignal > 0) {
+      void startVoiceListening(listenSource);
+    }
+  }, [listenSignal]);
+
+  // Pre-warm the mic while Ask DexNest is open so the first mic click starts
+  // recording instantly. Gated by the setting, faster-whisper, and Performance
+  // Mode; released when Performance Mode blocks speech.
+  useEffect(() => {
+    const blocked = speechState.performancePaused || ambientVoiceState.pausedByPerformanceMode;
+    if (blocked) {
+      releaseMic(true);
+      return;
+    }
+    if (speechState.settings.micPrewarmEnabled !== false && speechState.settings.speechEngine === "faster_whisper") {
+      void prewarmMic();
+    }
+  }, [speechState.performancePaused, ambientVoiceState.pausedByPerformanceMode, speechState.settings.micPrewarmEnabled, speechState.settings.speechEngine]);
+
   // Tick the session countdown; refresh state when it expires so the UI re-locks.
   useEffect(() => {
     if (!securityState.sessionUnlocked || !securityState.sessionExpiresAt) {
@@ -3081,11 +4929,99 @@ function AskDexNest({
     setAssistantMessages((current) => current.map((message) => (message.id === id ? { ...message, ...patch } : message)));
   }
 
-  async function executeAssistantRoute(messageId: string, route: VoiceRouteResult, routerUsed: AssistantRouterUsed): Promise<void> {
+  function spokenTemplate(route: VoiceRouteResult, ok: boolean, resultCount: number, fallback: string): string {
+    if (!ok) {
+      return "That failed.";
+    }
+    if (route.actionId?.startsWith("external.govee.")) {
+      if (route.actionId.endsWith(".turn_on")) return "Lights are on.";
+      if (route.actionId.endsWith(".turn_off")) return "Lights are off.";
+      if (route.actionId.endsWith(".set_brightness")) return "Brightness set.";
+      if (route.actionId.endsWith(".set_color")) return "Color changed.";
+      if (route.actionId.endsWith(".set_color_temperature")) return "Color temperature changed.";
+      return "Device updated.";
+    }
+    if (route.actionId === "system.performance.enable") return "Performance Mode is on.";
+    if (route.actionId === "system.performance.disable") return "Performance Mode is off.";
+    if (route.actionId === "system.performance.toggle") return "Performance Mode toggled.";
+    if (route.intent === "smart_lookup") return resultCount > 0 ? "I found it, but it is hidden for safety." : "I could not find it.";
+    if (route.intent === "search_query") return resultCount > 0 ? "I found results." : "I could not find it.";
+    if (route.intent === "finder_search" || route.intent === "finder_reverse_lookup") return resultCount > 0 ? "I found it." : "I could not find it.";
+    if (route.intent === "finder_add") return "Saved in Finder.";
+    if (route.intent === "calendar_create_candidate") return "Review the calendar event in DexNest.";
+    if (route.intent === "calendar_show_today" || route.intent === "calendar_show_upcoming") return "Calendar opened.";
+    if (route.intent === "drop_send_clipboard") return "Sent to Drop.";
+    if (route.intent === "dev_run_command") return "Command finished.";
+    if (route.intent === "capture_note") return "Capture started.";
+    if (route.intent === "journal_open_today") return "Journal opened.";
+    if (route.intent === "open_module") return "Opened.";
+    return fallback.replace(/\s+/g, " ").slice(0, 120);
+  }
+
+  async function speakDexNestResponse(text: string, context: { sensitivity: VoiceSensitivity; source: string; actionId?: string; allowSpeakSensitive?: boolean }): Promise<void> {
+    const settings = ambientVoiceState.settings;
+    let blockedReason = "";
+    let spoken = false;
+    if (!settings.speakResponses) {
+      blockedReason = "disabled";
+    } else if (settings.muteInPerformanceMode && (speechState.performancePaused || ambientVoiceState.pausedByPerformanceMode)) {
+      blockedReason = "performance_mode";
+    } else if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+      blockedReason = "speech_synthesis_unavailable";
+    }
+
+    const sensitive = context.sensitivity === "sensitive";
+    const canSpeakSensitive = sensitive
+      && Boolean(context.allowSpeakSensitive)
+      && securityState.sessionUnlocked
+      && settings.speakSensitiveAnswers
+      && securityState.settings.speakSensitiveAnswers;
+    const spokenText = sensitive && !canSpeakSensitive
+      ? "I found it, but it is hidden for safety."
+      : settings.shortResponsesOnly
+        ? text.replace(/\s+/g, " ").slice(0, 90)
+        : text.replace(/\s+/g, " ").slice(0, 180);
+
+    if (!blockedReason && spokenText.trim()) {
+      try {
+        const utterance = new SpeechSynthesisUtterance(spokenText);
+        utterance.rate = settings.voiceRate || 1;
+        utterance.volume = settings.voiceVolume ?? 1;
+        const voices = window.speechSynthesis.getVoices();
+        const selectedVoice = settings.voiceName ? voices.find((voice) => voice.name === settings.voiceName) : undefined;
+        if (selectedVoice) {
+          utterance.voice = selectedVoice;
+        }
+        utterance.onend = () => {
+          void getBridge().updateAmbientVoiceState({ currentState: "idle", lastSource: context.source });
+          void onAmbientVoiceChange();
+        };
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(utterance);
+        spoken = true;
+        void getBridge().updateAmbientVoiceState({ currentState: "speaking", lastActionResult: sensitive && !canSpeakSensitive ? "Sensitive answer hidden for speech." : "Speaking response.", lastSource: context.source });
+        window.setTimeout(() => {
+          void getBridge().updateAmbientVoiceState({ currentState: "idle", lastSource: context.source });
+          void onAmbientVoiceChange();
+        }, Math.min(4000, Math.max(1000, spokenText.length * 45)));
+      } catch {
+        blockedReason = "speak_failed";
+      }
+    }
+
+    await onAction("voice.tts_response", context.source, {
+      actionId: context.actionId,
+      sensitivity: context.sensitivity,
+      ttsSpoken: spoken,
+      blockedReason: blockedReason || (sensitive && !canSpeakSensitive ? "sensitive_blocked" : "")
+    });
+  }
+
+  async function executeAssistantRoute(messageId: string, route: VoiceRouteResult, routerUsed: AssistantRouterUsed, commandSource = "voice"): Promise<void> {
     if (!route.actionId) {
       return;
     }
-    await onAction("assistant.confirmed", "voice", {
+    await onAction("assistant.confirmed", commandSource, {
       router: routerUsed,
       intent: route.intent,
       targetModule: route.targetModule,
@@ -3093,16 +5029,17 @@ function AskDexNest({
       confidence: route.confidence,
       sensitivity: route.sensitivity
     });
-    const result = await onAction(route.actionId, "voice", route.params) as {
+    const result = await onAction(route.actionId, commandSource, route.params) as {
       ok?: boolean;
       error?: string;
       smartResults?: SmartLookupResult[];
-      results?: SearchResult[];
+      results?: SearchResult[] | FinderItem[];
     };
     const smartResults = result.smartResults ?? [];
-    const searchResults = result.results ?? [];
-    const resultCount = smartResults.length + searchResults.length;
-    await onAction("assistant.routed", "voice", {
+    const finderResults = route.targetModule === "finder" ? (result.results ?? []) as FinderItem[] : [];
+    const searchResults = route.targetModule === "finder" ? [] : (result.results ?? []) as SearchResult[];
+    const resultCount = smartResults.length + searchResults.length + finderResults.length;
+    await onAction("assistant.routed", commandSource, {
       router: routerUsed,
       intent: route.intent,
       targetModule: route.targetModule,
@@ -3114,29 +5051,158 @@ function AskDexNest({
     if (smartResults.some((item) => item.sensitive)) {
       void onSecurityChange();
     }
+    const answerText = result.ok === false
+      ? (result.error ?? "DexNest could not complete that.")
+      : route.intent === "finder_search"
+        ? finderItemLookupAnswer(String(route.params.query ?? ""), finderResults)
+        : route.intent === "finder_reverse_lookup"
+          ? finderReverseLookupAnswer(String(route.params.query ?? ""), finderResults)
+          : assistantAnswerText(route, smartResults, resultCount);
     updateAssistantMessage(messageId, {
       awaitingConfirm: false,
       resolved: result.ok === false ? "failed" : "ran",
       smartResults,
       searchResults,
-      text: result.ok === false
-        ? (result.error ?? "DexNest could not complete that.")
-        : assistantAnswerText(route, smartResults, resultCount)
+      finderResults,
+      text: answerText
+    });
+    if (route.intent === "finder_search" || route.intent === "finder_reverse_lookup") {
+      onFinderLookupComplete(answerText, commandSource);
+      void onAction("voice.workflow.finder_lookup", commandSource, {
+        workflowMode: "finder_add",
+        targetModule: "finder",
+        status: result.ok === false ? "failed" : "completed",
+        resultCount,
+        sensitivityCategory: "personal"
+      });
+    }
+    if (route.intent === "calendar_show_today" || route.intent === "calendar_show_upcoming") {
+      void onAction("voice.workflow.calendar_lookup", commandSource, {
+        workflowMode: "calendar_create",
+        targetModule: "calendar",
+        status: result.ok === false ? "failed" : "completed",
+        confidence: route.confidence,
+        sensitivityCategory: route.sensitivity
+      });
+    }
+    if (route.intent === "finder_add" && result.ok !== false) {
+      onFinderMemorySaved(commandSource);
+    }
+    await getBridge().updateAmbientVoiceState({
+      currentState: "idle",
+      lastActionResult: result.ok === false ? "Command failed." : answerText,
+      lastSource: commandSource
+    });
+    void onAmbientVoiceChange();
+    await speakDexNestResponse(spokenTemplate(route, result.ok !== false, resultCount, answerText), {
+      sensitivity: route.sensitivity,
+      source: commandSource,
+      actionId: route.actionId,
+      allowSpeakSensitive: Boolean(route.intent === "smart_lookup")
     });
   }
 
-  async function sendAssistant(rawText = voiceInput): Promise<void> {
+  function ambientRouteBlockedMessage(route: VoiceRouteResult, commandSource: string): string | null {
+    if (commandSource !== "ambient_voice" && commandSource !== "push_to_talk") {
+      return null;
+    }
+    if (route.intent === "external_device_control" && !ambientVoiceState.settings.allowDeviceControl) {
+      return "Ambient Voice device control is disabled in Settings.";
+    }
+    if ((route.intent === "drop_send_clipboard" || route.targetModule === "clipboard") && !ambientVoiceState.settings.allowClipboardActions) {
+      return "Ambient Voice Clipboard and Drop routes are disabled in Settings.";
+    }
+    if (route.intent === "dev_run_command" && !ambientVoiceState.settings.allowDevActions) {
+      return "Ambient Voice Dev actions are disabled in Settings.";
+    }
+    if (route.sensitivity === "sensitive" && !ambientVoiceState.settings.allowSensitiveLookups) {
+      return "Ambient Voice sensitive lookups are disabled in Settings.";
+    }
+    return null;
+  }
+
+  async function sendAssistant(rawText = voiceInput, commandSource = "voice"): Promise<void> {
     const text = rawText.trim();
     if (!text || assistantBusy) {
       return;
     }
     setVoiceInput("");
     appendAssistantMessage({ id: createClientId("assistant-user"), role: "user", text });
+
+    // Phase 23.4: journal continuous voice workflow takes priority over normal
+    // routing. "start today's journal" enters journal mode; while active, control
+    // words route to journal controls instead of being treated as commands.
+    if (isStartJournalCommand(text)) {
+      appendAssistantMessage({
+        id: createClientId("assistant-reply"),
+        role: "assistant",
+        text: speechState.performancePaused
+          ? "Speech is paused by Performance Mode."
+          : "Journal mode started. Speak freely. Say “save journal” or “stop journal” when done.",
+        routerUsed: "fast_path",
+        resolved: "info"
+      });
+      await onStartJournalVoice(commandSource);
+      return;
+    }
+    if (journalVoiceActive) {
+      const control = matchJournalControl(text);
+      if (control) {
+        onJournalControl(control);
+        appendAssistantMessage({
+          id: createClientId("assistant-reply"),
+          role: "assistant",
+          text: control === "save" ? "Journal saved. Journal mode stopped."
+            : control === "pause" ? "Journal mode paused. Say “resume journal” to continue."
+            : control === "resume" ? "Journal mode resumed."
+            : "Journal mode stopped. Saved chunks were kept.",
+          routerUsed: "fast_path",
+          resolved: "info"
+        });
+        return;
+      }
+    }
+    if (pendingCalendarCandidate?.missingFields.length) {
+      const patch = parseCalendarFollowUpPatch(text, pendingCalendarCandidate, voiceWorkflowSettings);
+      if (patch) {
+        const nextCandidate = updatedCalendarCandidate(pendingCalendarCandidate, patch, voiceWorkflowSettings);
+        setPendingCalendarCandidate(nextCandidate.missingFields.length ? nextCandidate : null);
+        onCalendarVoiceCandidate(nextCandidate, commandSource);
+        appendAssistantMessage({
+          id: createClientId("assistant-reply"),
+          role: "assistant",
+          text: nextCandidate.missingFields.length > 0
+            ? `Updated the Calendar candidate. Still missing ${nextCandidate.missingFields.join(", ")}.`
+            : `Updated the Calendar candidate. Add ${nextCandidate.title} on ${formatLocalDate(nextCandidate.date)}${nextCandidate.startTime ? ` at ${nextCandidate.startTime}` : ""}?`,
+          routerUsed: "fast_path",
+          resolved: "info"
+        });
+        await onAction("voice.workflow.calendar_candidate", commandSource, {
+          workflowMode: "calendar_create",
+          targetModule: "calendar",
+          status: "follow_up_updated",
+          confidence: nextCandidate.confidence,
+          missingFieldCount: nextCandidate.missingFields.length,
+          eventType: nextCandidate.eventType,
+          sensitivityCategory: nextCandidate.sensitivity
+        });
+        return;
+      }
+    }
     setAssistantBusy(true);
 
-    const ruleRoute = routeVoiceCommand(text, actions);
-    await onAction("assistant.command_received", "voice", {
-      router: "rules",
+    // Fast deterministic router runs first; obvious commands never reach Ollama.
+    const fastRoute = fastCommandRouter(text, actions, voiceWorkflowSettings);
+    const ruleRoute = fastRoute ?? routeVoiceCommand(text, actions, voiceWorkflowSettings);
+    await getBridge().updateAmbientVoiceState({
+      currentState: "processing",
+      lastRecognizedCommand: text,
+      lastActionResult: "Routing command.",
+      lastSource: commandSource
+    });
+    void onAmbientVoiceChange();
+    await onAction("assistant.command_received", commandSource, {
+      router: fastRoute ? "fast_path" : "rules",
       intent: ruleRoute.intent,
       sensitivity: ruleRoute.sensitivity,
       status: "received"
@@ -3144,17 +5210,18 @@ function AskDexNest({
 
     try {
       let route = ruleRoute;
-      let routerUsed: AssistantRouterUsed = "rules";
+      let routerUsed: AssistantRouterUsed = fastRoute ? "fast_path" : "rules";
 
-      // Obvious light commands should hit the registered Govee action directly;
+      // Obvious system/light commands hit registered DexNest actions directly;
       // Ollama is only useful when DexNest cannot classify the phrasing.
-      const engineEligible = assistantSettings.localIntentEngineEnabled
+      const engineEligible = !fastRoute
+        && assistantSettings.localIntentEngineEnabled
         && ruleRoute.intent !== "external_device_control"
         && (ruleRoute.intent === "unknown" || ruleRoute.confidence !== "high");
       if (engineEligible) {
         const llm = await getBridge().assistantLlmIntent({ query: text });
         if (llm.ok) {
-          const validated = validateLlmIntent(llm.intent, text, actions);
+          const validated = validateLlmIntent(llm.intent, text, actions, voiceWorkflowSettings);
           if (validated) {
             route = validated;
             routerUsed = "local-llm";
@@ -3170,8 +5237,131 @@ function AskDexNest({
         }
       }
 
+      const blockedMessage = ambientRouteBlockedMessage(route, commandSource);
+      if (blockedMessage) {
+        appendAssistantMessage({
+          id: createClientId("assistant-reply"),
+          role: "assistant",
+          text: blockedMessage,
+          route,
+          routerUsed,
+          resolved: "blocked"
+        });
+        await onAction("assistant.routed", commandSource, {
+          router: routerUsed,
+          intent: route.intent,
+          targetModule: route.targetModule,
+          sensitivity: route.sensitivity,
+          confidence: route.confidence,
+          status: "blocked"
+        });
+        await getBridge().updateAmbientVoiceState({
+          currentState: "idle",
+          lastActionResult: blockedMessage,
+          lastSource: commandSource
+        });
+        void onAmbientVoiceChange();
+        return;
+      }
+
+      if (route.intent === "capture_note" && route.actionId === "voice.workflow.start") {
+        const assistantId = createClientId("assistant-reply");
+        appendAssistantMessage({
+          id: assistantId,
+          role: "assistant",
+          text: speechState.performancePaused
+            ? "Speech is paused by Performance Mode."
+            : "Capture mode listening. Speak the note, then pause.",
+          route,
+          routerUsed,
+          awaitingConfirm: false,
+          resolved: speechState.performancePaused ? "blocked" : "info"
+        });
+        await onAction("assistant.routed", commandSource, {
+          router: routerUsed,
+          intent: route.intent,
+          targetModule: route.targetModule,
+          sensitivity: route.sensitivity,
+          confidence: route.confidence,
+          status: speechState.performancePaused ? "blocked" : "workflow_started"
+        });
+        if (!speechState.performancePaused) {
+          await onStartCaptureVoice(commandSource);
+        }
+        return;
+      }
+
+      if (route.intent === "calendar_create_candidate") {
+        const candidate = (route.params.candidate as CalendarVoiceCandidate | undefined) ?? parseCalendarVoiceCandidate(text, voiceWorkflowSettings);
+        if (!candidate) {
+          appendAssistantMessage({
+            id: createClientId("assistant-reply"),
+            role: "assistant",
+            text: "I could not build a Calendar candidate from that. Try adding a date like tomorrow or next Friday.",
+            route,
+            routerUsed,
+            resolved: "failed"
+          });
+          return;
+        }
+        const shouldAutoCreate = shouldAutoCreateCalendarCandidate(candidate, voiceWorkflowSettings);
+        if (!shouldAutoCreate) {
+          setPendingCalendarCandidate(candidate.missingFields.length ? candidate : null);
+          onCalendarVoiceCandidate(candidate, commandSource);
+          appendAssistantMessage({
+            id: createClientId("assistant-reply"),
+            role: "assistant",
+            text: candidate.missingFields.length > 0
+              ? candidate.missingFields.includes("time")
+                ? "Calendar candidate ready. What time should I use? You can also edit it on the Calendar page."
+                : `Calendar candidate ready. Please provide missing ${candidate.missingFields.join(", ")} or edit it on the Calendar page.`
+              : "Calendar candidate ready. Review it on the Calendar page, then Add event.",
+            route,
+            routerUsed,
+            awaitingConfirm: false,
+            resolved: "info"
+          });
+          await onAction("assistant.routed", commandSource, {
+            router: routerUsed,
+            intent: route.intent,
+            targetModule: route.targetModule,
+            sensitivity: route.sensitivity,
+            confidence: route.confidence,
+            status: "candidate_created",
+            missingFieldCount: candidate.missingFields.length
+          });
+        await getBridge().updateAmbientVoiceState({
+          currentState: "idle",
+          lastActionResult: "Calendar candidate ready in DexNest.",
+          lastSource: commandSource
+        });
+        void onAmbientVoiceChange();
+        await speakDexNestResponse(candidate.missingFields.length > 0 ? "I need a time or date." : "Review the calendar event in DexNest.", {
+          sensitivity: candidate.sensitivity,
+          source: commandSource,
+          actionId: "voice.workflow.calendar_candidate"
+        });
+        return;
+      }
+        setPendingCalendarCandidate(null);
+        route = {
+          ...route,
+          actionId: "calendar.create_event",
+          params: calendarCandidateToActionParams(candidate),
+          requiresConfirmation: false
+        };
+      }
+
       const assistantId = createClientId("assistant-reply");
       const needsConfirm = route.intent !== "unknown" && Boolean(route.actionId) && assistantNeedsConfirm(route, actions);
+      if (route.intent === "finder_add") {
+        const candidate = parseFinderAddPhrase(text);
+        if (candidate) {
+          onFinderVoiceCandidate(candidate, commandSource);
+        } else {
+          await onAction("finder.open", commandSource, {});
+        }
+      }
       const initialText = route.intent === "unknown"
         ? "I’m not sure what to do yet. Here are some things you can ask."
         : needsConfirm
@@ -3188,7 +5378,7 @@ function AskDexNest({
         resolved: route.intent === "unknown" ? "info" : undefined
       });
 
-      await onAction("assistant.routed", "voice", {
+      await onAction("assistant.routed", commandSource, {
         router: routerUsed,
         intent: route.intent,
         targetModule: route.targetModule,
@@ -3198,7 +5388,21 @@ function AskDexNest({
       });
 
       if (route.intent !== "unknown" && route.actionId && !needsConfirm) {
-        await executeAssistantRoute(assistantId, route, routerUsed);
+        await executeAssistantRoute(assistantId, route, routerUsed, commandSource);
+      } else {
+        if (needsConfirm) {
+          await speakDexNestResponse("Open DexNest to confirm.", {
+            sensitivity: route.sensitivity,
+            source: commandSource,
+            actionId: route.actionId
+          });
+        }
+        await getBridge().updateAmbientVoiceState({
+          currentState: "idle",
+          lastActionResult: needsConfirm ? "Confirmation required in DexNest." : "No matching action.",
+          lastSource: commandSource
+        });
+        void onAmbientVoiceChange();
       }
     } finally {
       setAssistantBusy(false);
@@ -3211,7 +5415,7 @@ function AskDexNest({
     }
     setAssistantBusy(true);
     try {
-      await executeAssistantRoute(message.id, message.route, message.routerUsed ?? "rules");
+      await executeAssistantRoute(message.id, message.route, message.routerUsed ?? "rules", "voice");
     } finally {
       setAssistantBusy(false);
     }
@@ -3300,54 +5504,77 @@ function AskDexNest({
     setSessionStatus("Trusted session settings saved.");
   }
 
-  async function startVoiceListening(): Promise<void> {
+  async function startVoiceListening(commandSource = "voice"): Promise<void> {
     if (voiceListening) {
       return;
     }
-    const inputBefore = voiceInputRef.current?.value ?? "";
-    voiceInputRef.current?.focus();
-    setVoiceListening(true);
-    setMicStatus("Opening Windows voice typing…");
-    const windowsResult = await getBridge().startWindowsDictation();
-    await onAction("voice.start_listening", "voice", {
-      speechRecognitionAvailable: false,
-      provider: "windows_dictation",
-      status: windowsResult.ok ? "started" : "failed"
-    });
-
-    if (windowsResult.ok) {
-      voiceInputRef.current?.focus();
-      setMicStatus("Listening… speak now, then pause.");
-      const startedAt = Date.now();
-      let lastValue = inputBefore;
-      let lastChangeAt = Date.now();
-      const poll = window.setInterval(() => {
-        const current = voiceInputRef.current?.value ?? "";
-        if (current !== lastValue) {
-          lastValue = current;
-          lastChangeAt = Date.now();
-          setMicStatus("Heard you… finishing up.");
-        }
-        const captured = current.trim() && current.trim() !== inputBefore.trim();
-        const settled = captured && Date.now() - lastChangeAt > 1500;
-        const timedOut = Date.now() - startedAt > 12000;
-        if (settled || timedOut) {
-          window.clearInterval(poll);
-          setVoiceListening(false);
-          const dictatedText = (voiceInputRef.current?.value ?? "").trim();
-          if (dictatedText && dictatedText !== inputBefore.trim()) {
-            setMicStatus("");
-            void sendAssistant(dictatedText);
-          } else {
-            setMicStatus("No speech captured. Enable Windows voice typing (Win+H): Settings → Time & language → Speech, or just type your question.");
-          }
-        }
-      }, 400);
+    if (speechState.performancePaused || ambientVoiceState.pausedByPerformanceMode) {
+      setMicStatus("Speech is paused by Performance Mode.");
+      await getBridge().updateAmbientVoiceState({
+        currentState: "paused",
+        lastActionResult: "Speech paused by Performance Mode.",
+        lastSource: commandSource
+      });
+      await onAmbientVoiceChange();
       return;
     }
-
-    setMicStatus(windowsResult.error ? `Mic unavailable: ${windowsResult.error}` : "Mic unavailable on this system. Type your question instead.");
-    setVoiceListening(false);
+    voiceInputRef.current?.focus();
+    setVoiceListening(true);
+    await getBridge().updateAmbientVoiceState({
+      currentState: "listening",
+      lastActionResult: "Recording with DexNest local speech service.",
+      lastSource: commandSource
+    });
+    void onAmbientVoiceChange();
+    setMicStatus("Listening locally. Speak, then pause.");
+    await onAction("voice.start_listening", commandSource, {
+      speechRecognitionAvailable: true,
+      provider: speechState.settings.speechEngine,
+      status: "started"
+    });
+    try {
+      const result = await runSharedSpeechCapture({ speechState, source: commandSource, sourceModule: "ask_dexnest" });
+      if (result.speechState) {
+        onSpeechStateChange(result.speechState);
+      }
+      if (result.status === "success" && result.transcript.trim()) {
+        const transcript = result.transcript.trim();
+        setMicStatus(`Captured with ${result.engine}${result.metrics ? ` · mic→rec ${result.metrics.micClickToRecordingMs}ms · transcribe ${result.metrics.transcriptionLatencyMs ?? result.durationMs}ms` : ` in ${result.durationMs} ms`}.`);
+        await getBridge().updateAmbientVoiceState({
+          currentState: "processing",
+          lastRecognizedCommand: transcript,
+          lastActionResult: "Speech captured.",
+          lastSource: commandSource
+        });
+        void onAmbientVoiceChange();
+        if (speechState.settings.showTranscriptBeforeSend || !speechState.settings.autoSendAfterSpeech) {
+          setVoiceInput(transcript);
+        } else {
+          void sendAssistant(transcript, commandSource);
+        }
+        return;
+      }
+      throw new Error(result.error ?? "No new speech captured.");
+    } catch (error) {
+      if (speechState.settings.fallbackToWindows) {
+        const windowsResult = await getBridge().startWindowsDictation();
+        setMicStatus(windowsResult.ok ? "Windows fallback started. Speak now." : (windowsResult.error ?? "Speech failed. Type your question instead."));
+        await onAction("voice.start_dictation_placeholder", commandSource, {
+          provider: "windows_dictation",
+          status: windowsResult.ok ? "started" : "failed"
+        });
+      } else {
+        setMicStatus(error instanceof Error ? error.message : "Speech failed. Type your question instead.");
+      }
+      await getBridge().updateAmbientVoiceState({
+        currentState: "idle",
+        lastActionResult: error instanceof Error ? error.message : "Speech failed.",
+        lastSource: commandSource
+      });
+      void onAmbientVoiceChange();
+    } finally {
+      setVoiceListening(false);
+    }
   }
 
   const sessionEnabled = securityState.settings.trustedSessionEnabled;
@@ -3452,6 +5679,18 @@ function AskDexNest({
                         <strong>{result.title}</strong>
                         <span>{result.sourceModule} · {result.matchReason}</span>
                         {result.textPreview && <span>{result.textPreview}</span>}
+                      </article>
+                    ))}
+                  </div>
+                )}
+
+                {message.finderResults && message.finderResults.length > 0 && (
+                  <div className="assistant__results">
+                    {message.finderResults.slice(0, 5).map((result) => (
+                      <article className="assistant__card accent-finder" key={result.id}>
+                        <strong>{result.itemName}</strong>
+                        <span>{result.location}{result.container ? ` / ${result.container}` : ""}{result.room ? ` / ${result.room}` : ""}</span>
+                        <span>{result.status}</span>
                       </article>
                     ))}
                   </div>
@@ -4617,14 +6856,31 @@ function ClipboardView({
   }
 
   async function assignSlot(slot: number): Promise<void> {
-    const result = await onAction("clipboard.assign_slot", "module_ui", { slot }) as { ok?: boolean; error?: string };
-    showStatus(result.ok ? `Assigned slot ${slot}.` : result.error ?? "Slot assignment failed.", result.ok ? "success" : "error");
+    const actionId = slot >= 1 && slot <= 3 ? `clipboard.slot${slot}.save_current` : "clipboard.assign_slot";
+    let result = await onAction(actionId, "module_ui", { slot }) as { ok?: boolean; status?: string; error?: string };
+    if (!result.ok && result.status === "sensitive_confirmation_required") {
+      const confirmed = window.confirm("This clipboard text looks sensitive. Save it to this DexNest slot anyway?");
+      if (confirmed) {
+        result = await onAction(actionId, "module_ui", { slot, confirmedSensitive: true }) as { ok?: boolean; error?: string };
+      }
+    }
+    showStatus(result.ok ? `Saved to Slot ${slot}.` : result.error ?? "Slot assignment failed.", result.ok ? "success" : "error");
     await onRefresh();
   }
 
   async function copySlot(slot: number): Promise<void> {
-    const result = await onAction("clipboard.copy_slot", "module_ui", { slot }) as { ok?: boolean; error?: string };
-    showStatus(result.ok ? `Copied slot ${slot}.` : result.error ?? "Slot copy failed.", result.ok ? "success" : "error");
+    const actionId = slot >= 1 && slot <= 3 ? `clipboard.slot${slot}.paste` : "clipboard.copy_slot";
+    const result = await onAction(actionId, "module_ui", { slot }) as { ok?: boolean; error?: string; pasteMode?: string };
+    showStatus(result.ok ? `Slot ${slot} copied. Press Ctrl+V.` : result.error ?? "Slot copy failed.", result.ok ? "success" : "error");
+    await onRefresh();
+  }
+
+  async function clearSlot(slot: number): Promise<void> {
+    if (!window.confirm(`Clear DexNest Clipboard Slot ${slot}?`)) {
+      return;
+    }
+    const result = await onAction("clipboard.clear_slot", "module_ui", { slot }) as { ok?: boolean; error?: string };
+    showStatus(result.ok ? `Cleared Slot ${slot}.` : result.error ?? "Slot clear failed.", result.ok ? "success" : "error");
     await onRefresh();
   }
 
@@ -4674,6 +6930,9 @@ function ClipboardView({
     const matchesSource = historySource === "all" || (item.source ?? "manual") === historySource;
     return matchesQuery && matchesSource;
   });
+  const quickSlots = clipboardState.slots.filter((slot) => slot.slot >= 1 && slot.slot <= 3);
+  const extendedSlots = clipboardState.slots.filter((slot) => slot.slot > 3);
+  const quickSlotShortcutText = (slot: number) => `Save: Ctrl+Shift+${slot} / Paste: Ctrl+Alt+${slot}`;
 
   return (
     <section className="view-stack accent-clipboard" aria-labelledby="clipboard-title">
@@ -4923,22 +7182,46 @@ function ClipboardView({
       )}
 
       {activeTab === "slots" && (
-        <Panel title="Clipboard Slots">
+        <Panel title="Quick Slots">
+          <p>Persistent text slots stay available until you overwrite or clear them. Copy text normally, then press the save shortcut. Paste uses the slot shortcut and falls back to copying the slot so normal Ctrl+V works.</p>
           <div className="clipboard-slot-grid">
-            {clipboardState.slots.map((slot) => (
+            {quickSlots.map((slot) => (
               <article className="clipboard-slot accent-clipboard" key={slot.slot}>
                 <div>
                   <strong>Slot {slot.slot}</strong>
-                  <p>{slot.preview || "Empty slot"}</p>
-                  {slot.updatedAt && <p className="technical">{formatLocalDateTime(slot.updatedAt)} / {formatBytes(slot.byteLength)}</p>}
+                  <p className="clipboard-slot-preview" title={slot.preview || "Empty slot"}>{slot.preview || "Empty slot"}</p>
+                  <p className="technical">{quickSlotShortcutText(slot.slot)}</p>
+                  {slot.updatedAt && <p className="technical">{formatLocalDateTime(slot.updatedAt)} / {formatBytes(slot.byteLength)} / {slot.source ?? "clipboard_ui"}</p>}
                 </div>
                 <div className="button-row">
-                  <button type="button" onClick={() => void assignSlot(slot.slot)}>Assign current</button>
-                  <button type="button" disabled={!slot.text} onClick={() => void copySlot(slot.slot)}>Copy slot</button>
+                  <button type="button" onClick={() => void assignSlot(slot.slot)}>Save current clipboard</button>
+                  <button type="button" disabled={!(slot.value || slot.text)} onClick={() => void copySlot(slot.slot)}>Copy/Paste slot</button>
+                  <button className="danger-button" type="button" disabled={!(slot.value || slot.text)} onClick={() => void clearSlot(slot.slot)}>Clear</button>
                 </div>
               </article>
             ))}
           </div>
+          {extendedSlots.length > 0 && (
+            <>
+              <h3>Extended Slots</h3>
+              <div className="clipboard-slot-grid">
+                {extendedSlots.map((slot) => (
+                  <article className="clipboard-slot accent-clipboard" key={slot.slot}>
+                    <div>
+                      <strong>Slot {slot.slot}</strong>
+                      <p className="clipboard-slot-preview" title={slot.preview || "Empty slot"}>{slot.preview || "Empty slot"}</p>
+                      {slot.updatedAt && <p className="technical">{formatLocalDateTime(slot.updatedAt)} / {formatBytes(slot.byteLength)}</p>}
+                    </div>
+                    <div className="button-row">
+                      <button type="button" onClick={() => void assignSlot(slot.slot)}>Save current clipboard</button>
+                      <button type="button" disabled={!(slot.value || slot.text)} onClick={() => void copySlot(slot.slot)}>Copy slot</button>
+                      <button className="danger-button" type="button" disabled={!(slot.value || slot.text)} onClick={() => void clearSlot(slot.slot)}>Clear</button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </>
+          )}
           <p className="technical">{clipboardState.slotsPath}</p>
         </Panel>
       )}
@@ -6905,100 +9188,284 @@ function Spinner({ size = "md", label }: { size?: "sm" | "md" | "lg"; label?: st
   );
 }
 
+let lastSpeechCaptureMetrics: SpeechCaptureMetrics | null = null;
+
+function getLastSpeechMetrics(): SpeechCaptureMetrics | null {
+  return lastSpeechCaptureMetrics;
+}
+
+async function recordSpeechAudio(settings: SpeechSettings): Promise<{ audioBytes: number[]; mimeType: string; durationMs: number; metrics: SpeechCaptureMetrics }> {
+  const clickAt = Date.now();
+  // Use the pre-warmed stream when available so recording starts instantly.
+  const ready = await prewarmMic();
+  if (!ready || !micWarm.stream) {
+    throw new Error(micWarm.state.error ?? "Microphone is not available.");
+  }
+  const stream = micWarm.stream;
+  const audioContext = micWarm.audioContext ?? new AudioContext();
+  micWarm.audioContext = audioContext;
+  if (audioContext.state === "suspended") {
+    await audioContext.resume().catch(() => undefined);
+  }
+
+  const chunks: Blob[] = [];
+  const preferredMimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "audio/webm";
+  const recorder = new MediaRecorder(stream, { mimeType: preferredMimeType });
+
+  const vadEnabled = settings.vadEnabled !== false && settings.autoStopOnSilence !== false && settings.silenceStopEnabled !== false;
+  const initialSilenceMs = settings.initialSilenceTimeoutMs ?? 4000;
+  const endSilenceMs = settings.endSilenceTimeoutMs ?? 900;
+  const minSpeechMs = settings.minSpeechMs ?? 300;
+  const maxRecordingMs = Math.max(3, settings.maxRecordingSeconds) * 1000;
+
+  let stopTimer: number | null = null;
+  let vadTimer: number | null = null;
+  let speechDetectedAt: number | null = null;
+  let silenceStopDelayMs: number | null = null;
+  let vadOutcome: SpeechCaptureMetrics["vadOutcome"] = "speech";
+  let recordingStartedAt = clickAt;
+
+  setMicWarmState({ streamStatus: "recording" });
+  try {
+    const stopped = new Promise<void>((resolve, reject) => {
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunks.push(event.data);
+        }
+      };
+      recorder.onerror = () => reject(new Error("Microphone recording failed."));
+      recorder.onstop = () => resolve();
+    });
+
+    recorder.start();
+    recordingStartedAt = Date.now();
+
+    // Hard safety cap (not the normal stop).
+    stopTimer = window.setTimeout(() => {
+      if (recorder.state !== "inactive") {
+        if (speechDetectedAt === null) {
+          vadOutcome = "no_speech";
+        } else {
+          vadOutcome = "max_recording";
+        }
+        recorder.stop();
+      }
+    }, maxRecordingMs);
+
+    if (vadEnabled) {
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 1024;
+      source.connect(analyser);
+      const data = new Uint8Array(analyser.fftSize);
+
+      // Auto-calibrate the silence threshold from the first frames of ambient
+      // noise, or use the configured numeric value.
+      let autoFloor = 0;
+      let autoFrames = 0;
+      const configuredThreshold = typeof settings.silenceThreshold === "number" ? settings.silenceThreshold : null;
+
+      let speechMsAccum = 0;
+      let quietSince: number | null = null;
+      const frameMs = 60;
+
+      const finishVad = () => {
+        if (source) {
+          try { source.disconnect(); } catch { /* ignore */ }
+        }
+      };
+
+      vadTimer = window.setInterval(() => {
+        analyser.getByteTimeDomainData(data);
+        const rms = Math.sqrt(data.reduce((total, value) => {
+          const normalized = (value - 128) / 128;
+          return total + normalized * normalized;
+        }, 0) / data.length);
+
+        // Threshold: configured value or auto floor (ambient + margin).
+        if (configuredThreshold === null && autoFrames < 6) {
+          autoFloor += rms;
+          autoFrames += 1;
+        }
+        const threshold = configuredThreshold ?? Math.max(0.012, (autoFloor / Math.max(1, autoFrames)) + 0.018);
+
+        const now = Date.now();
+        const elapsed = now - recordingStartedAt;
+
+        if (rms > threshold) {
+          speechMsAccum += frameMs;
+          quietSince = null;
+          if (speechDetectedAt === null && speechMsAccum >= minSpeechMs) {
+            speechDetectedAt = now - recordingStartedAt;
+          }
+          return;
+        }
+
+        // Silence frame.
+        if (speechDetectedAt === null) {
+          // No confirmed speech yet — cancel cleanly after the initial window.
+          if (elapsed > initialSilenceMs && recorder.state !== "inactive") {
+            vadOutcome = "no_speech";
+            finishVad();
+            recorder.stop();
+          }
+          return;
+        }
+        // Speech happened — stop after the end-silence window.
+        quietSince ??= now;
+        if (now - quietSince > endSilenceMs && recorder.state !== "inactive") {
+          silenceStopDelayMs = now - quietSince;
+          vadOutcome = "speech";
+          finishVad();
+          recorder.stop();
+        }
+      }, frameMs);
+    }
+
+    await stopped;
+  } finally {
+    if (stopTimer !== null) {
+      window.clearTimeout(stopTimer);
+    }
+    if (vadTimer !== null) {
+      window.clearInterval(vadTimer);
+    }
+    // Keep the stream + AudioContext warm for the next mic click.
+    setMicWarmState({ streamStatus: micWarm.stream ? "ready" : "unavailable" });
+  }
+
+  const blob = new Blob(chunks, { type: preferredMimeType });
+  const buffer = await blob.arrayBuffer();
+  const metrics: SpeechCaptureMetrics = {
+    micClickToRecordingMs: recordingStartedAt - clickAt,
+    recordingDurationMs: Date.now() - recordingStartedAt,
+    speechDetectedAtMs: speechDetectedAt,
+    silenceStopDelayMs,
+    vadOutcome
+  };
+  lastSpeechCaptureMetrics = metrics;
+  return {
+    audioBytes: Array.from(new Uint8Array(buffer)),
+    mimeType: blob.type || preferredMimeType,
+    durationMs: metrics.recordingDurationMs,
+    metrics
+  };
+}
+
+async function runSharedSpeechCapture(options: {
+  speechState: SpeechServiceState;
+  source: string;
+  sourceModule: string;
+  manualOverride?: boolean;
+}): Promise<SpeechTranscriptionResult & { metrics?: SpeechCaptureMetrics }> {
+  if (options.speechState.performancePaused && options.manualOverride !== true) {
+    return {
+      transcript: "",
+      engine: options.speechState.settings.speechEngine,
+      model: options.speechState.settings.modelName,
+      language: "en",
+      durationMs: 0,
+      status: "failed",
+      error: "Speech paused by Performance Mode."
+    };
+  }
+  const recorded = await recordSpeechAudio(options.speechState.settings);
+  // Clean cancel when the user said nothing — never transcribe empty audio.
+  if (recorded.metrics.vadOutcome === "no_speech") {
+    return {
+      transcript: "",
+      engine: options.speechState.settings.speechEngine,
+      model: options.speechState.settings.modelName,
+      language: "en",
+      durationMs: recorded.durationMs,
+      status: "cancelled",
+      error: "No speech detected.",
+      metrics: recorded.metrics
+    };
+  }
+  const transcriptionStartedAt = Date.now();
+  const result = await getBridge().transcribeSpeech({
+    audioBytes: recorded.audioBytes,
+    mimeType: recorded.mimeType,
+    source: options.source,
+    sourceModule: options.sourceModule,
+    language: "en",
+    manualOverride: options.manualOverride
+  });
+  return {
+    ...result,
+    metrics: { ...recorded.metrics, transcriptionLatencyMs: Date.now() - transcriptionStartedAt }
+  };
+}
+
 function VoiceInput({
   targetLabel,
+  speechState,
   onTranscript,
   onAction,
-  onBeforeDictation
+  onBeforeDictation,
+  onSpeechStateChanged
 }: {
   targetLabel: string;
+  speechState: SpeechServiceState;
   onTranscript: (text: string) => void;
   onAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>;
   onBeforeDictation?: () => void;
+  onSpeechStateChanged?: (state: SpeechServiceState) => void;
 }) {
-  const [status, setStatus] = useState("Click mic to start local dictation.");
+  const [status, setStatus] = useState("Click mic to start DexNest local speech.");
   const [isListening, setIsListening] = useState(false);
 
   async function startDictation(): Promise<void> {
     onBeforeDictation?.();
     setIsListening(true);
-    setStatus("Starting Windows dictation...");
+    setStatus(speechState.performancePaused ? "Speech paused by Performance Mode." : "Recording locally...");
 
-    const windowsResult = await getBridge().startWindowsDictation();
-    if (windowsResult.ok) {
-      setStatus("Windows dictation started. Speak now.");
-      void onAction("voice.start_dictation_placeholder", "module_ui", { targetLabel, provider: "windows_dictation", result: "started" });
-      window.setTimeout(() => {
-        setIsListening(false);
-        setStatus("Click mic to start local dictation.");
-      }, 2500);
-      return;
-    }
+    try {
+      const result = await runSharedSpeechCapture({ speechState, source: "module_ui", sourceModule: targetLabel });
+      if (result.speechState) {
+        onSpeechStateChanged?.(result.speechState);
+      }
+      if (result.status === "success" && result.transcript.trim()) {
+        onTranscript(result.transcript.trim());
+        setStatus(`Captured with ${result.engine} in ${result.durationMs} ms.`);
+        void onAction("speech.transcribe", "module_ui", {
+          targetLabel,
+          engine: result.engine,
+          model: result.model,
+          transcriptLength: result.transcript.length,
+          status: "success"
+        });
+        return;
+      }
+      throw new Error(result.error ?? "No speech was transcribed.");
+    } catch (error) {
+      if (!speechState.settings.fallbackToWindows) {
+        setStatus(error instanceof Error ? error.message : "Voice input failed.");
+        void onAction("speech.transcribe", "module_ui", { targetLabel, status: "failed" });
+        return;
+      }
 
-    const SpeechCtor = (window as unknown as { SpeechRecognition?: unknown; webkitSpeechRecognition?: unknown }).SpeechRecognition
-      ?? (window as unknown as { webkitSpeechRecognition?: unknown }).webkitSpeechRecognition;
-    if (!SpeechCtor) {
-      setIsListening(false);
-      setStatus("Windows dictation could not start. Click the text box and press Windows + H, or type manually.");
+      setStatus("Local speech failed. Starting Windows fallback...");
+      const windowsResult = await getBridge().startWindowsDictation();
+      if (windowsResult.ok) {
+        setStatus("Windows dictation started. Speak now.");
+        void onAction("voice.start_dictation_placeholder", "module_ui", { targetLabel, provider: "windows_dictation", result: "started" });
+        window.setTimeout(() => {
+          setIsListening(false);
+          setStatus("Click mic to start DexNest local speech.");
+        }, 2500);
+        return;
+      }
+      setStatus(windowsResult.error ?? "Voice input failed.");
       void onAction("voice.start_dictation_placeholder", "module_ui", {
         targetLabel,
         supported: false,
-        windowsError: windowsResult.error
-      });
-      return;
-    }
-
-    const recognition = new (SpeechCtor as new () => {
-      continuous: boolean;
-      interimResults: boolean;
-      lang: string;
-      start: () => void;
-      onresult: ((event: { results: ArrayLike<{ 0: { transcript: string } }> }) => void) | null;
-      onerror: (() => void) | null;
-      onend: (() => void) | null;
-    })();
-    recognition.continuous = false;
-    recognition.interimResults = false;
-    recognition.lang = "en-US";
-    recognition.onresult = (event) => {
-      const transcript = Array.from(event.results).map((result) => result[0].transcript).join(" ");
-      onTranscript(transcript);
-      setStatus("Voice text captured.");
-      void onAction("voice.start_dictation_placeholder", "module_ui", { targetLabel, supported: true, result: "success" });
-    };
-    recognition.onerror = () => {
-      setIsListening(false);
-      setStatus("Voice input failed. Click the text box and press Windows + H, or type manually.");
-      void onAction("voice.start_dictation_placeholder", "module_ui", {
-        targetLabel,
-        supported: true,
         result: "failed",
         windowsError: windowsResult.error
       });
-    };
-    recognition.onend = () => {
+    } finally {
       setIsListening(false);
-      setStatus((current) => current === "Listening..." ? "Voice input ended." : current);
-    };
-
-    try {
-      setStatus("Listening...");
-      recognition.start();
-      void onAction("voice.start_dictation_placeholder", "module_ui", {
-        targetLabel,
-        supported: true,
-        result: "started",
-        windowsFallbackError: windowsResult.error
-      });
-    } catch {
-      setIsListening(false);
-      setStatus("Voice input could not start. Click the text box and press Windows + H, or type manually.");
-      void onAction("voice.start_dictation_placeholder", "module_ui", {
-        targetLabel,
-        supported: true,
-        result: "start_failed",
-        windowsError: windowsResult.error
-      });
     }
   }
 
@@ -7013,11 +9480,27 @@ function VoiceInput({
 function JournalView({
   journalState,
   calendarState,
+  speechState,
+  onSpeechStateChange,
+  journalVoice,
+  onStartJournalVoice,
+  onPauseJournalVoice,
+  onResumeJournalVoice,
+  onSaveStopJournalVoice,
+  onCancelJournalVoice,
   onAction,
   onRefresh
 }: {
   journalState: JournalState;
   calendarState: CalendarState;
+  speechState: SpeechServiceState;
+  onSpeechStateChange: (state: SpeechServiceState) => void;
+  journalVoice: JournalVoiceState;
+  onStartJournalVoice: (source?: string) => Promise<void>;
+  onPauseJournalVoice: () => void;
+  onResumeJournalVoice: () => void;
+  onSaveStopJournalVoice: () => Promise<void>;
+  onCancelJournalVoice: (skipConfirm?: boolean) => Promise<void>;
   onAction: (actionId: string, source?: string, params?: unknown) => Promise<{
     ok: boolean;
     error?: string;
@@ -7044,6 +9527,13 @@ function JournalView({
       loadEntry(journalState.todayEntry);
     }
   }, [journalState.todayEntry]);
+
+  // While journal voice mode is active, mirror each auto-saved chunk into the editor.
+  useEffect(() => {
+    if (journalVoice.mode === "journal_dictation" && journalState.todayEntry) {
+      loadEntry(journalState.todayEntry);
+    }
+  }, [journalVoice.lastSavedAt, journalVoice.mode]);
 
   function loadEntry(entry: JournalEntry): void {
     setEntryId(entry.id);
@@ -7126,9 +9616,44 @@ function JournalView({
     await onRefresh();
   }
 
+  const journalVoiceActive = journalVoice.mode === "journal_dictation";
   return (
     <section className="view-stack accent-journal" aria-labelledby="journal-title">
       <PageHeader eyebrow="Private local capture" title="Journal" titleId="journal-title" />
+
+      <Panel title="Journal Voice Mode">
+        <div className="journal-voice" data-active={journalVoiceActive} data-status={journalVoice.status}>
+          <div className="section-heading section-heading--row">
+            <div>
+              <p>
+                {speechState.performancePaused
+                  ? "Speech is paused by Performance Mode."
+                  : journalVoiceActive
+                    ? (journalVoice.status === "paused" ? "Journal mode paused." : "Journal mode listening. Say “save journal” to finish.")
+                    : "Dictate your journal continuously. DexNest appends each chunk and auto-saves."}
+              </p>
+              <p className="technical">
+                status: {journalVoice.status} · chunks: {journalVoice.chunksCount}
+                {journalVoice.lastSavedAt ? ` · saved ${formatLocalDateTime(new Date(journalVoice.lastSavedAt).toISOString())}` : ""}
+                {journalVoice.error ? ` · ${journalVoice.error}` : ""}
+              </p>
+            </div>
+          </div>
+          <div className="button-row">
+            {!journalVoiceActive ? (
+              <button type="button" disabled={speechState.performancePaused} onClick={() => void onStartJournalVoice("module_ui")}>Start Journal Mode</button>
+            ) : (
+              <>
+                {journalVoice.status === "paused"
+                  ? <button type="button" disabled={speechState.performancePaused} onClick={() => onResumeJournalVoice()}>Resume</button>
+                  : <button type="button" onClick={() => onPauseJournalVoice()}>Pause</button>}
+                <button type="button" onClick={() => void onSaveStopJournalVoice()}>Save &amp; Stop</button>
+                <button type="button" onClick={() => void onCancelJournalVoice()}>Cancel</button>
+              </>
+            )}
+          </div>
+        </div>
+      </Panel>
 
       <div className="dashboard-grid">
         <Panel title="Today's Entry">
@@ -7139,6 +9664,8 @@ function JournalView({
           </div>
           <VoiceInput
             targetLabel="Journal entry"
+            speechState={speechState}
+            onSpeechStateChanged={onSpeechStateChange}
             onAction={onAction}
             onBeforeDictation={() => journalTextRef.current?.focus()}
             onTranscript={(text) => setRawText((current) => `${current}${current ? " " : ""}${text}`)}
@@ -7236,10 +9763,26 @@ function JournalView({
 
 function CalendarView({
   calendarState,
+  speechState,
+  voiceWorkflow,
+  voiceWorkflowSettings,
+  onSpeechStateChange,
+  onCalendarCandidateChange,
+  onConfirmCalendarCandidate,
+  onCancelCalendarCandidate,
+  onVoiceWorkflowSettingsChange,
   onAction,
   onRefresh
 }: {
   calendarState: CalendarState;
+  speechState: SpeechServiceState;
+  voiceWorkflow: VoiceWorkflowState;
+  voiceWorkflowSettings: VoiceWorkflowSettings;
+  onSpeechStateChange: (state: SpeechServiceState) => void;
+  onCalendarCandidateChange: (patch: Partial<CalendarVoiceCandidate>) => void;
+  onConfirmCalendarCandidate: () => Promise<void>;
+  onCancelCalendarCandidate: () => void;
+  onVoiceWorkflowSettingsChange: (settings: Partial<VoiceWorkflowSettings>) => Promise<void>;
   onAction: (actionId: string, source?: string, params?: unknown) => Promise<{ ok: boolean; error?: string; event?: CalendarEvent; calendarState?: CalendarState }>;
   onRefresh: () => Promise<void>;
 }) {
@@ -7276,6 +9819,7 @@ function CalendarView({
 
   const monthDate = parseLocalDateInput(`${visibleMonth}-01`);
   const monthLabel = monthDate.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  const calendarVoiceCandidate = voiceWorkflow.mode === "calendar_create" ? voiceWorkflow.calendarCandidate : null;
   const calendarDays = useMemo(() => {
     const firstOfMonth = new Date(monthDate);
     const gridStart = new Date(firstOfMonth);
@@ -7324,6 +9868,20 @@ function CalendarView({
     setReminderLevel(event.reminderLevel);
     setRecurrence(event.recurrence ?? "");
     setNotes(event.notes ?? "");
+  }
+
+  function loadVoiceCandidateForEdit(candidate: CalendarVoiceCandidate): void {
+    setEditingId(undefined);
+    setTitle(candidate.title);
+    setDate(candidate.date);
+    setSelectedDate(candidate.date);
+    setVisibleMonth(candidate.date.slice(0, 7));
+    setStartTime(candidate.startTime ?? "");
+    setEndTime(candidate.endTime ?? "");
+    setAllDay(candidate.allDay);
+    setReminderLevel(candidate.reminderLevel);
+    setRecurrence(candidate.recurrence ?? "");
+    setNotes(candidate.notes);
   }
 
   function resetForm(): void {
@@ -7460,6 +10018,46 @@ function CalendarView({
         )}
       />
 
+      {calendarVoiceCandidate && (
+        <Panel title="Voice Calendar Candidate">
+          <div className="status-grid">
+            <article>
+              <span>Status</span>
+              <strong>{voiceWorkflow.status === "saving" ? "Saving" : voiceWorkflow.status === "saved" ? "Saved" : "Review"}</strong>
+              <p>{voiceWorkflow.error || "Ctrl/typed/push-to-talk calendar command routed locally."}</p>
+            </article>
+            <article>
+              <span>Confidence</span>
+              <strong>{calendarVoiceCandidate.confidence}</strong>
+              <p>{calendarVoiceCandidate.missingFields.length ? `Missing ${calendarVoiceCandidate.missingFields.join(", ")}` : "Ready to add."}</p>
+            </article>
+            <article>
+              <span>Type</span>
+              <strong>{calendarVoiceCandidate.eventType}</strong>
+              <p>{calendarVoiceCandidate.sensitivity === "sensitive" ? "Source phrase hidden for privacy." : calendarVoiceCandidate.sourcePhrasePreview || "No source preview."}</p>
+            </article>
+          </div>
+          <div className="registry-controls">
+            <label>Title<input value={calendarVoiceCandidate.title} onChange={(event) => onCalendarCandidateChange({ title: event.target.value })} /></label>
+            <label>Date<input type="date" value={calendarVoiceCandidate.date} onChange={(event) => onCalendarCandidateChange({ date: event.target.value })} /></label>
+            <label>Start<input type="time" value={calendarVoiceCandidate.startTime ?? ""} disabled={calendarVoiceCandidate.allDay} onChange={(event) => onCalendarCandidateChange({ startTime: event.target.value || null, endTime: event.target.value ? addMinutesToTime(event.target.value, voiceWorkflowSettings.defaultMeetingDurationMinutes || 30) : null })} /></label>
+            <label>End<input type="time" value={calendarVoiceCandidate.endTime ?? ""} disabled={calendarVoiceCandidate.allDay} onChange={(event) => onCalendarCandidateChange({ endTime: event.target.value || null })} /></label>
+            <label>Reminder<select value={calendarVoiceCandidate.reminderLevel} onChange={(event) => onCalendarCandidateChange({ reminderLevel: event.target.value as "soft" | "normal" | "urgent" })}><option value="soft">soft</option><option value="normal">normal</option><option value="urgent">urgent</option></select></label>
+            <label>Recurrence<input value={calendarVoiceCandidate.recurrence ?? ""} onChange={(event) => onCalendarCandidateChange({ recurrence: event.target.value || null })} placeholder="yearly-placeholder" /></label>
+          </div>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={calendarVoiceCandidate.allDay} onChange={(event) => onCalendarCandidateChange({ allDay: event.target.checked })} />
+            <span>All-day event or birthday</span>
+          </label>
+          <textarea value={calendarVoiceCandidate.notes} onChange={(event) => onCalendarCandidateChange({ notes: event.target.value })} placeholder="Calendar notes" />
+          <div className="button-row">
+            <button type="button" className="button-primary" disabled={voiceWorkflow.status === "saving"} onClick={() => void onConfirmCalendarCandidate()}>{voiceWorkflow.status === "saving" ? "Saving..." : "Add event"}</button>
+            <button type="button" onClick={() => loadVoiceCandidateForEdit(calendarVoiceCandidate)}>Edit in form</button>
+            <button type="button" className="danger-button" onClick={onCancelCalendarCandidate}>Cancel</button>
+          </div>
+        </Panel>
+      )}
+
       <div className="calendar-shell">
         <Panel title={monthLabel}>
           <div className="calendar-grid" aria-label={`${monthLabel} calendar`}>
@@ -7491,6 +10089,8 @@ function CalendarView({
         <Panel title="Create Event">
           <VoiceInput
             targetLabel="Calendar event"
+            speechState={speechState}
+            onSpeechStateChanged={onSpeechStateChange}
             onAction={onAction}
             onBeforeDictation={() => calendarTitleRef.current?.focus()}
             onTranscript={(text) => setTitle((current) => `${current}${current ? " " : ""}${text}`)}
@@ -7512,6 +10112,27 @@ function CalendarView({
           {status && <p>{status}</p>}
         </Panel>
       </div>
+
+      <Panel title="Voice Calendar Settings">
+        <div className="registry-controls">
+          <label className="checkbox-row">
+            <input type="checkbox" checked={voiceWorkflowSettings.autoCreateHighConfidenceCalendarVoiceEvents} onChange={(event) => void onVoiceWorkflowSettingsChange({ autoCreateHighConfidenceCalendarVoiceEvents: event.target.checked })} />
+            <span>Auto-create high-confidence voice calendar events</span>
+          </label>
+          <label>
+            Default duration
+            <input type="number" min="5" step="5" value={voiceWorkflowSettings.defaultMeetingDurationMinutes} onChange={(event) => void onVoiceWorkflowSettingsChange({ defaultMeetingDurationMinutes: Number(event.target.value) || 30 })} />
+          </label>
+          <label>
+            Default reminder time
+            <input type="time" value={voiceWorkflowSettings.defaultReminderTime} onChange={(event) => void onVoiceWorkflowSettingsChange({ defaultReminderTime: event.target.value || "09:00" })} />
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={voiceWorkflowSettings.askBeforeRecurringEvents} onChange={(event) => void onVoiceWorkflowSettingsChange({ askBeforeRecurringEvents: event.target.checked })} />
+            <span>Ask before recurring events like birthdays</span>
+          </label>
+        </div>
+      </Panel>
 
       <div className="dashboard-grid">
         <Panel title={`Selected Day: ${formatLocalDate(selectedDate)}`}>
@@ -7607,10 +10228,20 @@ const emptyFinderForm = {
 
 function FinderView({
   finderState,
+  speechState,
+  voiceWorkflow,
+  onSpeechStateChange,
+  onSaveVoiceCandidate,
+  onCancelVoiceCandidate,
   onAction,
   onRefresh
 }: {
   finderState: FinderState;
+  speechState: SpeechServiceState;
+  voiceWorkflow: VoiceWorkflowState;
+  onSpeechStateChange: (state: SpeechServiceState) => void;
+  onSaveVoiceCandidate: () => Promise<void>;
+  onCancelVoiceCandidate: () => void;
   onAction: (actionId: string, source?: string, params?: unknown) => Promise<{
     ok: boolean;
     error?: string;
@@ -7664,6 +10295,22 @@ function FinderView({
       status: item.status,
       lentTo: item.lentTo ?? "",
       confidence: item.confidence ?? "sure"
+    });
+  }
+
+  function editVoiceCandidate(): void {
+    const candidate = voiceWorkflow.candidate;
+    if (!candidate) {
+      return;
+    }
+    setForm({
+      ...emptyFinderForm,
+      itemName: candidate.itemName,
+      location: candidate.location,
+      room: candidate.room,
+      container: candidate.container,
+      notes: candidate.notes,
+      confidence: candidate.confidence === "high" ? "sure" : "maybe"
     });
   }
 
@@ -7783,6 +10430,27 @@ function FinderView({
     <section className="view-stack accent-finder" aria-labelledby="finder-title">
       <PageHeader eyebrow="Local item-location memory" title="Finder" titleId="finder-title" />
 
+      <Panel title="Voice Add">
+        <div className="status-grid">
+          <article><span>Mode</span><strong>{voiceWorkflow.mode === "finder_add" ? "Finder add" : "Ready"}</strong><p>Say "passport is in black drawer" or "where is my passport" in Ask DexNest.</p></article>
+          <article><span>Status</span><strong>{voiceWorkflow.mode === "finder_add" ? voiceWorkflow.status : "idle"}</strong><p>{voiceWorkflow.error || "High-confidence memories save automatically; uncertain ones appear here."}</p></article>
+          <article><span>Confidence</span><strong>{voiceWorkflow.candidate?.confidence ?? "none"}</strong><p>{voiceWorkflow.lastTranscriptPreview || "No active Finder candidate."}</p></article>
+        </div>
+        {voiceWorkflow.candidate ? (
+          <div className="data-item data-item--stacked accent-finder">
+            <strong>Save {voiceWorkflow.candidate.itemName} in {voiceWorkflow.candidate.location}?</strong>
+            <span>{voiceWorkflow.candidate.room || "no room"} / {voiceWorkflow.candidate.container || "no container"}</span>
+            <div className="button-row">
+              <button type="button" className="button-primary" onClick={() => void onSaveVoiceCandidate()}>Save</button>
+              <button type="button" onClick={editVoiceCandidate}>Edit</button>
+              <button type="button" className="danger-button" onClick={onCancelVoiceCandidate}>Cancel</button>
+            </div>
+          </div>
+        ) : (
+          <p>No Finder voice candidate waiting.</p>
+        )}
+      </Panel>
+
       <div className="dashboard-grid">
         <Panel title="Quick Add">
           <div className="project-form">
@@ -7796,6 +10464,13 @@ function FinderView({
             <label>Tags<input value={form.tags} onChange={(event) => setForm({ ...form, tags: event.target.value })} placeholder="travel, documents" /></label>
             <label>Notes<textarea value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} placeholder="Optional private note" /></label>
           </div>
+          <VoiceInput
+            targetLabel="Finder"
+            speechState={speechState}
+            onSpeechStateChanged={onSpeechStateChange}
+            onTranscript={(text) => setForm((current) => ({ ...current, notes: current.notes ? `${current.notes}\n${text}` : text }))}
+            onAction={onAction}
+          />
           <div className="button-row">
             <button type="button" onClick={() => void saveItem()}>{form.id ? "Update item" : "Save item"}</button>
             <button type="button" onClick={() => setForm(emptyFinderForm)}>Reset</button>
@@ -8447,10 +11122,28 @@ const emptyCaptureForm = {
 
 function CaptureView({
   captureState,
+  speechState,
+  voiceWorkflow,
+  voiceWorkflowSettings,
+  onSpeechStateChange,
+  onStartVoiceCapture,
+  onSaveVoiceCapture,
+  onStopVoiceCapture,
+  onCancelVoiceCapture,
+  onVoiceWorkflowSettingsChange,
   onAction,
   onRefresh
 }: {
   captureState: CaptureState;
+  speechState: SpeechServiceState;
+  voiceWorkflow: VoiceWorkflowState;
+  voiceWorkflowSettings: VoiceWorkflowSettings;
+  onSpeechStateChange: (state: SpeechServiceState) => void;
+  onStartVoiceCapture: (source?: string) => Promise<void>;
+  onSaveVoiceCapture: () => Promise<void>;
+  onStopVoiceCapture: () => void;
+  onCancelVoiceCapture: () => void;
+  onVoiceWorkflowSettingsChange: (settings: Partial<VoiceWorkflowSettings>) => Promise<void>;
   onAction: (actionId: string, source?: string, params?: unknown) => Promise<{ ok: boolean; error?: string; captureState?: CaptureState }>;
   onRefresh: () => Promise<void>;
 }) {
@@ -8555,6 +11248,35 @@ function CaptureView({
     <section className="view-stack accent-capture" aria-labelledby="capture-title">
       <PageHeader eyebrow="Universal local inbox" title="Capture" titleId="capture-title" />
 
+      <Panel title="Voice Capture">
+        <div className="status-grid">
+          <article><span>Mode</span><strong>{voiceWorkflow.mode === "capture_note" ? "Capture voice" : "Ready"}</strong><p>{speechState.performancePaused ? "Speech is paused by Performance Mode." : "Select Ask DexNest or start here."}</p></article>
+          <article><span>Status</span><strong>{voiceWorkflow.mode === "capture_note" ? voiceWorkflow.status : "idle"}</strong><p>{voiceWorkflow.error || "Select text mentally, speak the note, then DexNest saves locally."}</p></article>
+          <article><span>Latest</span><strong>{voiceWorkflow.mode === "capture_note" ? `${voiceWorkflow.chunksCount} chunk${voiceWorkflow.chunksCount === 1 ? "" : "s"}` : "0 chunks"}</strong><p>{voiceWorkflow.lastTranscriptPreview || "No preview stored for sensitive text."}</p></article>
+        </div>
+        <p>Select Ask DexNest: "capture this" → speak your note. Or start a local Capture voice note here.</p>
+        <div className="button-row">
+          <button type="button" className="button-primary" disabled={speechState.performancePaused || voiceWorkflow.mode === "capture_note" && voiceWorkflow.status === "listening"} onClick={() => void onStartVoiceCapture("module_ui")}>Start Voice Capture</button>
+          <button type="button" disabled={voiceWorkflow.mode !== "capture_note"} onClick={() => void onSaveVoiceCapture()}>Save</button>
+          <button type="button" disabled={voiceWorkflow.mode !== "capture_note"} onClick={onStopVoiceCapture}>Stop</button>
+          <button type="button" className="danger-button" disabled={voiceWorkflow.mode !== "capture_note"} onClick={onCancelVoiceCapture}>Cancel</button>
+        </div>
+        <div className="settings-list">
+          <label className="assistant__check">
+            <input type="checkbox" checked={voiceWorkflowSettings.autoSaveCaptureVoiceNotes} onChange={(event) => void onVoiceWorkflowSettingsChange({ autoSaveCaptureVoiceNotes: event.target.checked })} />
+            <span>Auto-save Capture voice notes</span>
+          </label>
+          <label className="assistant__check">
+            <input type="checkbox" checked={voiceWorkflowSettings.continueCaptureMode} onChange={(event) => void onVoiceWorkflowSettingsChange({ continueCaptureMode: event.target.checked })} />
+            <span>Continue listening after saving</span>
+          </label>
+          <label className="assistant__check">
+            <input type="checkbox" checked={voiceWorkflowSettings.confirmSensitiveCapture} onChange={(event) => void onVoiceWorkflowSettingsChange({ confirmSensitiveCapture: event.target.checked })} />
+            <span>Require review for sensitive capture text</span>
+          </label>
+        </div>
+      </Panel>
+
       <Panel title="Quick Capture">
         <div className="project-form">
           <label>Type<select value={form.type} onChange={(event) => setForm({ ...form, type: event.target.value as CaptureItemType })}><option value="note">note</option><option value="link">link</option><option value="task">task</option><option value="expense">expense</option><option value="file">file</option><option value="image">image</option><option value="document">document</option><option value="other">other</option></select></label>
@@ -8563,6 +11285,13 @@ function CaptureView({
           <label>Tags<input value={form.tags} onChange={(event) => setForm({ ...form, tags: event.target.value })} placeholder="inbox, later" /></label>
           <label>Text<textarea value={form.text} onChange={(event) => setForm({ ...form, text: event.target.value })} placeholder="Note, task, thought, expense, or routing context" /></label>
         </div>
+        <VoiceInput
+          targetLabel="Capture"
+          speechState={speechState}
+          onSpeechStateChanged={onSpeechStateChange}
+          onTranscript={(text) => setForm((current) => ({ ...current, text: current.text ? `${current.text}\n${text}` : text }))}
+          onAction={onAction}
+        />
         <div className="button-row">
           <button type="button" onClick={() => void chooseFile()}>{form.filePath ? "File selected" : "Attach file"}</button>
           <button type="button" onClick={() => void saveCapture()}>Save to inbox</button>
@@ -8610,7 +11339,22 @@ function SearchView({
   onAssistantSettingsChange,
   securityState,
   onSecurityChange,
+  ambientVoiceState,
+  onAmbientVoiceChange,
+  speechState,
+  voiceWorkflowSettings,
+  onSpeechStateChange,
   assistantFocusSignal,
+  assistantListenSignal,
+  assistantListenSource,
+  journalVoiceActive,
+  onStartJournalVoice,
+  onJournalControl,
+  onStartCaptureVoice,
+  onFinderVoiceCandidate,
+  onCalendarVoiceCandidate,
+  onFinderLookupComplete,
+  onFinderMemorySaved,
   onAction,
   onRefresh
 }: {
@@ -8620,11 +11364,26 @@ function SearchView({
   onAssistantSettingsChange: () => Promise<void>;
   securityState: AssistantSecurityState;
   onSecurityChange: () => Promise<void>;
+  ambientVoiceState: AmbientVoiceState;
+  onAmbientVoiceChange: () => Promise<void>;
+  speechState: SpeechServiceState;
+  voiceWorkflowSettings: VoiceWorkflowSettings;
+  onSpeechStateChange: (state: SpeechServiceState) => void;
   assistantFocusSignal: number;
+  assistantListenSignal: number;
+  assistantListenSource: string;
+  journalVoiceActive: boolean;
+  onStartJournalVoice: (source?: string) => Promise<void>;
+  onJournalControl: (control: JournalVoiceControl) => void;
+  onStartCaptureVoice: (source?: string) => Promise<void>;
+  onFinderVoiceCandidate: (candidate: FinderVoiceCandidate, source?: string) => void;
+  onCalendarVoiceCandidate: (candidate: CalendarVoiceCandidate, source?: string) => void;
+  onFinderLookupComplete: (summary: string, source: string) => void;
+  onFinderMemorySaved: (source: string) => void;
   onAction: (actionId: string, source?: string, params?: unknown) => Promise<{
     ok: boolean;
     error?: string;
-    results?: SearchResult[];
+    results?: SearchResult[] | FinderItem[];
     secureResults?: SecureSearchResult[];
     smartResults?: SmartLookupResult[];
     searchState?: SearchState;
@@ -8688,7 +11447,7 @@ function SearchView({
     try {
       const result = await onAction("search.run_query", "module_ui", nextParams);
       if (result.ok) {
-        setResults(result.results ?? []);
+        setResults((result.results ?? []) as SearchResult[]);
         setStatus(`${result.results?.length ?? 0} results.`);
       } else {
         setStatus(result.error ?? "Search failed.");
@@ -8833,8 +11592,23 @@ function SearchView({
           onAssistantSettingsChange={onAssistantSettingsChange}
           securityState={securityState}
           onSecurityChange={onSecurityChange}
+          ambientVoiceState={ambientVoiceState}
+          onAmbientVoiceChange={onAmbientVoiceChange}
+          speechState={speechState}
+          voiceWorkflowSettings={voiceWorkflowSettings}
+          onSpeechStateChange={onSpeechStateChange}
           onAction={onAction}
           focusSignal={assistantFocusSignal}
+          listenSignal={assistantListenSignal}
+          listenSource={assistantListenSource}
+          journalVoiceActive={journalVoiceActive}
+          onStartJournalVoice={onStartJournalVoice}
+          onJournalControl={onJournalControl}
+          onStartCaptureVoice={onStartCaptureVoice}
+          onFinderVoiceCandidate={onFinderVoiceCandidate}
+          onCalendarVoiceCandidate={onCalendarVoiceCandidate}
+          onFinderLookupComplete={onFinderLookupComplete}
+          onFinderMemorySaved={onFinderMemorySaved}
         />
       </Panel>
 
@@ -9723,18 +12497,26 @@ function SettingsView({
   appInfo,
   backupState,
   calendarState,
+  ambientVoiceState,
+  speechState,
   performanceModeState,
   performanceModeSettings,
   onAction,
+  onAmbientVoiceChanged,
+  onSpeechStateChanged,
   onPerformanceChanged,
   onRefresh
 }: {
   appInfo: AppInfo | null;
   backupState: BackupState;
   calendarState: CalendarState;
+  ambientVoiceState: AmbientVoiceState;
+  speechState: SpeechServiceState;
   performanceModeState: PerformanceModeState;
   performanceModeSettings: PerformanceModeSettings;
   onAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>;
+  onAmbientVoiceChanged: (settings: Partial<AmbientVoiceSettings>) => Promise<void>;
+  onSpeechStateChanged: (state: SpeechServiceState) => void;
   onPerformanceChanged: (settings?: Partial<PerformanceModeSettings>, enabled?: boolean) => Promise<void>;
   onRefresh: () => Promise<void>;
 }) {
@@ -9747,6 +12529,32 @@ function SettingsView({
   const [performanceForm, setPerformanceForm] = useState<PerformanceModeSettings>(performanceModeSettings);
   const [performanceBusy, setPerformanceBusy] = useState(false);
   const [performanceSaving, setPerformanceSaving] = useState(false);
+  const [ambientForm, setAmbientForm] = useState<AmbientVoiceSettings>(ambientVoiceState.settings);
+  const [ambientSaving, setAmbientSaving] = useState(false);
+  const [ambientStatus, setAmbientStatus] = useState("");
+  const [speechForm, setSpeechForm] = useState<SpeechSettings>(speechState.settings);
+  const [speechBusy, setSpeechBusy] = useState(false);
+  const [speechStatus, setSpeechStatus] = useState("");
+  const [micWarmUi, setMicWarmUi] = useState<MicWarmState>(getMicWarmState());
+  const [speechMetrics, setSpeechMetrics] = useState<SpeechCaptureMetrics | null>(getLastSpeechMetrics());
+
+  useEffect(() => {
+    const unsubscribe = subscribeMicWarm(() => setMicWarmUi(getMicWarmState()));
+    void refreshMicPermission();
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    // Pre-warm the mic while Speech settings are open, gated by the setting and
+    // Performance Mode. Never warms silently elsewhere in the background.
+    if (speechState.performancePaused) {
+      releaseMic(true);
+      return;
+    }
+    if (speechForm.micPrewarmEnabled !== false && speechForm.speechEngine === "faster_whisper") {
+      void prewarmMic();
+    }
+  }, [speechState.performancePaused, speechForm.micPrewarmEnabled, speechForm.speechEngine]);
   const [lifecycleForm, setLifecycleForm] = useState<AppLifecycleSettings>(appInfo?.appLifecycleSettings ?? defaultAppLifecycleSettings);
   const [lifecycleSaving, setLifecycleSaving] = useState(false);
   const [lifecycleBusy, setLifecycleBusy] = useState(false);
@@ -9755,6 +12563,12 @@ function SettingsView({
   const [controlsSaving, setControlsSaving] = useState(false);
   const [externalState, setExternalState] = useState<ExternalDevicesState>(appInfo?.externalDevicesState ?? defaultExternalDevicesState);
   const [externalForm, setExternalForm] = useState<ExternalDevicesSettings>(appInfo?.externalDevicesState.settings ?? defaultExternalDevicesState.settings);
+  const [externalGroupForm, setExternalGroupForm] = useState({
+    groupId: "",
+    name: "Room lights",
+    aliases: "lights, room lights, all lights",
+    deviceIds: [] as string[]
+  });
   const [goveeApiKeyInput, setGoveeApiKeyInput] = useState("");
   const [externalStatus, setExternalStatus] = useState("");
   const [externalBusy, setExternalBusy] = useState(false);
@@ -9773,6 +12587,14 @@ function SettingsView({
   useEffect(() => {
     setPerformanceForm(performanceModeSettings);
   }, [performanceModeSettings]);
+
+  useEffect(() => {
+    setAmbientForm(ambientVoiceState.settings);
+  }, [ambientVoiceState.settings]);
+
+  useEffect(() => {
+    setSpeechForm(speechState.settings);
+  }, [speechState.settings]);
 
   useEffect(() => {
     if (appInfo?.appLifecycleSettings) {
@@ -9817,6 +12639,14 @@ function SettingsView({
     ["Global Command shortcut", appInfo ? `${appInfo.commandShortcutEnabled ? "enabled" : "disabled"} / ${appInfo.commandShortcut}` : "Loading"],
     ["Command shortcut status", appInfo ? `${appInfo.commandShortcutStatus}${appInfo.commandShortcutLastError ? ` / ${appInfo.commandShortcutLastError}` : ""}` : "Loading"],
     ["Tray status", appInfo?.trayStatus ?? "Loading"],
+    ["Speech settings", appInfo?.speechSettingsPath ?? speechState.settingsPath],
+    ["Speech models", appInfo?.speechModelsRoot ?? speechState.modelRoot],
+    ["Speech debug audio", appInfo?.speechDebugAudioRoot ?? speechState.debugAudioRoot],
+    ["Speech engine", `${speechState.settings.speechEngine} / ${speechState.settings.modelName}`],
+    ["Speech status", speechState.modelStatus.message],
+    ["Ambient Voice settings", appInfo?.ambientVoiceSettingsPath ?? ambientVoiceState.settingsPath],
+    ["Ambient Voice status", `${ambientVoiceState.settings.ambientVoiceEnabled ? "enabled" : "disabled"} / ${ambientVoiceState.currentState}`],
+    ["Ambient push-to-talk", `${ambientVoiceState.settings.pushToTalkShortcut} / ${ambientVoiceState.settings.pushToTalkShortcutStatus}`],
     ["App lifecycle settings", appInfo?.appLifecycleSettingsPath ?? "Loading"],
     ["Close behavior", appInfo?.appLifecycleSettings.closeBehavior.replaceAll("_", " ") ?? "Loading"],
     ["Windows auto-start", appInfo ? `${appInfo.appLifecycleSettings.startDexNestWithWindows ? "enabled" : "disabled"} / ${appInfo.appLifecycleSettings.loginItemStatus}` : "Loading"],
@@ -9864,6 +12694,7 @@ function SettingsView({
     ["Heatmap goals", appInfo?.heatmapGoalsPath ?? "Loading"],
     ["External Devices settings", appInfo?.externalDevicesSettingsPath ?? externalState.settingsPath],
     ["External Devices cache", appInfo?.externalDevicesCachePath ?? externalState.cachePath],
+    ["External Devices groups", appInfo?.externalDevicesGroupsPath ?? externalState.groupsPath],
     ["Govee provider", `${externalState.settings.goveeEnabled ? "enabled" : "disabled"} / ${externalState.providerStatus}`],
     ["Detected local timezone", appInfo?.localTimeZone ?? "Loading"],
     ["Current local date/time", appInfo?.localDateTimePreview ?? formatLocalDateTime(new Date())],
@@ -9900,6 +12731,153 @@ function SettingsView({
       setHealthStatus(`Performance Mode ${nextEnabled ? "enabled" : "disabled"}.`);
     } finally {
       setPerformanceBusy(false);
+    }
+  }
+
+  function updateAmbientOption<K extends keyof AmbientVoiceSettings>(key: K, value: AmbientVoiceSettings[K]): void {
+    setAmbientForm((current) => ({ ...current, [key]: value }));
+  }
+
+  async function saveAmbientVoiceOptions(): Promise<void> {
+    setAmbientSaving(true);
+    try {
+      await onAmbientVoiceChanged(ambientForm);
+      setAmbientStatus("Ambient Voice settings saved.");
+      await runHealthCheck();
+    } finally {
+      setAmbientSaving(false);
+    }
+  }
+
+  async function startAmbientVoiceTest(): Promise<void> {
+    setAmbientStatus("Opening Ask DexNest for a visible push-to-talk test.");
+    await getBridge().startAmbientListening({ source: "module_ui" });
+    await onAction("voice.ambient.test_microphone", "module_ui", {
+      currentState: ambientVoiceState.currentState,
+      pushToTalkShortcut: ambientVoiceState.settings.pushToTalkShortcut
+    });
+    await onRefresh();
+  }
+
+  async function testAmbientCommandRoute(): Promise<void> {
+    await onAction("voice.ambient.test_command", "module_ui", {
+      route: "Ask DexNest",
+      speakResponses: ambientForm.speakResponses,
+      allowSensitiveLookups: ambientForm.allowSensitiveLookups
+    });
+    setAmbientStatus("Ambient test command recorded. Use Ask DexNest for the live routing path.");
+  }
+
+  async function testLocalTts(): Promise<void> {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+      setAmbientStatus("Local OS speech synthesis is not available in this renderer.");
+      await onAction("voice.tts_response", "module_ui", { ttsSpoken: false, blockedReason: "speech_synthesis_unavailable", sensitivity: "none" });
+      return;
+    }
+    const utterance = new SpeechSynthesisUtterance("DexNest voice response test.");
+    utterance.rate = ambientForm.voiceRate || 1;
+    utterance.volume = ambientForm.voiceVolume ?? 1;
+    const voice = ambientForm.voiceName ? window.speechSynthesis.getVoices().find((item) => item.name === ambientForm.voiceName) : undefined;
+    if (voice) {
+      utterance.voice = voice;
+    }
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
+    setAmbientStatus("Speaking local test phrase.");
+    await onAction("voice.tts_response", "module_ui", { ttsSpoken: true, sensitivity: "none", actionId: "voice.tts_response" });
+  }
+
+  function updateSpeechOption<K extends keyof SpeechSettings>(key: K, value: SpeechSettings[K]): void {
+    setSpeechForm((current) => ({ ...current, [key]: value }));
+  }
+
+  async function saveSpeechOptions(): Promise<void> {
+    setSpeechBusy(true);
+    try {
+      const result = await getBridge().saveSpeechSettings(speechForm);
+      onSpeechStateChanged(result.speechState);
+      setSpeechStatus("Speech settings saved.");
+      await onRefresh();
+    } catch (error) {
+      setSpeechStatus(error instanceof Error ? error.message : "Speech settings failed.");
+    } finally {
+      setSpeechBusy(false);
+    }
+  }
+
+  async function checkSpeechModel(): Promise<void> {
+    setSpeechBusy(true);
+    setSpeechStatus("Checking local speech model...");
+    try {
+      const result = await getBridge().checkSpeechModel();
+      onSpeechStateChanged(result.speechState);
+      setSpeechStatus(result.status.message);
+    } finally {
+      setSpeechBusy(false);
+    }
+  }
+
+  async function installSpeechModel(): Promise<void> {
+    if (!window.confirm(`Download or verify ${speechForm.modelName} under local-data/models/speech?`)) {
+      return;
+    }
+    setSpeechBusy(true);
+    setSpeechStatus("Installing/verifying local speech model...");
+    try {
+      const result = await getBridge().installSpeechModel();
+      onSpeechStateChanged(result.speechState);
+      setSpeechStatus(result.status.message);
+    } finally {
+      setSpeechBusy(false);
+    }
+  }
+
+  async function warmSpeechEngine(): Promise<void> {
+    setSpeechBusy(true);
+    setSpeechStatus("Warming faster-whisper engine (loads the model once)...");
+    try {
+      const result = await getBridge().warmSpeechEngine();
+      onSpeechStateChanged(result.speechState);
+      const diag = result.speechState.warmDiagnostics;
+      setSpeechStatus(result.ok
+        ? `Speech engine ready (${diag?.device ?? "cpu"}/${diag?.computeType ?? "int8"}, loaded in ${diag?.loadLatencyMs ?? "?"}ms).`
+        : `Warm failed: ${result.error ?? "unknown error"}`);
+    } finally {
+      setSpeechBusy(false);
+    }
+  }
+
+  async function testSpeechMic(): Promise<void> {
+    setSpeechBusy(true);
+    setSpeechStatus("Listening… speak now, DexNest stops when you pause.");
+    try {
+      const result = await runSharedSpeechCapture({ speechState: { ...speechState, settings: speechForm }, source: "module_ui", sourceModule: "settings_speech_test", manualOverride: true });
+      if (result.speechState) {
+        onSpeechStateChanged(result.speechState);
+      }
+      if (result.metrics) {
+        setSpeechMetrics(result.metrics);
+      }
+      // Metadata-only audit of the mic test (no transcript/audio).
+      void onAction("speech.transcribe", "module_ui", {
+        sourceModule: "settings_speech_test",
+        engine: result.engine,
+        status: result.status,
+        micClickToRecordingMs: result.metrics?.micClickToRecordingMs ?? null,
+        speechDetectedAtMs: result.metrics?.speechDetectedAtMs ?? null,
+        silenceStopDelayMs: result.metrics?.silenceStopDelayMs ?? null,
+        transcriptionLatencyMs: result.metrics?.transcriptionLatencyMs ?? null,
+        vadOutcome: result.metrics?.vadOutcome ?? null
+      });
+      setSpeechStatus(result.status === "success"
+        ? `Transcribed ${result.transcript.length} chars · ${result.engine} · mic→rec ${result.metrics?.micClickToRecordingMs ?? "?"}ms · transcribe ${result.metrics?.transcriptionLatencyMs ?? result.durationMs}ms.`
+        : result.status === "cancelled"
+          ? "No speech detected — cancelled cleanly."
+          : result.error ?? "Speech test failed.");
+    } catch (error) {
+      setSpeechStatus(error instanceof Error ? error.message : "Speech test failed.");
+    } finally {
+      setSpeechBusy(false);
     }
   }
 
@@ -10028,6 +13006,72 @@ function SettingsView({
       ...current,
       devices: current.devices.map((device) => device.deviceId === deviceId ? { ...device, ...patch } : device)
     }));
+  }
+
+  function toggleExternalGroupDevice(deviceId: string, checked: boolean): void {
+    setExternalGroupForm((current) => ({
+      ...current,
+      deviceIds: checked
+        ? [...new Set([...current.deviceIds, deviceId])]
+        : current.deviceIds.filter((item) => item !== deviceId)
+    }));
+  }
+
+  function editExternalGroup(group: ExternalDeviceGroup): void {
+    setExternalGroupForm({
+      groupId: group.id,
+      name: group.name,
+      aliases: group.aliases.join(", "),
+      deviceIds: group.deviceIds
+    });
+  }
+
+  function resetExternalGroupForm(): void {
+    setExternalGroupForm({
+      groupId: "",
+      name: "Room lights",
+      aliases: "lights, room lights, all lights",
+      deviceIds: []
+    });
+  }
+
+  async function saveExternalGroup(): Promise<void> {
+    const result = await onAction("external.govee.update_group", "module_ui", externalGroupForm) as { ok?: boolean; error?: string; message?: string; externalDevicesState?: ExternalDevicesState };
+    if (result.externalDevicesState) {
+      setExternalState(result.externalDevicesState);
+      setExternalForm(result.externalDevicesState.settings);
+    } else {
+      await refreshExternalDevicesState();
+    }
+    setExternalStatus(result.ok === false ? result.error ?? "Group save failed." : result.message ?? "Group saved.");
+    if (result.ok !== false) {
+      resetExternalGroupForm();
+    }
+    await onRefresh();
+  }
+
+  async function deleteExternalGroup(groupId: string): Promise<void> {
+    if (!window.confirm("Delete this local Govee group? Devices and aliases stay intact.")) {
+      return;
+    }
+    const result = await onAction("external.govee.delete_group", "module_ui", { groupId, confirmedDangerous: true }) as { ok?: boolean; error?: string; message?: string; externalDevicesState?: ExternalDevicesState };
+    if (result.externalDevicesState) {
+      setExternalState(result.externalDevicesState);
+      setExternalForm(result.externalDevicesState.settings);
+    } else {
+      await refreshExternalDevicesState();
+    }
+    setExternalStatus(result.ok === false ? result.error ?? "Group delete failed." : result.message ?? "Group deleted.");
+    await onRefresh();
+  }
+
+  async function createRoomLightsGroupFromAllDevices(): Promise<void> {
+    setExternalGroupForm({
+      groupId: "",
+      name: "Room lights",
+      aliases: "lights, room lights, all lights",
+      deviceIds: externalState.devices.map((device) => device.deviceId)
+    });
   }
 
   async function createBackupNow(): Promise<void> {
@@ -10173,6 +13217,272 @@ function SettingsView({
           </div>
         </div>
         <p>Some apps may reserve shortcuts. Use a fallback if Ctrl+Space cannot register.</p>
+      </Panel>
+
+      <Panel title="Speech / Voice Engine">
+        <div className="settings-grid">
+          <article>
+            <span>Engine</span>
+            <strong>{speechState.settings.speechEngine}</strong>
+            <p>{speechState.modelStatus.message}</p>
+          </article>
+          <article>
+            <span>Model</span>
+            <strong>{speechState.settings.modelName}</strong>
+            <p className="technical">{speechState.modelRoot}</p>
+          </article>
+          <article>
+            <span>Device</span>
+            <strong>{speechState.modelStatus.deviceDetected}</strong>
+            <p>{speechState.performancePaused ? "Paused by Performance Mode." : "Runs only when a mic button is clicked."}</p>
+          </article>
+        </div>
+        <div className="registry-controls">
+          <label>
+            Engine
+            <select value={speechForm.speechEngine} onChange={(event) => updateSpeechOption("speechEngine", event.target.value as SpeechEngine)}>
+              <option value="faster_whisper">faster-whisper</option>
+              <option value="whisper_cpp">whisper.cpp placeholder</option>
+              <option value="windows_fallback">Windows fallback only</option>
+            </select>
+          </label>
+          <label>
+            Model
+            <select value={speechForm.modelName} onChange={(event) => updateSpeechOption("modelName", event.target.value)}>
+              {speechForm.modelSizeOptions.map((model) => <option value={model} key={model}>{model}</option>)}
+            </select>
+          </label>
+          <label>
+            Device
+            <select value={speechForm.device} onChange={(event) => updateSpeechOption("device", event.target.value as SpeechDevice)}>
+              <option value="auto">auto</option>
+              <option value="cuda">cuda</option>
+              <option value="cpu">cpu</option>
+            </select>
+          </label>
+          <label>
+            Compute
+            <select value={speechForm.computeType} onChange={(event) => updateSpeechOption("computeType", event.target.value as SpeechComputeType)}>
+              <option value="auto">auto</option>
+              <option value="int8">int8</option>
+              <option value="float16">float16</option>
+            </select>
+          </label>
+          <label>
+            Max recording seconds (safety cap)
+            <input type="number" min="3" max="30" value={speechForm.maxRecordingSeconds} onChange={(event) => updateSpeechOption("maxRecordingSeconds", Number(event.target.value) || 30)} />
+          </label>
+          <label>
+            Initial silence timeout (ms) — cancel if no speech
+            <input type="number" min="1000" max="15000" step="100" value={speechForm.initialSilenceTimeoutMs ?? 4000} onChange={(event) => updateSpeechOption("initialSilenceTimeoutMs", Number(event.target.value) || 4000)} />
+          </label>
+          <label>
+            End silence timeout (ms) — stop after you pause
+            <input type="number" min="300" max="4000" step="100" value={speechForm.endSilenceTimeoutMs ?? 900} onChange={(event) => updateSpeechOption("endSilenceTimeoutMs", Number(event.target.value) || 900)} />
+          </label>
+          <label>
+            Min speech (ms)
+            <input type="number" min="100" max="2000" step="50" value={speechForm.minSpeechMs ?? 300} onChange={(event) => updateSpeechOption("minSpeechMs", Number(event.target.value) || 300)} />
+          </label>
+          <label>
+            Silence threshold
+            <input value={speechForm.silenceThreshold === undefined ? "auto" : String(speechForm.silenceThreshold)} onChange={(event) => updateSpeechOption("silenceThreshold", event.target.value.trim().toLowerCase() === "auto" ? "auto" : (Number(event.target.value) || "auto"))} placeholder="auto or 0.02" />
+          </label>
+          <label>
+            Python path
+            <input value={speechForm.pythonPath ?? ""} onChange={(event) => updateSpeechOption("pythonPath", event.target.value || null)} placeholder="Auto-detect from PATH" />
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={speechForm.silenceStopEnabled} onChange={(event) => updateSpeechOption("silenceStopEnabled", event.target.checked)} />
+            <span>Stop recording after silence</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={speechForm.vadEnabled} onChange={(event) => updateSpeechOption("vadEnabled", event.target.checked)} />
+            <span>Use local VAD during transcription</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={speechForm.autoStopOnSilence !== false} onChange={(event) => updateSpeechOption("autoStopOnSilence", event.target.checked)} />
+            <span>Auto-stop when you stop speaking</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={speechForm.micPrewarmEnabled !== false} onChange={(event) => updateSpeechOption("micPrewarmEnabled", event.target.checked)} />
+            <span>Pre-warm microphone while DexNest is open (instant mic)</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={speechForm.fallbackToWindows} onChange={(event) => updateSpeechOption("fallbackToWindows", event.target.checked)} />
+            <span>Use Windows dictation only as fallback</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={speechForm.pauseInPerformanceMode} onChange={(event) => updateSpeechOption("pauseInPerformanceMode", event.target.checked)} />
+            <span>Pause speech capture in Performance Mode</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={speechForm.autoSendAfterSpeech} onChange={(event) => updateSpeechOption("autoSendAfterSpeech", event.target.checked)} />
+            <span>Auto-send Ask DexNest transcript</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={speechForm.showTranscriptBeforeSend} onChange={(event) => updateSpeechOption("showTranscriptBeforeSend", event.target.checked)} />
+            <span>Show transcript before sending</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={speechForm.keepAudioForDebug} onChange={(event) => updateSpeechOption("keepAudioForDebug", event.target.checked)} />
+            <span>Keep debug audio under local-data/debug/audio</span>
+          </label>
+        </div>
+        <div className="button-row">
+          <button type="button" className="button-primary" disabled={speechBusy} onClick={() => void saveSpeechOptions()}>
+            {speechBusy && <Spinner size="sm" />}
+            Save Speech settings
+          </button>
+          <button type="button" disabled={speechBusy} onClick={() => void warmSpeechEngine()}>Warm speech engine</button>
+          <button type="button" disabled={speechBusy} onClick={() => void prewarmMic()}>Pre-warm mic</button>
+          <button type="button" disabled={speechBusy} onClick={() => void checkSpeechModel()}>Check local model</button>
+          <button type="button" disabled={speechBusy} onClick={() => void installSpeechModel()}>Install selected model</button>
+          <button type="button" disabled={speechBusy} onClick={() => void testSpeechMic()}>Test mic</button>
+          <button type="button" onClick={() => void getBridge().openSpeechModelFolder()}>Open model folder</button>
+        </div>
+        {speechStatus && <p className="inline-status">{speechStatus}</p>}
+        <div className="settings-list">
+          <div className="settings-row"><span>Mic permission</span><strong className="technical">{micWarmUi.permission}</strong></div>
+          <div className="settings-row"><span>Mic stream</span><strong className="technical">{speechState.performancePaused ? "blocked (performance mode)" : micWarmUi.streamStatus}{micWarmUi.error ? ` · ${micWarmUi.error}` : ""}</strong></div>
+          <div className="settings-row"><span>Audio context</span><strong className="technical">{micWarmUi.audioContextStatus}</strong></div>
+          {speechMetrics && (
+            <div className="settings-row"><span>Last capture metrics</span><strong className="technical">mic→rec {speechMetrics.micClickToRecordingMs}ms · speech@{speechMetrics.speechDetectedAtMs ?? "—"}ms · silence-stop {speechMetrics.silenceStopDelayMs ?? "—"}ms · rec {speechMetrics.recordingDurationMs}ms · transcribe {speechMetrics.transcriptionLatencyMs ?? "—"}ms · {speechMetrics.vadOutcome}</strong></div>
+          )}
+          {speechState.engineState && (
+            <div className="settings-row"><span>Engine state</span><strong className="technical">{speechState.engineState}</strong></div>
+          )}
+          {speechState.warmDiagnostics && (
+            <div className="settings-row"><span>Engine diagnostics</span><strong className="technical">{speechState.warmDiagnostics.engine} · {speechState.warmDiagnostics.device}/{speechState.warmDiagnostics.computeType} · load {speechState.warmDiagnostics.loadLatencyMs ?? "—"}ms · last {speechState.warmDiagnostics.lastTranscriptionMs ?? "—"}ms{speechState.warmDiagnostics.lastError ? ` · error: ${speechState.warmDiagnostics.lastError}` : ""}</strong></div>
+          )}
+          <div className="settings-row"><span>Settings</span><strong className="technical">{speechState.settingsPath}</strong></div>
+          <div className="settings-row"><span>Models</span><strong className="technical">{speechState.modelRoot}</strong></div>
+          <div className="settings-row"><span>Debug audio</span><strong className="technical">{speechState.debugAudioRoot}</strong></div>
+          <div className="settings-row"><span>Python</span><strong className="technical">{speechState.modelStatus.pythonPath ?? "Auto-detect, preferred: sidecars/speech/.venv"}</strong></div>
+          <div className="settings-row"><span>Last latency</span><strong>{speechState.modelStatus.lastLatencyMs === null || speechState.modelStatus.lastLatencyMs === undefined ? "not measured" : `${speechState.modelStatus.lastLatencyMs} ms`}</strong></div>
+        </div>
+      </Panel>
+
+      <Panel title="Ambient Voice">
+        <div className="settings-grid">
+          <article>
+            <span>Ambient mode</span>
+            <strong>{ambientVoiceState.settings.ambientVoiceEnabled ? "Enabled" : "Disabled"}</strong>
+            <p>{ambientVoiceState.pausedByPerformanceMode ? "Paused by Performance Mode." : `State: ${ambientVoiceState.currentState}`}</p>
+          </article>
+          <article>
+            <span>Push-to-talk</span>
+            <strong>{ambientVoiceState.settings.pushToTalkShortcutStatus}</strong>
+            <p className="technical">{ambientVoiceState.settings.pushToTalkShortcut}</p>
+          </article>
+          <article>
+            <span>Wake word</span>
+            <strong>{ambientVoiceState.wakeWordStatus}</strong>
+            <p>Wake-word listening stays placeholder-only and off by default.</p>
+          </article>
+        </div>
+        <div className="registry-controls">
+          <label className="checkbox-row">
+            <input type="checkbox" checked={ambientForm.ambientVoiceEnabled} onChange={(event) => updateAmbientOption("ambientVoiceEnabled", event.target.checked)} />
+            <span>Enable Ambient Voice controls</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={ambientForm.pushToTalkEnabled} onChange={(event) => updateAmbientOption("pushToTalkEnabled", event.target.checked)} />
+            <span>Enable push-to-talk shortcut</span>
+          </label>
+          <label>
+            Push-to-talk shortcut
+            <select value={ambientForm.pushToTalkShortcut} onChange={(event) => updateAmbientOption("pushToTalkShortcut", event.target.value as AmbientVoiceSettings["pushToTalkShortcut"])}>
+              <option value="CommandOrControl+Alt+N">Ctrl+Alt+N</option>
+              <option value="CommandOrControl+Shift+N">Ctrl+Shift+N</option>
+              <option value="CommandOrControl+Alt+M">Ctrl+Alt+M</option>
+            </select>
+          </label>
+          <label>
+            Listen window seconds
+            <input type="number" min="3" max="30" value={ambientForm.maxListeningSeconds} onChange={(event) => updateAmbientOption("maxListeningSeconds", Number(event.target.value) || 8)} />
+          </label>
+          <label>
+            Cooldown milliseconds
+            <input type="number" min="500" max="10000" step="100" value={ambientForm.commandCooldownMs} onChange={(event) => updateAmbientOption("commandCooldownMs", Number(event.target.value) || 1200)} />
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={ambientForm.visibleListeningIndicator} onChange={(event) => updateAmbientOption("visibleListeningIndicator", event.target.checked)} />
+            <span>Show global listening indicator</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={ambientForm.pauseInPerformanceMode} onChange={(event) => updateAmbientOption("pauseInPerformanceMode", event.target.checked)} />
+            <span>Pause Ambient Voice in Performance Mode</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={ambientForm.speakResponses} onChange={(event) => updateAmbientOption("speakResponses", event.target.checked)} />
+            <span>Speak safe responses with local OS speech synthesis</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={ambientForm.speakSensitiveAnswers} onChange={(event) => updateAmbientOption("speakSensitiveAnswers", event.target.checked)} />
+            <span>Allow spoken sensitive answers only while trusted session is unlocked</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={ambientForm.shortResponsesOnly} onChange={(event) => updateAmbientOption("shortResponsesOnly", event.target.checked)} />
+            <span>Keep spoken responses short</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={ambientForm.muteInPerformanceMode} onChange={(event) => updateAmbientOption("muteInPerformanceMode", event.target.checked)} />
+            <span>Mute spoken responses in Performance Mode</span>
+          </label>
+          <label>
+            Voice
+            <select value={ambientForm.voiceName ?? ""} onChange={(event) => updateAmbientOption("voiceName", event.target.value || null)}>
+              <option value="">System default</option>
+              {typeof window !== "undefined" && "speechSynthesis" in window && window.speechSynthesis.getVoices().map((voice) => (
+                <option key={voice.name} value={voice.name}>{voice.name}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Voice rate
+            <input type="number" min="0.5" max="2" step="0.1" value={ambientForm.voiceRate} onChange={(event) => updateAmbientOption("voiceRate", Number(event.target.value) || 1)} />
+          </label>
+          <label>
+            Voice volume
+            <input type="number" min="0" max="1" step="0.1" value={ambientForm.voiceVolume} onChange={(event) => updateAmbientOption("voiceVolume", Number(event.target.value))} />
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={ambientForm.allowDeviceControl} onChange={(event) => updateAmbientOption("allowDeviceControl", event.target.checked)} />
+            <span>Allow local device control routes such as Govee</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={ambientForm.allowSensitiveLookups} onChange={(event) => updateAmbientOption("allowSensitiveLookups", event.target.checked)} />
+            <span>Allow sensitive lookup routes with masking and trusted-session rules</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={ambientForm.allowClipboardActions} onChange={(event) => updateAmbientOption("allowClipboardActions", event.target.checked)} />
+            <span>Allow Clipboard routes</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={ambientForm.allowDevActions} onChange={(event) => updateAmbientOption("allowDevActions", event.target.checked)} />
+            <span>Allow Dev routes with existing action safety rules</span>
+          </label>
+        </div>
+        <p className="ambient-note">
+          Ambient Nest uses visible push-to-talk speech capture and the existing Ask DexNest route. No raw mic audio is stored, and sensitive answers stay masked unless the trusted session and spoken-sensitive settings are both enabled.
+        </p>
+        <div className="button-row">
+          <button type="button" className="button-primary" onClick={() => void saveAmbientVoiceOptions()} disabled={ambientSaving}>
+            {ambientSaving ? "Saving..." : "Save Ambient Voice"}
+          </button>
+          <button type="button" onClick={() => void startAmbientVoiceTest()}>
+            Start listening test
+          </button>
+          <button type="button" onClick={() => void testAmbientCommandRoute()}>
+            Test command route
+          </button>
+          <button type="button" onClick={() => void testLocalTts()}>
+            Test voice
+          </button>
+        </div>
+        {ambientVoiceState.settings.pushToTalkShortcutLastError && <p className="status-text status-text--error">{ambientVoiceState.settings.pushToTalkShortcutLastError}</p>}
+        {ambientStatus && <p className="status-text">{ambientStatus}</p>}
       </Panel>
 
       <Panel title="Controls and Shortcuts">
@@ -10341,6 +13651,80 @@ function SettingsView({
           {externalStatus && <span className="inline-status">{externalStatus}</span>}
         </div>
 
+        <div className="data-item data-item--stacked accent-tools">
+          <div className="section-heading section-heading--row">
+            <div>
+              <h3>Groups</h3>
+              <p>Use groups for aliases like lights, room lights, and all lights.</p>
+            </div>
+            {externalState.groups.length === 0 && externalState.devices.length >= 2 && (
+              <button type="button" onClick={() => void createRoomLightsGroupFromAllDevices()}>
+                Create Room Lights group from cached devices
+              </button>
+            )}
+          </div>
+          <div className="registry-controls">
+            <label>
+              Group name
+              <input value={externalGroupForm.name} onChange={(event) => setExternalGroupForm((current) => ({ ...current, name: event.target.value }))} placeholder="Room lights" />
+            </label>
+            <label>
+              Aliases
+              <input value={externalGroupForm.aliases} onChange={(event) => setExternalGroupForm((current) => ({ ...current, aliases: event.target.value }))} placeholder="lights, room lights, all lights" />
+            </label>
+          </div>
+          <div className="shortcut-list">
+            {externalState.devices.length === 0 ? (
+              <EmptyState>Refresh Govee devices before creating a group.</EmptyState>
+            ) : (
+              externalState.devices.map((device) => (
+                <article key={`group-${device.deviceId}`}>
+                  <div>
+                    <strong>{device.userAlias || device.roomAlias || device.deviceName}</strong>
+                    <span>{device.deviceName} / {device.model}</span>
+                  </div>
+                  <label className="checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={externalGroupForm.deviceIds.includes(device.deviceId)}
+                      onChange={(event) => toggleExternalGroupDevice(device.deviceId, event.target.checked)}
+                    />
+                    <span>In group</span>
+                  </label>
+                </article>
+              ))
+            )}
+          </div>
+          <div className="button-row">
+            <button type="button" className="button-primary" disabled={externalBusy || externalGroupForm.deviceIds.length === 0} onClick={() => void saveExternalGroup()}>
+              {externalGroupForm.groupId ? "Update group" : "Save group"}
+            </button>
+            <button type="button" onClick={resetExternalGroupForm}>Reset group form</button>
+          </div>
+          <div className="action-list action-list--compact">
+            {externalState.groups.length === 0 ? (
+              <p>No Govee groups yet. Create Room lights to make "turn off lights" control multiple lamps.</p>
+            ) : (
+              externalState.groups.map((group) => (
+                <article className="deck-action-row accent-tools" key={group.id}>
+                  <div className="deck-action-row__main">
+                    <strong>{group.name}</strong>
+                    <span>{group.deviceIds.length} device(s) / aliases: {group.aliases.join(", ") || "none"}</span>
+                    <span className="technical">{group.id}</span>
+                  </div>
+                  <div className="deck-action-row__meta">
+                    <button type="button" onClick={() => editExternalGroup(group)}>Edit</button>
+                    <button type="button" disabled={externalBusy} onClick={() => void runExternalAction("external.govee.turn_on", { alias: group.name })}>On</button>
+                    <button type="button" disabled={externalBusy} onClick={() => void runExternalAction("external.govee.turn_off", { alias: group.name, confirmedDangerous: true })}>Off</button>
+                    <button type="button" disabled={externalBusy} onClick={() => void runExternalAction("external.govee.set_brightness", { alias: group.name, brightness: 40 })}>40%</button>
+                    <button type="button" className="button-danger" onClick={() => void deleteExternalGroup(group.id)}>Delete</button>
+                  </div>
+                </article>
+              ))
+            )}
+          </div>
+        </div>
+
         <div className="deck-panel-scroll">
           {externalState.devices.length === 0 ? (
             <EmptyState>No Govee devices cached yet. Save an API key, then refresh devices.</EmptyState>
@@ -10389,6 +13773,7 @@ function SettingsView({
         <div className="settings-list">
           <div className="settings-row"><span>Settings</span><strong className="technical">{externalState.settingsPath}</strong></div>
           <div className="settings-row"><span>Cache</span><strong className="technical">{externalState.cachePath}</strong></div>
+          <div className="settings-row"><span>Groups</span><strong className="technical">{externalState.groupsPath}</strong></div>
           <div className="settings-row"><span>Action example</span><strong className="technical">external.govee.turn_on {"{ alias: \"room lights\" }"}</strong></div>
         </div>
       </Panel>

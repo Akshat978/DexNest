@@ -35,6 +35,10 @@ const vaultVersionsRoot = join(vaultFilesRoot, "versions");
 const vaultTempRoot = join(vaultFilesRoot, "temp");
 const vaultSecureRoot = join(vaultFilesRoot, "secure");
 const vaultOcrRoot = join(vaultFilesRoot, "ocr");
+const speechModelsRoot = join(localDataRoot, "models", "speech");
+const speechTempRoot = join(localDataRoot, "files", "speech", "temp");
+const speechDebugAudioRoot = join(localDataRoot, "debug", "audio");
+const speechSidecarPythonPath = join(repoRoot, "sidecars", "speech", ".venv", "Scripts", "python.exe");
 const receiptsRoot = join(localDataRoot, "files", "receipts");
 const capturesRoot = join(localDataRoot, "files", "captures");
 const projectsConfigPath = join(settingsRoot, "projects.json");
@@ -76,8 +80,13 @@ const heatmapSettingsPath = join(settingsRoot, "heatmap-settings.json");
 const heatmapGoalsPath = join(settingsRoot, "heatmap-goals.json");
 const assistantSettingsPath = join(settingsRoot, "assistant-settings.json");
 const assistantSecuritySettingsPath = join(settingsRoot, "assistant-security-settings.json");
+const speechSettingsPath = join(settingsRoot, "speech-settings.json");
+const voiceWorkflowSettingsPath = join(settingsRoot, "voice-workflow-settings.json");
+const ambientVoiceSettingsPath = join(settingsRoot, "ambient-voice-settings.json");
 const externalDevicesSettingsPath = join(settingsRoot, "external-devices-settings.json");
 const externalDevicesCachePath = join(settingsRoot, "external-devices-cache.json");
+const externalDevicesGroupsPath = join(settingsRoot, "external-devices-groups.json");
+const goveeLocalApiKeyPath = join(settingsRoot, "govee-api-key.local.json");
 const performanceModeSettingsPath = join(settingsRoot, "performance-mode-settings.json");
 const appLifecycleSettingsPath = join(settingsRoot, "app-lifecycle-settings.json");
 const searchIndexStatusPath = join(settingsRoot, "search-index-status.json");
@@ -104,7 +113,7 @@ for (const action of seededActions) {
 
 let mainWindow: BrowserWindow | null = null;
 let rendererReady = false;
-let pendingOpenView: { view: string; focusAssistant?: boolean } | null = null;
+let pendingOpenView: { view: string; focusAssistant?: boolean; startListening?: boolean; source?: DexNestActionTrigger } | null = null;
 let tray: Tray | null = null;
 let actionServer: ReturnType<typeof createServer> | null = null;
 let secureVaultKey: Buffer | null = null;
@@ -127,6 +136,8 @@ let clipboardPasteReplayBusy = false;
 let clipboardArmedPasteText = "";
 let commandShortcutRegistered = false;
 let registeredCommandShortcut = "";
+let ambientVoiceShortcutRegistered = false;
+let registeredAmbientVoiceShortcut = "";
 let registeredKeyboardShortcuts: string[] = [];
 let vaultOcrQueueRunning = false;
 let vaultOcrQueuePaused = false;
@@ -205,6 +216,50 @@ interface KeyboardShortcutSettings {
   enabled: boolean;
   mappings: KeyboardShortcutMapping[];
   updatedAt: string;
+}
+
+type AmbientVoiceStatus = "idle" | "listening" | "processing" | "speaking" | "paused";
+
+interface AmbientVoiceSettings {
+  ambientVoiceEnabled: boolean;
+  wakeWordEnabled: boolean;
+  wakeWord: string;
+  pushToTalkEnabled: boolean;
+  pushToTalkShortcut: string;
+  pushToTalkShortcutStatus: "active" | "disabled" | "failed" | "paused";
+  pushToTalkShortcutLastError: string | null;
+  visibleListeningIndicator: boolean;
+  playStartSound: boolean;
+  playStopSound: boolean;
+  autoSendAfterSpeech: boolean;
+  stopListeningAfterCommand: boolean;
+  pauseInPerformanceMode: boolean;
+  allowDeviceControl: boolean;
+  allowClipboardActions: boolean;
+  allowDevActions: boolean;
+  allowSensitiveLookups: boolean;
+  speakResponses: boolean;
+  speakSensitiveAnswers: boolean;
+  voiceName?: string | null;
+  voiceRate: number;
+  voiceVolume: number;
+  shortResponsesOnly: boolean;
+  muteInPerformanceMode: boolean;
+  maxListeningSeconds: number;
+  commandCooldownMs: number;
+  updatedAt: string;
+}
+
+interface AmbientVoiceState {
+  settingsPath: string;
+  settings: AmbientVoiceSettings;
+  currentState: AmbientVoiceStatus;
+  lastRecognizedCommand: string;
+  lastActionResult: string;
+  lastSource: DexNestActionTrigger | "system";
+  lastChangedAt: string;
+  pausedByPerformanceMode: boolean;
+  wakeWordStatus: "placeholder" | "disabled";
 }
 
 interface StreamDeckSettings {
@@ -338,10 +393,15 @@ interface ClipboardMultiGroup {
 
 interface ClipboardSlot {
   slot: number;
+  slotId?: number;
+  type?: "text";
+  value?: string;
   text: string;
   preview: string;
   byteLength: number;
+  createdAt?: string;
   updatedAt: string;
+  source?: "keyboard_shortcut" | "clipboard_ui" | "command" | "module_ui";
 }
 
 interface DropTextItem {
@@ -412,6 +472,87 @@ interface ToolsRunResult {
   info?: Array<{ fileName: string; byteLength: number; pageCount: number | null }>;
   ocrPreview?: string;
   ocrMetadata?: { engine: string; averageConfidence: number | null };
+  error?: string;
+}
+
+type SpeechEngine = "faster_whisper" | "whisper_cpp" | "windows_fallback";
+type SpeechDevice = "auto" | "cuda" | "cpu";
+type SpeechComputeType = "auto" | "int8" | "float16";
+type SpeechStatus = "success" | "failed" | "cancelled";
+
+interface SpeechSettings {
+  speechEngine: SpeechEngine;
+  fallbackToWindows: boolean;
+  keepSpeechModelWarm?: boolean;
+  modelName: string;
+  modelSizeOptions: string[];
+  device: SpeechDevice;
+  computeType: SpeechComputeType;
+  maxRecordingSeconds: number;
+  silenceStopEnabled: boolean;
+  vadEnabled: boolean;
+  // Phase 23A.1 VAD/silence knobs.
+  initialSilenceTimeoutMs?: number;
+  endSilenceTimeoutMs?: number;
+  minSpeechMs?: number;
+  silenceThreshold?: number | "auto";
+  autoStopOnSilence?: boolean;
+  micPrewarmEnabled?: boolean;
+  keepAudioForDebug: boolean;
+  pauseInPerformanceMode: boolean;
+  autoSendAfterSpeech: boolean;
+  showTranscriptBeforeSend: boolean;
+  useSharedSpeechEverywhere: boolean;
+  pythonPath?: string | null;
+  updatedAt: string | null;
+}
+
+interface VoiceWorkflowSettings {
+  continueCaptureMode: boolean;
+  autoSaveCaptureVoiceNotes: boolean;
+  confirmBeforeSavingCapture: boolean;
+  confirmSensitiveCapture: boolean;
+  autoCreateHighConfidenceCalendarVoiceEvents: boolean;
+  defaultMeetingDurationMinutes: number;
+  defaultReminderTime: string;
+  askBeforeRecurringEvents: boolean;
+  updatedAt: string;
+}
+
+interface SpeechModelStatus {
+  ok: boolean;
+  installed: boolean;
+  message: string;
+  engine: SpeechEngine;
+  model: string;
+  modelPath: string;
+  pythonPath: string | null;
+  deviceDetected: "cuda" | "cpu" | "unknown";
+  fasterWhisperAvailable: boolean;
+  lastLatencyMs?: number | null;
+  lastError?: string | null;
+}
+
+interface SpeechServiceState {
+  settingsPath: string;
+  modelRoot: string;
+  debugAudioRoot: string;
+  settings: SpeechSettings;
+  modelStatus: SpeechModelStatus;
+  windowsFallbackAvailable: boolean;
+  performancePaused: boolean;
+  engineState?: SpeechEngineState;
+  warmDiagnostics?: SpeechWorkerDiagnostics;
+}
+
+interface SpeechTranscriptionResult {
+  transcript: string;
+  engine: SpeechEngine;
+  model: string;
+  language: string;
+  durationMs: number;
+  confidence?: number;
+  status: SpeechStatus;
   error?: string;
 }
 
@@ -590,9 +731,20 @@ interface ExternalDeviceCacheItem {
   lastKnownBrightness?: number | null;
 }
 
+interface ExternalDeviceGroup {
+  id: string;
+  name: string;
+  aliases: string[];
+  provider: "govee";
+  deviceIds: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface ExternalDevicesState {
   settingsPath: string;
   cachePath: string;
+  groupsPath: string;
   settings: ExternalDevicesSettings;
   secureVaultSetup: boolean;
   secureVaultUnlocked: boolean;
@@ -600,6 +752,7 @@ interface ExternalDevicesState {
   providerStatus: "disabled" | "ready" | "needs_secure_vault" | "locked" | "missing_api_key";
   providerMessage: string;
   devices: ExternalDeviceCacheItem[];
+  groups: ExternalDeviceGroup[];
 }
 
 interface SearchIndexRecord {
@@ -1097,6 +1250,12 @@ function ensureSearchRoot(): void {
   mkdirSync(searchIndexRoot, { recursive: true });
 }
 
+function ensureSpeechRoot(): void {
+  mkdirSync(speechModelsRoot, { recursive: true });
+  mkdirSync(speechTempRoot, { recursive: true });
+  mkdirSync(speechDebugAudioRoot, { recursive: true });
+}
+
 function ensureBackupRoot(): void {
   mkdirSync(backupsRoot, { recursive: true });
   mkdirSync(restoreStagingRoot, { recursive: true });
@@ -1340,6 +1499,8 @@ function appHealthState(source: DexNestActionTrigger = "module_ui", writeAudit =
   const performanceSettings = loadPerformanceModeSettings();
   const searchIndexStatus = loadSearchIndexStatus();
   const externalDevices = externalDevicesState();
+  const ambient = ambientVoiceState();
+  const speech = speechServiceState();
   const ocrQueuedCount = loadVaultOcrJobs().filter((job) => job.status === "queued").length;
   const localDataExists = existsSync(localDataRoot);
   const sqliteUnderLocalData = isPathInside(localDataRoot, localDb.dbPath);
@@ -1411,6 +1572,8 @@ function appHealthState(source: DexNestActionTrigger = "module_ui", writeAudit =
         check("command-shortcut", "Command global shortcut", !commandSettings.globalShortcutEnabled ? "warn" : commandSettings.globalShortcutStatus === "active" ? "pass" : "warn", `${commandSettings.globalShortcut} / ${commandSettings.globalShortcutStatus}${commandSettings.globalShortcutLastError ? ` / ${commandSettings.globalShortcutLastError}` : ""}`, commandSettings.globalShortcutStatus === "failed" ? "Switch DexNest Command shortcut to Ctrl+Alt+Space or Ctrl+Shift+Space." : undefined),
         check("keyboard-shortcuts", "Keyboard shortcuts", !keyboardSettings.enabled ? "warn" : keyboardSettings.mappings.some((mapping) => mapping.status === "active") ? "pass" : "warn", `${keyboardSettings.mappings.filter((mapping) => mapping.status === "active").length} active shortcut(s).`, shortcutConflictDetails(keyboardSettings).join(" ") || undefined),
         check("tray-status", "Tray status", tray && commandSettings.trayStatus === "active" ? "pass" : "warn", tray && commandSettings.trayStatus === "active" ? "DexNest tray is active." : "DexNest tray is not active.", "Restart DexNest if the tray icon is missing."),
+        check("ambient-voice", "Ambient Voice", ambient.settings.ambientVoiceEnabled ? "warn" : "pass", `${ambient.currentState}; push-to-talk ${ambient.settings.pushToTalkShortcutStatus}; wake word ${ambient.wakeWordStatus}.`, ambient.pausedByPerformanceMode ? "Ambient Voice is paused by Performance Mode." : "Ambient Voice is off by default; wake word is placeholder-only."),
+        check("speech-service", "Speech service", speech.performancePaused ? "warn" : "pass", `${speech.settings.speechEngine} / ${speech.settings.modelName} / ${speech.modelStatus.message}`, speech.performancePaused ? "Speech capture is paused by Performance Mode." : "Run Check local model in Settings when changing speech engine."),
         check("heatmap-state", "Heatmap status", performanceModePauses("heatmap") ? "warn" : heatmap.settings.enabled && !heatmap.settings.paused ? "warn" : "pass", heatmap.trackingStatus, performanceModePauses("heatmap") ? "Heatmap sampling is paused until Performance Mode turns off." : heatmap.settings.enabled && !heatmap.settings.paused ? "Heatmap samples only at configured interval." : undefined),
         check("ocr-queue-paused", "OCR queue", performanceModePauses("ocr") && ocrQueuedCount > 0 ? "warn" : "pass", performanceModePauses("ocr") ? `${ocrQueuedCount} queued OCR job(s); queue paused by Performance Mode.` : `${ocrQueuedCount} queued OCR job(s).`),
         check("search-index-stale", "Search index stale", searchIndexStatus.staleDueToPerformanceMode ? "warn" : "pass", searchIndexStatus.staleDueToPerformanceMode ? `Stale since ${searchIndexStatus.staleSince ?? "unknown"}: ${searchIndexStatus.staleReason ?? "performance mode"}` : "Search index is not marked stale by Performance Mode.", "Run manual Search rebuild when Performance Mode is off."),
@@ -1441,6 +1604,7 @@ function appHealthState(source: DexNestActionTrigger = "module_ui", writeAudit =
         check("libreoffice", "LibreOffice", tools.detectedLibreOfficePath || tools.libreOfficePath ? "pass" : "warn", tools.libreOfficePath || tools.detectedLibreOfficePath || "Missing.", "Install LibreOffice or set soffice.exe path for Office conversions."),
         check("tesseract", "Tesseract OCR", tools.detectedTesseractPath || tools.tesseractPath ? "pass" : "warn", tools.tesseractPath || tools.detectedTesseractPath || "Missing.", "Install Tesseract OCR or set tesseract.exe path in Tools settings for OCR."),
         check("python-paddleocr", "Python/PaddleOCR", tools.detectedPythonPath || tools.pythonPath ? "pass" : "warn", tools.pythonPath || tools.detectedPythonPath || "Python missing.", "Use Python 3.12 for PaddleOCR, then run: py -3.12 -m pip install paddleocr paddlepaddle, or switch OCR engine to Tesseract."),
+        check("speech-model-root", "Speech model root", existsSync(speechModelsRoot) ? "pass" : "warn", speechModelsRoot, "Open Settings > Speech / Voice Engine to create/check the model folder."),
         check("external-devices-settings", "External Devices settings", existsSync(externalDevicesSettingsPath) || !externalDevices.settings.goveeEnabled ? "pass" : "warn", externalDevices.settingsPath, "Save External Devices settings from Settings."),
         check("govee-provider", "Govee provider", externalDevices.providerStatus === "ready" || externalDevices.providerStatus === "disabled" ? "pass" : "warn", externalDevices.providerMessage, "Unlock Secure Vault and save a Govee API key to enable device control."),
         check("govee-cache", "Govee device cache", externalDevices.devices.length > 0 ? "pass" : "warn", `${externalDevices.devices.length} cached Govee device(s).`, "Refresh devices after saving a Govee API key."),
@@ -2153,6 +2317,14 @@ function saveExternalDevicesCache(devices: ExternalDeviceCacheItem[]): ExternalD
   return writeJsonFile(externalDevicesCachePath, devices);
 }
 
+function loadExternalDeviceGroups(): ExternalDeviceGroup[] {
+  return readJsonFile<ExternalDeviceGroup[]>(externalDevicesGroupsPath, []);
+}
+
+function saveExternalDeviceGroups(groups: ExternalDeviceGroup[]): ExternalDeviceGroup[] {
+  return writeJsonFile(externalDevicesGroupsPath, groups);
+}
+
 function externalDevicesState(): ExternalDevicesState {
   const settings = loadExternalDevicesSettings();
   const secureSetup = Boolean(loadSecureVaultFile());
@@ -2176,13 +2348,15 @@ function externalDevicesState(): ExternalDevicesState {
   return {
     settingsPath: externalDevicesSettingsPath,
     cachePath: externalDevicesCachePath,
+    groupsPath: externalDevicesGroupsPath,
     settings,
     secureVaultSetup: secureSetup,
     secureVaultUnlocked: secureUnlocked,
     apiKeyStored,
     providerStatus,
     providerMessage,
-    devices: loadExternalDevicesCache()
+    devices: loadExternalDevicesCache(),
+    groups: loadExternalDeviceGroups()
   };
 }
 
@@ -2254,6 +2428,7 @@ class ExternalDeviceActionError extends Error {
 
 function safeGoveeDeviceSummary(device: ExternalDeviceCacheItem) {
   return {
+    deviceId: device.deviceId,
     deviceName: device.deviceName,
     userAlias: device.userAlias,
     roomAlias: device.roomAlias,
@@ -2262,10 +2437,29 @@ function safeGoveeDeviceSummary(device: ExternalDeviceCacheItem) {
   };
 }
 
+function safeGoveeGroupSummary(group: ExternalDeviceGroup) {
+  return {
+    id: group.id,
+    name: group.name,
+    aliases: group.aliases,
+    deviceCount: group.deviceIds.length
+  };
+}
+
+function readLocalGoveeApiKey(): string | null {
+  const saved = readJsonFile<{ apiKey?: string }>(goveeLocalApiKeyPath, {});
+  const apiKey = typeof saved.apiKey === "string" ? saved.apiKey.trim() : "";
+  return apiKey || null;
+}
+
 function readGoveeApiKey(): string {
   const settings = loadExternalDevicesSettings();
   if (!settings.goveeEnabled) {
     throw new ExternalDeviceActionError("disabled", "provider_disabled", "Govee is disabled in External Devices settings.");
+  }
+  const localApiKey = readLocalGoveeApiKey();
+  if (localApiKey) {
+    return localApiKey;
   }
   if (!settings.goveeApiKeySecretId) {
     throw new ExternalDeviceActionError("missing_requirement", "missing_api_key", "Govee API key is not configured.", { missingRequirement: "govee_api_key" });
@@ -2358,7 +2552,14 @@ function logExternalDeviceEvent(
 }
 
 function normalizeAlias(value: unknown): string {
-  return String(value ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, " ")
+    .replace(/\b(my|the)\b/g, " ")
+    .replace(/\blights\b/g, "light")
+    .replace(/\blamps\b/g, "lamp")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function deviceAliases(device: ExternalDeviceCacheItem): string[] {
@@ -2367,7 +2568,21 @@ function deviceAliases(device: ExternalDeviceCacheItem): string[] {
     .filter(Boolean);
 }
 
-function findExternalDevice(params: Record<string, unknown>): ExternalDeviceCacheItem {
+function groupAliases(group: ExternalDeviceGroup): string[] {
+  return [group.name, group.id, ...group.aliases]
+    .map(normalizeAlias)
+    .filter(Boolean);
+}
+
+function uniqueDevicesById(devices: ExternalDeviceCacheItem[]): ExternalDeviceCacheItem[] {
+  return [...new Map(devices.map((device) => [device.deviceId, device])).values()];
+}
+
+type ExternalDeviceTarget =
+  | { type: "device"; alias: string; devices: ExternalDeviceCacheItem[]; device: ExternalDeviceCacheItem }
+  | { type: "group"; alias: string; devices: ExternalDeviceCacheItem[]; group: ExternalDeviceGroup };
+
+function findExternalDeviceTarget(params: Record<string, unknown>): ExternalDeviceTarget {
   const devices = loadExternalDevicesCache();
   const deviceId = String(params.deviceId ?? "").trim();
   if (deviceId) {
@@ -2377,26 +2592,83 @@ function findExternalDevice(params: Record<string, unknown>): ExternalDeviceCach
         details: { availableDevices: devices.map(safeGoveeDeviceSummary) }
       });
     }
-    return device;
+    return { type: "device", alias: device.userAlias || device.roomAlias || device.deviceName, device, devices: [device] };
   }
   const alias = normalizeAlias(params.alias ?? loadExternalDevicesSettings().defaultDeviceAlias ?? "");
   if (!alias) {
     throw new ExternalDeviceActionError("invalid_params", "missing_device_alias", "Provide a deviceId or alias for the Govee action.", {
       missingRequirement: "device_alias",
-      details: { availableDevices: devices.map(safeGoveeDeviceSummary) }
+      details: { availableDevices: devices.map(safeGoveeDeviceSummary), availableGroups: loadExternalDeviceGroups().map(safeGoveeGroupSummary) }
     });
   }
-  const matches = devices.filter((device) => deviceAliases(device).includes(alias));
-  if (matches.length === 1) {
-    return matches[0];
+  const groups = loadExternalDeviceGroups();
+  const exactUserAliasMatches = devices.filter((device) => normalizeAlias(device.userAlias) === alias);
+  if (exactUserAliasMatches.length === 1) {
+    return { type: "device", alias, device: exactUserAliasMatches[0], devices: exactUserAliasMatches };
   }
-  if (matches.length > 1) {
+  if (exactUserAliasMatches.length > 1) {
     throw new ExternalDeviceActionError("conflict", "govee_alias_conflict", `Multiple Govee devices match alias ${alias}. Use a more specific alias.`, {
-      details: { requestedAlias: alias, matches: matches.map(safeGoveeDeviceSummary) }
+      details: { requestedAlias: alias, matches: exactUserAliasMatches.map(safeGoveeDeviceSummary) }
+    });
+  }
+
+  const exactGroupMatches = groups.filter((group) => groupAliases(group).includes(alias));
+  if (exactGroupMatches.length === 1) {
+    const group = exactGroupMatches[0];
+    const groupDevices = devices.filter((device) => group.deviceIds.includes(device.deviceId));
+    if (groupDevices.length === 0) {
+      throw new ExternalDeviceActionError("not_found", "govee_group_empty", `Govee group ${group.name} has no cached devices.`, {
+        details: { requestedAlias: alias, group: safeGoveeGroupSummary(group), availableDevices: devices.map(safeGoveeDeviceSummary) }
+      });
+    }
+    return { type: "group", alias: group.name, group, devices: groupDevices };
+  }
+  if (exactGroupMatches.length > 1) {
+    throw new ExternalDeviceActionError("conflict", "govee_group_alias_conflict", `Multiple Govee groups match alias ${alias}.`, {
+      details: { requestedAlias: alias, matches: exactGroupMatches.map(safeGoveeGroupSummary) }
+    });
+  }
+
+  const exactDeviceNameMatches = devices.filter((device) => normalizeAlias(device.deviceName) === alias);
+  if (exactDeviceNameMatches.length === 1) {
+    return { type: "device", alias, device: exactDeviceNameMatches[0], devices: exactDeviceNameMatches };
+  }
+  if (exactDeviceNameMatches.length > 1) {
+    throw new ExternalDeviceActionError("conflict", "govee_alias_conflict", `Multiple Govee devices match alias ${alias}. Use a more specific alias.`, {
+      details: { requestedAlias: alias, matches: exactDeviceNameMatches.map(safeGoveeDeviceSummary) }
+    });
+  }
+
+  const exactRoomAliasMatches = devices.filter((device) => normalizeAlias(device.roomAlias) === alias);
+  if (exactRoomAliasMatches.length === 1) {
+    return { type: "device", alias, device: exactRoomAliasMatches[0], devices: exactRoomAliasMatches };
+  }
+  if (exactRoomAliasMatches.length > 1) {
+    throw new ExternalDeviceActionError("conflict", "govee_alias_conflict", `Multiple Govee devices match alias ${alias}. Use a more specific alias or create a group.`, {
+      details: { requestedAlias: alias, matches: exactRoomAliasMatches.map(safeGoveeDeviceSummary), suggestedGroupName: "Room lights" }
+    });
+  }
+
+  const fuzzyGroupMatches = groups.filter((group) => groupAliases(group).some((candidate) => candidate.includes(alias) || alias.includes(candidate)));
+  if (fuzzyGroupMatches.length === 1) {
+    const group = fuzzyGroupMatches[0];
+    const groupDevices = devices.filter((device) => group.deviceIds.includes(device.deviceId));
+    if (groupDevices.length) {
+      return { type: "group", alias: group.name, group, devices: groupDevices };
+    }
+  }
+
+  const fuzzyDeviceMatches = uniqueDevicesById(devices.filter((device) => deviceAliases(device).some((candidate) => candidate.includes(alias) || alias.includes(candidate))));
+  if (fuzzyDeviceMatches.length === 1) {
+    return { type: "device", alias, device: fuzzyDeviceMatches[0], devices: fuzzyDeviceMatches };
+  }
+  if (fuzzyDeviceMatches.length > 1) {
+    throw new ExternalDeviceActionError("conflict", "govee_alias_conflict", `Multiple Govee devices match alias ${alias}. Use a more specific alias.`, {
+      details: { requestedAlias: alias, matches: fuzzyDeviceMatches.map(safeGoveeDeviceSummary), suggestedGroupName: /\blight|lamp\b/.test(alias) ? "Room lights" : undefined }
     });
   }
   throw new ExternalDeviceActionError("not_found", "govee_device_not_found", `No Govee device matched alias ${alias}.`, {
-    details: { requestedAlias: alias, availableDevices: devices.map(safeGoveeDeviceSummary) }
+    details: { requestedAlias: alias, availableDevices: devices.map(safeGoveeDeviceSummary), availableGroups: groups.map(safeGoveeGroupSummary) }
   });
 }
 
@@ -2589,6 +2861,7 @@ function saveCommandResult(result: ProjectCommandResult): void {
 }
 
 const allowedCommandShortcuts = new Set(["CommandOrControl+Space", "CommandOrControl+Alt+Space", "CommandOrControl+Shift+Space"]);
+const allowedAmbientPushToTalkShortcuts = new Set(["CommandOrControl+Alt+N", "CommandOrControl+Shift+N", "CommandOrControl+Alt+M"]);
 
 function defaultCommandSettings(): CommandSettings {
   return {
@@ -2617,6 +2890,157 @@ function loadCommandSettings(): CommandSettings {
 
 function saveCommandSettings(settings: CommandSettings): CommandSettings {
   return writeJsonFile(commandSettingsPath, settings);
+}
+
+function defaultAmbientVoiceSettings(): AmbientVoiceSettings {
+  return {
+    ambientVoiceEnabled: false,
+    wakeWordEnabled: false,
+    wakeWord: "Nest",
+    pushToTalkEnabled: true,
+    pushToTalkShortcut: "CommandOrControl+Alt+N",
+    pushToTalkShortcutStatus: "disabled",
+    pushToTalkShortcutLastError: null,
+    visibleListeningIndicator: true,
+    playStartSound: true,
+    playStopSound: true,
+    autoSendAfterSpeech: true,
+    stopListeningAfterCommand: true,
+    pauseInPerformanceMode: true,
+    allowDeviceControl: true,
+    allowClipboardActions: true,
+    allowDevActions: true,
+    allowSensitiveLookups: true,
+    speakResponses: false,
+    speakSensitiveAnswers: false,
+    voiceName: null,
+    voiceRate: 1,
+    voiceVolume: 1,
+    shortResponsesOnly: true,
+    muteInPerformanceMode: true,
+    maxListeningSeconds: 8,
+    commandCooldownMs: 1200,
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function normalizeAmbientShortcut(value: unknown): string {
+  const shortcut = typeof value === "string" ? value : "";
+  return allowedAmbientPushToTalkShortcuts.has(shortcut) ? shortcut : defaultAmbientVoiceSettings().pushToTalkShortcut;
+}
+
+let ambientVoiceRuntime: Omit<AmbientVoiceState, "settings" | "settingsPath" | "pausedByPerformanceMode" | "wakeWordStatus"> = {
+  currentState: "idle",
+  lastRecognizedCommand: "",
+  lastActionResult: "",
+  lastSource: "system",
+  lastChangedAt: new Date().toISOString()
+};
+
+function loadAmbientVoiceSettings(): AmbientVoiceSettings {
+  const defaults = defaultAmbientVoiceSettings();
+  const saved = readJsonFile<Partial<AmbientVoiceSettings>>(ambientVoiceSettingsPath, defaults);
+  return {
+    ...defaults,
+    ...saved,
+    wakeWord: typeof saved.wakeWord === "string" && saved.wakeWord.trim() ? saved.wakeWord.trim() : defaults.wakeWord,
+    pushToTalkShortcut: normalizeAmbientShortcut(saved.pushToTalkShortcut),
+    maxListeningSeconds: Math.min(30, Math.max(3, Number(saved.maxListeningSeconds) || defaults.maxListeningSeconds)),
+    commandCooldownMs: Math.min(10000, Math.max(500, Number(saved.commandCooldownMs) || defaults.commandCooldownMs))
+  };
+}
+
+function ambientPausedByPerformanceMode(settings = loadAmbientVoiceSettings()): boolean {
+  return settings.pauseInPerformanceMode && loadPerformanceModeSettings().performanceModeEnabled;
+}
+
+function ambientVoiceState(): AmbientVoiceState {
+  const settings = loadAmbientVoiceSettings();
+  const pausedByPerformanceMode = ambientPausedByPerformanceMode(settings);
+  return {
+    settingsPath: ambientVoiceSettingsPath,
+    settings,
+    ...ambientVoiceRuntime,
+    currentState: pausedByPerformanceMode ? "paused" : ambientVoiceRuntime.currentState,
+    pausedByPerformanceMode,
+    wakeWordStatus: settings.wakeWordEnabled ? "placeholder" : "disabled"
+  };
+}
+
+function saveAmbientVoiceSettings(input: Partial<AmbientVoiceSettings>, source: DexNestActionTrigger | "system" = "module_ui"): AmbientVoiceSettings {
+  const current = loadAmbientVoiceSettings();
+  const next: AmbientVoiceSettings = {
+    ...current,
+    ambientVoiceEnabled: typeof input.ambientVoiceEnabled === "boolean" ? input.ambientVoiceEnabled : current.ambientVoiceEnabled,
+    wakeWordEnabled: typeof input.wakeWordEnabled === "boolean" ? input.wakeWordEnabled : current.wakeWordEnabled,
+    wakeWord: typeof input.wakeWord === "string" && input.wakeWord.trim() ? input.wakeWord.trim() : current.wakeWord,
+    pushToTalkEnabled: typeof input.pushToTalkEnabled === "boolean" ? input.pushToTalkEnabled : current.pushToTalkEnabled,
+    pushToTalkShortcut: normalizeAmbientShortcut(input.pushToTalkShortcut ?? current.pushToTalkShortcut),
+    visibleListeningIndicator: typeof input.visibleListeningIndicator === "boolean" ? input.visibleListeningIndicator : current.visibleListeningIndicator,
+    playStartSound: typeof input.playStartSound === "boolean" ? input.playStartSound : current.playStartSound,
+    playStopSound: typeof input.playStopSound === "boolean" ? input.playStopSound : current.playStopSound,
+    autoSendAfterSpeech: typeof input.autoSendAfterSpeech === "boolean" ? input.autoSendAfterSpeech : current.autoSendAfterSpeech,
+    stopListeningAfterCommand: typeof input.stopListeningAfterCommand === "boolean" ? input.stopListeningAfterCommand : current.stopListeningAfterCommand,
+    pauseInPerformanceMode: typeof input.pauseInPerformanceMode === "boolean" ? input.pauseInPerformanceMode : current.pauseInPerformanceMode,
+    allowDeviceControl: typeof input.allowDeviceControl === "boolean" ? input.allowDeviceControl : current.allowDeviceControl,
+    allowClipboardActions: typeof input.allowClipboardActions === "boolean" ? input.allowClipboardActions : current.allowClipboardActions,
+    allowDevActions: typeof input.allowDevActions === "boolean" ? input.allowDevActions : current.allowDevActions,
+    allowSensitiveLookups: typeof input.allowSensitiveLookups === "boolean" ? input.allowSensitiveLookups : current.allowSensitiveLookups,
+    speakResponses: typeof input.speakResponses === "boolean" ? input.speakResponses : current.speakResponses,
+    speakSensitiveAnswers: typeof input.speakSensitiveAnswers === "boolean" ? input.speakSensitiveAnswers : current.speakSensitiveAnswers,
+    voiceName: typeof input.voiceName === "string" && input.voiceName.trim() ? input.voiceName.trim() : null,
+    voiceRate: Math.min(2, Math.max(0.5, Number.isFinite(Number(input.voiceRate ?? current.voiceRate)) ? Number(input.voiceRate ?? current.voiceRate) : (current.voiceRate || 1))),
+    voiceVolume: Math.min(1, Math.max(0, Number.isFinite(Number(input.voiceVolume ?? current.voiceVolume)) ? Number(input.voiceVolume ?? current.voiceVolume) : (current.voiceVolume ?? 1))),
+    shortResponsesOnly: typeof input.shortResponsesOnly === "boolean" ? input.shortResponsesOnly : current.shortResponsesOnly,
+    muteInPerformanceMode: typeof input.muteInPerformanceMode === "boolean" ? input.muteInPerformanceMode : current.muteInPerformanceMode,
+    maxListeningSeconds: Math.min(30, Math.max(3, Number(input.maxListeningSeconds ?? current.maxListeningSeconds) || current.maxListeningSeconds)),
+    commandCooldownMs: Math.min(10000, Math.max(500, Number(input.commandCooldownMs ?? current.commandCooldownMs) || current.commandCooldownMs)),
+    pushToTalkShortcutStatus: current.pushToTalkShortcutStatus,
+    pushToTalkShortcutLastError: current.pushToTalkShortcutLastError,
+    updatedAt: new Date().toISOString()
+  };
+  const saved = writeJsonFile(ambientVoiceSettingsPath, next);
+  registerAmbientVoiceShortcut();
+  createDexNestTray();
+  localDb.appendActionEvent({
+    module: "DexNest Voice",
+    actionId: "voice.ambient.update_settings",
+    eventType: "ambient_voice_settings_updated",
+    status: "success",
+    source,
+    summary: "Updated DexNest Ambient Voice settings.",
+    metadataJson: {
+      ambientVoiceEnabled: saved.ambientVoiceEnabled,
+      wakeWordEnabled: saved.wakeWordEnabled,
+      pushToTalkEnabled: saved.pushToTalkEnabled,
+      pushToTalkShortcut: saved.pushToTalkShortcut,
+      speakResponses: saved.speakResponses,
+      speakSensitiveAnswers: saved.speakSensitiveAnswers,
+      shortResponsesOnly: saved.shortResponsesOnly,
+      muteInPerformanceMode: saved.muteInPerformanceMode
+    }
+  });
+  return saved;
+}
+
+function updateAmbientVoiceRuntime(input: Partial<Pick<AmbientVoiceState, "currentState" | "lastRecognizedCommand" | "lastActionResult" | "lastSource">>, source: DexNestActionTrigger | "system" = "system"): AmbientVoiceState {
+  const settings = loadAmbientVoiceSettings();
+  const command = typeof input.lastRecognizedCommand === "string" ? input.lastRecognizedCommand.trim() : ambientVoiceRuntime.lastRecognizedCommand;
+  const isSensitive = /\b(sin|social insurance|passport|health card|work permit|permit number|document number|uci|api[_ -]?key|token|secret)\b/i.test(command);
+  ambientVoiceRuntime = {
+    currentState: input.currentState ?? ambientVoiceRuntime.currentState,
+    lastRecognizedCommand: isSensitive ? "[sensitive command hidden]" : command,
+    lastActionResult: typeof input.lastActionResult === "string" ? input.lastActionResult.slice(0, 180) : ambientVoiceRuntime.lastActionResult,
+    lastSource: input.lastSource ?? source,
+    lastChangedAt: new Date().toISOString()
+  };
+  return {
+    settingsPath: ambientVoiceSettingsPath,
+    settings,
+    ...ambientVoiceRuntime,
+    pausedByPerformanceMode: ambientPausedByPerformanceMode(settings),
+    wakeWordStatus: settings.wakeWordEnabled ? "placeholder" : "disabled"
+  };
 }
 
 function defaultKeyboardShortcutSettings(): KeyboardShortcutSettings {
@@ -2686,6 +3110,72 @@ function defaultKeyboardShortcutSettings(): KeyboardShortcutSettings {
         targetType: "action",
         actionId: "clipboard.copy_plain_text",
         enabled: false,
+        allowDangerous: false,
+        status: "disabled",
+        lastError: null
+      },
+      {
+        id: "shortcut-save-clipboard-slot-1",
+        label: "Save Clipboard Slot 1",
+        shortcut: "CommandOrControl+Shift+1",
+        targetType: "action",
+        actionId: "clipboard.slot1.save_current",
+        enabled: true,
+        allowDangerous: false,
+        status: "disabled",
+        lastError: null
+      },
+      {
+        id: "shortcut-save-clipboard-slot-2",
+        label: "Save Clipboard Slot 2",
+        shortcut: "CommandOrControl+Shift+2",
+        targetType: "action",
+        actionId: "clipboard.slot2.save_current",
+        enabled: true,
+        allowDangerous: false,
+        status: "disabled",
+        lastError: null
+      },
+      {
+        id: "shortcut-save-clipboard-slot-3",
+        label: "Save Clipboard Slot 3",
+        shortcut: "CommandOrControl+Shift+3",
+        targetType: "action",
+        actionId: "clipboard.slot3.save_current",
+        enabled: true,
+        allowDangerous: false,
+        status: "disabled",
+        lastError: null
+      },
+      {
+        id: "shortcut-paste-clipboard-slot-1",
+        label: "Paste Clipboard Slot 1",
+        shortcut: "CommandOrControl+Alt+1",
+        targetType: "action",
+        actionId: "clipboard.slot1.paste",
+        enabled: true,
+        allowDangerous: false,
+        status: "disabled",
+        lastError: null
+      },
+      {
+        id: "shortcut-paste-clipboard-slot-2",
+        label: "Paste Clipboard Slot 2",
+        shortcut: "CommandOrControl+Alt+2",
+        targetType: "action",
+        actionId: "clipboard.slot2.paste",
+        enabled: true,
+        allowDangerous: false,
+        status: "disabled",
+        lastError: null
+      },
+      {
+        id: "shortcut-paste-clipboard-slot-3",
+        label: "Paste Clipboard Slot 3",
+        shortcut: "CommandOrControl+Alt+3",
+        targetType: "action",
+        actionId: "clipboard.slot3.paste",
+        enabled: true,
         allowDangerous: false,
         status: "disabled",
         lastError: null
@@ -2764,6 +3254,9 @@ function shortcutConflictDetails(settings = loadKeyboardShortcutSettings()): str
     }
     if (loadClipboardSettings().multiCopyHotkeyEnabled && loadClipboardSettings().multiCopyHotkey === normalized) {
       conflicts.push(`${mapping.label} conflicts with Clipboard multi-copy hotkey.`);
+    }
+    if (loadAmbientVoiceSettings().pushToTalkEnabled && loadAmbientVoiceSettings().pushToTalkShortcut === normalized) {
+      conflicts.push(`${mapping.label} conflicts with Ambient Voice push-to-talk.`);
     }
     const existing = seen.get(normalized);
     if (existing) {
@@ -2979,6 +3472,7 @@ function setPerformanceModeEnabled(enabled: boolean, reason: PerformanceModeReas
     vaultOcrQueuePaused = false;
     void processVaultOcrQueue("system");
   }
+  registerAmbientVoiceShortcut();
   createDexNestTray();
   localDb.appendActionEvent({
     module: "DexNest System",
@@ -3174,22 +3668,83 @@ function saveClipboardMultiGroups(groups: ClipboardMultiGroup[]): ClipboardMulti
 function defaultClipboardSlots(): ClipboardSlot[] {
   return Array.from({ length: 5 }, (_item, index) => ({
     slot: index + 1,
+    slotId: index + 1,
+    type: "text",
+    value: "",
     text: "",
     preview: "",
     byteLength: 0,
-    updatedAt: ""
+    createdAt: "",
+    updatedAt: "",
+    source: "clipboard_ui"
   }));
 }
 
 function loadClipboardSlots(): ClipboardSlot[] {
   const savedSlots = readJsonFile<ClipboardSlot[]>(clipboardSlotsPath, defaultClipboardSlots());
   const savedSlotByNumber = new Map(savedSlots.map((slot) => [slot.slot, slot]));
-  return defaultClipboardSlots().map((slot) => savedSlotByNumber.get(slot.slot) ?? slot);
+  return defaultClipboardSlots().map((slot) => {
+    const saved = savedSlotByNumber.get(slot.slot);
+    if (!saved) {
+      return slot;
+    }
+    const text = typeof saved.value === "string" ? saved.value : saved.text;
+    return {
+      ...slot,
+      ...saved,
+      slot: slot.slot,
+      slotId: slot.slot,
+      type: "text",
+      value: text,
+      text,
+      preview: saved.preview || previewText(text),
+      byteLength: saved.byteLength || byteLength(text),
+      createdAt: saved.createdAt ?? saved.updatedAt ?? "",
+      updatedAt: saved.updatedAt ?? "",
+      source: saved.source ?? "clipboard_ui"
+    };
+  });
 }
 
 function saveClipboardSlots(slots: ClipboardSlot[]): ClipboardSlot[] {
-  const normalized = defaultClipboardSlots().map((slot) => slots.find((item) => item.slot === slot.slot) ?? slot);
+  const normalized = defaultClipboardSlots().map((slot) => {
+    const saved = slots.find((item) => item.slot === slot.slot) ?? slot;
+    const text = typeof saved.value === "string" ? saved.value : saved.text;
+    return {
+      ...slot,
+      ...saved,
+      slot: slot.slot,
+      slotId: slot.slot,
+      type: "text" as const,
+      value: text,
+      text,
+      preview: saved.preview || previewText(text),
+      byteLength: saved.byteLength || byteLength(text),
+      createdAt: saved.createdAt ?? saved.updatedAt ?? "",
+      updatedAt: saved.updatedAt ?? "",
+      source: saved.source ?? "clipboard_ui"
+    };
+  });
   return writeJsonFile(clipboardSlotsPath, normalized);
+}
+
+function slotSourceFor(source: DexNestActionTrigger): ClipboardSlot["source"] {
+  if (source === "keyboard_shortcut") {
+    return "keyboard_shortcut";
+  }
+  if (source === "command" || source === "deck" || source === "routine" || source === "stream_deck_http") {
+    return "command";
+  }
+  return "clipboard_ui";
+}
+
+function slotNumberFromAction(actionId: string, params: Record<string, unknown>): number {
+  const directSlot = Number(params.slot);
+  if (Number.isInteger(directSlot)) {
+    return directSlot;
+  }
+  const match = /^clipboard\.slot([1-3])\./.exec(actionId);
+  return match ? Number(match[1]) : Number.NaN;
 }
 
 function isProtectedClipboardText(text: string): boolean {
@@ -3308,7 +3863,7 @@ function flushPendingOpenView(): void {
   mainWindow.webContents.send("dexnest:open-view", payload);
 }
 
-function dispatchOpenView(payload: { view: string; focusAssistant?: boolean }): void {
+function dispatchOpenView(payload: { view: string; focusAssistant?: boolean; startListening?: boolean; source?: DexNestActionTrigger }): void {
   if (!mainWindow || mainWindow.isDestroyed()) {
     pendingOpenView = payload;
     createWindow();
@@ -3524,6 +4079,111 @@ function registerCommandShortcut(): void {
   });
 }
 
+function unregisterAmbientVoiceShortcut(): void {
+  if (ambientVoiceShortcutRegistered && registeredAmbientVoiceShortcut) {
+    globalShortcut.unregister(registeredAmbientVoiceShortcut);
+  }
+  ambientVoiceShortcutRegistered = false;
+  registeredAmbientVoiceShortcut = "";
+}
+
+function requestAmbientListening(source: DexNestActionTrigger = "push_to_talk"): void {
+  const settings = loadAmbientVoiceSettings();
+  const startedAt = Date.now();
+  if (ambientPausedByPerformanceMode(settings)) {
+    updateAmbientVoiceRuntime({ currentState: "paused", lastActionResult: "Paused by Performance Mode.", lastSource: source }, source);
+    localDb.appendActionEvent({
+      module: "DexNest Voice",
+      actionId: "voice.ambient.start_listening",
+      eventType: "ambient_voice_start_skipped",
+      status: "skipped",
+      source,
+      summary: "Ambient Voice start skipped because Performance Mode is active.",
+      metadataJson: { pauseInPerformanceMode: settings.pauseInPerformanceMode },
+      durationMs: Date.now() - startedAt
+    });
+    createDexNestTray();
+    return;
+  }
+
+  updateAmbientVoiceRuntime({ currentState: "listening", lastActionResult: "Listening requested.", lastSource: source }, source);
+  localDb.appendActionEvent({
+    module: "DexNest Voice",
+    actionId: "voice.ambient.start_listening",
+    eventType: "ambient_voice_listening_requested",
+    status: "success",
+    source,
+    summary: "DexNest Ambient Voice listening was requested.",
+    metadataJson: {
+      pushToTalkEnabled: settings.pushToTalkEnabled,
+      wakeWordEnabled: settings.wakeWordEnabled,
+      source
+    },
+    durationMs: Date.now() - startedAt
+  });
+  focusDexNestWindow("search", source, {
+    actionId: "voice.ambient.start_listening",
+    eventType: "ambient_voice_opened_assistant",
+    summary: "Opened Ask DexNest for Ambient Voice listening.",
+    focusAssistant: true,
+    writeAudit: false
+  });
+  setTimeout(() => {
+    dispatchOpenView({ view: "search", focusAssistant: true, startListening: true, source });
+  }, 120);
+  createDexNestTray();
+}
+
+function registerAmbientVoiceShortcut(): void {
+  unregisterAmbientVoiceShortcut();
+  const settings = loadAmbientVoiceSettings();
+  if (!settings.pushToTalkEnabled) {
+    writeJsonFile(ambientVoiceSettingsPath, { ...settings, pushToTalkShortcutStatus: "disabled", pushToTalkShortcutLastError: null, updatedAt: new Date().toISOString() });
+    return;
+  }
+
+  const shortcut = normalizeAmbientShortcut(settings.pushToTalkShortcut);
+  if (ambientPausedByPerformanceMode(settings)) {
+    writeJsonFile(ambientVoiceSettingsPath, { ...settings, pushToTalkShortcut: shortcut, pushToTalkShortcutStatus: "paused", pushToTalkShortcutLastError: "Paused by Performance Mode.", updatedAt: new Date().toISOString() });
+    return;
+  }
+
+  const conflictsWithCommand = loadCommandSettings().globalShortcutEnabled && loadCommandSettings().globalShortcut === shortcut;
+  const conflictsWithClipboard = loadClipboardSettings().multiCopyHotkeyEnabled && loadClipboardSettings().multiCopyHotkey === shortcut;
+  if (conflictsWithCommand || conflictsWithClipboard) {
+    writeJsonFile(ambientVoiceSettingsPath, {
+      ...settings,
+      pushToTalkShortcut: shortcut,
+      pushToTalkShortcutStatus: "failed",
+      pushToTalkShortcutLastError: conflictsWithCommand ? "Shortcut conflicts with DexNest Command." : "Shortcut conflicts with Clipboard multi-copy.",
+      updatedAt: new Date().toISOString()
+    });
+    return;
+  }
+
+  ambientVoiceShortcutRegistered = globalShortcut.register(shortcut, () => {
+    requestAmbientListening("push_to_talk");
+  });
+  registeredAmbientVoiceShortcut = ambientVoiceShortcutRegistered ? shortcut : "";
+  writeJsonFile(ambientVoiceSettingsPath, {
+    ...settings,
+    pushToTalkShortcut: shortcut,
+    pushToTalkShortcutStatus: ambientVoiceShortcutRegistered ? "active" : "failed",
+    pushToTalkShortcutLastError: ambientVoiceShortcutRegistered ? null : `Electron could not register ${shortcut}. Another app may already reserve it.`,
+    updatedAt: new Date().toISOString()
+  });
+  localDb.appendActionEvent({
+    module: "DexNest Voice",
+    actionId: "voice.ambient.update_settings",
+    eventType: "ambient_push_to_talk_registration",
+    status: ambientVoiceShortcutRegistered ? "success" : "failed",
+    source: "system",
+    summary: ambientVoiceShortcutRegistered ? "Registered DexNest Ambient Voice push-to-talk shortcut." : "DexNest Ambient Voice push-to-talk shortcut registration failed.",
+    metadataJson: { shortcut, enabled: settings.pushToTalkEnabled },
+    errorMessage: ambientVoiceShortcutRegistered ? null : `Could not register ${shortcut}.`
+  });
+}
+
 function unregisterKeyboardShortcuts(): void {
   for (const shortcut of registeredKeyboardShortcuts) {
     globalShortcut.unregister(shortcut);
@@ -3578,6 +4238,9 @@ function validateKeyboardShortcutMapping(mapping: KeyboardShortcutMapping, setti
   }
   if (loadClipboardSettings().multiCopyHotkeyEnabled && loadClipboardSettings().multiCopyHotkey === mapping.shortcut) {
     return { ok: false, status: "conflict", error: "Shortcut conflicts with Clipboard multi-copy hotkey." };
+  }
+  if (loadAmbientVoiceSettings().pushToTalkEnabled && loadAmbientVoiceSettings().pushToTalkShortcut === mapping.shortcut) {
+    return { ok: false, status: "conflict", error: "Shortcut conflicts with Ambient Voice push-to-talk." };
   }
   return { ok: true, status: "active", error: null };
 }
@@ -3686,6 +4349,7 @@ function createDexNestTray(): void {
     tray = new Tray(createTrayIcon());
     const performance = performanceModeState();
     const performanceSettings = loadPerformanceModeSettings();
+    const ambient = ambientVoiceState();
     tray.setToolTip(performanceSettings.showTrayStatus && performance.enabled ? "DexNest - Performance Mode ON" : "DexNest");
     const nudgeCount = currentNudges().length;
     const menu = Menu.buildFromTemplate([
@@ -3696,6 +4360,7 @@ function createDexNestTray(): void {
       { type: "separator" },
       { label: "Show DexNest", click: () => focusDexNestWindow("command", "tray") },
       { label: "Ask DexNest", click: () => askDexNestFromTray() },
+      { label: "Start Listening", enabled: !ambient.pausedByPerformanceMode, click: () => requestAmbientListening("tray") },
       { label: "Open Search", click: () => focusDexNestWindow("search", "tray") },
       { label: "Open Drop", click: () => focusDexNestWindow("drop", "tray") },
       { label: "Open Clipboard", click: () => focusDexNestWindow("clipboard", "tray") },
@@ -3705,6 +4370,8 @@ function createDexNestTray(): void {
       { label: "Open Journal", click: () => focusDexNestWindow("journal", "tray") },
       { label: "Open Settings", click: () => focusDexNestWindow("settings", "tray") },
       { type: "separator" },
+      { label: `Ambient Voice: ${ambient.settings.ambientVoiceEnabled ? "ON" : "OFF"} / ${ambient.currentState}`, enabled: false },
+      { label: ambient.settings.ambientVoiceEnabled ? "Disable Ambient Voice" : "Enable Ambient Voice", click: () => saveAmbientVoiceSettings({ ambientVoiceEnabled: !ambient.settings.ambientVoiceEnabled }, "tray") },
       { label: `${performance.enabled ? "Disable" : "Enable"} Performance Mode`, click: () => togglePerformanceModeFromTray() },
       { label: "Lock sensitive session", click: () => lockSensitiveSessionFromTray() },
       { type: "separator" },
@@ -4791,6 +5458,8 @@ const assistantAllowedIntents = [
   "search_query",
   "finder_search",
   "calendar_create_candidate",
+  "calendar_show_today",
+  "calendar_show_upcoming",
   "drop_send_clipboard",
   "open_module",
   "dev_run_command",
@@ -4841,6 +5510,806 @@ function updateAssistantSettings(input: Partial<AssistantSettings>): AssistantSe
 
 function assistantState(): { settings: AssistantSettings } {
   return { settings: loadAssistantSettings() };
+}
+
+// --- DexNest shared local Speech Service (Phase 23A) -----------------------
+let speechLastLatencyMs: number | null = null;
+let speechLastError: string | null = null;
+
+function defaultSpeechSettings(): SpeechSettings {
+  return {
+    speechEngine: "faster_whisper",
+    fallbackToWindows: false,
+    keepSpeechModelWarm: true,
+    modelName: "base.en",
+    modelSizeOptions: ["tiny.en", "base.en", "small.en"],
+    device: "cpu",
+    computeType: "int8",
+    maxRecordingSeconds: 30,
+    silenceStopEnabled: true,
+    vadEnabled: true,
+    initialSilenceTimeoutMs: 4000,
+    endSilenceTimeoutMs: 900,
+    minSpeechMs: 300,
+    silenceThreshold: "auto",
+    autoStopOnSilence: true,
+    micPrewarmEnabled: true,
+    keepAudioForDebug: false,
+    pauseInPerformanceMode: true,
+    autoSendAfterSpeech: true,
+    showTranscriptBeforeSend: false,
+    useSharedSpeechEverywhere: true,
+    pythonPath: null,
+    updatedAt: null
+  };
+}
+
+function safeSpeechEngine(value: unknown, fallback: SpeechEngine): SpeechEngine {
+  return value === "faster_whisper" || value === "whisper_cpp" || value === "windows_fallback" ? value : fallback;
+}
+
+function safeSpeechDevice(value: unknown, fallback: SpeechDevice): SpeechDevice {
+  return value === "auto" || value === "cuda" || value === "cpu" ? value : fallback;
+}
+
+function safeSpeechComputeType(value: unknown, fallback: SpeechComputeType): SpeechComputeType {
+  return value === "auto" || value === "int8" || value === "float16" ? value : fallback;
+}
+
+function safeSpeechModelName(value: unknown, fallback: string): string {
+  const candidate = String(value ?? "").trim();
+  return ["tiny.en", "base.en", "small.en"].includes(candidate) ? candidate : fallback;
+}
+
+function loadSpeechSettings(): SpeechSettings {
+  return {
+    ...defaultSpeechSettings(),
+    ...readJsonFile<Partial<SpeechSettings>>(speechSettingsPath, defaultSpeechSettings())
+  };
+}
+
+function saveSpeechSettings(input: Partial<SpeechSettings>): SpeechSettings {
+  const current = loadSpeechSettings();
+  const next: SpeechSettings = {
+    ...current,
+    speechEngine: safeSpeechEngine(input.speechEngine, current.speechEngine),
+    fallbackToWindows: typeof input.fallbackToWindows === "boolean" ? input.fallbackToWindows : current.fallbackToWindows,
+    keepSpeechModelWarm: typeof input.keepSpeechModelWarm === "boolean" ? input.keepSpeechModelWarm : (current.keepSpeechModelWarm ?? true),
+    modelName: safeSpeechModelName(input.modelName, current.modelName),
+    modelSizeOptions: defaultSpeechSettings().modelSizeOptions,
+    device: safeSpeechDevice(input.device, current.device),
+    computeType: safeSpeechComputeType(input.computeType, current.computeType),
+    maxRecordingSeconds: Math.max(3, Math.min(30, Number(input.maxRecordingSeconds) || current.maxRecordingSeconds)),
+    silenceStopEnabled: typeof input.silenceStopEnabled === "boolean" ? input.silenceStopEnabled : current.silenceStopEnabled,
+    vadEnabled: typeof input.vadEnabled === "boolean" ? input.vadEnabled : current.vadEnabled,
+    initialSilenceTimeoutMs: Math.max(1000, Math.min(15000, Number(input.initialSilenceTimeoutMs) || (current.initialSilenceTimeoutMs ?? 4000))),
+    endSilenceTimeoutMs: Math.max(300, Math.min(4000, Number(input.endSilenceTimeoutMs) || (current.endSilenceTimeoutMs ?? 900))),
+    minSpeechMs: Math.max(100, Math.min(2000, Number(input.minSpeechMs) || (current.minSpeechMs ?? 300))),
+    silenceThreshold: input.silenceThreshold === "auto" || typeof input.silenceThreshold === "number" ? input.silenceThreshold : (current.silenceThreshold ?? "auto"),
+    autoStopOnSilence: typeof input.autoStopOnSilence === "boolean" ? input.autoStopOnSilence : (current.autoStopOnSilence ?? true),
+    micPrewarmEnabled: typeof input.micPrewarmEnabled === "boolean" ? input.micPrewarmEnabled : (current.micPrewarmEnabled ?? true),
+    keepAudioForDebug: typeof input.keepAudioForDebug === "boolean" ? input.keepAudioForDebug : current.keepAudioForDebug,
+    pauseInPerformanceMode: typeof input.pauseInPerformanceMode === "boolean" ? input.pauseInPerformanceMode : current.pauseInPerformanceMode,
+    autoSendAfterSpeech: typeof input.autoSendAfterSpeech === "boolean" ? input.autoSendAfterSpeech : current.autoSendAfterSpeech,
+    showTranscriptBeforeSend: typeof input.showTranscriptBeforeSend === "boolean" ? input.showTranscriptBeforeSend : current.showTranscriptBeforeSend,
+    useSharedSpeechEverywhere: typeof input.useSharedSpeechEverywhere === "boolean" ? input.useSharedSpeechEverywhere : current.useSharedSpeechEverywhere,
+    pythonPath: typeof input.pythonPath === "string" && input.pythonPath.trim() ? input.pythonPath.trim() : null,
+    updatedAt: new Date().toISOString()
+  };
+  ensureSpeechRoot();
+  const saved = writeJsonFile(speechSettingsPath, next);
+  localDb.appendActionEvent({
+    module: "DexNest Voice",
+    actionId: "speech.update_settings",
+    eventType: "speech_settings_updated",
+    status: "success",
+    source: "module_ui",
+    summary: "Updated DexNest shared speech service settings.",
+    metadataJson: {
+      engine: saved.speechEngine,
+      model: saved.modelName,
+      device: saved.device,
+      computeType: saved.computeType,
+      fallbackToWindows: saved.fallbackToWindows,
+      keepAudioForDebug: saved.keepAudioForDebug
+    }
+  });
+  return saved;
+}
+
+function defaultVoiceWorkflowSettings(): VoiceWorkflowSettings {
+  return {
+    continueCaptureMode: false,
+    autoSaveCaptureVoiceNotes: true,
+    confirmBeforeSavingCapture: false,
+    confirmSensitiveCapture: true,
+    autoCreateHighConfidenceCalendarVoiceEvents: false,
+    defaultMeetingDurationMinutes: 30,
+    defaultReminderTime: "09:00",
+    askBeforeRecurringEvents: true,
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function loadVoiceWorkflowSettings(): VoiceWorkflowSettings {
+  return {
+    ...defaultVoiceWorkflowSettings(),
+    ...readJsonFile<Partial<VoiceWorkflowSettings>>(voiceWorkflowSettingsPath, defaultVoiceWorkflowSettings())
+  };
+}
+
+function saveVoiceWorkflowSettings(input: Partial<VoiceWorkflowSettings>): VoiceWorkflowSettings {
+  const current = loadVoiceWorkflowSettings();
+  const next: VoiceWorkflowSettings = {
+    continueCaptureMode: typeof input.continueCaptureMode === "boolean" ? input.continueCaptureMode : current.continueCaptureMode,
+    autoSaveCaptureVoiceNotes: typeof input.autoSaveCaptureVoiceNotes === "boolean" ? input.autoSaveCaptureVoiceNotes : current.autoSaveCaptureVoiceNotes,
+    confirmBeforeSavingCapture: typeof input.confirmBeforeSavingCapture === "boolean" ? input.confirmBeforeSavingCapture : current.confirmBeforeSavingCapture,
+    confirmSensitiveCapture: typeof input.confirmSensitiveCapture === "boolean" ? input.confirmSensitiveCapture : current.confirmSensitiveCapture,
+    autoCreateHighConfidenceCalendarVoiceEvents: typeof input.autoCreateHighConfidenceCalendarVoiceEvents === "boolean" ? input.autoCreateHighConfidenceCalendarVoiceEvents : current.autoCreateHighConfidenceCalendarVoiceEvents,
+    defaultMeetingDurationMinutes: typeof input.defaultMeetingDurationMinutes === "number" ? Math.max(5, Math.min(480, input.defaultMeetingDurationMinutes)) : current.defaultMeetingDurationMinutes,
+    defaultReminderTime: typeof input.defaultReminderTime === "string" ? input.defaultReminderTime : current.defaultReminderTime,
+    askBeforeRecurringEvents: typeof input.askBeforeRecurringEvents === "boolean" ? input.askBeforeRecurringEvents : current.askBeforeRecurringEvents,
+    updatedAt: new Date().toISOString()
+  };
+  const saved = writeJsonFile(voiceWorkflowSettingsPath, next);
+  localDb.appendActionEvent({
+    module: "DexNest Voice",
+    actionId: "voice.workflow.update_settings",
+    eventType: "voice_workflow_settings_updated",
+    status: "success",
+    source: "module_ui",
+    summary: "Updated DexNest Voice workflow settings.",
+    metadataJson: {
+      continueCaptureMode: saved.continueCaptureMode,
+      autoSaveCaptureVoiceNotes: saved.autoSaveCaptureVoiceNotes,
+      confirmBeforeSavingCapture: saved.confirmBeforeSavingCapture,
+      confirmSensitiveCapture: saved.confirmSensitiveCapture,
+      autoCreateHighConfidenceCalendarVoiceEvents: saved.autoCreateHighConfidenceCalendarVoiceEvents,
+      defaultMeetingDurationMinutes: saved.defaultMeetingDurationMinutes,
+      askBeforeRecurringEvents: saved.askBeforeRecurringEvents
+    }
+  });
+  return saved;
+}
+
+function speechPythonPath(settings = loadSpeechSettings()): string | null {
+  const configured = settings.pythonPath?.trim();
+  if (configured && existsSync(configured)) {
+    return configured;
+  }
+  if (existsSync(speechSidecarPythonPath)) {
+    return speechSidecarPythonPath;
+  }
+  return resolvePythonPath();
+}
+
+function speechSidecarScript(): string {
+  return [
+    "import argparse, json, os, sys, time",
+    "",
+    "def finish(payload, code=0):",
+    "    print(json.dumps(payload, ensure_ascii=False))",
+    "    sys.exit(code)",
+    "",
+    "parser = argparse.ArgumentParser()",
+    "parser.add_argument('--audio')",
+    "parser.add_argument('--model', required=True)",
+    "parser.add_argument('--model-root', required=True)",
+    "parser.add_argument('--device', default='auto')",
+    "parser.add_argument('--compute-type', default='auto')",
+    "parser.add_argument('--language', default='en')",
+    "parser.add_argument('--vad', default='1')",
+    "parser.add_argument('--local-only', default='1')",
+    "parser.add_argument('--check-only', action='store_true')",
+    "args = parser.parse_args()",
+    "started = time.time()",
+    "try:",
+    "    from faster_whisper import WhisperModel",
+    "except Exception as exc:",
+    "    finish({'ok': False, 'error': 'faster-whisper is not installed. Install with: python -m pip install faster-whisper', 'engine': 'faster_whisper'}, 0)",
+    "",
+    "def cuda_count():",
+    "    try:",
+    "        import ctranslate2",
+    "        return int(ctranslate2.get_cuda_device_count())",
+    "    except Exception:",
+    "        return 0",
+    "",
+    "requested_device = args.device",
+    "detected_cuda = cuda_count()",
+    "device = 'cuda' if (requested_device == 'cuda' and detected_cuda > 0) else 'cpu'",
+    "compute_type = args.compute_type",
+    "if compute_type == 'auto':",
+    "    compute_type = 'int8'",
+    "try:",
+    "    model_kwargs = {'device': device, 'compute_type': compute_type, 'local_files_only': (args.local_only == '1')}",
+    "    model_root_has_files = bool(args.model_root and os.path.isdir(args.model_root) and any(os.scandir(args.model_root)))",
+    "    if model_root_has_files or args.local_only != '1':",
+    "        model_kwargs['download_root'] = args.model_root",
+    "    model = WhisperModel(args.model, **model_kwargs)",
+    "    if args.check_only:",
+    "        finish({'ok': True, 'engine': 'faster_whisper', 'model': args.model, 'device': device, 'computeType': compute_type, 'installed': True, 'durationMs': int((time.time() - started) * 1000)})",
+    "    if not args.audio or not os.path.exists(args.audio):",
+    "        finish({'ok': False, 'error': 'Audio file was not provided.', 'engine': 'faster_whisper'}, 0)",
+    "    segments, info = model.transcribe(args.audio, language=args.language or 'en', vad_filter=(args.vad == '1'))",
+    "    text = ' '.join([segment.text.strip() for segment in segments]).strip()",
+    "    finish({'ok': True, 'engine': 'faster_whisper', 'model': args.model, 'device': device, 'computeType': compute_type, 'language': getattr(info, 'language', args.language or 'en'), 'confidence': getattr(info, 'language_probability', None), 'transcript': text, 'durationMs': int((time.time() - started) * 1000)})",
+    "except Exception as exc:",
+    "    finish({'ok': False, 'error': str(exc), 'engine': 'faster_whisper', 'model': args.model, 'device': device, 'computeType': compute_type, 'durationMs': int((time.time() - started) * 1000)}, 0)"
+  ].join("\n");
+}
+
+function speechSidecarPath(): string {
+  ensureSpeechRoot();
+  const scriptPath = join(speechTempRoot, "dexnest-faster-whisper-sidecar.py");
+  writeFileSync(scriptPath, speechSidecarScript(), "utf8");
+  return scriptPath;
+}
+
+function speechModelPath(modelName: string): string {
+  return join(speechModelsRoot, modelName);
+}
+
+async function runSpeechSidecar(args: string[]): Promise<Record<string, unknown>> {
+  const pythonPath = speechPythonPath();
+  if (!pythonPath) {
+    return { ok: false, error: "Python is required for faster-whisper. Install Python 3.12 and faster-whisper, or enable Windows fallback." };
+  }
+  const scriptPath = speechSidecarPath();
+  const { stdout } = await execFileAsync(pythonPath, [scriptPath, ...args], speechTempRoot);
+  const line = stdout.trim().split(/\r?\n/).filter(Boolean).at(-1) ?? "{}";
+  try {
+    return JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return { ok: false, error: "Speech sidecar returned invalid JSON." };
+  }
+}
+
+// --- Warm persistent faster-whisper worker (Phase 23A/B) -------------------
+// A long-lived Python process loads the Whisper model once and stays warm, so
+// mic clicks do not pay the ~1s model-load cost every time. Requests are simple
+// newline-delimited JSON over stdin/stdout.
+type SpeechEngineState =
+  | "unavailable"
+  | "starting"
+  | "warming"
+  | "ready"
+  | "recording"
+  | "transcribing"
+  | "failed"
+  | "paused_by_performance_mode";
+
+interface SpeechWorkerDiagnostics {
+  engine: SpeechEngine;
+  model: string;
+  device: string;
+  computeType: string;
+  loadLatencyMs: number | null;
+  lastTranscriptionMs: number | null;
+  lastError: string | null;
+}
+
+let speechWorker: ReturnType<typeof spawn> | null = null;
+let speechWorkerReady = false;
+let speechWorkerConfigKey = "";
+let speechWorkerStdout = "";
+let speechWorkerStarting: Promise<{ ok: boolean; error?: string }> | null = null;
+let speechEngineStateValue: SpeechEngineState = "unavailable";
+const speechWorkerPending = new Map<string, { resolve: (value: Record<string, unknown>) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+const speechWorkerDiag: SpeechWorkerDiagnostics = {
+  engine: "faster_whisper",
+  model: "base.en",
+  device: "cpu",
+  computeType: "int8",
+  loadLatencyMs: null,
+  lastTranscriptionMs: null,
+  lastError: null
+};
+
+function speechEngineState(): SpeechEngineState {
+  return speechEngineStateValue;
+}
+
+function speechWorkerScript(): string {
+  return [
+    "import json, os, sys, time",
+    "def send(o):",
+    "    sys.stdout.write(json.dumps(o, ensure_ascii=False) + '\\n'); sys.stdout.flush()",
+    "cfg = json.loads(sys.argv[1]) if len(sys.argv) > 1 else {}",
+    "started = time.time()",
+    "try:",
+    "    from faster_whisper import WhisperModel",
+    "except Exception as exc:",
+    "    send({'type': 'fatal', 'ok': False, 'error': 'faster-whisper is not installed. Install with: python -m pip install faster-whisper'}); sys.exit(0)",
+    "def cuda_count():",
+    "    try:",
+    "        import ctranslate2; return int(ctranslate2.get_cuda_device_count())",
+    "    except Exception: return 0",
+    "req_device = cfg.get('device', 'cpu')",
+    "device = 'cuda' if (req_device == 'cuda' and cuda_count() > 0) else 'cpu'",
+    "compute = cfg.get('computeType', 'int8')",
+    "if compute == 'auto': compute = 'int8'",
+    "try:",
+    "    kwargs = {'device': device, 'compute_type': compute, 'local_files_only': bool(cfg.get('localOnly', True))}",
+    "    root = cfg.get('modelRoot')",
+    "    if root and os.path.isdir(root) and any(os.scandir(root)): kwargs['download_root'] = root",
+    "    elif not cfg.get('localOnly', True) and root: kwargs['download_root'] = root",
+    "    model = WhisperModel(cfg.get('model', 'base.en'), **kwargs)",
+    "except Exception as exc:",
+    "    send({'type': 'fatal', 'ok': False, 'error': str(exc), 'device': device, 'computeType': compute}); sys.exit(0)",
+    "send({'type': 'ready', 'ok': True, 'model': cfg.get('model', 'base.en'), 'device': device, 'computeType': compute, 'loadMs': int((time.time() - started) * 1000)})",
+    "for line in sys.stdin:",
+    "    line = line.strip()",
+    "    if not line: continue",
+    "    try: req = json.loads(line)",
+    "    except Exception: continue",
+    "    rid = req.get('id'); t = req.get('type')",
+    "    if t == 'shutdown': break",
+    "    if t == 'ping': send({'type': 'pong', 'id': rid, 'ok': True}); continue",
+    "    if t == 'transcribe':",
+    "        audio = req.get('audio'); st = time.time()",
+    "        if not audio or not os.path.exists(audio):",
+    "            send({'type': 'result', 'id': rid, 'ok': False, 'error': 'Audio file was not provided.'}); continue",
+    "        try:",
+    "            segments, info = model.transcribe(audio, language=req.get('language') or 'en', vad_filter=bool(req.get('vad', True)))",
+    "            text = ' '.join(s.text.strip() for s in segments).strip()",
+    "            send({'type': 'result', 'id': rid, 'ok': True, 'transcript': text, 'language': getattr(info, 'language', req.get('language') or 'en'), 'confidence': getattr(info, 'language_probability', None), 'transcriptionMs': int((time.time() - st) * 1000)})",
+    "        except Exception as exc:",
+    "            send({'type': 'result', 'id': rid, 'ok': False, 'error': str(exc), 'transcriptionMs': int((time.time() - st) * 1000)})"
+  ].join("\n");
+}
+
+function speechWorkerScriptPath(): string {
+  ensureSpeechRoot();
+  const scriptPath = join(speechTempRoot, "dexnest-faster-whisper-worker.py");
+  writeFileSync(scriptPath, speechWorkerScript(), "utf8");
+  return scriptPath;
+}
+
+function handleSpeechWorkerMessage(message: Record<string, unknown>, onReady: (result: { ok: boolean; error?: string }) => void): void {
+  const type = String(message.type ?? "");
+  if (type === "ready") {
+    speechWorkerReady = true;
+    speechEngineStateValue = "ready";
+    speechWorkerDiag.model = String(message.model ?? speechWorkerDiag.model);
+    speechWorkerDiag.device = String(message.device ?? speechWorkerDiag.device);
+    speechWorkerDiag.computeType = String(message.computeType ?? speechWorkerDiag.computeType);
+    speechWorkerDiag.loadLatencyMs = typeof message.loadMs === "number" ? message.loadMs : speechWorkerDiag.loadLatencyMs;
+    speechWorkerDiag.lastError = null;
+    onReady({ ok: true });
+    return;
+  }
+  if (type === "fatal") {
+    speechWorkerReady = false;
+    speechEngineStateValue = "failed";
+    speechWorkerDiag.lastError = String(message.error ?? "faster-whisper worker failed to start.");
+    onReady({ ok: false, error: speechWorkerDiag.lastError });
+    stopSpeechWorker();
+    return;
+  }
+  const id = typeof message.id === "string" ? message.id : null;
+  if (id && speechWorkerPending.has(id)) {
+    const pending = speechWorkerPending.get(id)!;
+    clearTimeout(pending.timer);
+    speechWorkerPending.delete(id);
+    pending.resolve(message);
+  }
+}
+
+function stopSpeechWorker(): void {
+  if (speechWorker) {
+    try { speechWorker.stdin?.write(`${JSON.stringify({ type: "shutdown" })}\n`); } catch { /* ignore */ }
+    try { speechWorker.kill(); } catch { /* ignore */ }
+  }
+  speechWorker = null;
+  speechWorkerReady = false;
+  speechWorkerStarting = null;
+  speechWorkerStdout = "";
+  for (const pending of speechWorkerPending.values()) {
+    clearTimeout(pending.timer);
+    pending.reject(new Error("Speech worker stopped."));
+  }
+  speechWorkerPending.clear();
+  if (speechEngineStateValue !== "failed") {
+    speechEngineStateValue = "unavailable";
+  }
+}
+
+function startSpeechWorker(settings = loadSpeechSettings()): Promise<{ ok: boolean; error?: string }> {
+  const configKey = `${settings.modelName}|${settings.device}|${settings.computeType}`;
+  if (speechWorker && speechWorkerReady && speechWorkerConfigKey === configKey) {
+    return Promise.resolve({ ok: true });
+  }
+  if (speechWorkerStarting && speechWorkerConfigKey === configKey) {
+    return speechWorkerStarting;
+  }
+  // Settings changed or no worker — restart cleanly.
+  stopSpeechWorker();
+  const pythonPath = speechPythonPath(settings);
+  if (!pythonPath) {
+    speechEngineStateValue = "failed";
+    speechWorkerDiag.lastError = "Python with faster-whisper was not found.";
+    return Promise.resolve({ ok: false, error: speechWorkerDiag.lastError });
+  }
+
+  speechWorkerConfigKey = configKey;
+  speechWorkerDiag.engine = "faster_whisper";
+  speechEngineStateValue = "starting";
+  const config = {
+    model: settings.modelName,
+    modelRoot: speechModelsRoot,
+    device: settings.device,
+    computeType: settings.computeType,
+    localOnly: true
+  };
+  const scriptPath = speechWorkerScriptPath();
+
+  speechWorkerStarting = new Promise<{ ok: boolean; error?: string }>((resolvePromise) => {
+    let settled = false;
+    const resolveOnce = (result: { ok: boolean; error?: string }) => {
+      if (!settled) {
+        settled = true;
+        resolvePromise(result);
+      }
+    };
+    try {
+      const child = spawn(pythonPath, [scriptPath, JSON.stringify(config)], { cwd: speechTempRoot, windowsHide: true });
+      speechWorker = child;
+      speechEngineStateValue = "warming";
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (chunk: string) => {
+        speechWorkerStdout += chunk;
+        let newlineIndex = speechWorkerStdout.indexOf("\n");
+        while (newlineIndex >= 0) {
+          const line = speechWorkerStdout.slice(0, newlineIndex).trim();
+          speechWorkerStdout = speechWorkerStdout.slice(newlineIndex + 1);
+          if (line) {
+            try {
+              handleSpeechWorkerMessage(JSON.parse(line) as Record<string, unknown>, resolveOnce);
+            } catch { /* ignore malformed line */ }
+          }
+          newlineIndex = speechWorkerStdout.indexOf("\n");
+        }
+      });
+      child.on("error", (error: Error) => {
+        speechWorkerDiag.lastError = error.message;
+        speechEngineStateValue = "failed";
+        resolveOnce({ ok: false, error: error.message });
+        stopSpeechWorker();
+      });
+      child.on("exit", () => {
+        if (speechWorker === child) {
+          const wasReady = speechWorkerReady;
+          stopSpeechWorker();
+          if (!wasReady) {
+            resolveOnce({ ok: false, error: speechWorkerDiag.lastError ?? "Speech worker exited before becoming ready." });
+          }
+        }
+      });
+      // Safety: if no "ready" within 60s, treat as failed.
+      setTimeout(() => resolveOnce({ ok: false, error: "Speech worker did not warm up in time." }), 60000);
+    } catch (error) {
+      speechEngineStateValue = "failed";
+      const message = error instanceof Error ? error.message : "Failed to start speech worker.";
+      speechWorkerDiag.lastError = message;
+      resolveOnce({ ok: false, error: message });
+    }
+  });
+  return speechWorkerStarting;
+}
+
+async function warmSpeechEngine(): Promise<{ ok: boolean; error?: string; engineState: SpeechEngineState; diagnostics: SpeechWorkerDiagnostics }> {
+  const settings = loadSpeechSettings();
+  // Part K: never warm/record while paused by Performance Mode.
+  if (performanceModeState().enabled && settings.pauseInPerformanceMode) {
+    speechEngineStateValue = "paused_by_performance_mode";
+    return { ok: false, error: "Speech is paused by Performance Mode.", engineState: speechEngineStateValue, diagnostics: speechWorkerDiag };
+  }
+  if (settings.speechEngine !== "faster_whisper") {
+    return { ok: false, error: "Warm engine only applies to faster-whisper.", engineState: speechEngineStateValue, diagnostics: speechWorkerDiag };
+  }
+  const result = await startSpeechWorker(settings);
+  return { ok: result.ok, error: result.error, engineState: speechEngineStateValue, diagnostics: speechWorkerDiag };
+}
+
+// Transcribe via the warm worker, starting/warming it on demand. Retries once.
+async function transcribeWithWarmWorker(audioPath: string, language: string, vad: boolean, settings = loadSpeechSettings()): Promise<Record<string, unknown>> {
+  const attempt = async (): Promise<Record<string, unknown>> => {
+    const started = await startSpeechWorker(settings);
+    if (!started.ok || !speechWorker || !speechWorkerReady) {
+      return { ok: false, error: started.error ?? "Speech worker is not ready." };
+    }
+    speechEngineStateValue = "transcribing";
+    const id = `t-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise<Record<string, unknown>>((resolvePromise) => {
+      const timer = setTimeout(() => {
+        speechWorkerPending.delete(id);
+        resolvePromise({ ok: false, error: "Speech transcription timed out." });
+      }, 120000);
+      speechWorkerPending.set(id, { resolve: resolvePromise, reject: (error) => resolvePromise({ ok: false, error: error.message }), timer });
+      try {
+        speechWorker!.stdin?.write(`${JSON.stringify({ type: "transcribe", id, audio: audioPath, language, vad })}\n`);
+      } catch (error) {
+        clearTimeout(timer);
+        speechWorkerPending.delete(id);
+        resolvePromise({ ok: false, error: error instanceof Error ? error.message : "Failed to send transcription request." });
+      }
+    });
+  };
+
+  let result = await attempt();
+  if (result.ok !== true) {
+    // Retry once before giving up (Part A.8) — restart the worker first.
+    speechWorkerDiag.lastError = String(result.error ?? "Speech transcription failed.");
+    stopSpeechWorker();
+    result = await attempt();
+  }
+  if (result.ok === true) {
+    speechEngineStateValue = "ready";
+    speechWorkerDiag.lastTranscriptionMs = typeof result.transcriptionMs === "number" ? result.transcriptionMs : speechWorkerDiag.lastTranscriptionMs;
+    speechWorkerDiag.lastError = null;
+  } else {
+    speechWorkerDiag.lastError = String(result.error ?? "Speech transcription failed.");
+  }
+  return result;
+}
+
+async function checkSpeechModel(install = false): Promise<SpeechModelStatus> {
+  ensureSpeechRoot();
+  const settings = loadSpeechSettings();
+  const pythonPath = speechPythonPath(settings);
+  if (settings.speechEngine === "windows_fallback") {
+    return {
+      ok: true,
+      installed: true,
+      message: "Windows fallback is selected.",
+      engine: "windows_fallback",
+      model: settings.modelName,
+      modelPath: speechModelsRoot,
+      pythonPath,
+      deviceDetected: "unknown",
+      fasterWhisperAvailable: false,
+      lastLatencyMs: speechLastLatencyMs,
+      lastError: speechLastError
+    };
+  }
+  if (settings.speechEngine === "whisper_cpp") {
+    return {
+      ok: false,
+      installed: false,
+      message: "whisper.cpp is a placeholder backend in this build. Use faster-whisper or Windows fallback.",
+      engine: "whisper_cpp",
+      model: settings.modelName,
+      modelPath: speechModelsRoot,
+      pythonPath,
+      deviceDetected: "unknown",
+      fasterWhisperAvailable: false,
+      lastLatencyMs: speechLastLatencyMs,
+      lastError: "whisper.cpp backend is not configured."
+    };
+  }
+  if (!pythonPath) {
+    return {
+      ok: false,
+      installed: false,
+      message: "Python was not found. Install Python and faster-whisper, or enable Windows fallback.",
+      engine: "faster_whisper",
+      model: settings.modelName,
+      modelPath: speechModelsRoot,
+      pythonPath: null,
+      deviceDetected: "unknown",
+      fasterWhisperAvailable: false,
+      lastLatencyMs: speechLastLatencyMs,
+      lastError: "Python not found."
+    };
+  }
+  const result = await runSpeechSidecar([
+    "--model", settings.modelName,
+    "--model-root", speechModelsRoot,
+    "--device", settings.device,
+    "--compute-type", settings.computeType,
+    "--language", "en",
+    "--local-only", install ? "0" : "1",
+    "--check-only"
+  ]);
+  const ok = result.ok === true;
+  const device = String(result.device ?? "unknown");
+  const message = ok
+    ? `${settings.modelName} is ready on ${device}.`
+    : String(result.error ?? (install ? "Model install failed." : "Model is missing or faster-whisper is not installed."));
+  return {
+    ok,
+    installed: ok,
+    message,
+    engine: "faster_whisper",
+    model: settings.modelName,
+    modelPath: speechModelsRoot,
+    pythonPath,
+    deviceDetected: device === "cuda" ? "cuda" : device === "cpu" ? "cpu" : "unknown",
+    fasterWhisperAvailable: ok || !/not installed/i.test(message),
+    lastLatencyMs: typeof result.durationMs === "number" ? result.durationMs : speechLastLatencyMs,
+    lastError: ok ? null : message
+  };
+}
+
+function speechServiceState(status?: SpeechModelStatus): SpeechServiceState {
+  const settings = loadSpeechSettings();
+  return {
+    settingsPath: speechSettingsPath,
+    modelRoot: speechModelsRoot,
+    debugAudioRoot: speechDebugAudioRoot,
+    settings,
+    modelStatus: status ?? {
+      ok: false,
+      installed: existsSync(speechModelsRoot) && readdirSync(speechModelsRoot).length > 0,
+      message: "Run Check local model for current status.",
+      engine: settings.speechEngine,
+      model: settings.modelName,
+      modelPath: speechModelPath(settings.modelName),
+      pythonPath: speechPythonPath(settings),
+      deviceDetected: "unknown",
+      fasterWhisperAvailable: false,
+      lastLatencyMs: speechLastLatencyMs,
+      lastError: speechLastError
+    },
+    windowsFallbackAvailable: process.platform === "win32",
+    performancePaused: performanceModeState().enabled && settings.pauseInPerformanceMode,
+    engineState: speechEngineState(),
+    warmDiagnostics: { ...speechWorkerDiag }
+  };
+}
+
+function sensitiveTranscriptCategory(transcript: string): "sensitive" | "personal" | "none" {
+  return /\b(sin|social insurance|passport|health card|work permit|permit number|document number|uci)\b/i.test(transcript)
+    ? "sensitive"
+    : transcript.trim() ? "personal" : "none";
+}
+
+async function transcribeSpeechAudio(input: {
+  audioBytes?: ArrayBuffer | Uint8Array | number[];
+  mimeType?: string;
+  source?: DexNestActionTrigger;
+  sourceModule?: string;
+  language?: string;
+  manualOverride?: boolean;
+}): Promise<SpeechTranscriptionResult & { speechState: SpeechServiceState }> {
+  const startedAt = Date.now();
+  ensureSpeechRoot();
+  const settings = loadSpeechSettings();
+  const source = input.source ?? "module_ui";
+  if (performanceModeState().enabled && settings.pauseInPerformanceMode && input.manualOverride !== true) {
+    const result: SpeechTranscriptionResult = {
+      transcript: "",
+      engine: settings.speechEngine,
+      model: settings.modelName,
+      language: input.language ?? "en",
+      durationMs: Date.now() - startedAt,
+      status: "failed",
+      error: "Speech is paused by Performance Mode."
+    };
+    localDb.appendActionEvent({
+      module: "DexNest Voice",
+      actionId: "speech.transcribe",
+      eventType: "speech_transcription_skipped",
+      status: "skipped",
+      source,
+      summary: result.error ?? "Speech is paused by Performance Mode.",
+      metadataJson: { engine: result.engine, model: result.model, sourceModule: input.sourceModule ?? null, reason: "performance_mode" },
+      durationMs: result.durationMs
+    });
+    return { ...result, speechState: speechServiceState() };
+  }
+  const raw = input.audioBytes instanceof Uint8Array
+    ? Buffer.from(input.audioBytes)
+    : Array.isArray(input.audioBytes)
+      ? Buffer.from(input.audioBytes)
+      : input.audioBytes
+        ? Buffer.from(input.audioBytes)
+        : Buffer.alloc(0);
+  if (raw.byteLength === 0) {
+    const result: SpeechTranscriptionResult = {
+      transcript: "",
+      engine: settings.speechEngine,
+      model: settings.modelName,
+      language: input.language ?? "en",
+      durationMs: Date.now() - startedAt,
+      status: "failed",
+      error: "No microphone audio was captured."
+    };
+    return { ...result, speechState: speechServiceState() };
+  }
+  const extension = /wav/i.test(input.mimeType ?? "") ? "wav" : /mp4|m4a/i.test(input.mimeType ?? "") ? "m4a" : "webm";
+  const audioPath = join(settings.keepAudioForDebug ? speechDebugAudioRoot : speechTempRoot, `speech-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${extension}`);
+  writeFileSync(audioPath, raw);
+  let result: SpeechTranscriptionResult;
+  try {
+    if (settings.speechEngine === "windows_fallback") {
+      result = {
+        transcript: "",
+        engine: "windows_fallback",
+        model: "windows",
+        language: input.language ?? "en",
+        durationMs: Date.now() - startedAt,
+        status: "failed",
+        error: "Windows fallback requires the DexNest Windows dictation bridge."
+      };
+    } else if (settings.speechEngine === "whisper_cpp") {
+      result = {
+        transcript: "",
+        engine: "whisper_cpp",
+        model: settings.modelName,
+        language: input.language ?? "en",
+        durationMs: Date.now() - startedAt,
+        status: "failed",
+        error: "whisper.cpp is not configured yet. Use faster-whisper or Windows fallback."
+      };
+    } else {
+      // Phase 23A/B: transcribe via the warm persistent worker (loads the model
+      // once, retries once on failure). Fallback to Windows only happens when
+      // the user explicitly enabled it — never silently/randomly.
+      const sidecar = await transcribeWithWarmWorker(audioPath, input.language ?? "en", settings.vadEnabled, settings);
+      const ok = sidecar.ok === true;
+      if (ok) {
+        result = {
+          transcript: String(sidecar.transcript ?? "").trim(),
+          engine: "faster_whisper",
+          model: settings.modelName,
+          language: String(sidecar.language ?? input.language ?? "en"),
+          durationMs: typeof sidecar.transcriptionMs === "number" ? sidecar.transcriptionMs : Date.now() - startedAt,
+          confidence: typeof sidecar.confidence === "number" ? sidecar.confidence : undefined,
+          status: "success",
+          error: undefined
+        };
+      } else if (settings.fallbackToWindows) {
+        result = {
+          transcript: "",
+          engine: "windows_fallback",
+          model: "windows",
+          language: input.language ?? "en",
+          durationMs: Date.now() - startedAt,
+          status: "failed",
+          error: `faster-whisper failed, Windows fallback is enabled but the Windows dictation bridge is not wired for transcription. faster-whisper error: ${String(sidecar.error ?? "unknown")}`
+        };
+      } else {
+        result = {
+          transcript: "",
+          engine: "faster_whisper",
+          model: settings.modelName,
+          language: input.language ?? "en",
+          durationMs: Date.now() - startedAt,
+          status: "failed",
+          error: String(sidecar.error ?? "faster-whisper transcription failed.")
+        };
+      }
+    }
+  } finally {
+    if (!settings.keepAudioForDebug && existsSync(audioPath)) {
+      unlinkSync(audioPath);
+    }
+  }
+  speechLastLatencyMs = result.durationMs;
+  speechLastError = result.error ?? null;
+  localDb.appendActionEvent({
+    module: "DexNest Voice",
+    actionId: "speech.transcribe",
+    eventType: result.status === "success" ? "speech_transcribed" : "speech_transcription_failed",
+    status: result.status,
+    source,
+    summary: result.status === "success" ? "Transcribed local microphone audio." : "Speech transcription failed.",
+    metadataJson: {
+      engine: result.engine,
+      model: result.model,
+      language: result.language,
+      sourceModule: input.sourceModule ?? null,
+      transcriptLength: result.transcript.length,
+      sensitivity: sensitiveTranscriptCategory(result.transcript),
+      debugAudioKept: settings.keepAudioForDebug,
+      fallbackAvailable: settings.fallbackToWindows
+    },
+    errorMessage: result.error ?? null,
+    durationMs: Date.now() - startedAt
+  });
+  return { ...result, speechState: speechServiceState() };
 }
 
 // --- Trusted sensitive-access session (Phase 18.6) --------------------------
@@ -4936,6 +6405,12 @@ function unlockTrustedSession(masterPassword?: string): { ok: boolean; error?: s
     try {
       const key = deriveSecureVaultKey(masterPassword, file.kdf);
       verifySecureVaultKey(file, key);
+      // Unlock the actual Secure Vault too. The trusted session uses the same
+      // master password, and Vault-stored secrets (e.g. the Govee API key) plus
+      // sensitive answers both require the live vault key. The vault keeps its
+      // own auto-lock timer.
+      secureVaultKey = key;
+      scheduleSecureVaultAutoLock(file.settings.autoLockMinutes);
     } catch {
       return { ok: false, error: "Invalid master password." };
     }
@@ -4990,6 +6465,8 @@ function assistantIntentPrompt(query: string): string {
     "- finder_search: asking WHERE a physical item is (where is/where did I put my passport, charger, what is in the black drawer).",
     "- search_query: find/open a document or file (find my passport document, search work permit, find the PDF about taxes, open my latest resume).",
     "- calendar_create_candidate: add/schedule/remind about an event (add meeting with Tim tomorrow at 3, remind me to call Tim next Friday, birthday in 3 days).",
+    "- calendar_show_today: ask what is on today's calendar or show today's events.",
+    "- calendar_show_upcoming: ask for upcoming calendar events, tomorrow, or next event.",
     "- drop_send_clipboard: send clipboard or current file to phone.",
     "- open_module: open a DexNest module/screen.",
     "- dev_run_command: run a dev command (typecheck, build, test, start).",
@@ -9554,8 +11031,8 @@ function runClipboardAction(action: DexNestActionDefinition, source: DexNestActi
     return { ok: true, actionId: action.id };
   }
 
-  if (action.id === "clipboard.assign_slot") {
-    const slotNumber = Number(params.slot);
+  if (action.id === "clipboard.assign_slot" || /^clipboard\.slot[1-3]\.save_current$/.test(action.id)) {
+    const slotNumber = slotNumberFromAction(action.id, params);
     const text = clipboard.readText();
     if (!Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > 5) {
       logActionEvent(action, "failed", source, "Clipboard slot assignment failed because the slot was invalid.", { slot: params.slot });
@@ -9567,38 +11044,117 @@ function runClipboardAction(action: DexNestActionDefinition, source: DexNestActi
     }
     if (isProtectedClipboardText(text)) {
       logActionEvent(action, "skipped", source, "Clipboard slot assignment skipped for a Secure Vault protected value.", { slot: slotNumber, protectedSource: "secure_vault" });
+      notifyClipboardHotkey("Protected secret skipped.", "error");
       return { ok: false, actionId: action.id, error: clipboardProtectedError() };
     }
+    const sensitive = looksSensitiveClipboardText(text);
+    if (sensitive && params.confirmedSensitive !== true) {
+      logActionEvent(action, "cancelled", source, "Clipboard slot assignment blocked because the clipboard looked sensitive.", {
+        slot: slotNumber,
+        sensitivityCategory: "likely_sensitive",
+        byteLength: byteLength(text)
+      });
+      if (source === "keyboard_shortcut") {
+        notifyClipboardHotkey("Clipboard looks sensitive. Open DexNest Clipboard to confirm saving it.", "error");
+      }
+      return {
+        ok: false,
+        actionId: action.id,
+        status: "sensitive_confirmation_required",
+        error: "Clipboard looks sensitive. Confirm before saving it to a slot."
+      };
+    }
     const slots = loadClipboardSlots();
+    const existingSlot = slots.find((slot) => slot.slot === slotNumber);
     const nextSlot: ClipboardSlot = {
       slot: slotNumber,
+      slotId: slotNumber,
+      type: "text",
+      value: text,
       text,
-      preview: previewText(text),
+      preview: sensitive ? "Sensitive text saved" : previewText(text),
       byteLength: byteLength(text),
-      updatedAt: now
+      createdAt: existingSlot?.createdAt || now,
+      updatedAt: now,
+      source: slotSourceFor(source)
     };
     saveClipboardSlots(slots.map((slot) => slot.slot === slotNumber ? nextSlot : slot));
     logActionEvent(action, "success", source, `Assigned current clipboard to slot ${slotNumber}, ${nextSlot.byteLength} bytes.`, {
       slot: slotNumber,
-      byteLength: nextSlot.byteLength
+      contentType: "text",
+      byteLength: nextSlot.byteLength,
+      sensitivityCategory: sensitive ? "likely_sensitive_confirmed" : "normal"
     });
+    if (source === "keyboard_shortcut") {
+      notifyClipboardHotkey(`Saved to Slot ${slotNumber}.`, "success");
+    }
     return { ok: true, actionId: action.id, slot: nextSlot };
   }
 
-  if (action.id === "clipboard.copy_slot") {
-    const slotNumber = Number(params.slot);
+  if (action.id === "clipboard.copy_slot" || /^clipboard\.slot[1-3]\.paste$/.test(action.id)) {
+    const slotNumber = slotNumberFromAction(action.id, params);
     const slot = loadClipboardSlots().find((item) => item.slot === slotNumber);
-    if (!slot?.text) {
+    const slotText = slot?.value || slot?.text || "";
+    if (!slotText) {
       logActionEvent(action, "failed", source, "Clipboard slot copy failed because the slot was empty.", { slot: slotNumber });
+      if (source === "keyboard_shortcut") {
+        notifyClipboardHotkey(`Slot ${slotNumber} is empty.`, "error");
+      }
       return { ok: false, actionId: action.id, error: "Clipboard slot is empty." };
     }
-    clipboard.writeText(slot.text);
-    lastClipboardListenerText = slot.text;
-    logActionEvent(action, "success", source, `Copied Clipboard slot ${slotNumber}, ${slot.byteLength} bytes.`, {
+    const slotByteLength = slot?.byteLength ?? byteLength(slotText);
+    const slotContentType = slot?.type ?? "text";
+    clipboard.writeText(slotText);
+    lastClipboardListenerText = slotText;
+    let pastedDirectly = false;
+    let pasteError: string | null = null;
+    if (source === "keyboard_shortcut" || params.pasteDirect === true) {
+      pastedDirectly = true;
+      void sendWindowsPasteShortcut().catch((error) => {
+        pasteError = error instanceof Error ? error.message : "Direct paste failed.";
+        notifyClipboardHotkey(`Slot ${slotNumber} copied. Press Ctrl+V.`, "error");
+      });
+    }
+    logActionEvent(action, "success", source, `${pastedDirectly ? "Pasted" : "Copied"} Clipboard slot ${slotNumber}, ${slotByteLength} bytes.`, {
       slot: slotNumber,
-      byteLength: slot.byteLength
+      contentType: slotContentType,
+      byteLength: slotByteLength,
+      pasteMode: pastedDirectly ? "direct" : "clipboard_fallback",
+      sensitivityCategory: looksSensitiveClipboardText(slotText) ? "likely_sensitive_confirmed" : "normal"
     });
-    return { ok: true, actionId: action.id };
+    if (source === "keyboard_shortcut") {
+      notifyClipboardHotkey(pastedDirectly ? `Pasted Slot ${slotNumber}.` : `Slot ${slotNumber} copied. Press Ctrl+V.`, pastedDirectly ? "success" : "error");
+    }
+    return { ok: true, actionId: action.id, pasteMode: pastedDirectly ? "direct" : "clipboard_fallback", pasteError };
+  }
+
+  if (action.id === "clipboard.clear_slot") {
+    const slotNumber = slotNumberFromAction(action.id, params);
+    if (!Number.isInteger(slotNumber) || slotNumber < 1 || slotNumber > 5) {
+      logActionEvent(action, "failed", source, "Clipboard slot clear failed because the slot was invalid.", { slot: params.slot });
+      return { ok: false, actionId: action.id, error: "Slot must be 1 through 5." };
+    }
+    const slots = loadClipboardSlots();
+    const slot = slots.find((item) => item.slot === slotNumber);
+    const clearedSlot: ClipboardSlot = {
+      slot: slotNumber,
+      slotId: slotNumber,
+      type: "text",
+      value: "",
+      text: "",
+      preview: "",
+      byteLength: 0,
+      createdAt: "",
+      updatedAt: "",
+      source: "clipboard_ui"
+    };
+    saveClipboardSlots(slots.map((item) => item.slot === slotNumber ? clearedSlot : item));
+    logActionEvent(action, "success", source, `Cleared Clipboard slot ${slotNumber}.`, {
+      slot: slotNumber,
+      contentType: slot?.type ?? "text",
+      byteLength: slot?.byteLength ?? 0
+    });
+    return { ok: true, actionId: action.id, slot: clearedSlot };
   }
 
   if (action.id === "clipboard.clear_history") {
@@ -10836,7 +12392,7 @@ function normalizeFinderItem(input: FinderItemInput, existing?: FinderItem): Fin
 
 function runFinderAction(action: DexNestActionDefinition, source: DexNestActionTrigger, payload: unknown = {}) {
   const startedAt = Date.now();
-  const input = typeof payload === "object" && payload !== null ? (payload as FinderItemInput & { statusFilter?: string; newLocation?: string }) : {};
+  const input = typeof payload === "object" && payload !== null ? (payload as FinderItemInput & { statusFilter?: string; newLocation?: string; updateExisting?: boolean }) : {};
 
   try {
     if (action.id === "finder.open") {
@@ -10846,7 +12402,12 @@ function runFinderAction(action: DexNestActionDefinition, source: DexNestActionT
 
     if (action.id === "finder.create_item" || action.id === "finder.update_item") {
       const items = loadFinderItems();
-      const existing = input.id ? items.find((item) => item.id === input.id) : undefined;
+      const itemName = input.itemName?.trim().toLowerCase();
+      const existing = input.id
+        ? items.find((item) => item.id === input.id)
+        : input.updateExisting && itemName
+          ? items.find((item) => item.itemName.trim().toLowerCase() === itemName && item.status !== "archived")
+          : undefined;
       const nextItem = normalizeFinderItem(input, existing);
       saveFinderItems([nextItem, ...items.filter((item) => item.id !== nextItem.id)]);
       logFinderEvent(action.id, "success", source, `${existing ? "Updated" : "Created"} DexNest Finder item.`, {
@@ -11621,7 +13182,7 @@ async function runExternalDevicesAction(action: DexNestActionDefinition, source:
   const settings = loadExternalDevicesSettings();
 
   try {
-    if (source === "voice" && !settings.allowVoiceControl) {
+    if ((source === "voice" || source === "assistant" || source === "ambient_voice" || source === "push_to_talk") && !settings.allowVoiceControl) {
       throw new ExternalDeviceActionError("disabled", "voice_control_disabled", "Govee voice control is disabled in Settings.");
     }
     if (source === "stream_deck_http" && !settings.allowStreamDeckControl) {
@@ -11694,6 +13255,71 @@ async function runExternalDevicesAction(action: DexNestActionDefinition, source:
       return { ok: true, actionId: action.id, externalDevicesState: externalDevicesState(), message: "Govee alias saved." };
     }
 
+    if (action.id === "external.govee.update_group") {
+      const now = new Date().toISOString();
+      const inputId = String(params.groupId ?? params.id ?? "").trim();
+      const name = String(params.name ?? "Room lights").trim();
+      const aliases = Array.isArray(params.aliases)
+        ? params.aliases.map((item) => String(item).trim()).filter(Boolean)
+        : String(params.aliases ?? "lights, room lights, all lights").split(",").map((item) => item.trim()).filter(Boolean);
+      const deviceIds = Array.isArray(params.deviceIds)
+        ? params.deviceIds.map((item) => String(item).trim()).filter(Boolean)
+        : [];
+      if (!name) {
+        throw new ExternalDeviceActionError("invalid_params", "missing_group_name", "Govee group name is required.");
+      }
+      if (deviceIds.length === 0) {
+        throw new ExternalDeviceActionError("invalid_params", "missing_group_devices", "Select at least one Govee device for the group.");
+      }
+      const devices = loadExternalDevicesCache();
+      const missingIds = deviceIds.filter((deviceId) => !devices.some((device) => device.deviceId === deviceId));
+      if (missingIds.length) {
+        throw new ExternalDeviceActionError("not_found", "govee_group_device_not_found", "One or more selected Govee devices are not in the local cache.", {
+          details: { missingCount: missingIds.length, availableDevices: devices.map(safeGoveeDeviceSummary) }
+        });
+      }
+      const groups = loadExternalDeviceGroups();
+      const existing = inputId ? groups.find((group) => group.id === inputId) : undefined;
+      const group: ExternalDeviceGroup = {
+        id: existing?.id ?? (inputId || normalizeAlias(name).replace(/\s+/g, "_") || createId("govee-group")),
+        name,
+        aliases: [...new Set(aliases)],
+        provider: "govee",
+        deviceIds: [...new Set(deviceIds)],
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now
+      };
+      saveExternalDeviceGroups(existing
+        ? groups.map((item) => item.id === existing.id ? group : item)
+        : [group, ...groups]
+      );
+      logExternalDeviceEvent(action.id, "success", source, "Saved local Govee device group.", {
+        actionType: "update_group",
+        groupId: group.id,
+        groupName: group.name,
+        aliasCount: group.aliases.length,
+        deviceCount: group.deviceIds.length
+      }, startedAt);
+      return { ok: true, actionId: action.id, externalDevicesState: externalDevicesState(), message: `Saved ${group.name}.` };
+    }
+
+    if (action.id === "external.govee.delete_group") {
+      const groupId = String(params.groupId ?? params.id ?? "").trim();
+      if (!groupId) {
+        throw new ExternalDeviceActionError("invalid_params", "missing_group_id", "Govee group ID is required.");
+      }
+      const groups = loadExternalDeviceGroups();
+      const group = groups.find((item) => item.id === groupId);
+      saveExternalDeviceGroups(groups.filter((item) => item.id !== groupId));
+      logExternalDeviceEvent(action.id, "success", source, "Deleted local Govee device group.", {
+        actionType: "delete_group",
+        groupId,
+        groupName: group?.name ?? null,
+        deviceCount: group?.deviceIds.length ?? 0
+      }, startedAt);
+      return { ok: true, actionId: action.id, externalDevicesState: externalDevicesState(), message: group ? `Deleted ${group.name}.` : "Deleted Govee group." };
+    }
+
     if (action.id === "external.govee.remove_api_key") {
       if (settings.goveeApiKeySecretId) {
         const file = loadSecureVaultFile();
@@ -11731,67 +13357,104 @@ async function runExternalDevicesAction(action: DexNestActionDefinition, source:
       return { ok: true, actionId: action.id, message: `Refreshed ${devices.length} Govee device(s).`, devices, externalDevicesState: externalDevicesState() };
     }
 
-    const device = findExternalDevice(params);
-    if (!device.controllable) {
-      throw new ExternalDeviceActionError("disabled", "govee_device_not_controllable", `${device.userAlias || device.deviceName} is not marked controllable by Govee.`);
-    }
-    const alias = device.userAlias || device.roomAlias || device.deviceName;
+    const target = findExternalDeviceTarget(params);
+    const alias = target.type === "group" ? target.group.name : (target.device.userAlias || target.device.roomAlias || target.device.deviceName);
+    const actionType = action.id.replace("external.govee.", "");
+    const commandResults: Array<{ deviceName: string; status: "success" | "failed"; error?: string }> = [];
 
-    if (action.id === "external.govee.turn_on") {
-      await goveeControl(device, "turn", "on");
-      updateCachedGoveeDevice(device.deviceId, { lastKnownPowerState: "on" });
-      logExternalDeviceEvent(action.id, "success", source, "Turned on Govee device.", { actionType: "turn_on", deviceAlias: alias, deviceName: device.deviceName }, startedAt);
-      return { ok: true, actionId: action.id, message: `Turned on ${alias}.`, externalDevicesState: externalDevicesState() };
+    if (target.devices.some((device) => !device.controllable)) {
+      throw new ExternalDeviceActionError("disabled", "govee_device_not_controllable", `${alias} includes a device that is not marked controllable by Govee.`, {
+        details: { targetType: target.type, deviceCount: target.devices.length }
+      });
     }
 
-    if (action.id === "external.govee.turn_off") {
-      if (settings.requireConfirmationForPowerOff && params.confirmedDangerous !== true) {
-        logExternalDeviceEvent(action.id, "cancelled", source, "Govee power-off requires confirmation.", { actionType: "turn_off", deviceAlias: alias, confirmationRequired: true }, startedAt);
-        return { ok: false, status: "confirmation_required", actionId: action.id, error: "Power-off requires confirmation.", message: "Power-off requires confirmation." };
+    const controlDevice = async (device: ExternalDeviceCacheItem): Promise<void> => {
+      if (action.id === "external.govee.turn_on") {
+        await goveeControl(device, "turn", "on");
+        updateCachedGoveeDevice(device.deviceId, { lastKnownPowerState: "on" });
+        return;
       }
-      await goveeControl(device, "turn", "off");
-      updateCachedGoveeDevice(device.deviceId, { lastKnownPowerState: "off" });
-      logExternalDeviceEvent(action.id, "success", source, "Turned off Govee device.", { actionType: "turn_off", deviceAlias: alias, deviceName: device.deviceName }, startedAt);
-      return { ok: true, actionId: action.id, message: `Turned off ${alias}.`, externalDevicesState: externalDevicesState() };
-    }
-
-    if (action.id === "external.govee.toggle") {
-      const next = device.lastKnownPowerState === "on" ? "off" : "on";
-      if (next === "off" && settings.requireConfirmationForPowerOff && params.confirmedDangerous !== true) {
-        logExternalDeviceEvent(action.id, "cancelled", source, "Govee toggle to off requires confirmation.", { actionType: "toggle", deviceAlias: alias, nextPowerState: next, confirmationRequired: true }, startedAt);
-        return { ok: false, status: "confirmation_required", actionId: action.id, error: "Power-off requires confirmation.", message: "Power-off requires confirmation." };
+      if (action.id === "external.govee.turn_off") {
+        await goveeControl(device, "turn", "off");
+        updateCachedGoveeDevice(device.deviceId, { lastKnownPowerState: "off" });
+        return;
       }
-      await goveeControl(device, "turn", next);
-      updateCachedGoveeDevice(device.deviceId, { lastKnownPowerState: next });
-      logExternalDeviceEvent(action.id, "success", source, "Toggled Govee device.", { actionType: "toggle", deviceAlias: alias, nextPowerState: next }, startedAt);
-      return { ok: true, actionId: action.id, message: `Set ${alias} ${next}.`, externalDevicesState: externalDevicesState() };
-    }
+      if (action.id === "external.govee.toggle") {
+        const next = device.lastKnownPowerState === "on" ? "off" : "on";
+        await goveeControl(device, "turn", next);
+        updateCachedGoveeDevice(device.deviceId, { lastKnownPowerState: next });
+        return;
+      }
+      if (action.id === "external.govee.set_brightness") {
+        const brightness = brightnessValue(params.brightness);
+        await goveeControl(device, "brightness", brightness);
+        updateCachedGoveeDevice(device.deviceId, { lastKnownBrightness: brightness });
+        return;
+      }
+      if (action.id === "external.govee.set_color") {
+        await goveeControl(device, "color", colorValue(params.color));
+        return;
+      }
+      if (action.id === "external.govee.set_color_temperature") {
+        await goveeControl(device, "colorTem", kelvinValue(params.kelvin));
+      }
+    };
 
+    const turnsOff = action.id === "external.govee.turn_off" || (action.id === "external.govee.toggle" && target.devices.some((device) => device.lastKnownPowerState === "on"));
+    if (turnsOff && settings.requireConfirmationForPowerOff && params.confirmedDangerous !== true) {
+      logExternalDeviceEvent(action.id, "cancelled", source, "Govee power-off requires confirmation.", { actionType, targetType: target.type, targetAlias: alias, deviceCount: target.devices.length, confirmationRequired: true }, startedAt);
+      return { ok: false, status: "confirmation_required", actionId: action.id, error: "Power-off requires confirmation.", message: "Power-off requires confirmation." };
+    }
     if (action.id === "external.govee.set_brightness") {
       const brightness = brightnessValue(params.brightness);
       if (settings.requireConfirmationForBrightnessBelow10 && brightness < 10 && params.confirmedDangerous !== true) {
-        logExternalDeviceEvent(action.id, "cancelled", source, "Low Govee brightness requires confirmation.", { actionType: "set_brightness", deviceAlias: alias, brightness, confirmationRequired: true }, startedAt);
+        logExternalDeviceEvent(action.id, "cancelled", source, "Low Govee brightness requires confirmation.", { actionType, targetType: target.type, targetAlias: alias, brightness, deviceCount: target.devices.length, confirmationRequired: true }, startedAt);
         return { ok: false, status: "confirmation_required", actionId: action.id, error: "Brightness below 10 requires confirmation.", message: "Brightness below 10 requires confirmation." };
       }
-      await goveeControl(device, "brightness", brightness);
-      updateCachedGoveeDevice(device.deviceId, { lastKnownBrightness: brightness });
-      logExternalDeviceEvent(action.id, "success", source, "Set Govee brightness.", { actionType: "set_brightness", deviceAlias: alias, brightness }, startedAt);
-      return { ok: true, actionId: action.id, message: `Set ${alias} brightness to ${brightness}.`, externalDevicesState: externalDevicesState() };
     }
 
-    if (action.id === "external.govee.set_color") {
-      const color = colorValue(params.color);
-      await goveeControl(device, "color", color);
-      logExternalDeviceEvent(action.id, "success", source, "Set Govee color.", { actionType: "set_color", deviceAlias: alias, colorProvided: true }, startedAt);
-      return { ok: true, actionId: action.id, message: `Set ${alias} color.`, externalDevicesState: externalDevicesState() };
+    for (const device of target.devices) {
+      try {
+        await controlDevice(device);
+        commandResults.push({ deviceName: device.userAlias || device.deviceName, status: "success" });
+      } catch (error) {
+        commandResults.push({ deviceName: device.userAlias || device.deviceName, status: "failed", error: safeGoveeError(error) });
+      }
     }
 
-    if (action.id === "external.govee.set_color_temperature") {
-      const kelvin = kelvinValue(params.kelvin);
-      await goveeControl(device, "colorTem", kelvin);
-      logExternalDeviceEvent(action.id, "success", source, "Set Govee color temperature.", { actionType: "set_color_temperature", deviceAlias: alias, kelvin }, startedAt);
-      return { ok: true, actionId: action.id, message: `Set ${alias} to ${kelvin}K.`, externalDevicesState: externalDevicesState() };
-    }
+    const successCount = commandResults.filter((result) => result.status === "success").length;
+    const failedCount = commandResults.length - successCount;
+    const resultStatus = failedCount === 0 ? "success" : successCount > 0 ? "partial_success" : "failed";
+    const eventStatus: DexNestEventStatus = resultStatus === "failed" ? "failed" : "success";
+    const message = target.type === "group"
+      ? `${action.title} completed for ${successCount}/${commandResults.length} ${alias} device(s).`
+      : failedCount ? `${action.title} failed for ${alias}.` : `${action.title} completed for ${alias}.`;
+
+    logExternalDeviceEvent(action.id, eventStatus, source, message, {
+      actionType,
+      targetType: target.type,
+      targetAlias: alias,
+      groupId: target.type === "group" ? target.group.id : null,
+      deviceCount: target.devices.length,
+      successCount,
+      failedCount,
+      brightness: action.id === "external.govee.set_brightness" ? brightnessValue(params.brightness) : undefined,
+      kelvin: action.id === "external.govee.set_color_temperature" ? kelvinValue(params.kelvin) : undefined,
+      colorProvided: action.id === "external.govee.set_color" ? Boolean(params.color) : undefined
+    }, startedAt, failedCount && !successCount ? commandResults.find((result) => result.error)?.error : null);
+
+    return {
+      ok: successCount > 0,
+      status: resultStatus,
+      actionId: action.id,
+      message,
+      provider: "govee",
+      targetType: target.type,
+      targetAlias: alias,
+      deviceCount: target.devices.length,
+      results: commandResults,
+      externalDevicesState: externalDevicesState()
+    };
   } catch (error) {
     const failure = externalDeviceFailure(error, params);
     const message = failure.message;
@@ -12167,8 +13830,100 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
       "voice.route_command": "voice_intent_detected",
       "voice.confirm_command": "voice_command_confirmed",
       "voice.cancel_command": "voice_command_cancelled",
-      "voice.start_dictation_placeholder": "voice_dictation_started"
+      "voice.start_dictation_placeholder": "voice_dictation_started",
+      "voice.tts_response": "voice_tts_response",
+      "voice.ambient.update_settings": "ambient_voice_settings_updated",
+      "voice.ambient.start_listening": "ambient_voice_listening_started",
+      "voice.ambient.stop_listening": "ambient_voice_listening_stopped",
+      "voice.ambient.test_microphone": "ambient_voice_microphone_tested",
+      "voice.ambient.test_command": "ambient_voice_command_tested",
+      "voice.ambient.toggle": "ambient_voice_toggled",
+      "voice.workflow.update_settings": "voice_workflow_settings_updated",
+      "voice.workflow.start": "voice_workflow_started",
+      "voice.workflow.stop": "voice_workflow_stopped",
+      "voice.workflow.capture_saved": "voice_capture_saved",
+      "voice.workflow.finder_candidate": "voice_finder_candidate",
+      "voice.workflow.finder_lookup": "voice_finder_lookup",
+      "voice.workflow.calendar_candidate": "voice_calendar_candidate",
+      "voice.workflow.calendar_confirmed": "voice_calendar_confirmed",
+      "voice.workflow.calendar_cancelled": "voice_calendar_cancelled",
+      "voice.workflow.calendar_lookup": "voice_calendar_lookup",
+      "speech.update_settings": "speech_settings_updated",
+      "speech.check_model": "speech_model_checked",
+      "speech.install_model": "speech_model_installed",
+      "speech.open_model_folder": "speech_model_folder_opened",
+      "speech.transcribe": "speech_transcription_requested"
     };
+    if (action.id === "speech.update_settings") {
+      const saved = saveSpeechSettings(input as Partial<SpeechSettings>);
+      return { ok: true, actionId, speechState: speechServiceState(), settings: saved };
+    }
+    if (action.id === "voice.workflow.update_settings") {
+      const saved = saveVoiceWorkflowSettings(input as Partial<VoiceWorkflowSettings>);
+      return { ok: true, actionId, settings: saved };
+    }
+    if (action.id === "speech.check_model" || action.id === "speech.install_model") {
+      const status = await checkSpeechModel(action.id === "speech.install_model");
+      localDb.appendActionEvent({
+        module: "DexNest Voice",
+        actionId,
+        eventType: eventTypeByAction[actionId],
+        status: status.ok ? "success" : "failed",
+        source,
+        summary: status.ok ? "Checked DexNest speech model." : "DexNest speech model check failed.",
+        metadataJson: {
+          engine: status.engine,
+          model: status.model,
+          deviceDetected: status.deviceDetected,
+          installed: status.installed,
+          fasterWhisperAvailable: status.fasterWhisperAvailable
+        },
+        errorMessage: status.ok ? null : status.message,
+        durationMs: Date.now() - startedAt
+      });
+      return { ok: status.ok, actionId, modelStatus: status, speechState: speechServiceState(status), error: status.ok ? undefined : status.message };
+    }
+    if (action.id === "speech.open_model_folder") {
+      ensureSpeechRoot();
+      void shell.openPath(speechModelsRoot);
+      localDb.appendActionEvent({
+        module: "DexNest Voice",
+        actionId,
+        eventType: eventTypeByAction[actionId],
+        status: "success",
+        source,
+        summary: "Opened DexNest speech model folder.",
+        metadataJson: { modelRoot: speechModelsRoot },
+        durationMs: Date.now() - startedAt
+      });
+      return { ok: true, actionId, path: speechModelsRoot };
+    }
+    if (action.id === "speech.transcribe") {
+      localDb.appendActionEvent({
+        module: "DexNest Voice",
+        actionId,
+        eventType: eventTypeByAction[actionId],
+        status: "skipped",
+        source,
+        summary: "Speech transcription requires microphone audio through the DexNest desktop bridge.",
+        metadataJson: { sourceModule: typeof input.sourceModule === "string" ? input.sourceModule : null },
+        durationMs: Date.now() - startedAt
+      });
+      return { ok: false, actionId, status: "requires_audio", error: "Use a DexNest mic button to capture local audio first." };
+    }
+    if (action.id === "voice.ambient.update_settings" || action.id === "voice.ambient.toggle") {
+      const saved = action.id === "voice.ambient.toggle"
+        ? saveAmbientVoiceSettings({ ambientVoiceEnabled: !loadAmbientVoiceSettings().ambientVoiceEnabled }, source)
+        : saveAmbientVoiceSettings(input as Partial<AmbientVoiceSettings>, source);
+      return { ok: true, actionId, ambientVoiceState: ambientVoiceState(), message: `Ambient Voice ${saved.ambientVoiceEnabled ? "enabled" : "disabled"}.` };
+    }
+    if (action.id === "voice.ambient.start_listening") {
+      requestAmbientListening(source === "module_ui" ? "ambient_voice" : source);
+      return { ok: true, actionId, ambientVoiceState: ambientVoiceState(), message: "Ambient Voice listening requested." };
+    }
+    if (action.id === "voice.ambient.stop_listening") {
+      updateAmbientVoiceRuntime({ currentState: "idle", lastActionResult: "Listening stopped.", lastSource: source }, source);
+    }
     const safeVoiceMetadata = {
       intent: typeof input.intent === "string" ? input.intent : null,
       targetModule: typeof input.targetModule === "string" ? input.targetModule : null,
@@ -12176,13 +13931,33 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
       confidence: typeof input.confidence === "string" ? input.confidence : null,
       sensitivity: typeof input.sensitivity === "string" ? input.sensitivity : null,
       status: typeof input.status === "string" ? input.status : null,
+      currentState: typeof input.currentState === "string" ? input.currentState : null,
+      ttsSpoken: typeof input.ttsSpoken === "boolean" ? input.ttsSpoken : null,
+      blockedReason: typeof input.blockedReason === "string" ? input.blockedReason : null,
+      workflowMode: typeof input.workflowMode === "string" ? input.workflowMode : null,
+      chunksCount: typeof input.chunksCount === "number" ? input.chunksCount : null,
+      missingFieldCount: typeof input.missingFieldCount === "number" ? input.missingFieldCount : null,
+      eventType: typeof input.eventType === "string" ? input.eventType : null,
+      parsedDate: typeof input.parsedDate === "boolean" ? input.parsedDate : null,
+      parsedTime: typeof input.parsedTime === "boolean" ? input.parsedTime : null,
+      durationMs: typeof input.durationMs === "number" ? input.durationMs : null,
+      sensitivityCategory: typeof input.sensitivityCategory === "string" ? input.sensitivityCategory : null,
+      source: typeof input.source === "string" ? input.source : source,
       speechRecognitionAvailable: typeof input.speechRecognitionAvailable === "boolean" ? input.speechRecognitionAvailable : null
     };
+    const requestedStatus = typeof input.status === "string" ? input.status : "success";
+    const auditStatus: DexNestEventStatus = requestedStatus === "failed"
+      ? "failed"
+      : requestedStatus === "cancelled"
+        ? "cancelled"
+        : requestedStatus === "skipped" || requestedStatus === "paused"
+          ? "skipped"
+          : "success";
     localDb.appendActionEvent({
       module: "DexNest Voice",
       actionId,
       eventType: eventTypeByAction[actionId] ?? "voice_action",
-      status: "success",
+      status: auditStatus,
       source,
       summary: actionId === "voice.route_command"
         ? "Routed DexNest voice command intent."
@@ -12829,8 +14604,17 @@ function registerIpcHandlers(): void {
     heatmapEventsPath,
     heatmapSettingsPath,
     heatmapGoalsPath,
+    speechSettingsPath,
+    voiceWorkflowSettingsPath,
+    voiceWorkflowSettings: loadVoiceWorkflowSettings(),
+    speechModelsRoot,
+    speechDebugAudioRoot,
+    speechState: speechServiceState(),
+    ambientVoiceSettingsPath,
+    ambientVoiceState: ambientVoiceState(),
     externalDevicesSettingsPath,
     externalDevicesCachePath,
+    externalDevicesGroupsPath,
     externalDevicesState: externalDevicesState(),
     performanceModeSettingsPath,
     appLifecycleSettingsPath,
@@ -12931,6 +14715,118 @@ function registerIpcHandlers(): void {
   ipcMain.handle("dexnest:save-assistant-settings", (_event, input: Partial<AssistantSettings>) => updateAssistantSettings(input));
   ipcMain.handle("dexnest:test-ollama", (_event, input: { ollamaUrl?: string; ollamaModel?: string }) => testOllamaConnection(input ?? {}));
   ipcMain.handle("dexnest:assistant-llm-intent", (_event, input: { query?: unknown }) => runOllamaIntent(input ?? {}));
+  ipcMain.handle("dexnest:get-ambient-voice-state", () => ambientVoiceState());
+  ipcMain.handle("dexnest:save-ambient-voice-settings", (_event, input: Partial<AmbientVoiceSettings>) => ({
+    settings: saveAmbientVoiceSettings(input ?? {}, "module_ui"),
+    state: ambientVoiceState()
+  }));
+  ipcMain.handle("dexnest:update-ambient-voice-state", (_event, input: Partial<Pick<AmbientVoiceState, "currentState" | "lastRecognizedCommand" | "lastActionResult" | "lastSource">>) =>
+    updateAmbientVoiceRuntime(input ?? {}, (input?.lastSource as DexNestActionTrigger | undefined) ?? "module_ui")
+  );
+  ipcMain.handle("dexnest:start-ambient-listening", (_event, input: { source?: DexNestActionTrigger } = {}) => {
+    requestAmbientListening(input.source ?? "module_ui");
+    return ambientVoiceState();
+  });
+  ipcMain.handle("dexnest:get-speech-state", () => speechServiceState());
+  ipcMain.handle("dexnest:get-voice-workflow-settings", () => loadVoiceWorkflowSettings());
+  ipcMain.handle("dexnest:save-voice-workflow-settings", (_event, input: Partial<VoiceWorkflowSettings>) => saveVoiceWorkflowSettings(input ?? {}));
+  ipcMain.handle("dexnest:save-speech-settings", (_event, input: Partial<SpeechSettings>) => ({
+    settings: saveSpeechSettings(input ?? {}),
+    speechState: speechServiceState()
+  }));
+  ipcMain.handle("dexnest:check-speech-model", async () => {
+    const startedAt = Date.now();
+    const status = await checkSpeechModel(false);
+    localDb.appendActionEvent({
+      module: "DexNest Voice",
+      actionId: "speech.check_model",
+      eventType: "speech_model_checked",
+      status: status.ok ? "success" : "failed",
+      source: "module_ui",
+      summary: status.ok ? "Checked DexNest speech model." : "DexNest speech model check failed.",
+      metadataJson: {
+        engine: status.engine,
+        model: status.model,
+        deviceDetected: status.deviceDetected,
+        installed: status.installed,
+        fasterWhisperAvailable: status.fasterWhisperAvailable
+      },
+      errorMessage: status.ok ? null : status.message,
+      durationMs: Date.now() - startedAt
+    });
+    return { ok: status.ok, status, speechState: speechServiceState(status) };
+  });
+  ipcMain.handle("dexnest:install-speech-model", async () => {
+    const startedAt = Date.now();
+    const status = await checkSpeechModel(true);
+    localDb.appendActionEvent({
+      module: "DexNest Voice",
+      actionId: "speech.install_model",
+      eventType: "speech_model_installed",
+      status: status.ok ? "success" : "failed",
+      source: "module_ui",
+      summary: status.ok ? "Installed or verified DexNest speech model." : "DexNest speech model install failed.",
+      metadataJson: {
+        engine: status.engine,
+        model: status.model,
+        deviceDetected: status.deviceDetected,
+        installed: status.installed,
+        fasterWhisperAvailable: status.fasterWhisperAvailable
+      },
+      errorMessage: status.ok ? null : status.message,
+      durationMs: Date.now() - startedAt
+    });
+    return { ok: status.ok, status, speechState: speechServiceState(status) };
+  });
+  ipcMain.handle("dexnest:open-speech-model-folder", () => {
+    ensureSpeechRoot();
+    void shell.openPath(speechModelsRoot);
+    localDb.appendActionEvent({
+      module: "DexNest Voice",
+      actionId: "speech.open_model_folder",
+      eventType: "speech_model_folder_opened",
+      status: "success",
+      source: "module_ui",
+      summary: "Opened DexNest speech model folder.",
+      metadataJson: { modelRoot: speechModelsRoot }
+    });
+    return { ok: true, path: speechModelsRoot };
+  });
+  ipcMain.handle("dexnest:warm-speech-engine", async () => {
+    const warmResult = await warmSpeechEngine();
+    localDb.appendActionEvent({
+      module: "DexNest Voice",
+      actionId: "speech.warm_engine",
+      eventType: warmResult.ok ? "speech_engine_warmed" : "speech_engine_warm_failed",
+      status: warmResult.ok ? "success" : "failed",
+      source: "module_ui",
+      summary: warmResult.ok ? "Warmed the faster-whisper speech engine." : "Failed to warm the faster-whisper speech engine.",
+      metadataJson: {
+        engineState: warmResult.engineState,
+        model: warmResult.diagnostics.model,
+        device: warmResult.diagnostics.device,
+        computeType: warmResult.diagnostics.computeType,
+        loadLatencyMs: warmResult.diagnostics.loadLatencyMs
+      },
+      errorMessage: warmResult.ok ? null : (warmResult.error ?? "Warm failed.")
+    });
+    return { ...warmResult, speechState: speechServiceState() };
+  });
+  ipcMain.handle("dexnest:transcribe-speech", (_event, input: {
+    audioBytes?: ArrayBuffer | Uint8Array | number[];
+    mimeType?: string;
+    source?: DexNestActionTrigger;
+    sourceModule?: string;
+    language?: string;
+    manualOverride?: boolean;
+  }) => transcribeSpeechAudio({
+    audioBytes: input?.audioBytes,
+    mimeType: input?.mimeType,
+    source: input?.source ?? "module_ui",
+    sourceModule: input?.sourceModule,
+    language: input?.language,
+    manualOverride: input?.manualOverride
+  }));
 
   ipcMain.handle("dexnest:get-assistant-security-state", () => assistantSecurityState());
   ipcMain.handle("dexnest:save-assistant-security-settings", (_event, input: Partial<AssistantSecuritySettings>) => {
@@ -13144,6 +15040,7 @@ app.whenReady().then(() => {
   ensureFinanceRoot();
   ensureCaptureRoot();
   ensureSearchRoot();
+  ensureSpeechRoot();
   ensureBackupRoot();
   registerIpcHandlers();
   syncAppLifecycleLoginItemStatus();
@@ -13153,6 +15050,7 @@ app.whenReady().then(() => {
   startHeatmapTimer();
   startClipboardListener();
   registerClipboardHotkey();
+  registerAmbientVoiceShortcut();
   scheduleActiveMultiCopyAutoClear();
   createWindow();
     registerCommandShortcut();
@@ -13177,9 +15075,11 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   isQuittingDexNest = true;
+  stopSpeechWorker();
   stopHeatmapTimer();
   stopClipboardListener();
   unregisterClipboardHotkey();
+  unregisterAmbientVoiceShortcut();
   unregisterCommandShortcut();
   unregisterKeyboardShortcuts();
   stopArmedMultiCopyPasteDetection();
