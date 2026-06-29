@@ -13,7 +13,7 @@ import AdmZip from "adm-zip";
 import { startSlotHook, stopSlotHook, isSlotHookRunning } from "./clipboardSlotHook.js";
 import { PDFDocument } from "pdf-lib";
 import { Jimp } from "jimp";
-import { createActionRegistry, seededActions } from "@dexnest/action-registry";
+import { createActionRegistry, createStreamDeckActionCatalog, seededActions, streamDeckCatalogItems } from "@dexnest/action-registry";
 import { createLocalDb } from "@dexnest/local-db";
 import type { MessageBoxOptions, MessageBoxSyncOptions, OpenDialogOptions, OpenDialogSyncOptions } from "electron";
 import type { DexNestActionDefinition, DexNestActionTrigger, DexNestEventStatus } from "@dexnest/shared-types";
@@ -70,6 +70,12 @@ const searchIndexPath = join(searchIndexRoot, "search-index.json");
 const savedSearchesPath = join(settingsRoot, "saved-searches.json");
 const journalEntriesPath = join(settingsRoot, "journal-entries.json");
 const calendarEventsPath = join(settingsRoot, "calendar-events.json");
+const timetablePath = join(settingsRoot, "timetable.json");
+const utilitiesPath = join(settingsRoot, "utilities.json");
+const weatherSettingsPath = join(settingsRoot, "weather-settings.json");
+const weatherCachePath = join(settingsRoot, "weather-cache.json");
+const newsSettingsPath = join(settingsRoot, "news-settings.json");
+const newsCachePath = join(settingsRoot, "news-cache.json");
 const nudgesPath = join(settingsRoot, "nudges.json");
 const nudgeSettingsPath = join(settingsRoot, "nudge-settings.json");
 const finderItemsPath = join(settingsRoot, "finder-items.json");
@@ -133,6 +139,10 @@ let secureVaultProtectedClipboardValue: string | null = null;
 let clipboardListenerTimer: ReturnType<typeof setInterval> | null = null;
 let clipboardMultiCopyTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
 let clipboardPasteFallbackTimer: ReturnType<typeof setInterval> | null = null;
+let weatherRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let weatherRefreshInFlight = false;
+let newsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+let newsRefreshInFlight = false;
 let lastClipboardListenerText = "";
 let clipboardHotkeyRegistered = false;
 let registeredClipboardHotkey = "";
@@ -982,6 +992,261 @@ interface CalendarEventInput {
   recurrence?: string | null;
   reminderLevel?: "soft" | "normal" | "urgent";
   notes?: string | null;
+}
+
+type TimetableDay = "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
+type TimetableBlockStatus = "planned" | "done" | "skipped" | "moved";
+
+interface TimetableBlock {
+  id: string;
+  day: TimetableDay;
+  startTime: string;
+  endTime: string;
+  title: string;
+  category: string;
+  accent: string;
+  notes: string;
+  status: TimetableBlockStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface TimetableTemplate {
+  id: string;
+  name: string;
+  blocks: TimetableBlock[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface TimetableFile {
+  activeTemplateId: string;
+  templates: TimetableTemplate[];
+  updatedAt: string;
+}
+
+interface TimetableBlockInput {
+  id?: string;
+  blockId?: string;
+  day?: TimetableDay;
+  startTime?: string;
+  endTime?: string;
+  title?: string;
+  category?: string;
+  accent?: string;
+  notes?: string;
+  status?: TimetableBlockStatus;
+  fromDay?: TimetableDay;
+  toDay?: TimetableDay;
+  templateId?: string;
+}
+
+type UtilityResultType = "calculation" | "conversion" | "date";
+type UtilityTimerStatus = "idle" | "running" | "paused" | "done";
+type UtilityStopwatchStatus = "idle" | "running" | "paused";
+type UtilityConversionCategory = "length" | "weight" | "temperature" | "volume" | "time" | "data";
+
+interface UtilityRecentResult {
+  id: string;
+  type: UtilityResultType;
+  input: string;
+  result: string;
+  createdAt: string;
+}
+
+interface UtilityConversionPreset {
+  id: string;
+  category: UtilityConversionCategory;
+  fromUnit: string;
+  toUnit: string;
+  createdAt: string;
+}
+
+interface UtilityTimer {
+  id: string;
+  label: string;
+  durationSeconds: number;
+  remainingSeconds: number;
+  status: UtilityTimerStatus;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface UtilityStopwatch {
+  status: UtilityStopwatchStatus;
+  elapsedMs: number;
+  startedAt?: string | null;
+  laps: Array<{ id: string; elapsedMs: number; createdAt: string }>;
+  history: Array<{ id: string; elapsedMs: number; createdAt: string }>;
+  updatedAt: string;
+}
+
+interface UtilityWorldClock {
+  id: string;
+  label: string;
+  timeZone: string;
+  createdAt: string;
+}
+
+interface UtilitiesSettings {
+  defaultTimerMinutes: number;
+  speakTimerDone: boolean;
+}
+
+interface UtilitiesFile {
+  recentResults: UtilityRecentResult[];
+  conversionPresets: UtilityConversionPreset[];
+  timers: UtilityTimer[];
+  stopwatch: UtilityStopwatch;
+  worldClocks: UtilityWorldClock[];
+  settings: UtilitiesSettings;
+  updatedAt: string;
+}
+
+interface UtilitiesInput {
+  expression?: string;
+  value?: number | string;
+  category?: UtilityConversionCategory;
+  fromUnit?: string;
+  toUnit?: string;
+  mode?: "between" | "add" | "subtract" | "countdown" | "time_now";
+  startDate?: string;
+  endDate?: string;
+  baseDate?: string;
+  days?: number | string;
+  targetDate?: string;
+  timerId?: string;
+  durationSeconds?: number | string;
+  durationMinutes?: number | string;
+  label?: string;
+  city?: string;
+  timeZone?: string;
+}
+
+type WeatherUnits = "metric" | "imperial";
+type WeatherRefreshMode = "manual" | "every_30_min" | "every_1_hour" | "every_2_hours";
+type WeatherProvider = "open_meteo";
+type WeatherCacheStatus = "empty" | "fresh" | "stale" | "offline" | "error";
+
+interface WeatherSettings {
+  weatherEnabled: boolean;
+  locationName: string;
+  latitude: number | null;
+  longitude: number | null;
+  units: WeatherUnits;
+  showWeatherOnCommand: boolean;
+  refreshMode: WeatherRefreshMode;
+  refreshOnCommandOpen: boolean;
+  provider: WeatherProvider;
+  lastRefreshAt: string | null;
+  lastAutoRefreshAt: string | null;
+}
+
+interface WeatherCache {
+  provider: WeatherProvider;
+  locationName: string;
+  latitude: number | null;
+  longitude: number | null;
+  units: WeatherUnits;
+  temperature: number | null;
+  feelsLike: number | null;
+  condition: string;
+  weatherCode: number | null;
+  high: number | null;
+  low: number | null;
+  precipitationChance: number | null;
+  windSpeed: number | null;
+  fetchedAt: string | null;
+  sourceStatus: "online" | "cached" | "offline" | "error";
+  error: string | null;
+}
+
+interface WeatherState {
+  settings: WeatherSettings;
+  cache: WeatherCache;
+  settingsPath: string;
+  cachePath: string;
+  status: WeatherCacheStatus;
+  cacheTtlMinutes: number | null;
+  nextRefreshAt: string | null;
+  autoRefreshActive: boolean;
+}
+
+interface WeatherInput extends Partial<WeatherSettings> {
+  enabled?: boolean;
+  refreshReason?: "manual" | "auto" | "command_open" | "voice";
+}
+
+type NewsCategory = "Top" | "Canada" | "India" | "World" | "Tech" | "AI" | "Finance" | "Sports" | "Health" | "Science" | "Business";
+type NewsRefreshMode = "manual" | "every_1_hour" | "every_3_hours" | "every_6_hours" | "daily_morning";
+type NewsCacheStatus = "empty" | "fresh" | "stale" | "offline" | "error";
+
+interface NewsSource {
+  id: string;
+  category: NewsCategory;
+  name: string;
+  url: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+  lastTestAt?: string | null;
+  lastTestStatus?: "success" | "failed" | null;
+  lastError?: string | null;
+}
+
+interface NewsSettings {
+  newsEnabled: boolean;
+  selectedCategories: NewsCategory[];
+  refreshMode: NewsRefreshMode;
+  maxItemsPerCategory: number;
+  readMorningBriefingCategories: NewsCategory[];
+  showNewsOnCommand: boolean;
+  provider: "rss";
+  sources: NewsSource[];
+  lastRefreshAt: string | null;
+  lastAutoRefreshAt: string | null;
+}
+
+interface NewsHeadline {
+  id: string;
+  category: NewsCategory;
+  title: string;
+  source: string;
+  sourceId: string;
+  link: string;
+  summary: string;
+  publishedAt: string | null;
+  fetchedAt: string;
+}
+
+interface NewsCache {
+  provider: "rss";
+  headlines: NewsHeadline[];
+  fetchedAt: string | null;
+  sourceStatus: "online" | "cached" | "offline" | "error";
+  error: string | null;
+  categoryCounts: Record<string, number>;
+}
+
+interface NewsState {
+  settings: NewsSettings;
+  cache: NewsCache;
+  settingsPath: string;
+  cachePath: string;
+  status: NewsCacheStatus;
+  nextRefreshAt: string | null;
+  autoRefreshActive: boolean;
+}
+
+interface NewsInput extends Partial<NewsSettings> {
+  enabled?: boolean;
+  refreshReason?: "manual" | "auto" | "command_open" | "voice";
+  category?: NewsCategory | string;
+  headlineId?: string;
+  source?: Partial<NewsSource>;
+  sourceId?: string;
 }
 
 type NudgePriority = "soft" | "normal" | "urgent";
@@ -1926,6 +2191,10 @@ function dataManagementCatalog(): DataManagementCategory[] {
     { id: "finder", label: "Finder", description: "Saved Finder items.", sensitive: false, recordFiles: [finderItemsPath], fileRoots: [] },
     { id: "dev", label: "Dev projects/history/profiles", description: "Dev projects, command run history, and pinned actions.", sensitive: false, recordFiles: [projectsConfigPath, commandResultsPath, pinnedActionsPath], fileRoots: [] },
     { id: "deck", label: "Deck routines/export status", description: "Deck routines and export status records.", sensitive: false, recordFiles: [routinesPath], fileRoots: [] },
+    { id: "timetable", label: "Timetable", description: "Timetable blocks, weekly status, and templates. Defaults are recreated after deletion.", sensitive: false, recordFiles: [timetablePath], fileRoots: [] },
+    { id: "utilities", label: "Utilities history/timers/world clocks", description: "Utilities recent results, timers, stopwatch, and world clocks. Default Utilities settings are recreated after deletion.", sensitive: false, recordFiles: [utilitiesPath], fileRoots: [] },
+    { id: "weather", label: "Weather cache/settings", description: "Cached weather and Weather settings. Weather is reset to its disabled default after deletion.", sensitive: false, recordFiles: [weatherCachePath, weatherSettingsPath], fileRoots: [] },
+    { id: "news", label: "News cache/sources/settings", description: "Cached headlines, RSS sources, and News settings. News is reset to its disabled default after deletion.", sensitive: false, recordFiles: [newsCachePath, newsSettingsPath], fileRoots: [] },
     { id: "heatmap", label: "Heatmap", description: "Heatmap activity events and goals. Keeps Heatmap settings.", sensitive: false, recordFiles: [heatmapEventsPath, heatmapGoalsPath], fileRoots: [] },
     { id: "search", label: "Search index", description: "Local search index, index status, and saved searches.", sensitive: false, recordFiles: [savedSearchesPath, searchIndexStatusPath], fileRoots: [searchIndexRoot] },
     { id: "external", label: "External Devices cached devices/groups", description: "Cached external devices and device groups. Keeps External Devices settings and credentials.", sensitive: false, recordFiles: [externalDevicesCachePath, externalDevicesGroupsPath], fileRoots: [] },
@@ -2116,6 +2385,17 @@ function executeDataDeletion(categoryIds: string[], source: DexNestActionTrigger
     } catch (error) {
       results.push({ id: category.id, label: category.label, recordsCleared: 0, filesDeleted: 0, ok: false, error: error instanceof Error ? error.message : "Deletion failed." });
     }
+  }
+
+  // Self-heal background timers for modules whose settings were just reset so the
+  // app stays consistent immediately (these reschedulers stop themselves when the
+  // reloaded settings are at their disabled defaults).
+  const clearedIds = new Set(results.filter((result) => result.ok).map((result) => result.id));
+  if (clearedIds.has("weather")) {
+    scheduleWeatherAutoRefresh();
+  }
+  if (clearedIds.has("news")) {
+    scheduleNewsAutoRefresh();
   }
 
   const failed = results.filter((result) => !result.ok);
@@ -5677,6 +5957,786 @@ function loadCalendarEvents(): CalendarEvent[] {
 
 function saveCalendarEvents(items: CalendarEvent[]): CalendarEvent[] {
   return writeJsonFile(calendarEventsPath, items);
+}
+
+const timetableDays: TimetableDay[] = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+
+function defaultTimetableFile(): TimetableFile {
+  const now = new Date().toISOString();
+  return {
+    activeTemplateId: "default-week",
+    templates: [{
+      id: "default-week",
+      name: "Default Week",
+      blocks: [],
+      createdAt: now,
+      updatedAt: now
+    }],
+    updatedAt: now
+  };
+}
+
+function loadTimetableFile(): TimetableFile {
+  const fallback = defaultTimetableFile();
+  const file = readJsonFile<Partial<TimetableFile>>(timetablePath, fallback);
+  const templates = Array.isArray(file.templates) && file.templates.length > 0 ? file.templates as TimetableTemplate[] : fallback.templates;
+  const activeTemplateId = typeof file.activeTemplateId === "string" && templates.some((template) => template.id === file.activeTemplateId)
+    ? file.activeTemplateId
+    : templates[0].id;
+  return {
+    activeTemplateId,
+    templates: templates.map((template) => ({
+      ...template,
+      blocks: Array.isArray(template.blocks) ? template.blocks.filter((block) => block.id && timetableDays.includes(block.day)).map((block) => ({ ...block, status: block.status ?? "planned" })) : []
+    })),
+    updatedAt: typeof file.updatedAt === "string" ? file.updatedAt : fallback.updatedAt
+  };
+}
+
+function saveTimetableFile(file: TimetableFile): TimetableFile {
+  return writeJsonFile(timetablePath, { ...file, updatedAt: new Date().toISOString() });
+}
+
+function defaultUtilitiesFile(): UtilitiesFile {
+  const now = new Date().toISOString();
+  return {
+    recentResults: [],
+    conversionPresets: [],
+    timers: [],
+    stopwatch: { status: "idle", elapsedMs: 0, startedAt: null, laps: [], history: [], updatedAt: now },
+    worldClocks: [
+      { id: "local", label: "Local", timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, createdAt: now },
+      { id: "utc", label: "UTC", timeZone: "UTC", createdAt: now }
+    ],
+    settings: { defaultTimerMinutes: 25, speakTimerDone: true },
+    updatedAt: now
+  };
+}
+
+function loadUtilitiesFile(): UtilitiesFile {
+  const fallback = defaultUtilitiesFile();
+  const stored = readJsonFile<Partial<UtilitiesFile>>(utilitiesPath, fallback);
+  return {
+    recentResults: Array.isArray(stored.recentResults) ? stored.recentResults.slice(0, 50) as UtilityRecentResult[] : [],
+    conversionPresets: Array.isArray(stored.conversionPresets) ? stored.conversionPresets as UtilityConversionPreset[] : [],
+    timers: Array.isArray(stored.timers) ? stored.timers.map(normalizeUtilityTimer) : [],
+    stopwatch: normalizeUtilityStopwatch(stored.stopwatch),
+    worldClocks: Array.isArray(stored.worldClocks) && stored.worldClocks.length > 0 ? stored.worldClocks.filter((clock): clock is UtilityWorldClock => Boolean(clock?.id && clock.label && clock.timeZone)) : fallback.worldClocks,
+    settings: { ...fallback.settings, ...(stored.settings ?? {}) },
+    updatedAt: typeof stored.updatedAt === "string" ? stored.updatedAt : fallback.updatedAt
+  };
+}
+
+function saveUtilitiesFile(file: UtilitiesFile): UtilitiesFile {
+  return writeJsonFile(utilitiesPath, { ...file, updatedAt: new Date().toISOString() });
+}
+
+function normalizeUtilityTimer(timer: Partial<UtilityTimer>): UtilityTimer {
+  const now = new Date().toISOString();
+  const durationSeconds = Math.max(1, Math.round(Number(timer.durationSeconds ?? 1500)));
+  const remainingSeconds = Math.max(0, Math.round(Number(timer.remainingSeconds ?? durationSeconds)));
+  return {
+    id: timer.id ?? createId("utility-timer"),
+    label: timer.label?.trim() || `${Math.round(durationSeconds / 60)} minute timer`,
+    durationSeconds,
+    remainingSeconds,
+    status: timer.status === "running" || timer.status === "paused" || timer.status === "done" ? timer.status : "idle",
+    startedAt: timer.startedAt ?? null,
+    completedAt: timer.completedAt ?? null,
+    createdAt: timer.createdAt ?? now,
+    updatedAt: timer.updatedAt ?? now
+  };
+}
+
+function normalizeUtilityStopwatch(stopwatch?: Partial<UtilityStopwatch>): UtilityStopwatch {
+  const now = new Date().toISOString();
+  return {
+    status: stopwatch?.status === "running" || stopwatch?.status === "paused" ? stopwatch.status : "idle",
+    elapsedMs: Math.max(0, Math.round(Number(stopwatch?.elapsedMs ?? 0))),
+    startedAt: stopwatch?.startedAt ?? null,
+    laps: Array.isArray(stopwatch?.laps) ? stopwatch.laps.slice(0, 30) : [],
+    history: Array.isArray(stopwatch?.history) ? stopwatch.history.slice(0, 30) : [],
+    updatedAt: stopwatch?.updatedAt ?? now
+  };
+}
+
+function computedUtilityTimer(timer: UtilityTimer, nowMs = Date.now()): UtilityTimer {
+  if (timer.status !== "running" || !timer.startedAt) {
+    return timer;
+  }
+  const elapsed = Math.max(0, Math.floor((nowMs - new Date(timer.startedAt).getTime()) / 1000));
+  const remainingSeconds = Math.max(0, timer.remainingSeconds - elapsed);
+  return {
+    ...timer,
+    remainingSeconds,
+    status: remainingSeconds === 0 ? "done" : "running",
+    completedAt: remainingSeconds === 0 ? new Date(nowMs).toISOString() : timer.completedAt,
+    startedAt: remainingSeconds === 0 ? null : timer.startedAt
+  };
+}
+
+function computedUtilityStopwatch(stopwatch: UtilityStopwatch, nowMs = Date.now()): UtilityStopwatch {
+  if (stopwatch.status !== "running" || !stopwatch.startedAt) {
+    return stopwatch;
+  }
+  return { ...stopwatch, elapsedMs: stopwatch.elapsedMs + Math.max(0, nowMs - new Date(stopwatch.startedAt).getTime()), startedAt: new Date(nowMs).toISOString() };
+}
+
+function utilitiesState(): UtilitiesFile & { activeTimer: UtilityTimer | null; utilitiesPath: string } {
+  const file = loadUtilitiesFile();
+  const timers = file.timers.map((timer) => computedUtilityTimer(timer));
+  const stopwatch = computedUtilityStopwatch(file.stopwatch);
+  const next = { ...file, timers, stopwatch };
+  if (JSON.stringify({ timers: file.timers, stopwatch: file.stopwatch }) !== JSON.stringify({ timers, stopwatch })) {
+    saveUtilitiesFile(next);
+  }
+  return { ...next, activeTimer: timers.find((timer) => timer.status === "running" || timer.status === "paused" || timer.status === "done") ?? null, utilitiesPath };
+}
+
+function addUtilityRecent(file: UtilitiesFile, type: UtilityResultType, input: string, result: string): UtilitiesFile {
+  return {
+    ...file,
+    recentResults: [{ id: createId("utility-result"), type, input, result, createdAt: new Date().toISOString() }, ...file.recentResults].slice(0, 50)
+  };
+}
+
+function defaultWeatherSettings(): WeatherSettings {
+  return {
+    weatherEnabled: false,
+    locationName: "",
+    latitude: null,
+    longitude: null,
+    units: "metric",
+    showWeatherOnCommand: true,
+    refreshMode: "manual",
+    refreshOnCommandOpen: false,
+    provider: "open_meteo",
+    lastRefreshAt: null,
+    lastAutoRefreshAt: null
+  };
+}
+
+function defaultWeatherCache(): WeatherCache {
+  return {
+    provider: "open_meteo",
+    locationName: "",
+    latitude: null,
+    longitude: null,
+    units: "metric",
+    temperature: null,
+    feelsLike: null,
+    condition: "",
+    weatherCode: null,
+    high: null,
+    low: null,
+    precipitationChance: null,
+    windSpeed: null,
+    fetchedAt: null,
+    sourceStatus: "cached",
+    error: null
+  };
+}
+
+function weatherRefreshMinutes(mode: WeatherRefreshMode): number | null {
+  if (mode === "every_30_min") { return 30; }
+  if (mode === "every_1_hour") { return 60; }
+  if (mode === "every_2_hours") { return 120; }
+  return null;
+}
+
+function loadWeatherSettings(): WeatherSettings {
+  const saved = readJsonFile<Partial<WeatherSettings>>(weatherSettingsPath, defaultWeatherSettings());
+  const defaults = defaultWeatherSettings();
+  const mode = saved.refreshMode === "every_30_min" || saved.refreshMode === "every_1_hour" || saved.refreshMode === "every_2_hours" || saved.refreshMode === "manual" ? saved.refreshMode : defaults.refreshMode;
+  const units = saved.units === "imperial" ? "imperial" : "metric";
+  return {
+    ...defaults,
+    ...saved,
+    weatherEnabled: Boolean(saved.weatherEnabled),
+    showWeatherOnCommand: saved.showWeatherOnCommand !== false,
+    refreshMode: mode,
+    refreshOnCommandOpen: Boolean(saved.refreshOnCommandOpen),
+    units,
+    provider: "open_meteo",
+    latitude: Number.isFinite(Number(saved.latitude)) ? Number(saved.latitude) : null,
+    longitude: Number.isFinite(Number(saved.longitude)) ? Number(saved.longitude) : null,
+    locationName: String(saved.locationName ?? "").trim()
+  };
+}
+
+function saveWeatherSettings(input: Partial<WeatherSettings>): WeatherSettings {
+  const current = loadWeatherSettings();
+  const next = {
+    ...current,
+    ...input,
+    provider: "open_meteo" as const,
+    units: input.units === "imperial" ? "imperial" as const : input.units === "metric" ? "metric" as const : current.units,
+    refreshMode: input.refreshMode === "every_30_min" || input.refreshMode === "every_1_hour" || input.refreshMode === "every_2_hours" || input.refreshMode === "manual" ? input.refreshMode : current.refreshMode,
+    latitude: input.latitude === null ? null : Number.isFinite(Number(input.latitude)) ? Number(input.latitude) : current.latitude,
+    longitude: input.longitude === null ? null : Number.isFinite(Number(input.longitude)) ? Number(input.longitude) : current.longitude,
+    locationName: typeof input.locationName === "string" ? input.locationName.trim() : current.locationName
+  };
+  const saved = writeJsonFile(weatherSettingsPath, next);
+  scheduleWeatherAutoRefresh();
+  return saved;
+}
+
+function loadWeatherCache(): WeatherCache {
+  return { ...defaultWeatherCache(), ...readJsonFile<Partial<WeatherCache>>(weatherCachePath, defaultWeatherCache()) };
+}
+
+function saveWeatherCache(cache: WeatherCache): WeatherCache {
+  return writeJsonFile(weatherCachePath, cache);
+}
+
+function weatherCondition(code: number | null): string {
+  if (code === null) { return "Unknown"; }
+  if (code === 0) { return "Clear"; }
+  if ([1, 2, 3].includes(code)) { return "Partly cloudy"; }
+  if ([45, 48].includes(code)) { return "Fog"; }
+  if ([51, 53, 55, 56, 57].includes(code)) { return "Drizzle"; }
+  if ([61, 63, 65, 66, 67, 80, 81, 82].includes(code)) { return "Rain"; }
+  if ([71, 73, 75, 77, 85, 86].includes(code)) { return "Snow"; }
+  if ([95, 96, 99].includes(code)) { return "Thunderstorm"; }
+  return "Weather";
+}
+
+function getJsonUrl(url: string, timeoutMs = 9000): Promise<unknown> {
+  return new Promise((resolveJson, rejectJson) => {
+    const request = httpsGet(url, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => { body += String(chunk); });
+      response.on("end", () => {
+        const status = response.statusCode ?? 0;
+        if (status < 200 || status >= 300) {
+          rejectJson(new Error(`Weather provider returned HTTP ${status}.`));
+          return;
+        }
+        try {
+          resolveJson(JSON.parse(body));
+        } catch {
+          rejectJson(new Error("Weather provider returned invalid JSON."));
+        }
+      });
+    });
+    request.setTimeout(timeoutMs, () => {
+      request.destroy(new Error("Weather request timed out."));
+    });
+    request.on("error", rejectJson);
+  });
+}
+
+function weatherStateStatus(settings: WeatherSettings, cache: WeatherCache): WeatherCacheStatus {
+  if (!cache.fetchedAt) { return "empty"; }
+  if (cache.sourceStatus === "offline") { return "offline"; }
+  if (cache.sourceStatus === "error") { return "error"; }
+  const ttl = weatherRefreshMinutes(settings.refreshMode);
+  if (!ttl) { return "fresh"; }
+  return Date.now() - Date.parse(cache.fetchedAt) <= ttl * 60_000 ? "fresh" : "stale";
+}
+
+function nextWeatherRefreshAt(settings = loadWeatherSettings(), cache = loadWeatherCache()): string | null {
+  const minutes = weatherRefreshMinutes(settings.refreshMode);
+  if (!settings.weatherEnabled || !minutes || !cache.fetchedAt) { return null; }
+  return new Date(Date.parse(cache.fetchedAt) + minutes * 60_000).toISOString();
+}
+
+function weatherState(): WeatherState {
+  const settings = loadWeatherSettings();
+  const cache = loadWeatherCache();
+  return {
+    settings,
+    cache,
+    settingsPath: weatherSettingsPath,
+    cachePath: weatherCachePath,
+    status: weatherStateStatus(settings, cache),
+    cacheTtlMinutes: weatherRefreshMinutes(settings.refreshMode),
+    nextRefreshAt: nextWeatherRefreshAt(settings, cache),
+    autoRefreshActive: Boolean(weatherRefreshTimer)
+  };
+}
+
+function logWeatherEvent(actionId: string, status: DexNestEventStatus, source: DexNestActionTrigger | "system", summary: string, metadataJson: Record<string, unknown>, startedAt: number, errorMessage: string | null = null): void {
+  localDb.appendActionEvent({
+    module: "DexNest Weather",
+    actionId,
+    eventType: actionId.replace(/\./g, "_"),
+    status,
+    source,
+    summary,
+    metadataJson,
+    errorMessage,
+    durationMs: Date.now() - startedAt
+  });
+}
+
+async function refreshWeather(source: DexNestActionTrigger | "system", reason: "manual" | "auto" | "command_open" | "voice" = "manual") {
+  const startedAt = Date.now();
+  const settings = loadWeatherSettings();
+  const existingCache = loadWeatherCache();
+  if (!settings.weatherEnabled) {
+    logWeatherEvent("weather.refresh", "skipped", source, "Weather refresh skipped because Weather is disabled.", { provider: settings.provider, reason }, startedAt);
+    return { ok: false, actionId: "weather.refresh", status: "disabled", message: "Weather is disabled.", weatherState: weatherState() };
+  }
+  if (performanceModeState().enabled && reason === "auto") {
+    logWeatherEvent("weather.refresh", "skipped", source, "Weather auto-refresh paused by Performance Mode.", { provider: settings.provider, reason }, startedAt);
+    scheduleWeatherAutoRefresh();
+    return { ok: false, actionId: "weather.refresh", status: "paused", message: "Weather auto-refresh is paused by Performance Mode.", weatherState: weatherState() };
+  }
+  if (settings.latitude === null || settings.longitude === null || !Number.isFinite(settings.latitude) || !Number.isFinite(settings.longitude)) {
+    const message = "Set latitude and longitude in Weather settings first.";
+    logWeatherEvent("weather.refresh", "failed", source, message, { provider: settings.provider, reason }, startedAt, message);
+    return { ok: false, actionId: "weather.refresh", status: "missing_location", error: message, message, weatherState: weatherState() };
+  }
+  if (weatherRefreshInFlight) {
+    return { ok: false, actionId: "weather.refresh", status: "pending", message: "Weather refresh is already running.", weatherState: weatherState() };
+  }
+
+  weatherRefreshInFlight = true;
+  try {
+    const unitParam = settings.units === "imperial" ? "&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch" : "";
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${encodeURIComponent(String(settings.latitude))}&longitude=${encodeURIComponent(String(settings.longitude))}&current=temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&forecast_days=1${unitParam}`;
+    const data = await getJsonUrl(url) as {
+      current?: Record<string, number>;
+      daily?: Record<string, number[]>;
+    };
+    const code = Number.isFinite(Number(data.current?.weather_code)) ? Number(data.current?.weather_code) : null;
+    const cache = saveWeatherCache({
+      provider: "open_meteo",
+      locationName: settings.locationName || "Weather location",
+      latitude: settings.latitude,
+      longitude: settings.longitude,
+      units: settings.units,
+      temperature: Number.isFinite(Number(data.current?.temperature_2m)) ? Number(data.current?.temperature_2m) : null,
+      feelsLike: Number.isFinite(Number(data.current?.apparent_temperature)) ? Number(data.current?.apparent_temperature) : null,
+      condition: weatherCondition(code),
+      weatherCode: code,
+      high: Number.isFinite(Number(data.daily?.temperature_2m_max?.[0])) ? Number(data.daily?.temperature_2m_max?.[0]) : null,
+      low: Number.isFinite(Number(data.daily?.temperature_2m_min?.[0])) ? Number(data.daily?.temperature_2m_min?.[0]) : null,
+      precipitationChance: Number.isFinite(Number(data.daily?.precipitation_probability_max?.[0])) ? Number(data.daily?.precipitation_probability_max?.[0]) : null,
+      windSpeed: Number.isFinite(Number(data.current?.wind_speed_10m)) ? Number(data.current?.wind_speed_10m) : null,
+      fetchedAt: new Date().toISOString(),
+      sourceStatus: "online",
+      error: null
+    });
+    saveWeatherSettings(reason === "auto" ? { lastRefreshAt: cache.fetchedAt, lastAutoRefreshAt: cache.fetchedAt } : { lastRefreshAt: cache.fetchedAt });
+    logWeatherEvent("weather.refresh", "success", source, "Refreshed DexNest Weather.", { provider: settings.provider, reason, status: "online", units: settings.units }, startedAt);
+    return { ok: true, actionId: "weather.refresh", status: "success", message: weatherAnswerText(weatherState()), weatherState: weatherState() };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Weather refresh failed.";
+    saveWeatherCache({ ...existingCache, sourceStatus: existingCache.fetchedAt ? "offline" : "error", error: message });
+    logWeatherEvent("weather.refresh", "failed", source, "Weather refresh failed.", { provider: settings.provider, reason, status: existingCache.fetchedAt ? "offline_cache" : "error" }, startedAt, message);
+    return { ok: false, actionId: "weather.refresh", status: existingCache.fetchedAt ? "offline_cache" : "error", error: message, message: existingCache.fetchedAt ? "Showing cached weather." : "I could not fetch weather.", weatherState: weatherState() };
+  } finally {
+    weatherRefreshInFlight = false;
+    scheduleWeatherAutoRefresh();
+  }
+}
+
+function scheduleWeatherAutoRefresh(): void {
+  if (weatherRefreshTimer) {
+    clearTimeout(weatherRefreshTimer);
+    weatherRefreshTimer = null;
+  }
+  const settings = loadWeatherSettings();
+  const minutes = weatherRefreshMinutes(settings.refreshMode);
+  if (!settings.weatherEnabled || !minutes) {
+    return;
+  }
+  const cache = loadWeatherCache();
+  const nextAt = cache.fetchedAt ? Date.parse(cache.fetchedAt) + minutes * 60_000 : Date.now() + minutes * 60_000;
+  const delay = Math.max(60_000, nextAt - Date.now());
+  weatherRefreshTimer = setTimeout(() => {
+    weatherRefreshTimer = null;
+    if (!loadWeatherSettings().weatherEnabled || loadWeatherSettings().refreshMode === "manual") {
+      return;
+    }
+    if (performanceModeState().enabled) {
+      scheduleWeatherAutoRefresh();
+      return;
+    }
+    void refreshWeather("system", "auto");
+  }, delay);
+}
+
+function weatherAnswerText(state: WeatherState): string {
+  if (!state.settings.weatherEnabled) {
+    return "Weather is disabled.";
+  }
+  if (!state.cache.fetchedAt || state.cache.temperature === null) {
+    return state.cache.error ? "I could not fetch weather." : "No cached weather yet.";
+  }
+  const unit = state.cache.units === "imperial" ? "degrees" : "degrees";
+  const cached = state.cache.sourceStatus === "offline" || state.cache.sourceStatus === "error" ? " Showing cached weather." : "";
+  const feels = state.cache.feelsLike === null ? "" : `, feels like ${Math.round(state.cache.feelsLike)}.`;
+  const precip = state.cache.precipitationChance === null ? "" : ` Precipitation chance is ${Math.round(state.cache.precipitationChance)} percent.`;
+  return `It is ${Math.round(state.cache.temperature)} ${unit} in ${state.cache.locationName || "your weather location"}${feels}${precip}${cached}`;
+}
+
+async function runWeatherAction(action: DexNestActionDefinition, source: DexNestActionTrigger, payload: unknown = {}) {
+  const startedAt = Date.now();
+  const input = typeof payload === "object" && payload !== null ? payload as WeatherInput : {};
+  try {
+    if (action.id === "weather.refresh") {
+      return await refreshWeather(source, input.refreshReason ?? (source === "voice" || source === "assistant" || source === "ambient_voice" || source === "ambient_wake_word" || source === "push_to_talk" ? "voice" : "manual"));
+    }
+    if (action.id === "weather.update_settings") {
+      const saved = saveWeatherSettings(input);
+      logWeatherEvent(action.id, "success", source, "Updated DexNest Weather settings.", { provider: saved.provider, weatherEnabled: saved.weatherEnabled, refreshMode: saved.refreshMode, units: saved.units, hasLocation: saved.latitude !== null && saved.longitude !== null && Number.isFinite(saved.latitude) && Number.isFinite(saved.longitude) }, startedAt);
+      return { ok: true, actionId: action.id, message: "Weather settings saved.", weatherState: weatherState() };
+    }
+    if (action.id === "weather.toggle_enabled") {
+      const enabled = typeof input.enabled === "boolean" ? input.enabled : !loadWeatherSettings().weatherEnabled;
+      const saved = saveWeatherSettings({ weatherEnabled: enabled });
+      logWeatherEvent(action.id, "success", source, enabled ? "Enabled DexNest Weather." : "Disabled DexNest Weather.", { provider: saved.provider, weatherEnabled: saved.weatherEnabled }, startedAt);
+      return { ok: true, actionId: action.id, message: enabled ? "Weather enabled." : "Weather disabled.", weatherState: weatherState() };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "DexNest Weather action failed.";
+    logWeatherEvent(action.id, "failed", source, message, payloadMetadata(payload), startedAt, message);
+    return { ok: false, actionId: action.id, error: message, message, weatherState: weatherState() };
+  }
+  return null;
+}
+
+const newsCategories: NewsCategory[] = ["Top", "Canada", "India", "World", "Tech", "AI", "Finance", "Sports", "Health", "Science", "Business"];
+
+function isNewsCategory(value: unknown): value is NewsCategory {
+  return typeof value === "string" && newsCategories.includes(value as NewsCategory);
+}
+
+function makeNewsSource(category: NewsCategory, name: string, url: string): NewsSource {
+  const now = new Date().toISOString();
+  return { id: createId("news-source"), category, name, url, enabled: true, createdAt: now, updatedAt: now, lastTestAt: null, lastTestStatus: null, lastError: null };
+}
+
+function defaultNewsSources(): NewsSource[] {
+  return [
+    makeNewsSource("Top", "BBC Top Stories", "https://feeds.bbci.co.uk/news/rss.xml"),
+    makeNewsSource("Canada", "CBC Top Stories", "https://www.cbc.ca/cmlink/rss-topstories"),
+    makeNewsSource("India", "The Hindu National", "https://www.thehindu.com/news/national/feeder/default.rss"),
+    makeNewsSource("World", "BBC World", "https://feeds.bbci.co.uk/news/world/rss.xml"),
+    makeNewsSource("Tech", "The Verge", "https://www.theverge.com/rss/index.xml"),
+    makeNewsSource("AI", "MIT Technology Review AI", "https://www.technologyreview.com/topic/artificial-intelligence/feed"),
+    makeNewsSource("Finance", "Yahoo Finance", "https://finance.yahoo.com/news/rssindex"),
+    makeNewsSource("Sports", "BBC Sport", "https://feeds.bbci.co.uk/sport/rss.xml"),
+    makeNewsSource("Health", "NPR Health", "https://feeds.npr.org/1128/rss.xml"),
+    makeNewsSource("Science", "NASA Breaking News", "https://www.nasa.gov/rss/dyn/breaking_news.rss"),
+    makeNewsSource("Business", "BBC Business", "https://feeds.bbci.co.uk/news/business/rss.xml")
+  ];
+}
+
+function defaultNewsSettings(): NewsSettings {
+  return {
+    newsEnabled: false,
+    selectedCategories: [],
+    refreshMode: "manual",
+    maxItemsPerCategory: 10,
+    readMorningBriefingCategories: [],
+    showNewsOnCommand: true,
+    provider: "rss",
+    sources: defaultNewsSources(),
+    lastRefreshAt: null,
+    lastAutoRefreshAt: null
+  };
+}
+
+function defaultNewsCache(): NewsCache {
+  return { provider: "rss", headlines: [], fetchedAt: null, sourceStatus: "cached", error: null, categoryCounts: {} };
+}
+
+function normalizeNewsSource(input: Partial<NewsSource>, existing?: NewsSource): NewsSource {
+  const now = new Date().toISOString();
+  return {
+    id: typeof input.id === "string" && input.id.trim() ? input.id : existing?.id ?? createId("news-source"),
+    category: isNewsCategory(input.category) ? input.category : existing?.category ?? "Top",
+    name: String(input.name ?? existing?.name ?? "RSS source").trim().slice(0, 80) || "RSS source",
+    url: String(input.url ?? existing?.url ?? "").trim().slice(0, 500),
+    enabled: typeof input.enabled === "boolean" ? input.enabled : existing?.enabled ?? true,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+    lastTestAt: existing?.lastTestAt ?? null,
+    lastTestStatus: existing?.lastTestStatus ?? null,
+    lastError: existing?.lastError ?? null
+  };
+}
+
+function normalizeNewsSettings(input: Partial<NewsSettings>, existing = defaultNewsSettings()): NewsSettings {
+  const selectedCategories = Array.isArray(input.selectedCategories) ? input.selectedCategories.filter(isNewsCategory) : existing.selectedCategories;
+  const readMorningBriefingCategories = Array.isArray(input.readMorningBriefingCategories) ? input.readMorningBriefingCategories.filter(isNewsCategory) : existing.readMorningBriefingCategories;
+  const sourceInput = Array.isArray(input.sources) ? input.sources : existing.sources;
+  const sources = sourceInput.map((source) => normalizeNewsSource(source as Partial<NewsSource>, existing.sources.find((item) => item.id === (source as Partial<NewsSource>).id))).filter((source) => source.url.startsWith("http://") || source.url.startsWith("https://"));
+  const refreshMode = input.refreshMode === "manual" || input.refreshMode === "every_1_hour" || input.refreshMode === "every_3_hours" || input.refreshMode === "every_6_hours" || input.refreshMode === "daily_morning" ? input.refreshMode : existing.refreshMode;
+  return {
+    newsEnabled: typeof input.newsEnabled === "boolean" ? input.newsEnabled : existing.newsEnabled,
+    selectedCategories,
+    refreshMode,
+    maxItemsPerCategory: Math.max(1, Math.min(30, Number(input.maxItemsPerCategory ?? existing.maxItemsPerCategory) || 10)),
+    readMorningBriefingCategories,
+    showNewsOnCommand: typeof input.showNewsOnCommand === "boolean" ? input.showNewsOnCommand : existing.showNewsOnCommand,
+    provider: "rss",
+    sources: sources.length > 0 ? sources : existing.sources,
+    lastRefreshAt: typeof input.lastRefreshAt === "string" || input.lastRefreshAt === null ? input.lastRefreshAt : existing.lastRefreshAt,
+    lastAutoRefreshAt: typeof input.lastAutoRefreshAt === "string" || input.lastAutoRefreshAt === null ? input.lastAutoRefreshAt : existing.lastAutoRefreshAt
+  };
+}
+
+function loadNewsSettings(): NewsSettings {
+  return normalizeNewsSettings(readJsonFile<Partial<NewsSettings>>(newsSettingsPath, defaultNewsSettings()), defaultNewsSettings());
+}
+
+function saveNewsSettings(input: Partial<NewsSettings>): NewsSettings {
+  const saved = writeJsonFile(newsSettingsPath, normalizeNewsSettings(input, loadNewsSettings()));
+  scheduleNewsAutoRefresh();
+  return saved;
+}
+
+function loadNewsCache(): NewsCache {
+  const saved = readJsonFile<Partial<NewsCache>>(newsCachePath, defaultNewsCache());
+  return { ...defaultNewsCache(), ...saved, provider: "rss", headlines: Array.isArray(saved.headlines) ? saved.headlines as NewsHeadline[] : [], categoryCounts: typeof saved.categoryCounts === "object" && saved.categoryCounts !== null ? saved.categoryCounts as Record<string, number> : {} };
+}
+
+function saveNewsCache(input: Partial<NewsCache>): NewsCache {
+  return writeJsonFile(newsCachePath, { ...defaultNewsCache(), ...input, provider: "rss" });
+}
+
+function newsRefreshMinutes(mode: NewsRefreshMode): number | null {
+  if (mode === "every_1_hour") { return 60; }
+  if (mode === "every_3_hours") { return 180; }
+  if (mode === "every_6_hours") { return 360; }
+  if (mode === "daily_morning") { return 1440; }
+  return null;
+}
+
+function newsStateStatus(settings: NewsSettings, cache: NewsCache): NewsCacheStatus {
+  if (!cache.fetchedAt || cache.headlines.length === 0) { return cache.error ? "error" : "empty"; }
+  if (cache.sourceStatus === "offline") { return "offline"; }
+  if (cache.sourceStatus === "error") { return "error"; }
+  const minutes = newsRefreshMinutes(settings.refreshMode);
+  if (!minutes) { return "fresh"; }
+  return Date.now() - Date.parse(cache.fetchedAt) > minutes * 60_000 ? "stale" : "fresh";
+}
+
+function nextNewsRefreshAt(settings: NewsSettings, cache: NewsCache): string | null {
+  const minutes = newsRefreshMinutes(settings.refreshMode);
+  if (!settings.newsEnabled || !minutes) { return null; }
+  if (settings.refreshMode === "daily_morning") {
+    const next = new Date();
+    next.setHours(7, 0, 0, 0);
+    if (next.getTime() <= Date.now()) { next.setDate(next.getDate() + 1); }
+    return next.toISOString();
+  }
+  const base = cache.fetchedAt ? Date.parse(cache.fetchedAt) : Date.now();
+  return new Date(base + minutes * 60_000).toISOString();
+}
+
+function newsState(): NewsState {
+  const settings = loadNewsSettings();
+  const cache = loadNewsCache();
+  return { settings, cache, settingsPath: newsSettingsPath, cachePath: newsCachePath, status: newsStateStatus(settings, cache), nextRefreshAt: nextNewsRefreshAt(settings, cache), autoRefreshActive: Boolean(newsRefreshTimer) };
+}
+
+function decodeXml(value: string): string {
+  return value.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1").replace(/<[^>]+>/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, "\"").replace(/&#39;/g, "'").replace(/&#(\d+);/g, (_match, code) => String.fromCharCode(Number(code))).replace(/\s+/g, " ").trim();
+}
+
+function xmlTagValue(item: string, tag: string): string {
+  const match = item.match(new RegExp(`<${tag}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/${tag}>`, "i"));
+  return match ? decodeXml(match[1]) : "";
+}
+
+function parseRssItems(xml: string, source: NewsSource, fetchedAt: string): NewsHeadline[] {
+  const blocks = [...xml.matchAll(/<item\b[\s\S]*?<\/item>/gi)].map((match) => match[0]).concat([...xml.matchAll(/<entry\b[\s\S]*?<\/entry>/gi)].map((match) => match[0]));
+  return blocks.map((item) => {
+    const title = xmlTagValue(item, "title");
+    const linkTag = xmlTagValue(item, "link");
+    const hrefMatch = item.match(/<link[^>]+href=["']([^"']+)["'][^>]*>/i);
+    const link = hrefMatch ? hrefMatch[1] : linkTag;
+    const summary = xmlTagValue(item, "description") || xmlTagValue(item, "summary") || xmlTagValue(item, "content:encoded");
+    const published = xmlTagValue(item, "pubDate") || xmlTagValue(item, "published") || xmlTagValue(item, "updated");
+    const publishedDate = published ? new Date(published) : null;
+    return { id: createId("news-headline"), category: source.category, title: title.slice(0, 240), source: source.name, sourceId: source.id, link: link.trim(), summary: summary.slice(0, 500), publishedAt: publishedDate && Number.isFinite(publishedDate.getTime()) ? publishedDate.toISOString() : null, fetchedAt };
+  }).filter((item) => item.title && item.link);
+}
+
+function logNewsEvent(actionId: string, status: DexNestEventStatus, source: DexNestActionTrigger | "system", summary: string, metadataJson: Record<string, unknown>, startedAt: number, errorMessage: string | null = null): void {
+  localDb.appendActionEvent({ module: "DexNest News", actionId, eventType: actionId.replace(/\./g, "_"), status, source, summary, metadataJson, errorMessage, durationMs: Date.now() - startedAt });
+}
+
+async function fetchNewsSource(source: NewsSource, maxItems: number): Promise<NewsHeadline[]> {
+  const xml = await new Promise<string>((resolvePromise, rejectPromise) => {
+    const getter = new URL(source.url).protocol === "https:" ? httpsGet : httpGet;
+    const request = getter(source.url, { headers: { "User-Agent": "DexNest/0.1 RSS" } }, (response) => {
+      if (response.statusCode && response.statusCode >= 400) {
+        rejectPromise(new Error(`RSS HTTP ${response.statusCode}`));
+        response.resume();
+        return;
+      }
+      let data = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => { data += chunk; });
+      response.on("end", () => resolvePromise(data));
+    });
+    request.setTimeout(10_000, () => request.destroy(new Error("RSS request timed out.")));
+    request.on("error", rejectPromise);
+  });
+  return parseRssItems(xml, source, new Date().toISOString()).slice(0, maxItems);
+}
+
+async function refreshNews(source: DexNestActionTrigger | "system", reason: "manual" | "auto" | "command_open" | "voice" = "manual", sourceId?: string) {
+  const startedAt = Date.now();
+  const settings = loadNewsSettings();
+  const existingCache = loadNewsCache();
+  if (!settings.newsEnabled) {
+    logNewsEvent("news.refresh", "skipped", source, "News refresh skipped because News is disabled.", { provider: settings.provider, reason }, startedAt);
+    return { ok: false, actionId: "news.refresh", status: "disabled", message: "News is disabled.", newsState: newsState() };
+  }
+  if (performanceModeState().enabled && reason === "auto") {
+    logNewsEvent("news.refresh", "skipped", source, "News auto-refresh paused by Performance Mode.", { provider: settings.provider, reason }, startedAt);
+    scheduleNewsAutoRefresh();
+    return { ok: false, actionId: "news.refresh", status: "paused", message: "News auto-refresh is paused by Performance Mode.", newsState: newsState() };
+  }
+  if (newsRefreshInFlight) {
+    return { ok: false, actionId: "news.refresh", status: "pending", message: "News refresh is already running.", newsState: newsState() };
+  }
+  const categories = settings.selectedCategories.length > 0 ? settings.selectedCategories : newsCategories;
+  const sources = settings.sources.filter((item) => item.enabled && (sourceId ? item.id === sourceId : categories.includes(item.category)));
+  if (sources.length === 0) {
+    const message = "No enabled RSS sources for selected News categories.";
+    logNewsEvent("news.refresh", "skipped", source, message, { provider: settings.provider, reason, selectedCategories: categories }, startedAt);
+    return { ok: false, actionId: "news.refresh", status: "no_sources", message, newsState: newsState() };
+  }
+  newsRefreshInFlight = true;
+  try {
+    const results = await Promise.allSettled(sources.map((rss) => fetchNewsSource(rss, settings.maxItemsPerCategory)));
+    const headlines = results.flatMap((result) => result.status === "fulfilled" ? result.value : []);
+    const failedCount = results.filter((result) => result.status === "rejected").length;
+    const categoryCounts = headlines.reduce<Record<string, number>>((counts, item) => {
+      counts[item.category] = (counts[item.category] ?? 0) + 1;
+      return counts;
+    }, {});
+    if (headlines.length === 0) {
+      throw new Error("No headlines returned from enabled RSS sources.");
+    }
+    const fetchedAt = new Date().toISOString();
+    saveNewsCache({ headlines, fetchedAt, sourceStatus: failedCount > 0 ? "cached" : "online", error: failedCount > 0 ? `${failedCount} RSS source${failedCount === 1 ? "" : "s"} failed.` : null, categoryCounts });
+    saveNewsSettings(reason === "auto" ? { lastRefreshAt: fetchedAt, lastAutoRefreshAt: fetchedAt } : { lastRefreshAt: fetchedAt });
+    logNewsEvent("news.refresh", "success", source, "Refreshed DexNest News headlines.", { provider: settings.provider, reason, sourceCount: sources.length, failedSourceCount: failedCount, itemCount: headlines.length, categoryCounts }, startedAt);
+    return { ok: true, actionId: "news.refresh", status: "success", message: `Refreshed ${headlines.length} News headlines.`, newsState: newsState() };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "News refresh failed.";
+    saveNewsCache({ ...existingCache, sourceStatus: existingCache.headlines.length ? "offline" : "error", error: message });
+    logNewsEvent("news.refresh", "failed", source, "News refresh failed.", { provider: settings.provider, reason, cachedItemCount: existingCache.headlines.length }, startedAt, message);
+    return { ok: false, actionId: "news.refresh", status: existingCache.headlines.length ? "offline_cache" : "error", error: message, message: existingCache.headlines.length ? "Showing cached News headlines." : "I could not fetch News.", newsState: newsState() };
+  } finally {
+    newsRefreshInFlight = false;
+    scheduleNewsAutoRefresh();
+  }
+}
+
+function scheduleNewsAutoRefresh(): void {
+  if (newsRefreshTimer) {
+    clearTimeout(newsRefreshTimer);
+    newsRefreshTimer = null;
+  }
+  const settings = loadNewsSettings();
+  const minutes = newsRefreshMinutes(settings.refreshMode);
+  if (!settings.newsEnabled || !minutes) {
+    return;
+  }
+  const cache = loadNewsCache();
+  const nextAt = nextNewsRefreshAt(settings, cache);
+  const delay = nextAt ? Math.max(60_000, Date.parse(nextAt) - Date.now()) : minutes * 60_000;
+  newsRefreshTimer = setTimeout(() => {
+    newsRefreshTimer = null;
+    const current = loadNewsSettings();
+    if (!current.newsEnabled || current.refreshMode === "manual") {
+      return;
+    }
+    if (performanceModeState().enabled) {
+      scheduleNewsAutoRefresh();
+      return;
+    }
+    void refreshNews("system", "auto");
+  }, delay);
+}
+
+function newsBriefingText(state: NewsState, inputCategory?: string): string {
+  if (!state.settings.newsEnabled) {
+    return "News is disabled.";
+  }
+  const categories = isNewsCategory(inputCategory) ? [inputCategory] : state.settings.readMorningBriefingCategories.length > 0 ? state.settings.readMorningBriefingCategories : state.settings.selectedCategories;
+  const selected = state.cache.headlines.filter((headline) => categories.length === 0 || categories.includes(headline.category)).slice(0, 8);
+  if (selected.length === 0) {
+    return state.cache.error ? "I could not fetch News. No cached headlines are available." : "No News headlines are cached yet.";
+  }
+  const cached = state.status === "offline" || state.status === "stale" ? "Showing cached news. " : "";
+  const grouped = selected.map((headline, index) => `${index + 1}. ${headline.category}: ${headline.title}`).join(" ");
+  return `${cached}Here are your top DexNest News headlines. ${grouped}`;
+}
+
+async function runNewsAction(action: DexNestActionDefinition, source: DexNestActionTrigger, payload: unknown = {}) {
+  const startedAt = Date.now();
+  const input = typeof payload === "object" && payload !== null ? payload as NewsInput : {};
+  try {
+    if (action.id === "news.open") {
+      logNewsEvent(action.id, "success", source, "Opened DexNest News.", {}, startedAt);
+      return { ok: true, actionId: action.id, newsState: newsState(), message: "Opened News." };
+    }
+    if (action.id === "news.refresh") {
+      return await refreshNews(source, input.refreshReason ?? (source === "voice" || source === "assistant" || source === "ambient_voice" || source === "ambient_wake_word" || source === "push_to_talk" ? "voice" : "manual"), typeof input.sourceId === "string" ? input.sourceId : undefined);
+    }
+    if (action.id === "news.update_settings") {
+      const current = loadNewsSettings();
+      let sources = input.sources ?? current.sources;
+      if (input.source) {
+        const existing = current.sources.find((item) => item.id === input.source?.id);
+        const nextSource = normalizeNewsSource(input.source, existing);
+        sources = existing ? current.sources.map((item) => item.id === nextSource.id ? nextSource : item) : [...current.sources, nextSource];
+      }
+      if (typeof input.sourceId === "string" && input.source?.enabled === false && !input.source.name && !input.source.url) {
+        sources = current.sources.filter((item) => item.id !== input.sourceId);
+      }
+      const saved = saveNewsSettings({ ...input, sources });
+      logNewsEvent(action.id, "success", source, "Updated DexNest News settings.", { provider: saved.provider, newsEnabled: saved.newsEnabled, selectedCategories: saved.selectedCategories, sourceCount: saved.sources.length, refreshMode: saved.refreshMode }, startedAt);
+      return { ok: true, actionId: action.id, message: "News settings saved.", newsState: newsState() };
+    }
+    if (action.id === "news.toggle_enabled") {
+      const enabled = typeof input.enabled === "boolean" ? input.enabled : !loadNewsSettings().newsEnabled;
+      const saved = saveNewsSettings({ newsEnabled: enabled });
+      logNewsEvent(action.id, "success", source, enabled ? "Enabled DexNest News." : "Disabled DexNest News.", { provider: saved.provider, newsEnabled: saved.newsEnabled }, startedAt);
+      return { ok: true, actionId: action.id, message: enabled ? "News enabled." : "News disabled.", newsState: newsState() };
+    }
+    if (action.id === "news.read_briefing") {
+      const state = newsState();
+      const message = newsBriefingText(state, typeof input.category === "string" ? input.category : undefined);
+      logNewsEvent(action.id, "success", source, "Prepared DexNest News briefing.", { provider: state.settings.provider, category: input.category ?? null, itemCount: state.cache.headlines.length, cacheStatus: state.status }, startedAt);
+      return { ok: true, actionId: action.id, message, briefingText: message, newsState: state };
+    }
+    if (action.id === "news.open_headline") {
+      const headline = loadNewsCache().headlines.find((item) => item.id === input.headlineId);
+      if (!headline) { return { ok: false, actionId: action.id, error: "Headline not found.", newsState: newsState() }; }
+      void shell.openExternal(headline.link);
+      logNewsEvent(action.id, "success", source, "Opened one News headline link.", { category: headline.category, sourceName: headline.source }, startedAt);
+      return { ok: true, actionId: action.id, message: "Opened headline link.", newsState: newsState() };
+    }
+    if (action.id === "news.save_headline_to_journal") {
+      const headline = loadNewsCache().headlines.find((item) => item.id === input.headlineId);
+      if (!headline) { return { ok: false, actionId: action.id, error: "Headline not found.", newsState: newsState() }; }
+      const today = getLocalTodayDateString();
+      const now = new Date().toISOString();
+      const entry = { id: createId("journal-entry"), date: today, title: `News: ${headline.title}`.slice(0, 100), rawText: `${headline.title}\n\n${headline.summary}\n\nSource: ${headline.source}\n${headline.link}`, cleanedText: `${headline.title}\n\n${headline.summary}`, mood: "unset", productivity: "unset", tags: ["news", headline.category.toLowerCase()], peopleTags: [], createdAt: now, updatedAt: now, extractedItems: [] };
+      saveJournalEntries([entry, ...loadJournalEntries()]);
+      logNewsEvent(action.id, "success", source, "Saved one News headline to Journal.", { category: headline.category, sourceName: headline.source, journalEntryId: entry.id }, startedAt);
+      return { ok: true, actionId: action.id, message: "Saved headline to Journal.", journalEntryId: entry.id, newsState: newsState() };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "News action failed.";
+    logNewsEvent(action.id, "failed", source, "DexNest News action failed.", { provider: "rss" }, startedAt, message);
+    return { ok: false, actionId: action.id, error: message, message, newsState: newsState() };
+  }
+  return null;
 }
 
 function defaultNudgeSettings(): NudgeSettings {
@@ -9330,6 +10390,61 @@ function calendarState() {
     nudgesPath,
     nudgeSettingsPath,
     nudgeSettings: loadNudgeSettings()
+  };
+}
+
+function currentTimetableDay(): TimetableDay {
+  const index = new Date().getDay();
+  return timetableDays[(index + 6) % 7];
+}
+
+function minutesFromTime(value: string): number {
+  const [hour, minute] = value.split(":").map(Number);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) {
+    return 0;
+  }
+  return hour * 60 + minute;
+}
+
+function activeTimetableTemplate(file = loadTimetableFile()): TimetableTemplate {
+  return file.templates.find((template) => template.id === file.activeTemplateId) ?? file.templates[0] ?? defaultTimetableFile().templates[0];
+}
+
+function timetableCurrentAndNext(blocks: TimetableBlock[], day: TimetableDay, nowMinutes: number) {
+  const dayBlocks = blocks.filter((block) => block.day === day).sort((a, b) => minutesFromTime(a.startTime) - minutesFromTime(b.startTime));
+  const currentBlock = dayBlocks.find((block) => minutesFromTime(block.startTime) <= nowMinutes && nowMinutes < minutesFromTime(block.endTime)) ?? null;
+  const nextBlock = dayBlocks.find((block) => minutesFromTime(block.startTime) > nowMinutes) ?? null;
+  return { currentBlock, nextBlock };
+}
+
+function timetableStats(blocks: TimetableBlock[]) {
+  const plannedMinutes = blocks.reduce((total, block) => total + Math.max(0, minutesFromTime(block.endTime) - minutesFromTime(block.startTime)), 0);
+  return {
+    plannedHours: Math.round((plannedMinutes / 60) * 10) / 10,
+    done: blocks.filter((block) => block.status === "done").length,
+    skipped: blocks.filter((block) => block.status === "skipped").length,
+    remaining: blocks.filter((block) => block.status === "planned" || block.status === "moved").length
+  };
+}
+
+function timetableState() {
+  const file = loadTimetableFile();
+  const activeTemplate = activeTimetableTemplate(file);
+  const now = new Date();
+  const today = currentTimetableDay();
+  const { currentBlock, nextBlock } = timetableCurrentAndNext(activeTemplate.blocks, today, now.getHours() * 60 + now.getMinutes());
+  return {
+    file,
+    activeTemplate,
+    templates: file.templates,
+    activeTemplateId: file.activeTemplateId,
+    today,
+    selectedDay: today,
+    currentBlock,
+    nextBlock,
+    stats: timetableStats(activeTemplate.blocks),
+    calendarConflicts: calendarState().todayEvents,
+    timetablePath
   };
 }
 
@@ -13270,6 +14385,408 @@ async function handleDropRoutes(request: IncomingMessage, response: ServerRespon
   return false;
 }
 
+function tokenizeCalculation(expression: string): string[] {
+  const tokens: string[] = [];
+  let index = 0;
+  const source = expression.replace(/\s+/g, "");
+  while (index < source.length) {
+    const char = source[index];
+    if (/[0-9.]/.test(char)) {
+      let value = char;
+      index += 1;
+      while (index < source.length && /[0-9.]/.test(source[index])) {
+        value += source[index];
+        index += 1;
+      }
+      if (!/^\d*\.?\d+$/.test(value)) {
+        throw new Error("Invalid number.");
+      }
+      tokens.push(value);
+      continue;
+    }
+    if ("+-*/()%".includes(char)) {
+      tokens.push(char);
+      index += 1;
+      continue;
+    }
+    throw new Error("Unsupported calculator character.");
+  }
+  return tokens;
+}
+
+function safeCalculateExpression(expression: string): number {
+  const tokens = tokenizeCalculation(expression);
+  const output: string[] = [];
+  const ops: string[] = [];
+  const precedence: Record<string, number> = { "+": 1, "-": 1, "*": 2, "/": 2, "%": 2 };
+  let previous = "";
+  for (const token of tokens) {
+    if (/^\d*\.?\d+$/.test(token)) {
+      output.push(token);
+      previous = "number";
+      continue;
+    }
+    if (token === "(") {
+      ops.push(token);
+      previous = token;
+      continue;
+    }
+    if (token === ")") {
+      while (ops.length && ops[ops.length - 1] !== "(") {
+        output.push(ops.pop()!);
+      }
+      if (ops.pop() !== "(") {
+        throw new Error("Mismatched parentheses.");
+      }
+      previous = "number";
+      continue;
+    }
+    if (token === "-" && (!previous || previous === "(" || previous === "operator")) {
+      output.push("0");
+    }
+    while (ops.length && ops[ops.length - 1] !== "(" && precedence[ops[ops.length - 1]] >= precedence[token]) {
+      output.push(ops.pop()!);
+    }
+    ops.push(token);
+    previous = "operator";
+  }
+  while (ops.length) {
+    const op = ops.pop()!;
+    if (op === "(" || op === ")") {
+      throw new Error("Mismatched parentheses.");
+    }
+    output.push(op);
+  }
+  const stack: number[] = [];
+  for (const token of output) {
+    if (/^\d*\.?\d+$/.test(token)) {
+      stack.push(Number(token));
+      continue;
+    }
+    const right = stack.pop();
+    const left = stack.pop();
+    if (left === undefined || right === undefined) {
+      throw new Error("Invalid expression.");
+    }
+    if (token === "/" && right === 0) {
+      throw new Error("Cannot divide by zero.");
+    }
+    stack.push(token === "+" ? left + right : token === "-" ? left - right : token === "*" ? left * right : token === "/" ? left / right : left % right);
+  }
+  if (stack.length !== 1 || !Number.isFinite(stack[0])) {
+    throw new Error("Invalid expression.");
+  }
+  return stack[0];
+}
+
+const conversionFactors: Record<Exclude<UtilityConversionCategory, "temperature">, Record<string, number>> = {
+  length: { m: 1, meter: 1, meters: 1, km: 1000, kilometer: 1000, kilometers: 1000, cm: 0.01, centimeter: 0.01, centimeters: 0.01, mm: 0.001, inch: 0.0254, inches: 0.0254, ft: 0.3048, foot: 0.3048, feet: 0.3048, mile: 1609.344, miles: 1609.344 },
+  weight: { g: 1, gram: 1, grams: 1, kg: 1000, kilogram: 1000, kilograms: 1000, lb: 453.59237, lbs: 453.59237, pound: 453.59237, pounds: 453.59237, oz: 28.349523125, ounce: 28.349523125, ounces: 28.349523125 },
+  volume: { l: 1, liter: 1, liters: 1, ml: 0.001, milliliter: 0.001, milliliters: 0.001, cup: 0.2365882365, cups: 0.2365882365, gallon: 3.785411784, gallons: 3.785411784 },
+  time: { second: 1, seconds: 1, sec: 1, minute: 60, minutes: 60, min: 60, hour: 3600, hours: 3600, day: 86400, days: 86400 },
+  data: { b: 1, byte: 1, bytes: 1, kb: 1024, mb: 1048576, gb: 1073741824, tb: 1099511627776 }
+};
+
+function normalizeUnit(unit: string): string {
+  return unit.trim().toLowerCase().replace(/\s+/g, "_");
+}
+
+function convertUtilityUnit(category: UtilityConversionCategory, value: number, fromUnit: string, toUnit: string): number {
+  const from = normalizeUnit(fromUnit);
+  const to = normalizeUnit(toUnit);
+  if (category === "temperature") {
+    const celsius = from === "c" || from === "celsius" ? value : from === "f" || from === "fahrenheit" ? (value - 32) * 5 / 9 : from === "k" || from === "kelvin" ? value - 273.15 : NaN;
+    if (!Number.isFinite(celsius)) {
+      throw new Error("Unsupported temperature unit.");
+    }
+    return to === "c" || to === "celsius" ? celsius : to === "f" || to === "fahrenheit" ? celsius * 9 / 5 + 32 : to === "k" || to === "kelvin" ? celsius + 273.15 : NaN;
+  }
+  const table = conversionFactors[category];
+  const fromFactor = table?.[from];
+  const toFactor = table?.[to];
+  if (!fromFactor || !toFactor) {
+    throw new Error("Unsupported conversion unit.");
+  }
+  return (value * fromFactor) / toFactor;
+}
+
+function formatUtilityNumber(value: number): string {
+  return Number.isInteger(value) ? String(value) : Number(value.toFixed(6)).toString();
+}
+
+function utilityDateDiff(startDate: string, endDate: string): number {
+  const start = parseLocalDateInput(startDate);
+  const end = parseLocalDateInput(endDate);
+  return Math.round((end.getTime() - start.getTime()) / 86400000);
+}
+
+function logUtilitiesEvent(actionId: string, status: DexNestEventStatus, source: DexNestActionTrigger, summary: string, metadataJson: Record<string, unknown>, startedAt: number, errorMessage: string | null = null): void {
+  localDb.appendActionEvent({
+    module: "DexNest Utilities",
+    actionId,
+    eventType: actionId.replace(/\./g, "_"),
+    status,
+    source,
+    summary,
+    metadataJson,
+    errorMessage,
+    durationMs: Date.now() - startedAt
+  });
+}
+
+function runUtilitiesAction(action: DexNestActionDefinition, source: DexNestActionTrigger, payload: unknown = {}) {
+  const startedAt = Date.now();
+  const input = typeof payload === "object" && payload !== null ? payload as UtilitiesInput : {};
+  try {
+    let file = loadUtilitiesFile();
+    if (action.id === "utilities.open") {
+      logUtilitiesEvent(action.id, "success", source, "Opened DexNest Utilities.", {}, startedAt);
+      return { ok: true, actionId: action.id, utilitiesState: utilitiesState(), message: "Opened Utilities." };
+    }
+
+    if (action.id === "utilities.calculate") {
+      const expression = String(input.expression ?? "").trim();
+      if (!expression) { throw new Error("Calculator expression is required."); }
+      const result = formatUtilityNumber(safeCalculateExpression(expression));
+      file = saveUtilitiesFile(addUtilityRecent(file, "calculation", expression, result));
+      logUtilitiesEvent(action.id, "success", source, "Ran Utilities calculator.", { expressionLength: expression.length, resultLength: result.length }, startedAt);
+      return { ok: true, actionId: action.id, result, message: `${expression} is ${result}.`, utilitiesState: utilitiesState() };
+    }
+
+    if (action.id === "utilities.copy_result") {
+      const latest = file.recentResults[0];
+      if (!latest) { throw new Error("No Utilities result to copy."); }
+      clipboard.writeText(latest.result);
+      logUtilitiesEvent(action.id, "success", source, "Copied Utilities result.", { resultType: latest.type, resultLength: latest.result.length }, startedAt);
+      return { ok: true, actionId: action.id, message: "Copied result.", utilitiesState: utilitiesState() };
+    }
+
+    if (action.id === "utilities.convert_units") {
+      const value = Number(input.value);
+      const category = input.category ?? "length";
+      if (!Number.isFinite(value)) { throw new Error("Conversion value is required."); }
+      const fromUnit = String(input.fromUnit ?? "");
+      const toUnit = String(input.toUnit ?? "");
+      const converted = convertUtilityUnit(category, value, fromUnit, toUnit);
+      if (!Number.isFinite(converted)) { throw new Error("Unsupported conversion."); }
+      const result = `${formatUtilityNumber(converted)} ${toUnit}`;
+      file = saveUtilitiesFile(addUtilityRecent(file, "conversion", `${value} ${fromUnit} to ${toUnit}`, result));
+      logUtilitiesEvent(action.id, "success", source, "Converted Utilities units.", { category, fromUnit, toUnit }, startedAt);
+      return { ok: true, actionId: action.id, result, message: `${value} ${fromUnit} is ${result}.`, utilitiesState: utilitiesState() };
+    }
+
+    if (action.id === "utilities.date_calculate") {
+      const mode = input.mode ?? "countdown";
+      let result = "";
+      if (mode === "time_now") {
+        result = formatLocalDateTime(new Date());
+      } else if (mode === "between") {
+        result = `${Math.abs(utilityDateDiff(String(input.startDate), String(input.endDate)))} days`;
+      } else if (mode === "add" || mode === "subtract") {
+        const base = parseLocalDateInput(String(input.baseDate ?? getLocalTodayDateString()));
+        base.setDate(base.getDate() + (mode === "add" ? 1 : -1) * Number(input.days ?? 0));
+        result = toLocalDateInputValue(base);
+      } else {
+        result = `${Math.max(0, utilityDateDiff(getLocalTodayDateString(), String(input.targetDate ?? input.endDate ?? getLocalTodayDateString())))} days`;
+      }
+      file = saveUtilitiesFile(addUtilityRecent(file, "date", mode, result));
+      logUtilitiesEvent(action.id, "success", source, "Ran Utilities date calculation.", { mode }, startedAt);
+      return { ok: true, actionId: action.id, result, message: result, utilitiesState: utilitiesState() };
+    }
+
+    if (action.id === "utilities.timer.start") {
+      const durationSeconds = Math.max(1, Math.round(Number(input.durationSeconds ?? Number(input.durationMinutes ?? file.settings.defaultTimerMinutes) * 60)));
+      const timer = normalizeUtilityTimer({ id: input.timerId, label: input.label ?? `${Math.round(durationSeconds / 60)} minute timer`, durationSeconds, remainingSeconds: durationSeconds, status: "running", startedAt: new Date().toISOString() });
+      file = saveUtilitiesFile({ ...file, timers: [timer, ...file.timers.filter((item) => item.id !== timer.id)].slice(0, 10) });
+      logUtilitiesEvent(action.id, "success", source, "Started Utilities timer.", { timerId: timer.id, durationSeconds }, startedAt);
+      return { ok: true, actionId: action.id, timer, message: `Timer started for ${Math.round(durationSeconds / 60)} minutes.`, utilitiesState: utilitiesState() };
+    }
+
+    if (action.id === "utilities.timer.pause" || action.id === "utilities.timer.reset") {
+      const timers = file.timers.map((timer) => computedUtilityTimer(timer));
+      const target = timers.find((timer) => timer.id === input.timerId) ?? timers.find((timer) => timer.status === "running" || timer.status === "paused" || timer.status === "done");
+      if (!target) { throw new Error("No active timer."); }
+      const nextTimer: UtilityTimer = action.id === "utilities.timer.pause"
+        ? { ...target, status: target.status === "paused" ? "running" : "paused", startedAt: target.status === "paused" ? new Date().toISOString() : null, updatedAt: new Date().toISOString() }
+        : { ...target, status: "idle", remainingSeconds: target.durationSeconds, startedAt: null, completedAt: null, updatedAt: new Date().toISOString() };
+      file = saveUtilitiesFile({ ...file, timers: [nextTimer, ...timers.filter((timer) => timer.id !== nextTimer.id)] });
+      logUtilitiesEvent(action.id, "success", source, action.id.endsWith("pause") ? "Paused Utilities timer." : "Reset Utilities timer.", { timerId: nextTimer.id, status: nextTimer.status }, startedAt);
+      return { ok: true, actionId: action.id, timer: nextTimer, message: action.id.endsWith("pause") ? `Timer ${nextTimer.status}.` : "Timer reset.", utilitiesState: utilitiesState() };
+    }
+
+    if (action.id === "utilities.stopwatch.start" || action.id === "utilities.stopwatch.pause" || action.id === "utilities.stopwatch.reset") {
+      const current = computedUtilityStopwatch(file.stopwatch);
+      const now = new Date().toISOString();
+      const stopwatch = action.id === "utilities.stopwatch.start"
+        ? { ...current, status: "running" as const, startedAt: now, updatedAt: now }
+        : action.id === "utilities.stopwatch.pause"
+          ? { ...current, status: "paused" as const, startedAt: null, updatedAt: now }
+          : { ...current, status: "idle" as const, elapsedMs: 0, startedAt: null, laps: [], history: current.elapsedMs > 0 ? [{ id: createId("stopwatch-run"), elapsedMs: current.elapsedMs, createdAt: now }, ...current.history].slice(0, 20) : current.history, updatedAt: now };
+      file = saveUtilitiesFile({ ...file, stopwatch });
+      logUtilitiesEvent(action.id, "success", source, "Updated Utilities stopwatch.", { status: stopwatch.status, elapsedMs: stopwatch.elapsedMs }, startedAt);
+      return { ok: true, actionId: action.id, stopwatch, message: action.id.endsWith("start") ? "The stopwatch is running." : action.id.endsWith("pause") ? "Stopwatch paused." : "Stopwatch reset.", utilitiesState: utilitiesState() };
+    }
+
+    if (action.id === "utilities.world_clock.add" || action.id === "utilities.world_clock.remove") {
+      if (action.id.endsWith("add")) {
+        const label = String(input.city ?? input.label ?? "").trim();
+        const timeZone = String(input.timeZone ?? "").trim();
+        if (!label || !timeZone) { throw new Error("City label and timezone are required."); }
+        new Intl.DateTimeFormat(undefined, { timeZone }).format(new Date());
+        const clock: UtilityWorldClock = { id: createId("world-clock"), label, timeZone, createdAt: new Date().toISOString() };
+        file = saveUtilitiesFile({ ...file, worldClocks: [clock, ...file.worldClocks].slice(0, 12) });
+        logUtilitiesEvent(action.id, "success", source, "Added Utilities world clock.", { label, timeZone }, startedAt);
+        return { ok: true, actionId: action.id, clock, message: `Added ${label}.`, utilitiesState: utilitiesState() };
+      }
+      const id = String((payload as { id?: string })?.id ?? input.city ?? input.label ?? "").trim();
+      file = saveUtilitiesFile({ ...file, worldClocks: file.worldClocks.filter((clock) => clock.id !== id && clock.label !== id) });
+      logUtilitiesEvent(action.id, "success", source, "Removed Utilities world clock.", { id }, startedAt);
+      return { ok: true, actionId: action.id, message: "Removed world clock.", utilitiesState: utilitiesState() };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "DexNest Utilities action failed.";
+    logUtilitiesEvent(action.id, "failed", source, message, payloadMetadata(payload), startedAt, message);
+    return { ok: false, actionId: action.id, error: message };
+  }
+  return null;
+}
+
+function logTimetableEvent(actionId: string, status: DexNestEventStatus, source: DexNestActionTrigger, summary: string, metadataJson: Record<string, unknown>, startedAt: number, errorMessage: string | null = null): void {
+  localDb.appendActionEvent({
+    module: "DexNest Timetable",
+    actionId,
+    eventType: actionId.replace(/\./g, "_"),
+    status,
+    source,
+    summary,
+    metadataJson,
+    errorMessage,
+    durationMs: Date.now() - startedAt
+  });
+}
+
+function normalizeTimetableBlock(input: TimetableBlockInput, existing?: TimetableBlock): TimetableBlock {
+  const now = new Date().toISOString();
+  const day = input.day && timetableDays.includes(input.day) ? input.day : existing?.day ?? currentTimetableDay();
+  const startTime = /^\d{2}:\d{2}$/.test(input.startTime ?? "") ? input.startTime! : existing?.startTime ?? "09:00";
+  const endTime = /^\d{2}:\d{2}$/.test(input.endTime ?? "") ? input.endTime! : existing?.endTime ?? "10:00";
+  return {
+    id: input.id ?? input.blockId ?? existing?.id ?? createId("timetable-block"),
+    day,
+    startTime,
+    endTime,
+    title: input.title?.trim() || existing?.title || "Routine block",
+    category: input.category?.trim() || existing?.category || "Focus",
+    accent: input.accent?.trim() || existing?.accent || "var(--accent-timetable)",
+    notes: input.notes ?? existing?.notes ?? "",
+    status: input.status ?? existing?.status ?? "planned",
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now
+  };
+}
+
+function runTimetableAction(action: DexNestActionDefinition, source: DexNestActionTrigger, payload: unknown = {}) {
+  const startedAt = Date.now();
+  const input = typeof payload === "object" && payload !== null ? payload as TimetableBlockInput : {};
+  try {
+    const file = loadTimetableFile();
+    const templateIndex = file.templates.findIndex((template) => template.id === (input.templateId ?? file.activeTemplateId));
+    const template = file.templates[templateIndex >= 0 ? templateIndex : 0];
+    const saveTemplate = (nextTemplate: TimetableTemplate) => {
+      const templates = file.templates.map((item) => item.id === nextTemplate.id ? nextTemplate : item);
+      return saveTimetableFile({ ...file, templates });
+    };
+    const currentState = timetableState();
+    const currentBlockId = input.blockId ?? input.id ?? currentState.currentBlock?.id ?? "";
+
+    if (action.id === "timetable.open" || action.id === "timetable.show_today") {
+      logTimetableEvent(action.id, "success", source, action.id === "timetable.show_today" ? "Opened today's DexNest Timetable." : "Opened DexNest Timetable.", {}, startedAt);
+      return { ok: true, actionId: action.id, timetableState: currentState, message: action.id === "timetable.show_today" ? "Opened today's Timetable." : "Opened Timetable." };
+    }
+
+    if (action.id === "timetable.current_block") {
+      const message = currentState.currentBlock
+        ? `Now: ${currentState.currentBlock.title} until ${currentState.currentBlock.endTime}.`
+        : currentState.nextBlock
+          ? `No current block. Next: ${currentState.nextBlock.title} at ${currentState.nextBlock.startTime}.`
+          : "No more Timetable blocks today.";
+      logTimetableEvent(action.id, "success", source, "Checked DexNest Timetable current block.", {
+        hasCurrentBlock: Boolean(currentState.currentBlock),
+        currentBlockId: currentState.currentBlock?.id ?? null,
+        nextBlockId: currentState.nextBlock?.id ?? null
+      }, startedAt);
+      return { ok: true, actionId: action.id, timetableState: currentState, currentBlock: currentState.currentBlock, nextBlock: currentState.nextBlock, message };
+    }
+
+    if (action.id === "timetable.create_block" || action.id === "timetable.update_block" || action.id === "timetable.move_block") {
+      const existing = template.blocks.find((block) => block.id === (input.blockId ?? input.id));
+      const nextBlock = normalizeTimetableBlock(input, existing);
+      const nextTemplate: TimetableTemplate = {
+        ...template,
+        blocks: [nextBlock, ...template.blocks.filter((block) => block.id !== nextBlock.id)].sort((a, b) => a.day.localeCompare(b.day) || a.startTime.localeCompare(b.startTime)),
+        updatedAt: new Date().toISOString()
+      };
+      saveTemplate(nextTemplate);
+      logTimetableEvent(action.id, "success", source, `${existing ? "Updated" : "Created"} DexNest Timetable block.`, {
+        blockId: nextBlock.id,
+        day: nextBlock.day,
+        category: nextBlock.category,
+        status: nextBlock.status
+      }, startedAt);
+      return { ok: true, actionId: action.id, block: nextBlock, timetableState: timetableState(), message: `${existing ? "Updated" : "Created"} Timetable block.` };
+    }
+
+    if (action.id === "timetable.delete_block") {
+      const existing = template.blocks.find((block) => block.id === currentBlockId);
+      saveTemplate({ ...template, blocks: template.blocks.filter((block) => block.id !== currentBlockId), updatedAt: new Date().toISOString() });
+      logTimetableEvent(action.id, "success", source, "Deleted DexNest Timetable block.", { blockId: currentBlockId, day: existing?.day ?? null, category: existing?.category ?? null }, startedAt);
+      return { ok: true, actionId: action.id, timetableState: timetableState(), message: "Deleted Timetable block." };
+    }
+
+    if (action.id === "timetable.mark_done" || action.id === "timetable.mark_skipped") {
+      const status: TimetableBlockStatus = action.id === "timetable.mark_done" ? "done" : "skipped";
+      const existing = template.blocks.find((block) => block.id === currentBlockId);
+      if (!existing) {
+        throw new Error("No current Timetable block to update.");
+      }
+      const updated = { ...existing, status, updatedAt: new Date().toISOString() };
+      saveTemplate({ ...template, blocks: [updated, ...template.blocks.filter((block) => block.id !== updated.id)], updatedAt: updated.updatedAt });
+      logTimetableEvent(action.id, "success", source, status === "done" ? "Marked current Timetable block done." : "Skipped current Timetable block.", { blockId: updated.id, day: updated.day, category: updated.category, status }, startedAt);
+      return { ok: true, actionId: action.id, block: updated, timetableState: timetableState(), message: status === "done" ? "Marked current block done." : "Skipped current block." };
+    }
+
+    if (action.id === "timetable.copy_day") {
+      const fromDay = input.fromDay ?? currentTimetableDay();
+      const toDay = input.toDay ?? currentTimetableDay();
+      const copied = template.blocks.filter((block) => block.day === fromDay).map((block) => normalizeTimetableBlock({ ...block, id: createId("timetable-block"), day: toDay, status: "planned" }));
+      saveTemplate({ ...template, blocks: [...copied, ...template.blocks.filter((block) => block.day !== toDay)], updatedAt: new Date().toISOString() });
+      logTimetableEvent(action.id, "success", source, "Copied DexNest Timetable day.", { fromDay, toDay, blockCount: copied.length }, startedAt);
+      return { ok: true, actionId: action.id, timetableState: timetableState(), message: `Copied ${fromDay} to ${toDay}.` };
+    }
+
+    if (action.id === "timetable.clear_day") {
+      const day = input.day ?? currentTimetableDay();
+      const removedCount = template.blocks.filter((block) => block.day === day).length;
+      saveTemplate({ ...template, blocks: template.blocks.filter((block) => block.day !== day), updatedAt: new Date().toISOString() });
+      logTimetableEvent(action.id, "success", source, "Cleared DexNest Timetable day.", { day, removedCount }, startedAt);
+      return { ok: true, actionId: action.id, timetableState: timetableState(), message: `Cleared ${day}.` };
+    }
+
+    if (action.id === "timetable.set_active_template") {
+      const activeTemplateId = input.templateId && file.templates.some((item) => item.id === input.templateId) ? input.templateId : file.activeTemplateId;
+      saveTimetableFile({ ...file, activeTemplateId });
+      logTimetableEvent(action.id, "success", source, "Set active DexNest Timetable template.", { activeTemplateId }, startedAt);
+      return { ok: true, actionId: action.id, timetableState: timetableState(), message: "Active Timetable template updated." };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "DexNest Timetable action failed.";
+    logTimetableEvent(action.id, "failed", source, message, payloadMetadata(payload), startedAt, message);
+    return { ok: false, actionId: action.id, error: message };
+  }
+
+  return null;
+}
+
 function runJournalAction(action: DexNestActionDefinition, source: DexNestActionTrigger, payload: unknown = {}) {
   const startedAt = Date.now();
   const input = typeof payload === "object" && payload !== null ? (payload as JournalEntryInput & { entryId?: string }) : {};
@@ -14019,58 +15536,10 @@ function exportStreamDeckButtonPack(source: DexNestActionTrigger): { ok: boolean
   const endpointBase = `http://127.0.0.1:${actionPort}/actions`;
   const healthUrl = `http://127.0.0.1:${actionPort}/health`;
 
-  type Button = { category: string; file: string; title: string; actionId?: string; body?: string; note?: string; placeholder?: boolean };
-  const buttons: Button[] = [
-    // Part A — Core
-    { category: "Core", file: "open-command", title: "Open Command", actionId: "command.open_home", body: "{}" },
-    { category: "Core", file: "open-search", title: "Open Search", actionId: "search.open", body: "{}" },
-    { category: "Core", file: "start-mic", title: "Start Mic / Ask DexNest", actionId: "assistant.start_listening", body: "{}", note: "Starts listening in the background (works minimized/tray); shows the desktop voice overlay and does not force-open the app." },
-    { category: "Core", file: "toggle-performance-mode", title: "Toggle Performance Mode", actionId: "system.performance.toggle", body: "{}" },
-    { category: "Core", file: "lock-sensitive-session", title: "Lock Sensitive Session", actionId: "system.lifecycle.lock_sensitive_session", body: "{}" },
-    { category: "Core", file: "open-app-health", title: "Open App Health", actionId: "system.health.open", body: "{}" },
-    // Part B — Clipboard slots
-    { category: "Clipboard", file: "save-slot-1", title: "Save Clipboard to Slot 1", actionId: "clipboard.slot1.save_current", body: "{}" },
-    { category: "Clipboard", file: "paste-slot-1", title: "Paste Slot 1", actionId: "clipboard.slot1.paste", body: "{}" },
-    { category: "Clipboard", file: "save-slot-2", title: "Save Clipboard to Slot 2", actionId: "clipboard.slot2.save_current", body: "{}" },
-    { category: "Clipboard", file: "paste-slot-2", title: "Paste Slot 2", actionId: "clipboard.slot2.paste", body: "{}" },
-    { category: "Clipboard", file: "save-slot-3", title: "Save Clipboard to Slot 3", actionId: "clipboard.slot3.save_current", body: "{}" },
-    { category: "Clipboard", file: "paste-slot-3", title: "Paste Slot 3", actionId: "clipboard.slot3.paste", body: "{}" },
-    { category: "Clipboard", file: "open-clipboard", title: "Open Clipboard", actionId: "clipboard.open", body: "{}" },
-    // Part C — Multi-copy
-    { category: "Clipboard", file: "multicopy-add", title: "Multi-copy: Add Current", actionId: "clipboard.multi_copy_add_current", body: "{}", note: "Adds the current clipboard to the active multi-copy session (secrets are skipped)." },
-    { category: "Clipboard", file: "multicopy-paste-group", title: "Multi-copy: Paste Group", actionId: "clipboard.paste_multi_copy_group", body: "{}" },
-    { category: "Clipboard", file: "multicopy-clear", title: "Multi-copy: Clear Session", actionId: "clipboard.clear_multi_copy_session", body: "{\"confirmedDangerous\":true}" },
-    // Part D — Drop
-    { category: "Drop", file: "open-drop", title: "Open Drop", actionId: "drop.open", body: "{}" },
-    { category: "Drop", file: "send-clipboard-to-phone", title: "Send Clipboard to Phone", actionId: "drop.send_clipboard_to_drop", body: "{}" },
-    { category: "Drop", file: "copy-latest-phone-text", title: "Copy Latest Phone Text", actionId: "drop.copy_latest_phone_text", body: "{}" },
-    { category: "Drop", file: "open-incoming-folder", title: "Open Incoming Folder", actionId: "drop.open_incoming_folder", body: "{}" },
-    // Part E — Journal / Calendar / Finance / Backup
-    { category: "Journal", file: "start-todays-journal", title: "Start Today's Journal", actionId: "journal.start_today_voice", body: "{}", note: "Starts the journal voice workflow; falls back to opening today's entry if speech is unavailable." },
-    { category: "Journal", file: "save-journal", title: "Save Journal", actionId: "journal.save_voice", body: "{}" },
-    { category: "Journal", file: "open-journal", title: "Open Journal", actionId: "journal.open_today", body: "{}" },
-    { category: "Calendar", file: "open-today-calendar", title: "Open Today's Calendar", actionId: "calendar.show_today", body: "{}" },
-    { category: "Calendar", file: "show-upcoming-events", title: "Show Upcoming Events", actionId: "calendar.show_upcoming", body: "{}" },
-    { category: "Finance", file: "open-finance", title: "Open Finance", actionId: "finance.open", body: "{}" },
-    { category: "Backup", file: "backup-now", title: "Backup Now", actionId: "backup.create", body: "{}" },
-    { category: "Backup", file: "open-backup-folder", title: "Open Backup Folder", actionId: "backup.open_folder", body: "{}" }
-  ];
+  const catalogGroups = createStreamDeckActionCatalog(loadProjects());
+  const buttons = streamDeckCatalogItems(catalogGroups);
 
-  // Part F — Dev: per configured project, Start + Stop (Dev Launch Profiles are
-  // not present in this build, so use the existing project start/stop actions).
-  const projects = loadProjects();
-  for (const project of projects) {
-    const hasStart = Boolean(project.commands?.start?.trim());
-    buttons.push(hasStart
-      ? { category: "Dev", file: `start-${project.id}`, title: `Start ${project.name}`, actionId: `dev.project.${project.id}.run_start`, body: "{}" }
-      : { category: "Dev", file: `start-${project.id}`, title: `Start ${project.name}`, placeholder: true, note: `No start command configured for ${project.name}. Set one in DexNest Dev, then re-export.` });
-    buttons.push({ category: "Dev", file: `stop-${project.id}`, title: `Stop ${project.name}`, actionId: `dev.project.${project.id}.stop`, body: "{\"confirmedDangerous\":true}", note: "Stops the project (stop command / Docker / configured ports)." });
-  }
-  if (projects.length === 0) {
-    buttons.push({ category: "Dev", file: "no-projects", title: "No Dev projects configured", placeholder: true, note: "Add a Dev project in DexNest, then re-export to get Start/Stop buttons." });
-  }
-
-  const scriptFor = (button: Button): string => {
+  const scriptFor = (button: (typeof buttons)[number]): string => {
     const lines: string[] = [
       `# DexNest Stream Deck: ${button.title}${button.placeholder ? " (PLACEHOLDER)" : ""}`,
       "# Calls the local DexNest action endpoint. No secrets or API keys are stored here.",
@@ -14083,7 +15552,7 @@ function exportStreamDeckButtonPack(source: DexNestActionTrigger): { ok: boolean
     }
     lines.push("$ErrorActionPreference = 'SilentlyContinue'");
     lines.push(`$uri = '${endpointBase}/${button.actionId}'`);
-    lines.push(`$body = '${button.body ?? "{}"}'`);
+    lines.push(`$body = '${JSON.stringify(button.params ?? {}).replace(/'/g, "''")}'`);
     lines.push("Invoke-RestMethod -Method Post -Uri $uri -ContentType 'application/json' -Body $body | Out-Null");
     return lines.join("\r\n") + "\r\n";
   };
@@ -14571,6 +16040,9 @@ function navigationTargetForAction(actionId: string): { view: string; focusAssis
     "drop.open": { view: "drop", message: "DexNest opened Drop." },
     "clipboard.open": { view: "clipboard", message: "DexNest opened Clipboard." },
     "dev.open_dashboard": { view: "dev", message: "DexNest opened Dev." },
+    "utilities.open": { view: "utilities", message: "DexNest opened Utilities." },
+    "timetable.open": { view: "timetable", message: "DexNest opened Timetable." },
+    "timetable.show_today": { view: "timetable", message: "DexNest opened today's Timetable." },
     "vault.open": { view: "vault", message: "DexNest opened Vault." },
     "settings.open": { view: "settings", message: "DexNest opened Settings." },
     "audit.open_history": { view: "audit", message: "DexNest opened Audit." },
@@ -15347,6 +16819,34 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
     }
   }
 
+  if (action.module === "timetable") {
+    const result = runTimetableAction(action, source, payload);
+    if (result) {
+      return result;
+    }
+  }
+
+  if (action.module === "utilities") {
+    const result = runUtilitiesAction(action, source, payload);
+    if (result) {
+      return result;
+    }
+  }
+
+  if (action.module === "weather") {
+    const result = await runWeatherAction(action, source, payload);
+    if (result) {
+      return result;
+    }
+  }
+
+  if (action.module === "news") {
+    const result = await runNewsAction(action, source, payload);
+    if (result) {
+      return result;
+    }
+  }
+
   if (action.module === "finder") {
     const result = runFinderAction(action, source, payload);
     if (result) {
@@ -15524,6 +17024,7 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
       "voice.route_command": "voice_intent_detected",
       "voice.confirm_command": "voice_command_confirmed",
       "voice.cancel_command": "voice_command_cancelled",
+      "voice.validate_capabilities": "voice_capabilities_validated",
       "voice.start_dictation_placeholder": "voice_dictation_started",
       "voice.tts_response": "voice_tts_response",
       "voice.ambient.update_settings": "ambient_voice_settings_updated",
@@ -15637,7 +17138,10 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
       durationMs: typeof input.durationMs === "number" ? input.durationMs : null,
       sensitivityCategory: typeof input.sensitivityCategory === "string" ? input.sensitivityCategory : null,
       source: typeof input.source === "string" ? input.source : source,
-      speechRecognitionAvailable: typeof input.speechRecognitionAvailable === "boolean" ? input.speechRecognitionAvailable : null
+      speechRecognitionAvailable: typeof input.speechRecognitionAvailable === "boolean" ? input.speechRecognitionAvailable : null,
+      displayedPhraseCount: typeof input.displayedPhraseCount === "number" ? input.displayedPhraseCount : null,
+      brokenPhraseCount: typeof input.brokenPhraseCount === "number" ? input.brokenPhraseCount : null,
+      confirmationPhraseCount: typeof input.confirmationPhraseCount === "number" ? input.confirmationPhraseCount : null
     };
     const requestedStatus = typeof input.status === "string" ? input.status : "success";
     const auditStatus: DexNestEventStatus = requestedStatus === "failed"
@@ -16556,6 +18060,12 @@ function registerIpcHandlers(): void {
     savedSearchesPath,
     journalEntriesPath,
     calendarEventsPath,
+    timetablePath,
+    utilitiesPath,
+    weatherSettingsPath,
+    weatherCachePath,
+    newsSettingsPath,
+    newsCachePath,
     nudgesPath,
     nudgeSettingsPath,
     finderItemsPath,
@@ -16639,6 +18149,14 @@ function registerIpcHandlers(): void {
   ipcMain.handle("dexnest:get-journal-state", () => journalState());
 
   ipcMain.handle("dexnest:get-calendar-state", () => calendarState());
+
+  ipcMain.handle("dexnest:get-timetable-state", () => timetableState());
+
+  ipcMain.handle("dexnest:get-utilities-state", () => utilitiesState());
+
+  ipcMain.handle("dexnest:get-weather-state", () => weatherState());
+
+  ipcMain.handle("dexnest:get-news-state", () => newsState());
 
   ipcMain.handle("dexnest:get-finder-state", () => finderState());
 
@@ -17205,6 +18723,8 @@ app.whenReady().then(() => {
   startActionEndpoint();
   refreshNudges("system", false);
   startHeatmapTimer();
+  scheduleWeatherAutoRefresh();
+  scheduleNewsAutoRefresh();
   startClipboardListener();
   registerClipboardHotkey();
   reconcileSlotHook();
@@ -17240,6 +18760,14 @@ app.on("before-quit", () => {
   stopWakeEngine();
   destroyVoiceOverlay();
   stopHeatmapTimer();
+  if (weatherRefreshTimer) {
+    clearTimeout(weatherRefreshTimer);
+    weatherRefreshTimer = null;
+  }
+  if (newsRefreshTimer) {
+    clearTimeout(newsRefreshTimer);
+    newsRefreshTimer = null;
+  }
   stopClipboardListener();
   unregisterClipboardHotkey();
   unregisterAmbientVoiceShortcut();

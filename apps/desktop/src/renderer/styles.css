@@ -258,6 +258,22 @@ button:focus-visible {
   --accent: var(--accent-calendar);
 }
 
+.accent-timetable {
+  --accent: var(--accent-timetable);
+}
+
+.accent-utilities {
+  --accent: var(--accent-utilities);
+}
+
+.accent-weather {
+  --accent: var(--accent-weather);
+}
+
+.accent-news {
+  --accent: var(--accent-news);
+}
+
 .accent-finder {
   --accent: var(--accent-finder);
 }

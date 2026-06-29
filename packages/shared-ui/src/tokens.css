@@ -20,6 +20,18 @@
   --accent-deck: #A855F7;
   --accent-journal: #F59E0B;
   --accent-calendar: #14B8A6;
+  --accent-timetable: #2DD4BF;
+  --accent-timetable-secondary: #C084FC;
+  --accent-timetable-glow: rgba(45, 212, 191, 0.22);
+  --accent-utilities: #A3E635;
+  --accent-utilities-secondary: #22D3EE;
+  --accent-utilities-glow: rgba(163, 230, 53, 0.18);
+  --accent-weather: #60A5FA;
+  --accent-weather-secondary: #22D3EE;
+  --accent-weather-glow: rgba(96, 165, 250, 0.18);
+  --accent-news: #FACC15;
+  --accent-news-secondary: #6366F1;
+  --accent-news-glow: rgba(250, 204, 21, 0.16);
   --accent-finder: #84CC16;
   --accent-heatmap: #EF4444;
   --accent-voice: #06B6D4;

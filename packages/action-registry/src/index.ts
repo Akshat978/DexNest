@@ -2,6 +2,207 @@ import type { DexNestActionDefinition } from "@dexnest/shared-types";
 
 const actionIdPattern = /^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)+$/;
 
+export interface StreamDeckCatalogProject {
+  id: string;
+  name: string;
+  commands?: {
+    start?: string;
+  };
+}
+
+export interface StreamDeckCatalogItem {
+  category: string;
+  file: string;
+  title: string;
+  actionId?: string;
+  params?: Record<string, unknown>;
+  description?: string;
+  note?: string;
+  placeholder?: boolean;
+}
+
+export interface StreamDeckCatalogGroup {
+  id: string;
+  title: string;
+  description: string;
+  items: StreamDeckCatalogItem[];
+}
+
+const baseStreamDeckCatalog: StreamDeckCatalogGroup[] = [
+  {
+    id: "core-command",
+    title: "Core / Command",
+    description: "Primary DexNest entry points and local system controls.",
+    items: [
+      { category: "Core", file: "open-command", title: "Open Command", actionId: "command.open_home", params: {}, description: "Open the Command dashboard." },
+      { category: "Core", file: "toggle-performance-mode", title: "Toggle Performance Mode", actionId: "system.performance.toggle", params: {}, description: "Pause or resume heavier DexNest workers." },
+      { category: "Core", file: "lock-sensitive-session", title: "Lock Sensitive Session", actionId: "system.lifecycle.lock_sensitive_session", params: {}, description: "Lock Vault and sensitive assistant sessions." },
+      { category: "Core", file: "open-app-health", title: "Open App Health", actionId: "system.health.open", params: {}, description: "Open DexNest diagnostics." }
+    ]
+  },
+  {
+    id: "search-ask",
+    title: "Search / Ask",
+    description: "Search, smart lookup, and voice entry actions.",
+    items: [
+      { category: "Search", file: "open-search", title: "Open Search", actionId: "search.open", params: {}, description: "Open Search and Ask DexNest." },
+      { category: "Search", file: "start-mic", title: "Start Mic / Ask DexNest", actionId: "assistant.start_listening", params: {}, description: "Start background listening.", note: "Works minimized/tray; shows the voice overlay and does not force-open the app." }
+    ]
+  },
+  {
+    id: "clipboard",
+    title: "Clipboard",
+    description: "Slots and multi-copy actions safe for Stream Deck.",
+    items: [
+      { category: "Clipboard", file: "save-slot-1", title: "Save Clipboard to Slot 1", actionId: "clipboard.slot1.save_current", params: {}, description: "Save current clipboard into slot 1." },
+      { category: "Clipboard", file: "paste-slot-1", title: "Paste Slot 1", actionId: "clipboard.slot1.paste", params: {}, description: "Paste clipboard slot 1." },
+      { category: "Clipboard", file: "save-slot-2", title: "Save Clipboard to Slot 2", actionId: "clipboard.slot2.save_current", params: {}, description: "Save current clipboard into slot 2." },
+      { category: "Clipboard", file: "paste-slot-2", title: "Paste Slot 2", actionId: "clipboard.slot2.paste", params: {}, description: "Paste clipboard slot 2." },
+      { category: "Clipboard", file: "save-slot-3", title: "Save Clipboard to Slot 3", actionId: "clipboard.slot3.save_current", params: {}, description: "Save current clipboard into slot 3." },
+      { category: "Clipboard", file: "paste-slot-3", title: "Paste Slot 3", actionId: "clipboard.slot3.paste", params: {}, description: "Paste clipboard slot 3." },
+      { category: "Clipboard", file: "open-clipboard", title: "Open Clipboard", actionId: "clipboard.open", params: {}, description: "Open Clipboard." },
+      { category: "Clipboard", file: "multicopy-add", title: "Multi-copy: Add Current", actionId: "clipboard.multi_copy_add_current", params: {}, description: "Add current clipboard to the active multi-copy session.", note: "Secrets are skipped." },
+      { category: "Clipboard", file: "multicopy-paste-group", title: "Multi-copy: Paste Group", actionId: "clipboard.paste_multi_copy_group", params: {}, description: "Paste the active multi-copy group." },
+      { category: "Clipboard", file: "multicopy-clear", title: "Multi-copy: Clear Session", actionId: "clipboard.clear_multi_copy_session", params: { confirmedDangerous: true }, description: "Clear the temporary multi-copy session." }
+    ]
+  },
+  {
+    id: "drop",
+    title: "Drop",
+    description: "PC-phone handoff actions.",
+    items: [
+      { category: "Drop", file: "open-drop", title: "Open Drop", actionId: "drop.open", params: {}, description: "Open Drop." },
+      { category: "Drop", file: "send-clipboard-to-phone", title: "Send Clipboard to Phone", actionId: "drop.send_clipboard_to_drop", params: {}, description: "Send the current clipboard to the phone shelf." },
+      { category: "Drop", file: "copy-latest-phone-text", title: "Copy Latest Phone Text", actionId: "drop.copy_latest_phone_text", params: {}, description: "Copy the newest phone text into Windows clipboard." },
+      { category: "Drop", file: "open-incoming-folder", title: "Open Incoming Folder", actionId: "drop.open_incoming_folder", params: {}, description: "Open the Drop receive folder." }
+    ]
+  },
+  {
+    id: "journal",
+    title: "Journal",
+    description: "Daily journal voice and open actions.",
+    items: [
+      { category: "Journal", file: "start-todays-journal", title: "Start Today's Journal", actionId: "journal.start_today_voice", params: {}, description: "Start the journal voice workflow.", note: "Falls back to opening today's entry if speech is unavailable." },
+      { category: "Journal", file: "save-journal", title: "Save Journal", actionId: "journal.save_voice", params: {}, description: "Save the active journal voice entry." },
+      { category: "Journal", file: "open-journal", title: "Open Journal", actionId: "journal.open_today", params: {}, description: "Open today's journal entry." }
+    ]
+  },
+  {
+    id: "calendar",
+    title: "Calendar",
+    description: "Local calendar views.",
+    items: [
+      { category: "Calendar", file: "open-today-calendar", title: "Open Today's Calendar", actionId: "calendar.show_today", params: {}, description: "Open today's local calendar." },
+      { category: "Calendar", file: "show-upcoming-events", title: "Show Upcoming Events", actionId: "calendar.show_upcoming", params: {}, description: "Open upcoming events." }
+    ]
+  },
+  {
+    id: "finance",
+    title: "Finance",
+    description: "Manual finance dashboard.",
+    items: [
+      { category: "Finance", file: "open-finance", title: "Open Finance", actionId: "finance.open", params: {}, description: "Open Finance." }
+    ]
+  },
+  {
+    id: "backup",
+    title: "Backup",
+    description: "Local backup controls.",
+    items: [
+      { category: "Backup", file: "backup-now", title: "Backup Now", actionId: "backup.create", params: {}, description: "Create a local DexNest backup." },
+      { category: "Backup", file: "open-backup-folder", title: "Open Backup Folder", actionId: "backup.open_folder", params: {}, description: "Open the backup folder." }
+    ]
+  },
+  {
+    id: "external-devices",
+    title: "External Devices",
+    description: "Configured local device actions.",
+    items: [
+      { category: "External Devices", file: "govee-toggle", title: "Toggle Govee Default", actionId: "external.govee.toggle", params: {}, description: "Toggle the default Govee device or group." },
+      { category: "External Devices", file: "govee-on", title: "Govee On", actionId: "external.govee.turn_on", params: {}, description: "Turn on the default Govee device or group." },
+      { category: "External Devices", file: "govee-off", title: "Govee Off", actionId: "external.govee.turn_off", params: {}, description: "Turn off the default Govee device or group." },
+      { category: "External Devices", file: "govee-brightness-40", title: "Govee Brightness 40", actionId: "external.govee.set_brightness", params: { brightness: 40 }, description: "Set default Govee brightness to 40%." }
+    ]
+  },
+  {
+    id: "timetable",
+    title: "Timetable",
+    description: "Weekly routine planner and current-block controls.",
+    items: [
+      { category: "Timetable", file: "open-timetable", title: "Open Timetable", actionId: "timetable.open", params: {}, description: "Open the Timetable weekly planner." },
+      { category: "Timetable", file: "show-todays-timetable", title: "Show Today's Timetable", actionId: "timetable.show_today", params: {}, description: "Open Timetable focused on today." },
+      { category: "Timetable", file: "what-should-i-do-now", title: "What Should I Do Now", actionId: "timetable.current_block", params: {}, description: "Show the current Timetable block." },
+      { category: "Timetable", file: "mark-current-block-done", title: "Mark Current Block Done", actionId: "timetable.mark_done", params: {}, description: "Mark the current Timetable block done for this week." },
+      { category: "Timetable", file: "skip-current-block", title: "Skip Current Block", actionId: "timetable.mark_skipped", params: {}, description: "Mark the current Timetable block skipped for this week." }
+    ]
+  },
+  {
+    id: "utilities",
+    title: "Utilities",
+    description: "Local calculator, timers, stopwatch, and converters.",
+    items: [
+      { category: "Utilities", file: "open-utilities", title: "Open Utilities", actionId: "utilities.open", params: {}, description: "Open the Utilities workspace." },
+      { category: "Utilities", file: "start-timer-25", title: "Start Timer 25 Minutes", actionId: "utilities.timer.start", params: { durationMinutes: 25 }, description: "Start a 25-minute focus timer." },
+      { category: "Utilities", file: "start-stopwatch", title: "Start Stopwatch", actionId: "utilities.stopwatch.start", params: {}, description: "Start the local stopwatch." },
+      { category: "Utilities", file: "pause-stopwatch", title: "Stop / Pause Stopwatch", actionId: "utilities.stopwatch.pause", params: {}, description: "Pause (or resume) the local stopwatch." },
+      { category: "Utilities", file: "reset-stopwatch", title: "Reset Stopwatch", actionId: "utilities.stopwatch.reset", params: {}, description: "Reset the local stopwatch." },
+      { category: "Utilities", file: "open-calculator", title: "Open Calculator / Utilities", actionId: "utilities.open", params: {}, description: "Open Utilities (calculator, converters, clocks)." }
+    ]
+  },
+  {
+    id: "weather",
+    title: "Weather",
+    description: "Optional local weather controls. Weather has no sidebar view; Show Weather opens Command where the widget appears.",
+    items: [
+      { category: "Weather", file: "refresh-weather", title: "Refresh Weather", actionId: "weather.refresh", params: {}, description: "Fetch the latest weather when Weather is enabled.", note: "No-op with a message when Weather is disabled in Settings." },
+      { category: "Weather", file: "toggle-weather", title: "Toggle Weather Enabled", actionId: "weather.toggle_enabled", params: {}, description: "Enable or disable optional Weather." },
+      { category: "Weather", file: "show-weather", title: "Show Weather / Ask Weather", actionId: "command.open_home", params: {}, description: "Open Command, where the Weather widget is shown.", note: "Weather has no dedicated sidebar module; the widget shows on Command when Weather is enabled." }
+    ]
+  },
+  {
+    id: "news",
+    title: "News",
+    description: "Optional RSS headlines and morning briefing.",
+    items: [
+      { category: "News", file: "open-news", title: "Open News", actionId: "news.open", params: {}, description: "Open the News workspace." },
+      { category: "News", file: "refresh-news", title: "Refresh News", actionId: "news.refresh", params: {}, description: "Fetch selected RSS headlines when News is enabled." },
+      { category: "News", file: "read-morning-news", title: "Read Morning News", actionId: "news.read_briefing", params: {}, description: "Read a concise local TTS briefing from cached headlines." },
+      { category: "News", file: "show-ai-news", title: "Show AI News", actionId: "news.read_briefing", params: { category: "AI" }, description: "Read the cached AI headlines briefing." },
+      { category: "News", file: "show-finance-news", title: "Show Finance News", actionId: "news.read_briefing", params: { category: "Finance" }, description: "Read the cached Finance headlines briefing." },
+      { category: "News", file: "show-sports-news", title: "Show Sports News", actionId: "news.read_briefing", params: { category: "Sports" }, description: "Read the cached Sports headlines briefing." }
+    ]
+  }
+];
+
+export function streamDeckCatalogItems(groups: StreamDeckCatalogGroup[]): StreamDeckCatalogItem[] {
+  return groups.flatMap((group) => group.items);
+}
+
+export function createStreamDeckActionCatalog(projects: StreamDeckCatalogProject[] = []): StreamDeckCatalogGroup[] {
+  const groups: StreamDeckCatalogGroup[] = baseStreamDeckCatalog.map((group) => ({
+    ...group,
+    items: group.items.map((item) => ({ ...item, params: item.params ? { ...item.params } : undefined }))
+  }));
+  const devItems: StreamDeckCatalogItem[] = projects.flatMap((project) => {
+    const hasStart = Boolean(project.commands?.start?.trim());
+    return [
+      hasStart
+        ? { category: "Dev", file: `start-${project.id}`, title: `Start ${project.name}`, actionId: `dev.project.${project.id}.run_start`, params: {}, description: `Start ${project.name}.` }
+        : { category: "Dev", file: `start-${project.id}`, title: `Start ${project.name}`, placeholder: true, description: `No start command configured for ${project.name}.`, note: `Set a start command for ${project.name} in DexNest Dev, then re-export.` },
+      { category: "Dev", file: `stop-${project.id}`, title: `Stop ${project.name}`, actionId: `dev.project.${project.id}.stop`, params: { confirmedDangerous: true }, description: `Stop ${project.name}.`, note: "Stops the project using stop command, Docker, or configured ports." }
+    ];
+  });
+  groups.push({
+    id: "dev",
+    title: "Dev",
+    description: "Per-project Dev controls generated from saved DexNest projects.",
+    items: devItems.length > 0
+      ? devItems
+      : [{ category: "Dev", file: "no-projects", title: "No Dev projects configured", placeholder: true, description: "Add a Dev project in DexNest, then re-export to get Start/Stop buttons." }]
+  });
+  return groups;
+}
+
 export const seededActions = [
   {
     id: "command.open_home",
@@ -2059,6 +2260,117 @@ export const seededActions = [
     enabled: true,
     status: "available"
   },
+  ...[
+    ["timetable.open", "Open Timetable", "Open the DexNest Timetable weekly routine planner.", "timetable.navigation", "safe", false, "desktop.view.timetable"],
+    ["timetable.create_block", "Create Timetable Block", "Create a local DexNest Timetable routine block.", "timetable.blocks", "caution", false, "timetable.create_block"],
+    ["timetable.update_block", "Update Timetable Block", "Update a local DexNest Timetable routine block.", "timetable.blocks", "caution", false, "timetable.update_block"],
+    ["timetable.delete_block", "Delete Timetable Block", "Delete a local DexNest Timetable routine block.", "timetable.blocks", "danger", true, "timetable.delete_block"],
+    ["timetable.mark_done", "Mark Current Block Done", "Mark the current DexNest Timetable block done for this week.", "timetable.status", "caution", false, "timetable.mark_done"],
+    ["timetable.mark_skipped", "Skip Current Block", "Mark the current DexNest Timetable block skipped for this week.", "timetable.status", "caution", false, "timetable.mark_skipped"],
+    ["timetable.move_block", "Move Timetable Block", "Move or reschedule a DexNest Timetable block.", "timetable.blocks", "caution", false, "timetable.move_block"],
+    ["timetable.copy_day", "Copy Timetable Day", "Copy one Timetable day into another day.", "timetable.day", "caution", false, "timetable.copy_day"],
+    ["timetable.clear_day", "Clear Timetable Day", "Clear all blocks for one Timetable day.", "timetable.day", "danger", true, "timetable.clear_day"],
+    ["timetable.set_active_template", "Set Active Timetable Template", "Set the active weekly Timetable template.", "timetable.templates", "caution", false, "timetable.set_active_template"],
+    ["timetable.show_today", "Show Today's Timetable", "Open DexNest Timetable focused on today.", "timetable.navigation", "safe", false, "desktop.view.timetable"],
+    ["timetable.current_block", "Current Timetable Block", "Show the current DexNest Timetable block.", "timetable.status", "safe", false, "timetable.current_block"]
+  ].map(([id, title, description, category, dangerLevel, requiresConfirmation, handlerRef]): DexNestActionDefinition => ({
+    id: id as string,
+    title: title as string,
+    moduleId: "timetable",
+    module: "timetable",
+    description: description as string,
+    category: category as string,
+    dangerLevel: dangerLevel as "safe" | "caution" | "danger" | "critical",
+    requiresConfirmation: requiresConfirmation as boolean,
+    confirmationRule: requiresConfirmation ? "Timetable day/block deletion requires confirmation." : null,
+    reversible: false,
+    undoActionId: null,
+    handlerType: "internal_function" as const,
+    handlerRef: handlerRef as string,
+    allowedTriggers: ["command", "deck", "keyboard_shortcut", "tray", "assistant", "ambient_voice", "ambient_wake_word", "push_to_talk", "voice", "routine", "module_ui"] as Array<"command" | "deck" | "keyboard_shortcut" | "tray" | "assistant" | "ambient_voice" | "ambient_wake_word" | "push_to_talk" | "voice" | "routine" | "module_ui">,
+    enabled: true,
+    status: "available" as const
+  })),
+  ...[
+    ["utilities.open", "Open Utilities", "Open the DexNest Utilities workspace.", "utilities.navigation", "safe", false, "desktop.view.utilities"],
+    ["utilities.calculate", "Calculate", "Run a safe local calculator expression.", "utilities.calculator", "safe", false, "utilities.calculate"],
+    ["utilities.copy_result", "Copy Utility Result", "Copy the latest Utilities result to the Windows clipboard.", "utilities.output", "safe", false, "utilities.copy_result"],
+    ["utilities.convert_units", "Convert Units", "Convert local units such as length, weight, temperature, time, volume, or data size.", "utilities.converter", "safe", false, "utilities.convert_units"],
+    ["utilities.date_calculate", "Date Calculate", "Run local date calculations using the PC local date.", "utilities.date", "safe", false, "utilities.date_calculate"],
+    ["utilities.timer.start", "Start Timer", "Start a local DexNest Utilities timer.", "utilities.timer", "caution", false, "utilities.timer.start"],
+    ["utilities.timer.pause", "Pause Timer", "Pause the active Utilities timer.", "utilities.timer", "caution", false, "utilities.timer.pause"],
+    ["utilities.timer.reset", "Reset Timer", "Reset the active Utilities timer.", "utilities.timer", "caution", false, "utilities.timer.reset"],
+    ["utilities.stopwatch.start", "Start Stopwatch", "Start the local Utilities stopwatch.", "utilities.stopwatch", "caution", false, "utilities.stopwatch.start"],
+    ["utilities.stopwatch.pause", "Pause Stopwatch", "Pause the local Utilities stopwatch.", "utilities.stopwatch", "caution", false, "utilities.stopwatch.pause"],
+    ["utilities.stopwatch.reset", "Reset Stopwatch", "Reset the local Utilities stopwatch.", "utilities.stopwatch", "caution", false, "utilities.stopwatch.reset"],
+    ["utilities.world_clock.add", "Add World Clock", "Add a manually configured local world clock.", "utilities.world_clock", "caution", false, "utilities.world_clock.add"],
+    ["utilities.world_clock.remove", "Remove World Clock", "Remove a local Utilities world clock.", "utilities.world_clock", "caution", false, "utilities.world_clock.remove"]
+  ].map(([id, title, description, category, dangerLevel, requiresConfirmation, handlerRef]): DexNestActionDefinition => ({
+    id: id as string,
+    title: title as string,
+    moduleId: "utilities",
+    module: "utilities",
+    description: description as string,
+    category: category as string,
+    dangerLevel: dangerLevel as "safe" | "caution" | "danger" | "critical",
+    requiresConfirmation: requiresConfirmation as boolean,
+    confirmationRule: null,
+    reversible: false,
+    undoActionId: null,
+    handlerType: "internal_function" as const,
+    handlerRef: handlerRef as string,
+    allowedTriggers: ["command", "deck", "keyboard_shortcut", "tray", "assistant", "ambient_voice", "ambient_wake_word", "push_to_talk", "voice", "routine", "module_ui"] as Array<"command" | "deck" | "keyboard_shortcut" | "tray" | "assistant" | "ambient_voice" | "ambient_wake_word" | "push_to_talk" | "voice" | "routine" | "module_ui">,
+    enabled: true,
+    status: "available" as const
+  })),
+  ...[
+    ["weather.refresh", "Refresh Weather", "Fetch the latest optional DexNest Weather data from Open-Meteo when Weather is enabled.", "weather.refresh", "safe", false, "weather.refresh"],
+    ["weather.update_settings", "Update Weather Settings", "Update optional DexNest Weather settings.", "weather.settings", "caution", false, "weather.update_settings"],
+    ["weather.toggle_enabled", "Toggle Weather", "Enable or disable optional DexNest Weather.", "weather.settings", "caution", false, "weather.toggle_enabled"]
+  ].map(([id, title, description, category, dangerLevel, requiresConfirmation, handlerRef]) => ({
+    id: id as string,
+    title: title as string,
+    moduleId: "weather",
+    module: "weather",
+    description: description as string,
+    category: category as string,
+    dangerLevel: dangerLevel as "safe" | "caution" | "danger" | "critical",
+    requiresConfirmation: requiresConfirmation as boolean,
+    confirmationRule: null,
+    reversible: false,
+    undoActionId: null,
+    handlerType: "internal_function" as const,
+    handlerRef: handlerRef as string,
+    allowedTriggers: ["command", "deck", "keyboard_shortcut", "tray", "assistant", "ambient_voice", "ambient_wake_word", "push_to_talk", "voice", "routine", "module_ui"] as Array<"command" | "deck" | "keyboard_shortcut" | "tray" | "assistant" | "ambient_voice" | "ambient_wake_word" | "push_to_talk" | "voice" | "routine" | "module_ui">,
+    enabled: true,
+    status: "available" as const
+  })),
+  ...[
+    ["news.open", "Open News", "Open the optional DexNest News RSS workspace.", "news.navigation", "safe", false, "desktop.view.news"],
+    ["news.refresh", "Refresh News", "Fetch selected RSS headlines when DexNest News is enabled.", "news.refresh", "safe", false, "news.refresh"],
+    ["news.update_settings", "Update News Settings", "Update optional DexNest News settings and RSS sources.", "news.settings", "caution", false, "news.update_settings"],
+    ["news.read_briefing", "Read Morning News", "Read a concise local TTS briefing from cached News headlines.", "news.briefing", "safe", false, "news.read_briefing"],
+    ["news.open_headline", "Open News Headline", "Open one RSS headline link in the browser.", "news.headlines", "safe", false, "news.open_headline"],
+    ["news.save_headline_to_journal", "Save Headline to Journal", "Save a News headline summary into the local Journal.", "news.headlines", "caution", false, "news.save_headline_to_journal"],
+    ["news.toggle_enabled", "Toggle News", "Enable or disable optional DexNest News.", "news.settings", "caution", false, "news.toggle_enabled"]
+  ].map(([id, title, description, category, dangerLevel, requiresConfirmation, handlerRef]) => ({
+    id: id as string,
+    title: title as string,
+    moduleId: "news",
+    module: "news",
+    description: description as string,
+    category: category as string,
+    dangerLevel: dangerLevel as "safe" | "caution" | "danger" | "critical",
+    requiresConfirmation: requiresConfirmation as boolean,
+    confirmationRule: null,
+    reversible: false,
+    undoActionId: null,
+    handlerType: "internal_function" as const,
+    handlerRef: handlerRef as string,
+    allowedTriggers: ["command", "deck", "stream_deck_http", "keyboard_shortcut", "tray", "assistant", "ambient_voice", "ambient_wake_word", "push_to_talk", "voice", "routine", "module_ui"] as Array<"command" | "deck" | "stream_deck_http" | "keyboard_shortcut" | "tray" | "assistant" | "ambient_voice" | "ambient_wake_word" | "push_to_talk" | "voice" | "routine" | "module_ui">,
+    enabled: true,
+    status: "available" as const
+  })),
   {
     id: "calendar.open",
     title: "Open Calendar",
@@ -2310,6 +2622,7 @@ export const seededActions = [
     ["voice.route_command", "Route Voice Command", "Route spoken or typed command text to a local DexNest intent.", "voice.routing", "safe", false],
     ["voice.confirm_command", "Confirm Voice Command", "Confirm and run a routed DexNest voice command.", "voice.routing", "caution", false],
     ["voice.cancel_command", "Cancel Voice Command", "Cancel a routed DexNest voice command before execution.", "voice.routing", "safe", false],
+    ["voice.validate_capabilities", "Validate Voice Commands", "Dry-run the displayed Things You Can Say commands without executing actions.", "voice.routing", "safe", false],
     ["voice.start_dictation_placeholder", "Start Voice Dictation", "Start click-to-speak dictation when browser SpeechRecognition is available, otherwise show a local fallback.", "voice.input", "safe", false],
     ["speech.update_settings", "Update Speech Settings", "Update DexNest shared local speech service settings.", "voice.speech", "caution", false],
     ["speech.check_model", "Check Speech Model", "Check the selected local speech model and engine.", "voice.speech", "safe", false],

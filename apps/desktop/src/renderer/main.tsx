@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExtern
 import { createRoot } from "react-dom/client";
 import QRCode from "qrcode";
 import { formatLocalDate, formatLocalDateTime, getLocalTodayDateString, parseLocalDateInput, resolveRelativeLocalDate, toLocalDateInputValue } from "@dexnest/shared-types";
+import { createStreamDeckActionCatalog } from "@dexnest/action-registry";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Command, Code2, LayoutGrid, ClipboardList, Share2, Wrench, Vault, Sparkles, Inbox,
@@ -20,8 +21,8 @@ import {
   TrendingDown, Repeat, Receipt, CreditCard, Banknote,
   Target, EyeOff,
   Hammer, FlaskConical, TerminalSquare, GitBranch, Circle,
-  Pin, WifiOff, Lightbulb, Power, Plug, Sun, Snowflake, Flame,
-  Palette, Keyboard, AudioLines, User, type LucideIcon
+  Pin, WifiOff, Lightbulb, Power, Plug, Sun, CloudSun, Snowflake, Flame,
+  Palette, Keyboard, AudioLines, User, Calculator, Timer, Globe2, Newspaper, type LucideIcon
 } from "lucide-react";
 import { GlassCard, SectionTitle } from "./components/ui/GlassCard";
 import { StatusChip } from "./components/ui/StatusChip";
@@ -35,7 +36,7 @@ import "@dexnest/shared-ui/tokens.css";
 import "./styles.css";
 import "./theme.css";
 
-type ViewId = "command" | "dev" | "deck" | "clipboard" | "drop" | "tools" | "vault" | "search" | "capture" | "journal" | "calendar" | "finder" | "finance" | "heatmap" | "devices" | "backup" | "health" | "audit" | "settings";
+type ViewId = "command" | "dev" | "deck" | "clipboard" | "drop" | "tools" | "vault" | "search" | "capture" | "journal" | "calendar" | "timetable" | "utilities" | "news" | "finder" | "finance" | "heatmap" | "devices" | "backup" | "health" | "audit" | "settings";
 type ActionStatus = "success" | "failed" | "skipped" | "cancelled" | "pending";
 type ToastTone = "success" | "error";
 type AppCloseBehavior = "minimize_to_tray" | "ask" | "exit";
@@ -98,6 +99,12 @@ interface AppInfo {
   savedSearchesPath: string;
   journalEntriesPath: string;
   calendarEventsPath: string;
+  timetablePath: string;
+  utilitiesPath: string;
+  weatherSettingsPath: string;
+  weatherCachePath: string;
+  newsSettingsPath: string;
+  newsCachePath: string;
   nudgesPath: string;
   nudgeSettingsPath: string;
   finderItemsPath: string;
@@ -1317,6 +1324,226 @@ interface CalendarState {
   nudgeSettings: NudgeSettings;
 }
 
+type TimetableDay = "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
+type TimetableBlockStatus = "planned" | "done" | "skipped" | "moved";
+
+interface TimetableBlock {
+  id: string;
+  day: TimetableDay;
+  startTime: string;
+  endTime: string;
+  title: string;
+  category: string;
+  accent: string;
+  notes: string;
+  status: TimetableBlockStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface TimetableTemplate {
+  id: string;
+  name: string;
+  blocks: TimetableBlock[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface TimetableFile {
+  activeTemplateId: string;
+  templates: TimetableTemplate[];
+  updatedAt: string;
+}
+
+interface TimetableState {
+  file: TimetableFile;
+  activeTemplate: TimetableTemplate;
+  templates: TimetableTemplate[];
+  activeTemplateId: string;
+  today: TimetableDay;
+  selectedDay: TimetableDay;
+  currentBlock: TimetableBlock | null;
+  nextBlock: TimetableBlock | null;
+  stats: {
+    plannedHours: number;
+    done: number;
+    skipped: number;
+    remaining: number;
+  };
+  calendarConflicts: CalendarEvent[];
+  timetablePath: string;
+}
+
+type UtilityResultType = "calculation" | "conversion" | "date";
+type UtilityTimerStatus = "idle" | "running" | "paused" | "done";
+type UtilityStopwatchStatus = "idle" | "running" | "paused";
+type UtilityConversionCategory = "length" | "weight" | "temperature" | "volume" | "time" | "data";
+
+interface UtilityRecentResult {
+  id: string;
+  type: UtilityResultType;
+  input: string;
+  result: string;
+  createdAt: string;
+}
+
+interface UtilityConversionPreset {
+  id: string;
+  category: UtilityConversionCategory;
+  fromUnit: string;
+  toUnit: string;
+  createdAt: string;
+}
+
+interface UtilityTimer {
+  id: string;
+  label: string;
+  durationSeconds: number;
+  remainingSeconds: number;
+  status: UtilityTimerStatus;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface UtilityStopwatch {
+  status: UtilityStopwatchStatus;
+  elapsedMs: number;
+  startedAt?: string | null;
+  laps: Array<{ id: string; elapsedMs: number; createdAt: string }>;
+  history: Array<{ id: string; elapsedMs: number; createdAt: string }>;
+  updatedAt: string;
+}
+
+interface UtilityWorldClock {
+  id: string;
+  label: string;
+  timeZone: string;
+  createdAt: string;
+}
+
+interface UtilitiesState {
+  recentResults: UtilityRecentResult[];
+  conversionPresets: UtilityConversionPreset[];
+  timers: UtilityTimer[];
+  stopwatch: UtilityStopwatch;
+  worldClocks: UtilityWorldClock[];
+  settings: { defaultTimerMinutes: number; speakTimerDone: boolean };
+  updatedAt: string;
+  activeTimer: UtilityTimer | null;
+  utilitiesPath: string;
+}
+
+type WeatherUnits = "metric" | "imperial";
+type WeatherRefreshMode = "manual" | "every_30_min" | "every_1_hour" | "every_2_hours";
+type WeatherCacheStatus = "empty" | "fresh" | "stale" | "offline" | "error";
+
+interface WeatherSettings {
+  weatherEnabled: boolean;
+  locationName: string;
+  latitude: number | null;
+  longitude: number | null;
+  units: WeatherUnits;
+  showWeatherOnCommand: boolean;
+  refreshMode: WeatherRefreshMode;
+  refreshOnCommandOpen: boolean;
+  provider: "open_meteo";
+  lastRefreshAt: string | null;
+  lastAutoRefreshAt: string | null;
+}
+
+interface WeatherCache {
+  provider: "open_meteo";
+  locationName: string;
+  latitude: number | null;
+  longitude: number | null;
+  units: WeatherUnits;
+  temperature: number | null;
+  feelsLike: number | null;
+  condition: string;
+  weatherCode: number | null;
+  high: number | null;
+  low: number | null;
+  precipitationChance: number | null;
+  windSpeed: number | null;
+  fetchedAt: string | null;
+  sourceStatus: "online" | "cached" | "offline" | "error";
+  error: string | null;
+}
+
+interface WeatherState {
+  settings: WeatherSettings;
+  cache: WeatherCache;
+  settingsPath: string;
+  cachePath: string;
+  status: WeatherCacheStatus;
+  cacheTtlMinutes: number | null;
+  nextRefreshAt: string | null;
+  autoRefreshActive: boolean;
+}
+
+type NewsCategory = "Top" | "Canada" | "India" | "World" | "Tech" | "AI" | "Finance" | "Sports" | "Health" | "Science" | "Business";
+type NewsRefreshMode = "manual" | "every_1_hour" | "every_3_hours" | "every_6_hours" | "daily_morning";
+type NewsCacheStatus = "empty" | "fresh" | "stale" | "offline" | "error";
+
+interface NewsSource {
+  id: string;
+  category: NewsCategory;
+  name: string;
+  url: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+  lastTestAt?: string | null;
+  lastTestStatus?: "success" | "failed" | null;
+  lastError?: string | null;
+}
+
+interface NewsSettings {
+  newsEnabled: boolean;
+  selectedCategories: NewsCategory[];
+  refreshMode: NewsRefreshMode;
+  maxItemsPerCategory: number;
+  readMorningBriefingCategories: NewsCategory[];
+  showNewsOnCommand: boolean;
+  provider: "rss";
+  sources: NewsSource[];
+  lastRefreshAt: string | null;
+  lastAutoRefreshAt: string | null;
+}
+
+interface NewsHeadline {
+  id: string;
+  category: NewsCategory;
+  title: string;
+  source: string;
+  sourceId: string;
+  link: string;
+  summary: string;
+  publishedAt: string | null;
+  fetchedAt: string;
+}
+
+interface NewsCache {
+  provider: "rss";
+  headlines: NewsHeadline[];
+  fetchedAt: string | null;
+  sourceStatus: "online" | "cached" | "offline" | "error";
+  error: string | null;
+  categoryCounts: Record<string, number>;
+}
+
+interface NewsState {
+  settings: NewsSettings;
+  cache: NewsCache;
+  settingsPath: string;
+  cachePath: string;
+  status: NewsCacheStatus;
+  nextRefreshAt: string | null;
+  autoRefreshActive: boolean;
+}
+
 type FinderItemStatus = "at_home" | "lent_out" | "missing" | "archived";
 type FinderItemConfidence = "sure" | "maybe" | "old";
 
@@ -1712,6 +1939,10 @@ interface DexNestBridge {
   getSearchState: () => Promise<SearchState>;
   getJournalState: () => Promise<JournalState>;
   getCalendarState: () => Promise<CalendarState>;
+  getTimetableState: () => Promise<TimetableState>;
+  getUtilitiesState: () => Promise<UtilitiesState>;
+  getWeatherState: () => Promise<WeatherState>;
+  getNewsState: () => Promise<NewsState>;
   getFinderState: () => Promise<FinderState>;
   getFinanceState: () => Promise<FinanceState>;
   getCaptureState: () => Promise<CaptureState>;
@@ -2013,6 +2244,110 @@ const defaultStreamDeckSettings: StreamDeckSettings = {
   updatedAt: new Date().toISOString()
 };
 
+const TIMETABLE_DAYS: TimetableDay[] = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+const defaultTimetableTemplate: TimetableTemplate = {
+  id: "default-week",
+  name: "Default Week",
+  blocks: [],
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString()
+};
+const defaultTimetableState: TimetableState = {
+  file: { activeTemplateId: "default-week", templates: [defaultTimetableTemplate], updatedAt: new Date().toISOString() },
+  activeTemplate: defaultTimetableTemplate,
+  templates: [defaultTimetableTemplate],
+  activeTemplateId: "default-week",
+  today: "monday",
+  selectedDay: "monday",
+  currentBlock: null,
+  nextBlock: null,
+  stats: { plannedHours: 0, done: 0, skipped: 0, remaining: 0 },
+  calendarConflicts: [],
+  timetablePath: "./local-data/settings/timetable.json"
+};
+
+const defaultUtilitiesState: UtilitiesState = {
+  recentResults: [],
+  conversionPresets: [],
+  timers: [],
+  stopwatch: { status: "idle", elapsedMs: 0, startedAt: null, laps: [], history: [], updatedAt: new Date().toISOString() },
+  worldClocks: [],
+  settings: { defaultTimerMinutes: 25, speakTimerDone: false },
+  updatedAt: new Date().toISOString(),
+  activeTimer: null,
+  utilitiesPath: "./local-data/settings/utilities.json"
+};
+
+const defaultWeatherState: WeatherState = {
+  settings: {
+    weatherEnabled: false,
+    locationName: "",
+    latitude: null,
+    longitude: null,
+    units: "metric",
+    showWeatherOnCommand: true,
+    refreshMode: "manual",
+    refreshOnCommandOpen: false,
+    provider: "open_meteo",
+    lastRefreshAt: null,
+    lastAutoRefreshAt: null
+  },
+  cache: {
+    provider: "open_meteo",
+    locationName: "",
+    latitude: null,
+    longitude: null,
+    units: "metric",
+    temperature: null,
+    feelsLike: null,
+    condition: "",
+    weatherCode: null,
+    high: null,
+    low: null,
+    precipitationChance: null,
+    windSpeed: null,
+    fetchedAt: null,
+    sourceStatus: "cached",
+    error: null
+  },
+  settingsPath: "./local-data/settings/weather-settings.json",
+  cachePath: "./local-data/settings/weather-cache.json",
+  status: "empty",
+  cacheTtlMinutes: null,
+  nextRefreshAt: null,
+  autoRefreshActive: false
+};
+
+const NEWS_CATEGORIES: NewsCategory[] = ["Top", "Canada", "India", "World", "Tech", "AI", "Finance", "Sports", "Health", "Science", "Business"];
+
+const defaultNewsState: NewsState = {
+  settings: {
+    newsEnabled: false,
+    selectedCategories: [],
+    refreshMode: "manual",
+    maxItemsPerCategory: 10,
+    readMorningBriefingCategories: [],
+    showNewsOnCommand: true,
+    provider: "rss",
+    sources: [],
+    lastRefreshAt: null,
+    lastAutoRefreshAt: null
+  },
+  cache: {
+    provider: "rss",
+    headlines: [],
+    fetchedAt: null,
+    sourceStatus: "cached",
+    error: null,
+    categoryCounts: {}
+  },
+  settingsPath: "./local-data/settings/news-settings.json",
+  cachePath: "./local-data/settings/news-cache.json",
+  status: "empty",
+  nextRefreshAt: null,
+  autoRefreshActive: false
+};
+
 const fallbackBridge: DexNestBridge = {
   getAppInfo: async () => ({
     appName: "DexNest",
@@ -2063,6 +2398,12 @@ const fallbackBridge: DexNestBridge = {
     savedSearchesPath: "./local-data/settings/saved-searches.json",
     journalEntriesPath: "./local-data/settings/journal-entries.json",
     calendarEventsPath: "./local-data/settings/calendar-events.json",
+    timetablePath: "./local-data/settings/timetable.json",
+    utilitiesPath: "./local-data/settings/utilities.json",
+    weatherSettingsPath: "./local-data/settings/weather-settings.json",
+    weatherCachePath: "./local-data/settings/weather-cache.json",
+    newsSettingsPath: "./local-data/settings/news-settings.json",
+    newsCachePath: "./local-data/settings/news-cache.json",
     nudgesPath: "./local-data/settings/nudges.json",
     nudgeSettingsPath: "./local-data/settings/nudge-settings.json",
     finderItemsPath: "./local-data/settings/finder-items.json",
@@ -2255,6 +2596,10 @@ const fallbackBridge: DexNestBridge = {
       backupReminderAfterDays: 7
     }
   }),
+  getTimetableState: async () => defaultTimetableState,
+  getUtilitiesState: async () => defaultUtilitiesState,
+  getWeatherState: async () => defaultWeatherState,
+  getNewsState: async () => defaultNewsState,
   getFinderState: async () => ({
     items: [],
     itemsPath: "./local-data/settings/finder-items.json",
@@ -2443,6 +2788,9 @@ const views: Array<{ id: ViewId; label: string; accentClass: string; actionId: s
   { id: "vault", label: "Vault", accentClass: "accent-vault", actionId: "vault.open" },
   { id: "journal", label: "Journal", accentClass: "accent-journal", actionId: "journal.open_today" },
   { id: "calendar", label: "Calendar", accentClass: "accent-calendar", actionId: "calendar.show_today" },
+  { id: "timetable", label: "Timetable", accentClass: "accent-timetable", actionId: "timetable.open" },
+  { id: "utilities", label: "Utilities", accentClass: "accent-utilities", actionId: "utilities.open" },
+  { id: "news", label: "News", accentClass: "accent-news", actionId: "news.open" },
   { id: "finder", label: "Finder", accentClass: "accent-finder", actionId: "finder.open" },
   { id: "capture", label: "Capture", accentClass: "accent-capture", actionId: "capture.open" },
   { id: "finance", label: "Finance", accentClass: "accent-finance", actionId: "finance.open" },
@@ -2469,6 +2817,10 @@ const MODULE_META: Record<string, { icon: LucideIcon; accent: string }> = {
   capture: { icon: Inbox, accent: "#EC4899" },
   journal: { icon: NotebookPen, accent: "#F59E0B" },
   calendar: { icon: CalendarDays, accent: "#14B8A6" },
+  timetable: { icon: CalendarClock, accent: "var(--accent-timetable)" },
+  utilities: { icon: Calculator, accent: "var(--accent-utilities)" },
+  weather: { icon: CloudSun, accent: "var(--accent-weather)" },
+  news: { icon: Newspaper, accent: "var(--accent-news)" },
   finder: { icon: PackageSearch, accent: "#84CC16" },
   finance: { icon: Wallet, accent: "#22C55E" },
   heatmap: { icon: Activity, accent: "#EF4444" },
@@ -2491,6 +2843,9 @@ const moduleCards = [
   ["capture", "Capture", "Shared inbox for unsorted local items.", "available"],
   ["journal", "Journal", "Private daily capture and shutdown flow.", "available"],
   ["calendar", "Calendar", "Local events and reminders foundation.", "available"],
+  ["timetable", "Timetable", "Weekly routine and current block cockpit.", "available"],
+  ["utilities", "Utilities", "Local calculator, timers, converters, and clocks.", "available"],
+  ["news", "News", "Optional RSS headlines and morning briefing.", "available"],
   ["finder", "Finder", "Physical item-location memory.", "available"],
   ["finance", "Finance", "Manual expenses, receipts, and reminders.", "available"],
   ["heatmap", "Heatmap", "Local app usage and goals.", "available"]
@@ -2522,6 +2877,15 @@ const voiceModuleAliases: Record<string, { module: ViewId; actionId: string }> =
   finance: { module: "finance", actionId: "finance.open" },
   journal: { module: "journal", actionId: "journal.open_today" },
   calendar: { module: "calendar", actionId: "calendar.show_today" },
+  timetable: { module: "timetable", actionId: "timetable.open" },
+  utilities: { module: "utilities", actionId: "utilities.open" },
+  calculator: { module: "utilities", actionId: "utilities.open" },
+  timer: { module: "utilities", actionId: "utilities.open" },
+  stopwatch: { module: "utilities", actionId: "utilities.open" },
+  "world clock": { module: "utilities", actionId: "utilities.open" },
+  news: { module: "news", actionId: "news.open" },
+  "weekly timetable": { module: "timetable", actionId: "timetable.open" },
+  routine: { module: "timetable", actionId: "timetable.open" },
   finder: { module: "finder", actionId: "finder.open" },
   heatmap: { module: "heatmap", actionId: "heatmap.open" },
   audit: { module: "audit", actionId: "audit.open_history" },
@@ -2542,60 +2906,139 @@ const voiceModuleAliases: Record<string, { module: ViewId; actionId: string }> =
 type VoiceSourceTag = "J" | "P" | "T" | "D";
 interface VoiceCapabilityItem { label: string; examples: string[]; sources: VoiceSourceTag[]; }
 interface VoiceCapabilityGroup { module: string; accent: string; items: VoiceCapabilityItem[]; }
+type VoiceValidationStatus = "works" | "needs_confirmation" | "unsupported" | "ambiguous" | "missing_action";
+interface VoiceValidationResult {
+  module: string;
+  label: string;
+  phrase: string;
+  status: VoiceValidationStatus;
+  routerUsed: AssistantRouterUsed;
+  actionId?: string;
+  workflow?: string;
+  intent?: VoiceIntentName;
+  message: string;
+}
 
 const ALL_VOICE: VoiceSourceTag[] = ["J", "P", "T", "D"];
 const VOICE_NO_DECK: VoiceSourceTag[] = ["J", "P", "T"];
 
-const VOICE_CAPABILITY_GROUPS: VoiceCapabilityGroup[] = [
-  { module: "Core", accent: "#22D3EE", items: [
+// Base capability map. The Dev group's project-specific phrases are computed
+// from the live action registry at runtime (see getVoiceCapabilityGroups), so
+// only phrases that actually resolve are ever displayed or validated — no fake
+// or aspirational commands.
+const BASE_VOICE_CAPABILITY_GROUPS: VoiceCapabilityGroup[] = [
+  { module: "Command / Core", accent: "var(--accent-command)", items: [
     { label: "Open Command", examples: ["open command", "go home"], sources: ALL_VOICE },
-    { label: "Open Settings", examples: ["open settings"], sources: ALL_VOICE },
-    { label: "Show App Health", examples: ["show app health", "open app health"], sources: ALL_VOICE },
-    { label: "Performance Mode on/off", examples: ["turn on performance mode", "turn off performance mode"], sources: ALL_VOICE },
-    { label: "Lock sensitive session", examples: ["lock sensitive session"], sources: ALL_VOICE }
+    { label: "Open Settings", examples: ["open settings"], sources: ALL_VOICE }
   ] },
-  { module: "Search / Vault", accent: "#10B981", items: [
+  { module: "Search / Ask DexNest", accent: "var(--accent-search)", items: [
     { label: "Search", examples: ["search work permit", "find document passport"], sources: VOICE_NO_DECK },
-    { label: "Open / Lock Vault", examples: ["open vault", "lock vault"], sources: ALL_VOICE },
     { label: "Smart Lookup", examples: ["what is my work permit number", "when does my work permit expire"], sources: VOICE_NO_DECK },
     { label: "Find document", examples: ["find my passport document"], sources: VOICE_NO_DECK }
   ] },
-  { module: "Journal / Calendar", accent: "#F59E0B", items: [
-    { label: "Journal", examples: ["start today's journal", "save journal", "open journal"], sources: VOICE_NO_DECK },
-    { label: "Calendar", examples: ["show today's calendar", "show upcoming events"], sources: ALL_VOICE },
-    { label: "Add event", examples: ["add meeting with Tim tomorrow at 3"], sources: VOICE_NO_DECK }
-  ] },
-  { module: "Clipboard / Drop", accent: "#8B5CF6", items: [
+  { module: "Clipboard", accent: "var(--accent-clipboard)", items: [
     { label: "Clipboard slots", examples: ["show clipboard slots", "paste slot 1", "paste slot 2", "paste slot 3"], sources: ALL_VOICE },
+  ] },
+  { module: "Drop", accent: "var(--accent-drop)", items: [
     { label: "Send clipboard to phone", examples: ["send clipboard to phone"], sources: ALL_VOICE },
     { label: "Open Drop", examples: ["open drop"], sources: ALL_VOICE }
   ] },
-  { module: "Dev", accent: "#3B82F6", items: [
-    { label: "Open Dev", examples: ["open dev"], sources: ALL_VOICE },
-    { label: "Run command", examples: ["run typecheck", "run build"], sources: ALL_VOICE },
-    { label: "Project lifecycle", examples: ["start DexNest project", "stop DexNest project", "restart DexNest project"], sources: ALL_VOICE }
+  { module: "Journal", accent: "var(--accent-journal)", items: [
+    { label: "Journal", examples: ["start today's journal", "save journal", "open journal"], sources: VOICE_NO_DECK }
   ] },
-  { module: "Tools / Backup", accent: "#F97316", items: [
-    { label: "Open Tools", examples: ["open tools"], sources: ALL_VOICE },
-    { label: "Backup", examples: ["open backup", "create backup"], sources: ALL_VOICE }
+  { module: "Calendar", accent: "var(--accent-calendar)", items: [
+    { label: "Calendar", examples: ["show today's calendar", "show upcoming events"], sources: ALL_VOICE },
+    { label: "Add event", examples: ["add meeting with Tim tomorrow at 3"], sources: VOICE_NO_DECK }
   ] },
-  { module: "Heatmap", accent: "#EF4444", items: [
-    { label: "Heatmap", examples: ["open heatmap", "pause heatmap", "start heatmap"], sources: ALL_VOICE }
+  { module: "Timetable", accent: "var(--accent-timetable)", items: [
+    { label: "Current block", examples: ["what should I do now", "what am I doing now"], sources: ALL_VOICE },
+    { label: "Today timetable", examples: ["show today's timetable", "open timetable"], sources: ALL_VOICE },
+    { label: "Block status", examples: ["mark current block done", "skip current block"], sources: ALL_VOICE }
   ] },
-  { module: "Deck / Routines", accent: "#A855F7", items: [
+  { module: "Utilities", accent: "var(--accent-utilities)", items: [
+    { label: "Open Utilities", examples: ["open utilities"], sources: ALL_VOICE },
+    { label: "Calculator", examples: ["calculate 15 percent of 2400", "what is 15 percent of 2400"], sources: VOICE_NO_DECK },
+    { label: "Unit conversion", examples: ["convert 5 feet 11 inches to centimeters", "convert 10 kilometers to miles"], sources: VOICE_NO_DECK },
+    { label: "Timers", examples: ["start a 25 minute timer", "pause timer", "reset timer"], sources: ALL_VOICE },
+    { label: "Stopwatch", examples: ["start stopwatch", "stop stopwatch", "reset stopwatch"], sources: ALL_VOICE },
+    { label: "Date and clocks", examples: ["how many days until July 1", "what time is it", "show world clock"], sources: VOICE_NO_DECK }
+  ] },
+  { module: "Weather", accent: "var(--accent-weather)", items: [
+    { label: "Weather", examples: ["what's the weather", "will it rain today", "will it snow today"], sources: VOICE_NO_DECK },
+    { label: "Refresh Weather", examples: ["refresh weather"], sources: ALL_VOICE },
+    { label: "Weather settings", examples: ["enable weather", "disable weather"], sources: ALL_VOICE }
+  ] },
+  { module: "News", accent: "var(--accent-news)", items: [
+    { label: "Open News", examples: ["open news"], sources: ALL_VOICE },
+    { label: "Refresh News", examples: ["refresh news"], sources: ALL_VOICE },
+    { label: "Morning Briefing", examples: ["read morning news", "read my news"], sources: VOICE_NO_DECK },
+    { label: "Category News", examples: ["show AI news", "show tech news", "read finance headlines", "read sports headlines"], sources: VOICE_NO_DECK }
+  ] },
+  { module: "Finder", accent: "var(--accent-finder)", items: [
+    { label: "Finder lookup", examples: ["where is my passport", "what is in black drawer"], sources: VOICE_NO_DECK },
+    { label: "Remember location", examples: ["remember passport is in black drawer"], sources: VOICE_NO_DECK }
+  ] },
+  { module: "Capture", accent: "var(--accent-capture)", items: [
+    { label: "Capture", examples: ["capture this", "remember this"], sources: VOICE_NO_DECK }
+  ] },
+  { module: "Finance", accent: "var(--accent-finance)", items: [
+    { label: "Open Finance", examples: ["open finance"], sources: ALL_VOICE }
+  ] },
+  // Dev project run/lifecycle phrases are injected at runtime from real project
+  // actions (getVoiceCapabilityGroups). Only "Open Dev" is universally available.
+  { module: "Dev", accent: "var(--accent-dev)", items: [
+    { label: "Open Dev", examples: ["open dev"], sources: ALL_VOICE }
+  ] },
+  { module: "Deck / Stream Deck", accent: "var(--accent-deck)", items: [
     { label: "Open Deck", examples: ["open deck", "show stream deck"], sources: ALL_VOICE },
     { label: "Run routine", examples: ["run morning routine", "run dev routine", "run end of day routine"], sources: ALL_VOICE }
   ] },
-  { module: "External Devices", accent: "#FB923C", items: [
+  { module: "External Devices / Govee", accent: "var(--accent-tools)", items: [
     { label: "Lights", examples: ["turn on lights", "turn off lights", "set lights to 40 percent", "make lights blue"], sources: ALL_VOICE },
     { label: "Specific device", examples: ["turn on side lamp", "turn off table lamp"], sources: ALL_VOICE }
   ] },
-  { module: "Finance / Capture / Finder", accent: "#22C55E", items: [
-    { label: "Open modules", examples: ["open finance", "open capture"], sources: ALL_VOICE },
-    { label: "Capture", examples: ["capture this", "remember passport is in black drawer"], sources: VOICE_NO_DECK },
-    { label: "Finder lookup", examples: ["where is my passport", "what is in black drawer"], sources: VOICE_NO_DECK }
+  { module: "Backup", accent: "var(--info)", items: [
+    { label: "Backup", examples: ["open backup", "create backup"], sources: ALL_VOICE }
+  ] },
+  { module: "Performance Mode", accent: "var(--warning)", items: [
+    { label: "Performance Mode on/off", examples: ["turn on performance mode", "turn off performance mode"], sources: ALL_VOICE }
+  ] },
+  { module: "App Health", accent: "var(--success)", items: [
+    { label: "Show App Health", examples: ["show app health", "open app health"], sources: ALL_VOICE }
+  ] },
+  { module: "Vault / Secure Vault", accent: "var(--accent-vault)", items: [
+    { label: "Open / Lock Vault", examples: ["open vault", "lock vault"], sources: ALL_VOICE },
+    { label: "Lock sensitive session", examples: ["lock sensitive session"], sources: ALL_VOICE }
   ] }
 ];
+
+// Build the Dev capability items from the live action registry. Project run and
+// lifecycle phrases are only shown when a matching registered project action
+// exists, so every displayed phrase resolves through the real router. With no
+// Dev projects configured, Dev shows only the always-available "Open Dev".
+function devVoiceCapabilityItems(actions: ActionDefinition[]): VoiceCapabilityItem[] {
+  const items: VoiceCapabilityItem[] = [{ label: "Open Dev", examples: ["open dev"], sources: ALL_VOICE }];
+  const hasRun = (key: string) => actions.some((action) => new RegExp(`^dev\\.project\\..+\\.run_${key}$`).test(action.id));
+  const runExamples = ["typecheck", "build", "test"].filter(hasRun).map((key) => `run ${key}`);
+  if (runExamples.length > 0) {
+    items.push({ label: "Run command", examples: runExamples, sources: ALL_VOICE });
+  }
+  const startAction = actions.find((action) => /^dev\.project\..+\.run_start$/.test(action.id));
+  const projectName = startAction?.title.match(/^Run (.+) start$/)?.[1];
+  const hasStop = actions.some((action) => /^dev\.project\..+\.stop$/.test(action.id));
+  if (projectName && hasStop) {
+    items.push({ label: "Project lifecycle", examples: [`start ${projectName}`, `stop ${projectName}`], sources: ALL_VOICE });
+  } else if (projectName) {
+    items.push({ label: "Project lifecycle", examples: [`start ${projectName}`], sources: ALL_VOICE });
+  }
+  return items;
+}
+
+function getVoiceCapabilityGroups(actions: ActionDefinition[]): VoiceCapabilityGroup[] {
+  return BASE_VOICE_CAPABILITY_GROUPS.map((group) =>
+    group.module === "Dev" ? { ...group, items: devVoiceCapabilityItems(actions) } : group
+  );
+}
 
 function normalizeVoiceCommand(value: string): string {
   return value.toLowerCase().replace(/[^\w\s:'-]/g, " ").replace(/\s+/g, " ").trim();
@@ -3236,6 +3679,57 @@ function routeVoiceCommand(input: string, actions: ActionDefinition[], workflowS
 // Fast deterministic command router (Phase 23 Part D). Handles obvious commands
 // instantly without ever calling Ollama. Returns null for anything it is not
 // confident about, so the rules router + optional LLM can take over.
+const utilityUnitCategoryMap: Record<string, UtilityConversionCategory> = {
+  mm: "length", millimeter: "length", millimeters: "length",
+  cm: "length", centimeter: "length", centimeters: "length",
+  m: "length", meter: "length", meters: "length",
+  km: "length", kilometer: "length", kilometers: "length",
+  in: "length", inch: "length", inches: "length",
+  ft: "length", foot: "length", feet: "length",
+  yd: "length", yard: "length", yards: "length",
+  mi: "length", mile: "length", miles: "length",
+  g: "weight", gram: "weight", grams: "weight",
+  kg: "weight", kilogram: "weight", kilograms: "weight",
+  lb: "weight", lbs: "weight", pound: "weight", pounds: "weight",
+  oz: "weight", ounce: "weight", ounces: "weight",
+  c: "temperature", celsius: "temperature",
+  f: "temperature", fahrenheit: "temperature",
+  k: "temperature", kelvin: "temperature",
+  ml: "volume", milliliter: "volume", milliliters: "volume",
+  l: "volume", liter: "volume", liters: "volume",
+  gal: "volume", gallon: "volume", gallons: "volume",
+  sec: "time", second: "time", seconds: "time",
+  min: "time", minute: "time", minutes: "time",
+  hr: "time", hour: "time", hours: "time",
+  day: "time", days: "time",
+  b: "data", byte: "data", bytes: "data",
+  kb: "data", mb: "data", gb: "data", tb: "data"
+};
+
+function utilityCategoryForUnits(fromUnit: string, toUnit: string): UtilityConversionCategory | null {
+  const from = utilityUnitCategoryMap[fromUnit.toLowerCase()];
+  const to = utilityUnitCategoryMap[toUnit.toLowerCase()];
+  return from && from === to ? from : null;
+}
+
+function resolveVoiceMonthDate(input: string): string | null {
+  const match = input.match(/\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})\b/i);
+  if (!match) {
+    return null;
+  }
+  const month = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"].indexOf(match[1].toLowerCase());
+  const day = Number(match[2]);
+  if (month < 0 || day < 1 || day > 31) {
+    return null;
+  }
+  const today = parseLocalDateInput(getLocalTodayDateString());
+  const date = new Date(today.getFullYear(), month, day);
+  if (date < today) {
+    date.setFullYear(date.getFullYear() + 1);
+  }
+  return toLocalDateInputValue(date);
+}
+
 // Universal capability fast-path: resolves spoken/typed commands that map
 // directly to registered DexNest actions (clipboard slots, backup, heatmap,
 // Dev project lifecycle, Deck routines). Driven by the action registry + a few
@@ -3248,10 +3742,131 @@ function capabilityFastRoute(normalized: string, trimmed: string, actions: Actio
     return { intent, targetModule, actionId, params, confidence: "high", requiresConfirmation, sensitivity: "none", explanation };
   };
 
+  // Core navigation aliases that users actually say.
+  if (/^(go\s+home|home|open\s+home|command\s+home)$/.test(normalized) && has("command.open_home")) {
+    return make("command.open_home", {}, "Opens DexNest Command Home.", "open_module", "command");
+  }
+
+  // Utilities: local calculator/converter/timer/date fast-paths.
+  const percentMatch = trimmed.match(/\b(?:what\s+is|calculate)?\s*(\d+(?:\.\d+)?)\s*(?:percent|%)\s+of\s+(\d+(?:\.\d+)?)/i);
+  if (percentMatch && has("utilities.calculate")) {
+    const expression = `(${percentMatch[1]}/100)*${percentMatch[2]}`;
+    return make("utilities.calculate", { expression }, "Calculates a local percentage.", "run_action", "utilities");
+  }
+  const calculateMatch = trimmed.match(/^\s*calculate\s+(.+)$/i);
+  if (calculateMatch && has("utilities.calculate")) {
+    const expression = calculateMatch[1].replace(/\bpercent\b/gi, "%");
+    return make("utilities.calculate", { expression }, "Runs the local DexNest Utilities calculator.", "run_action", "utilities");
+  }
+  const mixedFeetMatch = trimmed.match(/\bconvert\s+(\d+(?:\.\d+)?)\s*(?:feet|foot|ft)\s+(\d+(?:\.\d+)?)\s*(?:inches|inch|in)\s+to\s+([a-zA-Z]+)\b/i);
+  if (mixedFeetMatch && has("utilities.convert_units")) {
+    const toUnit = mixedFeetMatch[3];
+    const category = utilityCategoryForUnits("inches", toUnit);
+    if (category) {
+      return make("utilities.convert_units", {
+        category,
+        value: Number(mixedFeetMatch[1]) * 12 + Number(mixedFeetMatch[2]),
+        fromUnit: "inches",
+        toUnit
+      }, "Converts mixed feet and inches locally.", "run_action", "utilities");
+    }
+  }
+  const convertMatch = trimmed.match(/\bconvert\s+(-?\d+(?:\.\d+)?)\s+([a-zA-Z]+)\s+to\s+([a-zA-Z]+)\b/i);
+  if (convertMatch && has("utilities.convert_units")) {
+    const category = utilityCategoryForUnits(convertMatch[2], convertMatch[3]);
+    if (category) {
+      return make("utilities.convert_units", {
+        category,
+        value: Number(convertMatch[1]),
+        fromUnit: convertMatch[2],
+        toUnit: convertMatch[3]
+      }, "Converts units locally.", "run_action", "utilities");
+    }
+  }
+  const timerMatch = normalized.match(/\bstart\b.*?(\d+)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?)\b/);
+  if (timerMatch && has("utilities.timer.start")) {
+    const count = Number(timerMatch[1]);
+    const unit = timerMatch[2];
+    const multiplier = unit.startsWith("hour") || unit.startsWith("hr") ? 3600 : unit.startsWith("sec") ? 1 : 60;
+    return make("utilities.timer.start", {
+      durationSeconds: count * multiplier,
+      label: `${count} ${unit} timer`
+    }, "Starts a local Utilities timer.", "run_action", "utilities");
+  }
+  if (/\bpause\b.*\btimer\b|\btimer\b.*\bpause\b/.test(normalized) && has("utilities.timer.pause")) {
+    return make("utilities.timer.pause", {}, "Pauses the active Utilities timer.", "run_action", "utilities");
+  }
+  if (/\breset\b.*\btimer\b|\btimer\b.*\breset\b/.test(normalized) && has("utilities.timer.reset")) {
+    return make("utilities.timer.reset", {}, "Resets the active Utilities timer.", "run_action", "utilities");
+  }
+  if (/\bstart\b.*\bstopwatch\b|\bstopwatch\b.*\bstart\b/.test(normalized) && has("utilities.stopwatch.start")) {
+    return make("utilities.stopwatch.start", {}, "Starts the Utilities stopwatch.", "run_action", "utilities");
+  }
+  if (/\b(stop|pause)\b.*\bstopwatch\b|\bstopwatch\b.*\b(stop|pause)\b/.test(normalized) && has("utilities.stopwatch.pause")) {
+    return make("utilities.stopwatch.pause", {}, "Pauses the Utilities stopwatch.", "run_action", "utilities");
+  }
+  if (/\breset\b.*\bstopwatch\b|\bstopwatch\b.*\breset\b/.test(normalized) && has("utilities.stopwatch.reset")) {
+    return make("utilities.stopwatch.reset", {}, "Resets the Utilities stopwatch.", "run_action", "utilities");
+  }
+  if (/\bhow many days until\b/.test(normalized) && has("utilities.date_calculate")) {
+    const targetDate = resolveRelativeLocalDate(trimmed) ?? resolveVoiceMonthDate(trimmed);
+    if (targetDate) {
+      return make("utilities.date_calculate", { mode: "countdown", targetDate }, "Calculates a local date countdown.", "run_action", "utilities");
+    }
+  }
+  if (/\bwhat time is it\b|\bcurrent time\b/.test(normalized) && has("utilities.date_calculate")) {
+    return make("utilities.date_calculate", { mode: "time_now" }, "Answers with the local PC time.", "run_action", "utilities");
+  }
+  if (/\b(show|open|view)\b.*\bworld clock\b/.test(normalized) && has("utilities.open")) {
+    return make("utilities.open", {}, "Opens DexNest Utilities world clocks.", "open_module", "utilities");
+  }
+
+  // Weather is explicitly optional online. It only calls Open-Meteo when the
+  // user asks or enabled auto-refresh is due.
+  if (/\bweather\b/.test(normalized) && /\b(enable|turn on)\b/.test(normalized) && has("weather.toggle_enabled")) {
+    return make("weather.toggle_enabled", { enabled: true }, "Enables optional DexNest Weather.", "run_action", "weather");
+  }
+  if (/\bweather\b/.test(normalized) && /\b(disable|turn off)\b/.test(normalized) && has("weather.toggle_enabled")) {
+    return make("weather.toggle_enabled", { enabled: false }, "Disables optional DexNest Weather.", "run_action", "weather");
+  }
+  if (/\b(refresh|update)\b.*\bweather\b|\bweather\b.*\b(refresh|update)\b/.test(normalized) && has("weather.refresh")) {
+    return make("weather.refresh", { refreshReason: "voice" }, "Refreshes optional DexNest Weather.", "run_action", "weather");
+  }
+  if ((/\bweather\b/.test(normalized) || /\b(rain|snow)\b.*\btoday\b/.test(normalized)) && has("weather.refresh")) {
+    return make("weather.refresh", { refreshReason: "voice" }, "Answers with optional local Weather data.", "run_action", "weather");
+  }
+
+  const newsCategoryMatch = normalized.match(/\b(top|canada|india|world|tech|ai|finance|sports|health|science|business)\s+(news|headlines)\b|\b(news|headlines)\s+(about\s+)?(top|canada|india|world|tech|ai|finance|sports|health|science|business)\b/);
+  if (/\bnews\b/.test(normalized) && /\b(open|show)\b/.test(normalized) && !newsCategoryMatch && has("news.open")) {
+    return make("news.open", {}, "Opens DexNest News.", "open_module", "news");
+  }
+  if (/\b(refresh|update)\b.*\bnews\b|\bnews\b.*\b(refresh|update)\b/.test(normalized) && has("news.refresh")) {
+    return make("news.refresh", { refreshReason: "voice" }, "Refreshes optional DexNest News.", "run_action", "news");
+  }
+  if (/\b(read|brief)\b.*\b(morning\s+)?news\b|\bread\s+my\s+news\b/.test(normalized) && has("news.read_briefing")) {
+    return make("news.read_briefing", {}, "Reads the DexNest News morning briefing.", "run_action", "news");
+  }
+  if (newsCategoryMatch && has("news.read_briefing")) {
+    const raw = newsCategoryMatch[1] || newsCategoryMatch[5] || "";
+    const category = raw.toLowerCase() === "ai" ? "AI" : raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
+    return make("news.read_briefing", { category }, `Shows DexNest ${category} News.`, "run_action", "news");
+  }
+
+  // Show Clipboard slots by opening the Clipboard module. Slot paste remains a
+  // separate action below.
+  if (/\bclipboard\b/.test(normalized) && /\b(slots?|quick slots?)\b/.test(normalized) && /\b(show|open|view)\b/.test(normalized) && has("clipboard.open")) {
+    return make("clipboard.open", {}, "Opens DexNest Clipboard slots.", "open_module", "clipboard");
+  }
+
   // Paste Clipboard Slot 1/2/3.
   const slotMatch = normalized.match(/\bslot\s*([123])\b/);
   if (slotMatch && /\bpaste\b/.test(normalized) && has(`clipboard.slot${slotMatch[1]}.paste`)) {
     return make(`clipboard.slot${slotMatch[1]}.paste`, {}, `Pastes Clipboard Slot ${slotMatch[1]} into the focused app.`, "run_action", "clipboard");
+  }
+
+  // Save the active Journal voice session if one is running.
+  if (/\b(save|finish|stop)\b/.test(normalized) && /\b(journal|diary|entry)\b/.test(normalized) && has("journal.save_voice")) {
+    return make("journal.save_voice", {}, "Saves the active DexNest Journal voice entry.", "run_action", "journal");
   }
 
   // Create backup.
@@ -3285,6 +3900,23 @@ function capabilityFastRoute(normalized: string, trimmed: string, actions: Actio
   const routineMatch = trimmed.match(/\brun\s+(.+?)\s+routine\b/i);
   if (routineMatch && has("deck.routine.run")) {
     return make("deck.routine.run", { routineName: routineMatch[1].trim() }, `Runs the ${routineMatch[1].trim()} routine.`, "run_action", "deck");
+  }
+
+  // Timetable discipline cockpit.
+  if (/\bwhat\s+(should|am)\s+i\b.*\b(do|doing)\b/.test(normalized) && has("timetable.current_block")) {
+    return make("timetable.current_block", {}, "Answers with the current DexNest Timetable block.", "run_action", "timetable");
+  }
+  if (/\b(current|now)\b.*\b(timetable|block|routine)\b/.test(normalized) && has("timetable.current_block")) {
+    return make("timetable.current_block", {}, "Answers with the current DexNest Timetable block.", "run_action", "timetable");
+  }
+  if (/\b(show|open|view|go to)\b.*\b(today'?s\s+)?(timetable|schedule|routine)\b/.test(normalized) && has("timetable.show_today")) {
+    return make("timetable.show_today", {}, "Opens today's DexNest Timetable.", "open_module", "timetable");
+  }
+  if (/\bmark\b.*\b(current\s+)?(block|timetable|routine)\b.*\bdone\b/.test(normalized) && has("timetable.mark_done")) {
+    return make("timetable.mark_done", {}, "Marks the current Timetable block done.", "run_action", "timetable");
+  }
+  if (/\b(skip|skipped)\b.*\b(current\s+)?(block|timetable|routine)\b/.test(normalized) && has("timetable.mark_skipped")) {
+    return make("timetable.mark_skipped", {}, "Skips the current Timetable block.", "run_action", "timetable");
   }
 
   return null;
@@ -3420,6 +4052,78 @@ function fastCommandRouter(text: string, actions: ActionDefinition[], workflowSe
   }
 
   return null;
+}
+
+function routeVoiceCommandDryRun(text: string, actions: ActionDefinition[], workflowSettings = defaultVoiceWorkflowSettings): { route: VoiceRouteResult; routerUsed: AssistantRouterUsed } {
+  const fastRoute = fastCommandRouter(text, actions, workflowSettings);
+  if (fastRoute) {
+    return { route: fastRoute, routerUsed: "fast_path" };
+  }
+  return { route: routeVoiceCommand(text, actions, workflowSettings), routerUsed: "rules" };
+}
+
+function validateVoiceCapabilities(actions: ActionDefinition[], workflowSettings = defaultVoiceWorkflowSettings): VoiceValidationResult[] {
+  return getVoiceCapabilityGroups(actions).flatMap((group) => group.items.flatMap((item) => item.examples.map((phrase) => {
+    const { route, routerUsed } = routeVoiceCommandDryRun(phrase, actions, workflowSettings);
+    const action = route.actionId ? actions.find((candidate) => candidate.id === route.actionId) : undefined;
+    let status: VoiceValidationStatus = "works";
+    let message = "Dry-run resolved to a registered DexNest action.";
+
+    if (!route.actionId) {
+      status = route.confidence === "low" ? "unsupported" : "ambiguous";
+      message = route.explanation || "No registered action was resolved.";
+    } else if (!action) {
+      status = "missing_action";
+      message = "Resolved route points to an action that is not currently registered.";
+    } else if (route.confidence === "low") {
+      status = "ambiguous";
+      message = "Resolver produced a low-confidence route.";
+    } else if (route.requiresConfirmation || action.requiresConfirmation || action.dangerLevel === "danger" || action.dangerLevel === "critical") {
+      status = "needs_confirmation";
+      message = "Dry-run resolves, but the real action requires confirmation.";
+    }
+
+    return {
+      module: group.module,
+      label: item.label,
+      phrase,
+      status,
+      routerUsed,
+      actionId: route.actionId,
+      workflow: typeof route.params?.workflowMode === "string" ? route.params.workflowMode : undefined,
+      intent: route.intent,
+      message
+    };
+  })));
+}
+
+function voiceValidationBroken(results: VoiceValidationResult[]): VoiceValidationResult[] {
+  return results.filter((result) => result.status === "unsupported" || result.status === "ambiguous" || result.status === "missing_action");
+}
+
+function addVoiceValidationHealth(health: AppHealthState, actions: ActionDefinition[], workflowSettings = defaultVoiceWorkflowSettings): AppHealthState {
+  const results = validateVoiceCapabilities(actions, workflowSettings);
+  const broken = voiceValidationBroken(results);
+  const checks: HealthCheckResult[] = [
+    {
+      id: "voice-capabilities-displayed",
+      label: "Displayed voice commands",
+      status: broken.length > 0 ? "warn" : "pass",
+      detail: broken.length > 0 ? `${broken.length} displayed phrases need routing cleanup.` : `${results.length} displayed phrases resolve in dry-run.`,
+      suggestion: broken.length > 0 ? "Open Settings -> Things you can say and run validation." : undefined
+    }
+  ];
+  const groups = [...health.groups.filter((group) => group.id !== "voice-capabilities"), { id: "voice-capabilities", title: "Voice Commands", checks }];
+  const summary = groups.flatMap((group) => group.checks).reduce((acc, check) => {
+    acc[check.status] += 1;
+    return acc;
+  }, { pass: 0, warn: 0, fail: 0 });
+  return {
+    ...health,
+    groups,
+    summary,
+    overallStatus: summary.fail > 0 ? "fail" : summary.warn > 0 ? "warn" : "pass"
+  };
 }
 
 const assistantSensitiveRegex = /\b(sin|social insurance|passport|health card|work permit|permit number|document number|uci|expiry|expires|valid until)\b/i;
@@ -4412,6 +5116,10 @@ function DexNestApp() {
       backupReminderAfterDays: 7
     }
   });
+  const [timetableState, setTimetableState] = useState<TimetableState>(defaultTimetableState);
+  const [utilitiesState, setUtilitiesState] = useState<UtilitiesState>(defaultUtilitiesState);
+  const [weatherState, setWeatherState] = useState<WeatherState>(defaultWeatherState);
+  const [newsState, setNewsState] = useState<NewsState>(defaultNewsState);
   const [finderState, setFinderState] = useState<FinderState>({
     items: [],
     itemsPath: "",
@@ -5429,7 +6137,7 @@ function DexNestApp() {
     try {
       const view = activeViewRef.current;
       // Always-needed lightweight/global states (sidebar, dashboard, indicators).
-      const [info, nextActions, nextProjects, nextCommandResults, nextPinnedActionIds, nextClipboardState, nextDropState, nextToolsState, nextJournalState, nextCalendarState, nextRoutinesState, nextPerformanceState, nextPerformanceSettings, nextCommandStats, nextEvents, nextAmbientVoiceState, nextSpeechState, nextVoiceWorkflowSettings] = await Promise.all([
+      const [info, nextActions, nextProjects, nextCommandResults, nextPinnedActionIds, nextClipboardState, nextDropState, nextToolsState, nextJournalState, nextCalendarState, nextTimetableState, nextUtilitiesState, nextWeatherState, nextNewsState, nextRoutinesState, nextPerformanceState, nextPerformanceSettings, nextCommandStats, nextEvents, nextAmbientVoiceState, nextSpeechState, nextVoiceWorkflowSettings] = await Promise.all([
         getBridge().getAppInfo(),
         getBridge().listActions(),
         getBridge().listProjects(),
@@ -5440,6 +6148,10 @@ function DexNestApp() {
         getBridge().getToolsState(),
         getBridge().getJournalState(),
         getBridge().getCalendarState(),
+        getBridge().getTimetableState(),
+        getBridge().getUtilitiesState(),
+        getBridge().getWeatherState(),
+        getBridge().getNewsState(),
         getBridge().getRoutinesState(),
         getBridge().getPerformanceModeState(),
         getBridge().getPerformanceModeSettings(),
@@ -5460,6 +6172,10 @@ function DexNestApp() {
       setToolsState(nextToolsState);
       setJournalState(nextJournalState);
       setCalendarState(nextCalendarState);
+      setTimetableState(nextTimetableState);
+      setUtilitiesState(nextUtilitiesState);
+      setWeatherState(nextWeatherState);
+      setNewsState(nextNewsState);
       setRoutinesState(nextRoutinesState);
       setPerformanceModeState(nextPerformanceState);
       setPerformanceModeSettings(nextPerformanceSettings);
@@ -5497,7 +6213,7 @@ function DexNestApp() {
   }
 
   async function refreshProjectsAndActions(): Promise<void> {
-    const [info, nextActions, nextProjects, nextCommandResults, nextPinnedActionIds, nextClipboardState, nextDropState, nextToolsState, nextVaultState, nextSearchState, nextJournalState, nextCalendarState, nextFinderState, nextFinanceState, nextCaptureState, nextHeatmapState, nextRoutinesState, nextPerformanceState, nextPerformanceSettings, nextCommandStats, nextEvents, nextAmbientVoiceState, nextSpeechState] = await Promise.all([
+    const [info, nextActions, nextProjects, nextCommandResults, nextPinnedActionIds, nextClipboardState, nextDropState, nextToolsState, nextVaultState, nextSearchState, nextJournalState, nextCalendarState, nextTimetableState, nextUtilitiesState, nextWeatherState, nextNewsState, nextFinderState, nextFinanceState, nextCaptureState, nextHeatmapState, nextRoutinesState, nextPerformanceState, nextPerformanceSettings, nextCommandStats, nextEvents, nextAmbientVoiceState, nextSpeechState] = await Promise.all([
       getBridge().getAppInfo(),
       getBridge().listActions(),
       getBridge().listProjects(),
@@ -5510,6 +6226,10 @@ function DexNestApp() {
       getBridge().getSearchState(),
       getBridge().getJournalState(),
       getBridge().getCalendarState(),
+      getBridge().getTimetableState(),
+      getBridge().getUtilitiesState(),
+      getBridge().getWeatherState(),
+      getBridge().getNewsState(),
       getBridge().getFinderState(),
       getBridge().getFinanceState(),
       getBridge().getCaptureState(),
@@ -5535,6 +6255,10 @@ function DexNestApp() {
     setSearchState(nextSearchState);
     setJournalState(nextJournalState);
     setCalendarState(nextCalendarState);
+    setTimetableState(nextTimetableState);
+    setUtilitiesState(nextUtilitiesState);
+    setWeatherState(nextWeatherState);
+    setNewsState(nextNewsState);
     setFinderState(nextFinderState);
     setFinanceState(nextFinanceState);
     setCaptureState(nextCaptureState);
@@ -5674,15 +6398,25 @@ function DexNestApp() {
         aria-label="DexNest navigation"
         className={`relative z-30 flex h-screen flex-col border-r border-[#161616] bg-[#050505] transition-[width] duration-300 ${sidebarCollapsed ? "w-[68px]" : "w-[244px]"}`}
       >
-        <div className="flex items-center gap-2.5 border-b border-[#161616] px-4 py-4">
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-[#1f1f1f] bg-black">
+        <div className={`flex items-center border-b border-[#161616] py-4 ${sidebarCollapsed ? "justify-center gap-1 px-1" : "gap-2.5 px-4"}`}>
+          <span className={`flex shrink-0 items-center justify-center overflow-hidden rounded-xl border border-[#1f1f1f] bg-black ${sidebarCollapsed ? "h-8 w-8" : "h-9 w-9"}`}>
             <img src={logoUrl} alt="DexNest" className="h-full w-full object-cover" />
           </span>
           {!sidebarCollapsed && (
-            <div className="leading-tight">
+            <div className="min-w-0 flex-1 leading-tight">
               <p className="text-sm font-semibold tracking-tight text-[#F5F5F5]">DexNest</p>
             </div>
           )}
+          <button
+            type="button"
+            data-testid="sidebar-toggle"
+            onClick={() => setSidebarCollapsed((current) => !current)}
+            title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            className={`flex shrink-0 items-center justify-center rounded-lg border border-[#262626] bg-[#0d0d0d] text-[#A3A3A3] transition-colors hover:border-[#3a3a3a] hover:text-[#F5F5F5] ${sidebarCollapsed ? "h-7 w-7" : "h-8 w-8"}`}
+          >
+            {sidebarCollapsed ? <PanelLeft className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+          </button>
         </div>
 
         <nav className="sidebar-scroll flex-1 space-y-0.5 overflow-y-auto px-2.5 py-3">
@@ -5710,8 +6444,8 @@ function DexNestApp() {
           })}
         </nav>
 
-        <div className="border-t border-[#161616]">
-          <div className={sidebarCollapsed ? "flex flex-col items-center gap-2.5 px-2 py-3" : "grid grid-cols-2 gap-1.5 px-2.5 py-3"}>
+        <div className="border-t border-[#161616] pb-3">
+          <div className={sidebarCollapsed ? "flex flex-col items-center gap-3 px-2 py-4" : "grid grid-cols-2 gap-1.5 px-2.5 py-4"}>
             {shellStatus.map((s) => {
               const SIcon = s.icon;
               return sidebarCollapsed ? (
@@ -5731,16 +6465,6 @@ function DexNestApp() {
             })}
           </div>
         </div>
-
-        <button
-          type="button"
-          data-testid="sidebar-toggle"
-          onClick={() => setSidebarCollapsed((current) => !current)}
-          className="flex items-center gap-2 border-t border-[#161616] px-4 py-3 text-[#525252] transition-colors hover:text-[#F5F5F5]"
-        >
-          {sidebarCollapsed ? <PanelLeft className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
-          {!sidebarCollapsed && <span className="text-xs">Collapse</span>}
-        </button>
       </aside>
 
       <div className="relative z-10 flex min-w-0 flex-1 flex-col">
@@ -5864,6 +6588,10 @@ function DexNestApp() {
               clipboardState={clipboardState}
               pinnedActionIds={pinnedActionIds}
               calendarState={calendarState}
+              timetableState={timetableState}
+              utilitiesState={utilitiesState}
+              weatherState={weatherState}
+              newsState={newsState}
               commandStats={commandStats}
               events={events}
               performanceModeState={performanceModeState}
@@ -6025,6 +6753,28 @@ function DexNestApp() {
               onRefresh={refreshShellData}
             />
           )}
+          {activeView === "timetable" && (
+            <TimetableView
+              timetableState={timetableState}
+              calendarState={calendarState}
+              onAction={runUiAction}
+              onRefresh={refreshShellData}
+            />
+          )}
+          {activeView === "utilities" && (
+            <UtilitiesView
+              utilitiesState={utilitiesState}
+              onAction={runUiAction}
+              onRefresh={refreshShellData}
+            />
+          )}
+          {activeView === "news" && (
+            <NewsView
+              newsState={newsState}
+              onAction={runUiAction}
+              onRefresh={refreshShellData}
+            />
+          )}
           {activeView === "finder" && (
             <FinderView
               finderState={finderState}
@@ -6058,16 +6808,18 @@ function DexNestApp() {
             <BackupView backupState={backupState} onAction={runUiAction} onRefresh={refreshShellData} />
           )}
           {activeView === "health" && (
-            <AppHealthView healthState={appHealthState} onRunChecks={async () => { const r = await runUiAction("system.health.run_checks", "module_ui", {}) as { health?: AppHealthState }; setAppHealthState(r?.health ?? await getBridge().getAppHealth()); }} onAction={runUiAction} />
+            <AppHealthView healthState={appHealthState ? addVoiceValidationHealth(appHealthState, actions, voiceWorkflowSettings) : appHealthState} onRunChecks={async () => { const r = await runUiAction("system.health.run_checks", "module_ui", {}) as { health?: AppHealthState }; const health = r?.health ?? await getBridge().getAppHealth(); setAppHealthState(addVoiceValidationHealth(health, actions, voiceWorkflowSettings)); }} onAction={runUiAction} />
           )}
           {activeView === "audit" && <AuditView events={events} onRefresh={handleAction} refreshEvents={refreshEvents} />}
           {activeView === "settings" && (
             <SettingsView
+              actions={actions}
               userName={userName}
               onUserNameChange={setUserName}
               appInfo={appInfo}
               backupState={backupState}
               calendarState={calendarState}
+              weatherState={weatherState}
               performanceModeState={performanceModeState}
               performanceModeSettings={performanceModeSettings}
               ambientVoiceState={ambientVoiceState}
@@ -6306,6 +7058,10 @@ function AskDexNest({
     if (route.actionId === "system.performance.enable") return "Performance Mode is on.";
     if (route.actionId === "system.performance.disable") return "Performance Mode is off.";
     if (route.actionId === "system.performance.toggle") return "Performance Mode toggled.";
+    if (route.actionId?.startsWith("timetable.")) return fallback.replace(/\s+/g, " ").slice(0, 120);
+    if (route.actionId?.startsWith("utilities.")) return fallback.replace(/\s+/g, " ").slice(0, 120);
+    if (route.actionId?.startsWith("weather.")) return fallback.replace(/\s+/g, " ").slice(0, 140);
+    if (route.actionId?.startsWith("news.")) return fallback.replace(/\s+/g, " ").slice(0, 220);
     if (route.intent === "smart_lookup") return resultCount > 0 ? "I found it, but it is hidden for safety." : "I could not find it.";
     if (route.intent === "search_query") return resultCount > 0 ? "I found results." : "I could not find it.";
     if (route.intent === "finder_search" || route.intent === "finder_reverse_lookup") return resultCount > 0 ? "I found it." : "I could not find it.";
@@ -6448,6 +7204,7 @@ function AskDexNest({
     const result = await onAction(route.actionId, commandSource, route.params) as {
       ok?: boolean;
       error?: string;
+      message?: string;
       smartResults?: SmartLookupResult[];
       results?: SearchResult[] | FinderItem[];
     };
@@ -6477,6 +7234,8 @@ function AskDexNest({
     }
     const answerText = result.ok === false
       ? (result.error ?? "DexNest could not complete that.")
+      : result.message
+        ? result.message
       : route.intent === "finder_search"
         ? finderItemLookupAnswer(String(route.params.query ?? ""), finderResults)
         : route.intent === "finder_reverse_lookup"
@@ -7286,6 +8045,10 @@ function CommandView({
   clipboardState,
   pinnedActionIds,
   calendarState,
+  timetableState,
+  utilitiesState,
+  weatherState,
+  newsState,
   commandStats,
   events,
   performanceModeState,
@@ -7302,6 +8065,10 @@ function CommandView({
   clipboardState: ClipboardState;
   pinnedActionIds: string[];
   calendarState: CalendarState;
+  timetableState: TimetableState;
+  utilitiesState: UtilitiesState;
+  weatherState: WeatherState;
+  newsState: NewsState;
   commandStats: CommandStats;
   events: EventEntry[];
   performanceModeState: PerformanceModeState;
@@ -7469,6 +8236,33 @@ function CommandView({
   const dxSuccessRate = dxActionsToday > 0 ? Math.round(((dxActionsToday - dxFailedToday) / dxActionsToday) * 100) : 100;
   const quickActions = pinnedActions.slice(0, 6);
   const perfPauses = ["OCR queue", "Heatmap", "Indexing", "Backups"];
+  const timetableAccent = "var(--accent-timetable)";
+  const timetableNow = timetableState.currentBlock;
+  const timetableNext = timetableState.nextBlock;
+  const utilitiesAccent = "var(--accent-utilities)";
+  const activeTimer = utilitiesState.activeTimer;
+  const latestUtilityResult = utilitiesState.recentResults[0];
+  const weatherAccent = "var(--accent-weather)";
+  const weatherVisible = weatherState.settings.weatherEnabled && weatherState.settings.showWeatherOnCommand;
+  const weatherUnit = weatherTemperatureUnit(weatherState.cache.units);
+  const weatherRefreshRef = useRef("");
+  const newsAccent = "var(--accent-news)";
+  const newsVisible = newsState.settings.newsEnabled && newsState.settings.showNewsOnCommand;
+  const commandNewsHeadlines = newsState.cache.headlines
+    .filter((headline) => newsState.settings.selectedCategories.length === 0 || newsState.settings.selectedCategories.includes(headline.category))
+    .slice(0, 3);
+
+  useEffect(() => {
+    if (!weatherVisible || !weatherState.settings.refreshOnCommandOpen || weatherState.status !== "stale") {
+      return;
+    }
+    const key = weatherState.cache.fetchedAt ?? "empty";
+    if (weatherRefreshRef.current === key) {
+      return;
+    }
+    weatherRefreshRef.current = key;
+    void onAction("weather.refresh", "command", { refreshReason: "command_open" });
+  }, [weatherVisible, weatherState.settings.refreshOnCommandOpen, weatherState.status, weatherState.cache.fetchedAt, onAction]);
 
   return (
     <div className="space-y-6">
@@ -7568,6 +8362,139 @@ function CommandView({
             )}
           </GlassCard>
 
+          <GlassCard accent={timetableAccent} hover={false}>
+            <SectionTitle action={<button type="button" onClick={() => onNavigate("timetable")} className="flex items-center gap-0.5 text-[10px] text-[#525252] hover:text-[#A3A3A3]">open timetable <ChevronRight className="h-3 w-3" /></button>}>Timetable</SectionTitle>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <div className="glass-card p-3">
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="font-mono text-[10px]" style={{ color: timetableAccent }}>now</span>
+                  {timetableNow && <StatusChip tone={timetableNow.status === "done" ? "ok" : timetableNow.status === "skipped" ? "warn" : "info"}>{timetableNow.status}</StatusChip>}
+                </div>
+                <p className="truncate text-sm font-semibold text-[#F5F5F5]">{timetableNow?.title ?? "No current block"}</p>
+                <p className="mt-1 font-mono text-[10px] text-[#A3A3A3]">{timetableNow ? `${timetableNow.startTime} - ${timetableNow.endTime}` : "Use Timetable to plan this hour."}</p>
+              </div>
+              <div className="glass-card p-3">
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="font-mono text-[10px]" style={{ color: "var(--accent-timetable-secondary)" }}>next</span>
+                  <CalendarClock className="h-3.5 w-3.5" style={{ color: "var(--accent-timetable-secondary)" }} />
+                </div>
+                <p className="truncate text-sm font-semibold text-[#F5F5F5]">{timetableNext?.title ?? "No next block today"}</p>
+                <p className="mt-1 font-mono text-[10px] text-[#A3A3A3]">{timetableNext ? `${timetableNext.startTime} - ${timetableNext.endTime}` : `${timetableState.activeTemplate.blocks.length} planned weekly blocks`}</p>
+              </div>
+            </div>
+          </GlassCard>
+
+          <GlassCard accent={utilitiesAccent} hover={false}>
+            <SectionTitle action={<button type="button" onClick={() => onNavigate("utilities")} className="flex items-center gap-0.5 text-[10px] text-[#525252] hover:text-[#A3A3A3]">open utilities <ChevronRight className="h-3 w-3" /></button>}>Utilities</SectionTitle>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <div className="glass-card p-3">
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="font-mono text-[10px]" style={{ color: utilitiesAccent }}>timer</span>
+                  <Timer className="h-3.5 w-3.5" style={{ color: utilitiesAccent }} />
+                </div>
+                <p className="truncate text-sm font-semibold text-[#F5F5F5]">{activeTimer?.label ?? "No active timer"}</p>
+                <p className="mt-1 font-mono text-[10px] text-[#A3A3A3]">{activeTimer ? `${formatDuration(Math.max(0, activeTimer.remainingSeconds))} / ${activeTimer.status}` : "Start one from Utilities or voice."}</p>
+              </div>
+              <div className="glass-card p-3">
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <span className="font-mono text-[10px]" style={{ color: "var(--accent-utilities-secondary)" }}>latest result</span>
+                  <Calculator className="h-3.5 w-3.5" style={{ color: "var(--accent-utilities-secondary)" }} />
+                </div>
+                <p className="truncate text-sm font-semibold text-[#F5F5F5]">{latestUtilityResult?.result ?? "No result yet"}</p>
+                <p className="mt-1 truncate font-mono text-[10px] text-[#A3A3A3]">{latestUtilityResult?.input ?? "Calculator, converter, and date math."}</p>
+              </div>
+            </div>
+          </GlassCard>
+
+          {weatherVisible && (
+            <GlassCard accent={weatherAccent} hover={false}>
+              <SectionTitle
+                action={(
+                  <button
+                    type="button"
+                    onClick={() => void onAction("weather.refresh", "command", { refreshReason: "manual" })}
+                    className="flex items-center gap-1 text-[10px] text-[var(--text-disabled)] hover:text-[var(--text-muted)]"
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                    refresh
+                  </button>
+                )}
+              >
+                Weather
+              </SectionTitle>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1.1fr_0.9fr]">
+                <div className="glass-card p-3">
+                  <div className="mb-1 flex items-center justify-between gap-2">
+                    <span className="font-mono text-[10px]" style={{ color: weatherAccent }}>{weatherState.cache.locationName || weatherState.settings.locationName || "Weather location"}</span>
+                    <StatusChip tone={weatherStatusTone(weatherState.status)}>{weatherState.status}</StatusChip>
+                  </div>
+                  <p className="truncate text-sm font-semibold text-[var(--text)]">
+                    {weatherState.cache.temperature === null
+                      ? "No weather cache yet"
+                      : `${formatWeatherNumber(weatherState.cache.temperature)} ${weatherUnit} · ${weatherState.cache.condition || "weather"}`}
+                  </p>
+                  <p className="mt-1 font-mono text-[10px] text-[var(--text-muted)]">
+                    {weatherState.cache.fetchedAt ? `Updated ${formatLocalDateTime(weatherState.cache.fetchedAt)}` : "Refresh to fetch from Open-Meteo."}
+                  </p>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="glass-card p-3">
+                    <p className="font-mono text-[10px] text-[var(--text-disabled)]">high / low</p>
+                    <p className="mt-1 text-sm font-semibold text-[var(--text)]">{formatWeatherNumber(weatherState.cache.high)} / {formatWeatherNumber(weatherState.cache.low)} {weatherUnit}</p>
+                  </div>
+                  <div className="glass-card p-3">
+                    <p className="font-mono text-[10px] text-[var(--text-disabled)]">precip</p>
+                    <p className="mt-1 text-sm font-semibold text-[var(--text)]">{formatWeatherNumber(weatherState.cache.precipitationChance, "%")}</p>
+                  </div>
+                  <div className="glass-card p-3">
+                    <p className="font-mono text-[10px] text-[var(--text-disabled)]">feels</p>
+                    <p className="mt-1 text-sm font-semibold text-[var(--text)]">{formatWeatherNumber(weatherState.cache.feelsLike)} {weatherUnit}</p>
+                  </div>
+                  <div className="glass-card p-3">
+                    <p className="font-mono text-[10px] text-[var(--text-disabled)]">wind</p>
+                    <p className="mt-1 text-sm font-semibold text-[var(--text)]">{formatWeatherNumber(weatherState.cache.windSpeed)} {weatherWindUnit(weatherState.cache.units)}</p>
+                  </div>
+                </div>
+              </div>
+              {weatherState.cache.error && <p className="mt-2 text-xs text-[var(--text-muted)]">{weatherState.cache.error}</p>}
+            </GlassCard>
+          )}
+
+          {newsVisible && (
+            <GlassCard accent={newsAccent} hover={false}>
+              <SectionTitle
+                action={(
+                  <div className="flex items-center gap-2">
+                    <StatusChip tone={weatherStatusTone(newsState.status)}>{newsState.status}</StatusChip>
+                    <button type="button" onClick={() => void onAction("news.refresh", "command", { refreshReason: "manual" })} className="flex items-center gap-1 text-[10px] text-[var(--text-disabled)] hover:text-[var(--text-muted)]">
+                      <RefreshCw className="h-3 w-3" />
+                      refresh
+                    </button>
+                  </div>
+                )}
+              >
+                News
+              </SectionTitle>
+              {commandNewsHeadlines.length === 0 ? (
+                <p className="text-xs text-[var(--text-muted)]">{newsState.cache.error || "No cached News headlines yet."}</p>
+              ) : (
+                <div className="space-y-2">
+                  {commandNewsHeadlines.map((headline) => (
+                    <div key={headline.id} className="glass-card flex items-center gap-3 p-2.5">
+                      <span className="shrink-0 rounded border border-[var(--border)] px-1.5 py-0.5 font-mono text-[10px]" style={{ color: newsAccent }}>{headline.category}</span>
+                      <span className="min-w-0 flex-1 truncate text-sm text-[var(--text)]" title={headline.title}>{headline.title}</span>
+                      <span className="hidden shrink-0 text-[10px] text-[var(--text-disabled)] sm:inline">{headline.source}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="mt-3 flex flex-wrap gap-2">
+                <ActionButton icon={AudioLines} accent={newsAccent} variant="soft" onClick={() => void onAction("news.read_briefing", "command", {})}>Read briefing</ActionButton>
+                <ActionButton icon={Newspaper} accent={newsAccent} variant="ghost" onClick={() => onNavigate("news")}>Open News</ActionButton>
+              </div>
+            </GlassCard>
+          )}
+
           {/* Recent activity */}
           <GlassCard hover={false}>
             <SectionTitle action={<button type="button" onClick={() => onNavigate("audit")} className="text-[10px] text-[#525252] hover:text-[#A3A3A3]">view all</button>}>Recent Activity</SectionTitle>
@@ -7664,6 +8591,252 @@ const emptyProjectForm: ProjectFormState = {
   dockerComposeEnabled: false,
   healthUrl: ""
 };
+
+function NewsView({
+  newsState,
+  onAction,
+  onRefresh
+}: {
+  newsState: NewsState;
+  onAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>;
+  onRefresh: () => Promise<void>;
+}) {
+  const [selectedCategory, setSelectedCategory] = useState<NewsCategory>(newsState.settings.selectedCategories[0] ?? "Top");
+  const [settingsDraft, setSettingsDraft] = useState<NewsSettings>(newsState.settings);
+  const [sourceDraft, setSourceDraft] = useState({ category: "Top" as NewsCategory, name: "", url: "" });
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("");
+  const visibleCategories = newsState.settings.selectedCategories.length > 0 ? newsState.settings.selectedCategories : NEWS_CATEGORIES;
+  const selectedHeadlines = newsState.cache.headlines.filter((headline) => headline.category === selectedCategory).slice(0, newsState.settings.maxItemsPerCategory);
+  const briefingCount = newsState.cache.headlines.filter((headline) => {
+    const categories = newsState.settings.readMorningBriefingCategories.length > 0 ? newsState.settings.readMorningBriefingCategories : visibleCategories;
+    return categories.includes(headline.category);
+  }).slice(0, 8).length;
+
+  useEffect(() => {
+    setSettingsDraft(newsState.settings);
+    if (!visibleCategories.includes(selectedCategory)) {
+      setSelectedCategory(visibleCategories[0] ?? "Top");
+    }
+  }, [newsState.settings, newsState.cache.fetchedAt]);
+
+  async function runNews(actionId: string, params: unknown = {}): Promise<void> {
+    setBusy(true);
+    setStatus("");
+    try {
+      const result = await onAction(actionId, "module_ui", params) as { message?: string; error?: string; briefingText?: string };
+      if (actionId === "news.read_briefing") {
+        const text = result.briefingText ?? result.message ?? "";
+        if (text && typeof window !== "undefined" && "speechSynthesis" in window) {
+          window.speechSynthesis.cancel();
+          window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+        }
+      }
+      await onRefresh();
+      setStatus(result.message ?? result.error ?? "News action finished.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "News action failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function toggleCategory(category: NewsCategory, field: "selectedCategories" | "readMorningBriefingCategories"): void {
+    setSettingsDraft((current) => {
+      const list = current[field];
+      return {
+        ...current,
+        [field]: list.includes(category) ? list.filter((item) => item !== category) : [...list, category]
+      };
+    });
+  }
+
+  async function saveSettings(): Promise<void> {
+    await runNews("news.update_settings", settingsDraft);
+  }
+
+  async function addSource(): Promise<void> {
+    if (!sourceDraft.name.trim() || !sourceDraft.url.trim()) {
+      setStatus("Add a source name and RSS URL.");
+      return;
+    }
+    await runNews("news.update_settings", { source: sourceDraft });
+    setSourceDraft({ category: sourceDraft.category, name: "", url: "" });
+  }
+
+  const tone = newsState.status === "fresh" ? "ok" : newsState.status === "error" ? "error" : newsState.status === "empty" ? "info" : "warn";
+
+  return (
+    <div className="space-y-5">
+      <PageHeader
+        eyebrow="RSS headlines"
+        title="News"
+        titleId="news-title"
+        actions={(
+          <div className="flex flex-wrap gap-2">
+            <StatusChip tone={tone}>{newsState.status}</StatusChip>
+            <ActionButton icon={RefreshCw} accent="var(--accent-news)" disabled={busy || !newsState.settings.newsEnabled} onClick={() => void runNews("news.refresh", { refreshReason: "manual" })}>Refresh</ActionButton>
+          </div>
+        )}
+      />
+
+      {!newsState.settings.newsEnabled && (
+        <GlassCard accent="var(--accent-news)" hover={false}>
+          <SectionTitle>News is disabled</SectionTitle>
+          <p className="text-sm text-[var(--text-muted)]">DexNest will not fetch RSS feeds until you enable News. Cached data stays local under <span className="technical">{newsState.cachePath}</span>.</p>
+          <ActionButton className="mt-3" icon={Newspaper} accent="var(--accent-news)" onClick={() => void runNews("news.toggle_enabled", { enabled: true })}>Enable News</ActionButton>
+        </GlassCard>
+      )}
+
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
+        <div className="space-y-5">
+          <GlassCard accent="var(--accent-news)" hover={false}>
+            <SectionTitle action={<span className="font-mono text-[10px] text-[var(--text-disabled)]">{newsState.cache.fetchedAt ? formatLocalDateTime(newsState.cache.fetchedAt) : "not refreshed"}</span>}>Headlines</SectionTitle>
+            <div className="mb-3 flex flex-wrap gap-2">
+              {visibleCategories.map((category) => (
+                <button key={category} type="button" className={`chip ${selectedCategory === category ? "is-active" : ""}`} onClick={() => setSelectedCategory(category)}>
+                  {category}
+                  <span className="font-mono text-[10px]">{newsState.cache.categoryCounts[category] ?? 0}</span>
+                </button>
+              ))}
+            </div>
+            {selectedHeadlines.length === 0 ? (
+              <p className="empty-state">{newsState.cache.error || "No cached headlines for this category yet. Refresh News after enabling RSS sources."}</p>
+            ) : (
+              <div className="space-y-2">
+                {selectedHeadlines.map((headline) => (
+                  <article key={headline.id} className="glass-card p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="mb-1 flex flex-wrap items-center gap-2">
+                          <StatusChip tone="info">{headline.category}</StatusChip>
+                          <span className="font-mono text-[10px] text-[var(--text-disabled)]">{headline.source}</span>
+                          <span className="font-mono text-[10px] text-[var(--text-disabled)]">{headline.publishedAt ? formatLocalDateTime(headline.publishedAt) : "RSS time unavailable"}</span>
+                        </div>
+                        <h3 className="text-base font-semibold text-[var(--text)]">{headline.title}</h3>
+                        {headline.summary && <p className="mt-1 line-clamp-2 text-sm text-[var(--text-muted)]">{headline.summary}</p>}
+                      </div>
+                      <div className="flex shrink-0 flex-wrap gap-2">
+                        <ActionButton icon={ExternalLink} accent="var(--accent-news)" variant="ghost" onClick={() => void runNews("news.open_headline", { headlineId: headline.id })}>Open</ActionButton>
+                        <ActionButton icon={NotebookPen} accent="var(--accent-news)" variant="ghost" onClick={() => void runNews("news.save_headline_to_journal", { headlineId: headline.id })}>Journal</ActionButton>
+                        <ActionButton icon={AudioLines} accent="var(--accent-news)" variant="ghost" onClick={() => {
+                          if (typeof window !== "undefined" && "speechSynthesis" in window) {
+                            window.speechSynthesis.cancel();
+                            window.speechSynthesis.speak(new SpeechSynthesisUtterance(`${headline.category}. ${headline.title}. ${headline.summary}`));
+                          }
+                        }}>Read</ActionButton>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle>RSS Source Manager</SectionTitle>
+            <div className="registry-controls">
+              <label>
+                Category
+                <select value={sourceDraft.category} onChange={(event) => setSourceDraft((current) => ({ ...current, category: event.target.value as NewsCategory }))}>
+                  {NEWS_CATEGORIES.map((category) => <option key={category} value={category}>{category}</option>)}
+                </select>
+              </label>
+              <label>
+                Source name
+                <input value={sourceDraft.name} onChange={(event) => setSourceDraft((current) => ({ ...current, name: event.target.value }))} placeholder="My RSS source" />
+              </label>
+              <label>
+                RSS URL
+                <input value={sourceDraft.url} onChange={(event) => setSourceDraft((current) => ({ ...current, url: event.target.value }))} placeholder="https://example.com/feed.xml" />
+              </label>
+            </div>
+            <div className="button-row">
+              <ActionButton icon={Plus} accent="var(--accent-news)" onClick={() => void addSource()}>Add source</ActionButton>
+            </div>
+            <div className="mt-3 max-h-80 space-y-2 overflow-y-auto pr-1">
+              {settingsDraft.sources.map((source) => (
+                <div key={source.id} className="glass-card flex flex-wrap items-center gap-3 p-2.5">
+                  <label className="checkbox-row min-w-0 flex-1">
+                    <input
+                      type="checkbox"
+                      checked={source.enabled}
+                      onChange={(event) => setSettingsDraft((current) => ({ ...current, sources: current.sources.map((item) => item.id === source.id ? { ...item, enabled: event.target.checked } : item) }))}
+                    />
+                    <span className="min-w-0">
+                      <strong className="block truncate text-sm text-[var(--text)]">{source.name}</strong>
+                      <span className="technical block truncate">{source.category} · {source.url}</span>
+                    </span>
+                  </label>
+                  <ActionButton icon={RefreshCw} accent="var(--accent-news)" variant="ghost" disabled={busy || !newsState.settings.newsEnabled} onClick={() => void runNews("news.refresh", { refreshReason: "manual", sourceId: source.id })}>Test</ActionButton>
+                  <ActionButton icon={Trash2} accent="var(--error)" variant="ghost" onClick={() => setSettingsDraft((current) => ({ ...current, sources: current.sources.filter((item) => item.id !== source.id) }))}>Remove</ActionButton>
+                </div>
+              ))}
+            </div>
+          </GlassCard>
+        </div>
+
+        <div className="space-y-5">
+          <GlassCard accent="var(--accent-news)" hover={false}>
+            <SectionTitle>Morning Briefing</SectionTitle>
+            <p className="text-sm text-[var(--text-muted)]">{briefingCount} cached headlines selected for the briefing.</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <ActionButton icon={AudioLines} accent="var(--accent-news)" disabled={busy || !newsState.settings.newsEnabled} onClick={() => void runNews("news.read_briefing", {})}>Read morning news</ActionButton>
+              <ActionButton icon={RefreshCw} accent="var(--accent-news)" variant="ghost" disabled={busy || !newsState.settings.newsEnabled} onClick={async () => { await runNews("news.refresh", { refreshReason: "manual" }); await runNews("news.read_briefing", {}); }}>Refresh and read</ActionButton>
+            </div>
+            {status && <p className="mt-3 inline-status">{status}</p>}
+          </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle>Settings</SectionTitle>
+            <div className="space-y-3">
+              <label className="checkbox-row">
+                <input type="checkbox" checked={settingsDraft.newsEnabled} onChange={(event) => setSettingsDraft((current) => ({ ...current, newsEnabled: event.target.checked }))} />
+                <span>Enable News</span>
+              </label>
+              <label className="checkbox-row">
+                <input type="checkbox" checked={settingsDraft.showNewsOnCommand} onChange={(event) => setSettingsDraft((current) => ({ ...current, showNewsOnCommand: event.target.checked }))} />
+                <span>Show News on Command</span>
+              </label>
+              <label>
+                Refresh mode
+                <select value={settingsDraft.refreshMode} onChange={(event) => setSettingsDraft((current) => ({ ...current, refreshMode: event.target.value as NewsRefreshMode }))}>
+                  <option value="manual">Manual</option>
+                  <option value="every_1_hour">Every hour</option>
+                  <option value="every_3_hours">Every 3 hours</option>
+                  <option value="every_6_hours">Every 6 hours</option>
+                  <option value="daily_morning">Daily morning</option>
+                </select>
+              </label>
+              <label>
+                Max items per category
+                <input type="number" min="1" max="30" value={settingsDraft.maxItemsPerCategory} onChange={(event) => setSettingsDraft((current) => ({ ...current, maxItemsPerCategory: Number(event.target.value) || 10 }))} />
+              </label>
+              <div>
+                <p className="mb-1 text-sm text-[var(--text)]">Selected categories</p>
+                <div className="flex flex-wrap gap-2">
+                  {NEWS_CATEGORIES.map((category) => <button key={category} type="button" className={`chip ${settingsDraft.selectedCategories.includes(category) ? "is-active" : ""}`} onClick={() => toggleCategory(category, "selectedCategories")}>{category}</button>)}
+                </div>
+              </div>
+              <div>
+                <p className="mb-1 text-sm text-[var(--text)]">Briefing categories</p>
+                <div className="flex flex-wrap gap-2">
+                  {NEWS_CATEGORIES.map((category) => <button key={category} type="button" className={`chip ${settingsDraft.readMorningBriefingCategories.includes(category) ? "is-active" : ""}`} onClick={() => toggleCategory(category, "readMorningBriefingCategories")}>{category}</button>)}
+                </div>
+              </div>
+              <div className="button-row">
+                <ActionButton icon={Save} accent="var(--accent-news)" disabled={busy} onClick={() => void saveSettings()}>Save News settings</ActionButton>
+                <ActionButton icon={Power} accent="var(--accent-news)" variant="ghost" disabled={busy} onClick={() => void runNews("news.toggle_enabled", { enabled: !newsState.settings.newsEnabled })}>{newsState.settings.newsEnabled ? "Disable" : "Enable"}</ActionButton>
+              </div>
+              <p className="technical">{newsState.settingsPath}</p>
+              <p className="technical">{newsState.cachePath}</p>
+            </div>
+          </GlassCard>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function projectToForm(project: DexNestProject): ProjectFormState {
   return {
@@ -10032,6 +11205,31 @@ function formatDuration(seconds: number): string {
   return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
 }
 
+function weatherTemperatureUnit(units: WeatherUnits): string {
+  return units === "imperial" ? "F" : "C";
+}
+
+function weatherWindUnit(units: WeatherUnits): string {
+  return units === "imperial" ? "mph" : "km/h";
+}
+
+function formatWeatherNumber(value: number | null, suffix = ""): string {
+  return value === null || !Number.isFinite(value) ? "not set" : `${Math.round(value)}${suffix}`;
+}
+
+function weatherStatusTone(status: WeatherCacheStatus): "ok" | "warn" | "info" | "error" {
+  if (status === "fresh") {
+    return "ok";
+  }
+  if (status === "stale" || status === "offline") {
+    return "warn";
+  }
+  if (status === "error") {
+    return "error";
+  }
+  return "info";
+}
+
 function shortcutLabel(value: string): string {
   return value
     .replaceAll("CommandOrControl", "Ctrl")
@@ -10774,6 +11972,622 @@ function JournalView({
     </div>
   );
 
+}
+
+const utilityConversionUnits: Record<UtilityConversionCategory, string[]> = {
+  length: ["mm", "cm", "m", "km", "in", "ft", "yd", "mi"],
+  weight: ["g", "kg", "oz", "lb"],
+  temperature: ["celsius", "fahrenheit", "kelvin"],
+  volume: ["ml", "l", "gal"],
+  time: ["seconds", "minutes", "hours", "days"],
+  data: ["bytes", "kb", "mb", "gb", "tb"]
+};
+
+function utilityTimerRemaining(timer: UtilityTimer | null): number {
+  if (!timer) {
+    return 0;
+  }
+  if (timer.status !== "running" || !timer.startedAt) {
+    return Math.max(0, timer.remainingSeconds);
+  }
+  const elapsed = Math.max(0, Math.floor((Date.now() - Date.parse(timer.startedAt)) / 1000));
+  return Math.max(0, timer.remainingSeconds - elapsed);
+}
+
+function utilityStopwatchMs(stopwatch: UtilityStopwatch): number {
+  if (stopwatch.status !== "running" || !stopwatch.startedAt) {
+    return stopwatch.elapsedMs;
+  }
+  return stopwatch.elapsedMs + Math.max(0, Date.now() - Date.parse(stopwatch.startedAt));
+}
+
+function formatStopwatchMs(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  const centiseconds = Math.floor((ms % 1000) / 10);
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}.${String(centiseconds).padStart(2, "0")}`;
+}
+
+function safeWorldClockTime(timeZone: string): string {
+  try {
+    return new Intl.DateTimeFormat(undefined, { timeZone, hour: "2-digit", minute: "2-digit", weekday: "short" }).format(new Date());
+  } catch {
+    return "Invalid timezone";
+  }
+}
+
+function UtilitiesView({
+  utilitiesState,
+  onAction,
+  onRefresh
+}: {
+  utilitiesState: UtilitiesState;
+  onAction: (actionId: string, source?: string, params?: unknown) => Promise<{ ok?: boolean; error?: string; message?: string; result?: string; utilitiesState?: UtilitiesState }>;
+  onRefresh: () => Promise<void>;
+}) {
+  const ACCENT = "var(--accent-utilities)";
+  const SECONDARY = "var(--accent-utilities-secondary)";
+  const [tick, setTick] = useState(Date.now());
+  const [message, setMessage] = useState("");
+  const [expression, setExpression] = useState("15%2400");
+  const [category, setCategory] = useState<UtilityConversionCategory>("length");
+  const [convertValue, setConvertValue] = useState("10");
+  const [fromUnit, setFromUnit] = useState("km");
+  const [toUnit, setToUnit] = useState("mi");
+  const [dateMode, setDateMode] = useState<"between" | "add" | "subtract" | "countdown">("countdown");
+  const [startDate, setStartDate] = useState(getLocalTodayDateString());
+  const [endDate, setEndDate] = useState(getLocalTodayDateString());
+  const [days, setDays] = useState("7");
+  const [timerMinutes, setTimerMinutes] = useState(String(utilitiesState.settings.defaultTimerMinutes || 25));
+  const [timerLabel, setTimerLabel] = useState("Focus timer");
+  const [clockLabel, setClockLabel] = useState("Toronto");
+  const [clockZone, setClockZone] = useState("America/Toronto");
+
+  useEffect(() => {
+    if (utilitiesState.activeTimer?.status !== "running" && utilitiesState.stopwatch.status !== "running") {
+      return;
+    }
+    const interval = window.setInterval(() => setTick(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [utilitiesState.activeTimer?.status, utilitiesState.stopwatch.status]);
+
+  useEffect(() => {
+    const units = utilityConversionUnits[category];
+    if (!units.includes(fromUnit)) {
+      setFromUnit(units[0]);
+    }
+    if (!units.includes(toUnit)) {
+      setToUnit(units[1] ?? units[0]);
+    }
+  }, [category, fromUnit, toUnit]);
+
+  async function runUtility(actionId: string, params: Record<string, unknown>): Promise<void> {
+    const result = await onAction(actionId, "module_ui", params);
+    setMessage(result.ok === false ? result.error ?? "Utilities action failed." : result.message ?? "Done.");
+    await onRefresh();
+  }
+
+  const activeTimer = utilitiesState.activeTimer;
+  const remaining = utilityTimerRemaining(activeTimer);
+  const timerProgress = activeTimer ? Math.max(0, Math.min(100, ((activeTimer.durationSeconds - remaining) / Math.max(1, activeTimer.durationSeconds)) * 100)) : 0;
+  const stopwatchDisplay = formatStopwatchMs(utilityStopwatchMs(utilitiesState.stopwatch));
+
+  return (
+    <div className="space-y-6 accent-utilities">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: "color-mix(in srgb, var(--accent-utilities) 40%, transparent)", background: "color-mix(in srgb, var(--accent-utilities) 14%, transparent)", color: ACCENT }}>
+            <Calculator className="h-5 w-5" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight" style={{ color: "var(--text)" }}>Utilities</h1>
+            <p className="text-sm" style={{ color: "var(--text-muted)" }}>Fast local calculator, converters, timers, and clocks.</p>
+          </div>
+        </div>
+        <StatusChip tone={activeTimer?.status === "running" ? "running" : utilitiesState.stopwatch.status === "running" ? "running" : "info"}>
+          {activeTimer?.status === "running" ? "timer running" : utilitiesState.stopwatch.status === "running" ? "stopwatch running" : "local"}
+        </StatusChip>
+      </div>
+
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-12">
+        <div className="space-y-5 xl:col-span-7">
+          <GlassCard accent={ACCENT} hover={false}>
+            <SectionTitle action={<Calculator className="h-3.5 w-3.5" style={{ color: ACCENT }} />}>Calculator</SectionTitle>
+            <div className="registry-controls">
+              <label>
+                Expression
+                <input value={expression} onChange={(event) => setExpression(event.target.value)} placeholder="(15/100)*2400" />
+              </label>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {["7", "8", "9", "/", "4", "5", "6", "*", "1", "2", "3", "-", "0", ".", "(", ")", "+", "%"].map((token) => (
+                <button key={token} type="button" onClick={() => setExpression((current) => `${current}${token}`)} className="min-w-10 rounded-lg border px-3 py-2 font-mono text-sm" style={{ borderColor: "var(--border)", color: "var(--text)" }}>{token}</button>
+              ))}
+              <button type="button" onClick={() => setExpression("")}>Clear</button>
+              <ActionButton accent={ACCENT} icon={Calculator} onClick={() => void runUtility("utilities.calculate", { expression })}>Calculate</ActionButton>
+              <button type="button" onClick={() => void runUtility("utilities.copy_result", {})}>Copy result</button>
+            </div>
+          </GlassCard>
+
+          <GlassCard accent={SECONDARY} hover={false}>
+            <SectionTitle action={<ArrowRightLeft className="h-3.5 w-3.5" style={{ color: SECONDARY }} />}>Unit Converter</SectionTitle>
+            <div className="registry-controls">
+              <label>Category<select value={category} onChange={(event) => setCategory(event.target.value as UtilityConversionCategory)}>{Object.keys(utilityConversionUnits).map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+              <label>Value<input value={convertValue} onChange={(event) => setConvertValue(event.target.value)} /></label>
+              <label>From<select value={fromUnit} onChange={(event) => setFromUnit(event.target.value)}>{utilityConversionUnits[category].map((unit) => <option key={unit} value={unit}>{unit}</option>)}</select></label>
+              <label>To<select value={toUnit} onChange={(event) => setToUnit(event.target.value)}>{utilityConversionUnits[category].map((unit) => <option key={unit} value={unit}>{unit}</option>)}</select></label>
+            </div>
+            <div className="button-row">
+              <ActionButton accent={SECONDARY} icon={ArrowRightLeft} onClick={() => void runUtility("utilities.convert_units", { category, value: convertValue, fromUnit, toUnit })}>Convert</ActionButton>
+            </div>
+          </GlassCard>
+
+          <GlassCard accent={ACCENT} hover={false}>
+            <SectionTitle action={<CalendarClock className="h-3.5 w-3.5" style={{ color: ACCENT }} />}>Date Calculator</SectionTitle>
+            <div className="registry-controls">
+              <label>Mode<select value={dateMode} onChange={(event) => setDateMode(event.target.value as typeof dateMode)}><option value="countdown">Countdown</option><option value="between">Days between</option><option value="add">Add days</option><option value="subtract">Subtract days</option></select></label>
+              <label>{dateMode === "between" ? "Start date" : "Base date"}<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} /></label>
+              {(dateMode === "between" || dateMode === "countdown") && <label>{dateMode === "countdown" ? "Target date" : "End date"}<input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} /></label>}
+              {(dateMode === "add" || dateMode === "subtract") && <label>Days<input value={days} onChange={(event) => setDays(event.target.value)} /></label>}
+            </div>
+            <div className="button-row">
+              <ActionButton accent={ACCENT} icon={CalendarClock} onClick={() => void runUtility("utilities.date_calculate", { mode: dateMode, startDate, endDate, baseDate: startDate, targetDate: endDate, days })}>Calculate date</ActionButton>
+            </div>
+          </GlassCard>
+        </div>
+
+        <div className="space-y-5 xl:col-span-5">
+          <GlassCard accent={ACCENT} glow hover={false}>
+            <SectionTitle action={<Timer className="h-3.5 w-3.5" style={{ color: ACCENT }} />}>Timer</SectionTitle>
+            <div className="rounded-xl border p-4" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-lg font-semibold" style={{ color: "var(--text)" }}>{activeTimer?.label ?? "No active timer"}</p>
+                  <p className="font-mono text-3xl" style={{ color: ACCENT }}>{formatDuration(remaining)}</p>
+                </div>
+                <ProgressRing value={timerProgress} color="var(--accent-utilities)" />
+              </div>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
+              {[5, 10, 25, 30, 60].map((minutes) => <button key={minutes} type="button" onClick={() => { setTimerMinutes(String(minutes)); setTimerLabel(`${minutes} minute timer`); }}>{minutes}m</button>)}
+            </div>
+            <div className="registry-controls mt-3">
+              <label>Minutes<input value={timerMinutes} onChange={(event) => setTimerMinutes(event.target.value)} /></label>
+              <label>Label<input value={timerLabel} onChange={(event) => setTimerLabel(event.target.value)} /></label>
+            </div>
+            <div className="button-row">
+              <ActionButton accent={ACCENT} icon={Play} onClick={() => void runUtility("utilities.timer.start", { durationMinutes: timerMinutes, label: timerLabel })}>Start timer</ActionButton>
+              <button type="button" onClick={() => void runUtility("utilities.timer.pause", {})}>Pause</button>
+              <button type="button" onClick={() => void runUtility("utilities.timer.reset", {})}>Reset</button>
+            </div>
+          </GlassCard>
+
+          <GlassCard accent={SECONDARY} hover={false}>
+            <SectionTitle action={<Clock className="h-3.5 w-3.5" style={{ color: SECONDARY }} />}>Stopwatch</SectionTitle>
+            <p className="font-mono text-4xl" style={{ color: SECONDARY }}>{stopwatchDisplay}</p>
+            <div className="button-row mt-3">
+              <ActionButton accent={SECONDARY} icon={Play} onClick={() => void runUtility("utilities.stopwatch.start", {})}>Start</ActionButton>
+              <button type="button" onClick={() => void runUtility("utilities.stopwatch.pause", {})}>Pause</button>
+              <button type="button" onClick={() => void runUtility("utilities.stopwatch.reset", {})}>Reset</button>
+            </div>
+          </GlassCard>
+
+          <GlassCard accent={ACCENT} hover={false}>
+            <SectionTitle action={<Globe2 className="h-3.5 w-3.5" style={{ color: ACCENT }} />}>World Clock</SectionTitle>
+            <div className="registry-controls">
+              <label>City<input value={clockLabel} onChange={(event) => setClockLabel(event.target.value)} placeholder="Toronto" /></label>
+              <label>Timezone<input value={clockZone} onChange={(event) => setClockZone(event.target.value)} placeholder="America/Toronto" /></label>
+            </div>
+            <div className="button-row">
+              <ActionButton accent={ACCENT} icon={Plus} onClick={() => void runUtility("utilities.world_clock.add", { city: clockLabel, timeZone: clockZone })}>Add clock</ActionButton>
+            </div>
+            <div className="mt-3 space-y-2">
+              <div className="glass-card flex items-center justify-between gap-3 p-3">
+                <span style={{ color: "var(--text)" }}>Local</span>
+                <span className="font-mono" style={{ color: "var(--text-muted)" }}>{new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", weekday: "short" }).format(new Date(tick))}</span>
+              </div>
+              {utilitiesState.worldClocks.map((clock) => (
+                <div key={clock.id} className="glass-card flex items-center justify-between gap-3 p-3">
+                  <div>
+                    <p style={{ color: "var(--text)" }}>{clock.label}</p>
+                    <p className="font-mono text-xs" style={{ color: "var(--text-muted)" }}>{clock.timeZone}</p>
+                  </div>
+                  <span className="font-mono" style={{ color: ACCENT }}>{safeWorldClockTime(clock.timeZone)}</span>
+                  <button type="button" onClick={() => void runUtility("utilities.world_clock.remove", { id: clock.id })}>Remove</button>
+                </div>
+              ))}
+            </div>
+          </GlassCard>
+        </div>
+      </div>
+
+      <GlassCard accent={SECONDARY} hover={false}>
+        <SectionTitle action={<HistoryIcon className="h-3.5 w-3.5" style={{ color: SECONDARY }} />}>Recent Results</SectionTitle>
+        {utilitiesState.recentResults.length === 0 ? <p style={{ color: "var(--text-muted)" }}>No utility results yet.</p> : (
+          <div className="action-list">
+            {utilitiesState.recentResults.slice(0, 12).map((item) => (
+              <article key={item.id} className="action-row accent-utilities">
+                <div>
+                  <h3>{item.result}</h3>
+                  <p className="technical">{item.type} / {item.input} / {formatLocalDateTime(item.createdAt)}</p>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+        {message && <p className="inline-status">{message}</p>}
+        <p className="technical">{utilitiesState.utilitiesPath}</p>
+      </GlassCard>
+    </div>
+  );
+}
+
+function TimetableView({
+  timetableState,
+  calendarState,
+  onAction,
+  onRefresh
+}: {
+  timetableState: TimetableState;
+  calendarState: CalendarState;
+  onAction: (actionId: string, source?: string, params?: unknown) => Promise<{ ok?: boolean; error?: string; message?: string; timetableState?: TimetableState }>;
+  onRefresh: () => Promise<void>;
+}) {
+  const ACCENT = "var(--accent-timetable)";
+  const SECONDARY = "var(--accent-timetable-secondary)";
+  const [selectedDay, setSelectedDay] = useState<TimetableDay>(timetableState.today);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [form, setForm] = useState({
+    title: "",
+    day: timetableState.today as TimetableDay,
+    startTime: "09:00",
+    endTime: "10:00",
+    category: "Focus",
+    notes: ""
+  });
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    setSelectedDay(timetableState.today);
+    setForm((current) => ({ ...current, day: timetableState.today }));
+  }, [timetableState.today]);
+
+  const sortedBlocks = [...timetableState.activeTemplate.blocks].sort((left, right) => {
+    const dayDiff = TIMETABLE_DAYS.indexOf(left.day) - TIMETABLE_DAYS.indexOf(right.day);
+    return dayDiff || left.startTime.localeCompare(right.startTime);
+  });
+  const selectedBlocks = sortedBlocks.filter((block) => block.day === selectedDay);
+  const todayBlocks = sortedBlocks.filter((block) => block.day === timetableState.today);
+  const selectedDate = dateForTimetableDay(selectedDay, calendarState.today);
+  const selectedEvents = calendarState.events.filter((event) => event.date === selectedDate);
+
+  function titleCaseDay(day: TimetableDay): string {
+    return day.slice(0, 1).toUpperCase() + day.slice(1);
+  }
+
+  function timeToMinutes(value: string): number {
+    const [hours = "0", minutes = "0"] = value.split(":");
+    return Number(hours) * 60 + Number(minutes);
+  }
+
+  function blockHours(block: TimetableBlock): number {
+    return Math.max(0, timeToMinutes(block.endTime) - timeToMinutes(block.startTime)) / 60;
+  }
+
+  function dateForTimetableDay(day: TimetableDay, today: string): string {
+    const todayDate = parseLocalDateInput(today);
+    const currentMondayIndex = (todayDate.getDay() + 6) % 7;
+    const targetIndex = TIMETABLE_DAYS.indexOf(day);
+    const next = new Date(todayDate);
+    next.setDate(todayDate.getDate() + targetIndex - currentMondayIndex);
+    return toLocalDateInputValue(next);
+  }
+
+  function eventConflicts(block: TimetableBlock): CalendarEvent[] {
+    const start = timeToMinutes(block.startTime);
+    const end = timeToMinutes(block.endTime);
+    return selectedEvents.filter((event) => {
+      if (event.allDay) {
+        return true;
+      }
+      const eventStart = event.startTime ? timeToMinutes(event.startTime) : 0;
+      const eventEnd = event.endTime ? timeToMinutes(event.endTime) : eventStart + 30;
+      return start < eventEnd && end > eventStart;
+    });
+  }
+
+  function resetForm(day: TimetableDay = selectedDay): void {
+    setEditingId(null);
+    setForm({ title: "", day, startTime: "09:00", endTime: "10:00", category: "Focus", notes: "" });
+  }
+
+  function loadBlock(block: TimetableBlock): void {
+    setEditingId(block.id);
+    setSelectedDay(block.day);
+    setForm({
+      title: block.title,
+      day: block.day,
+      startTime: block.startTime,
+      endTime: block.endTime,
+      category: block.category,
+      notes: block.notes
+    });
+  }
+
+  async function saveBlock(): Promise<void> {
+    if (!form.title.trim()) {
+      setMessage("Block title is required.");
+      return;
+    }
+    if (timeToMinutes(form.endTime) <= timeToMinutes(form.startTime)) {
+      setMessage("End time must be after start time.");
+      return;
+    }
+    const result = await onAction(editingId ? "timetable.update_block" : "timetable.create_block", "module_ui", {
+      blockId: editingId ?? undefined,
+      ...form,
+      accent: ACCENT
+    });
+    setMessage(result.ok === false ? result.error ?? "Timetable save failed." : result.message ?? "Timetable block saved.");
+    if (result.ok !== false) {
+      resetForm(form.day);
+      await onRefresh();
+    }
+  }
+
+  async function deleteBlock(block: TimetableBlock): Promise<void> {
+    if (!window.confirm(`Delete "${block.title}" from ${titleCaseDay(block.day)}?`)) {
+      return;
+    }
+    const result = await onAction("timetable.delete_block", "module_ui", { blockId: block.id, confirmedDangerous: true });
+    setMessage(result.ok === false ? result.error ?? "Delete failed." : "Timetable block deleted.");
+    await onRefresh();
+  }
+
+  async function markBlock(block: TimetableBlock, actionId: "timetable.mark_done" | "timetable.mark_skipped"): Promise<void> {
+    const result = await onAction(actionId, "module_ui", { blockId: block.id });
+    setMessage(result.ok === false ? result.error ?? "Status update failed." : result.message ?? "Timetable block updated.");
+    await onRefresh();
+  }
+
+  async function copyDay(): Promise<void> {
+    const toDay = TIMETABLE_DAYS[(TIMETABLE_DAYS.indexOf(selectedDay) + 1) % TIMETABLE_DAYS.length];
+    const result = await onAction("timetable.copy_day", "module_ui", { fromDay: selectedDay, toDay });
+    setMessage(result.ok === false ? result.error ?? "Copy day failed." : result.message ?? `Copied to ${titleCaseDay(toDay)}.`);
+    await onRefresh();
+  }
+
+  async function clearDay(): Promise<void> {
+    if (!window.confirm(`Clear all ${titleCaseDay(selectedDay)} Timetable blocks?`)) {
+      return;
+    }
+    const result = await onAction("timetable.clear_day", "module_ui", { day: selectedDay, confirmedDangerous: true });
+    setMessage(result.ok === false ? result.error ?? "Clear day failed." : result.message ?? "Day cleared.");
+    await onRefresh();
+  }
+
+  async function runCurrentAction(actionId: "timetable.mark_done" | "timetable.mark_skipped"): Promise<void> {
+    const current = timetableState.currentBlock;
+    if (!current) {
+      setMessage("No current Timetable block is active.");
+      return;
+    }
+    await markBlock(current, actionId);
+  }
+
+  const statCards = [
+    ["planned hours", `${timetableState.stats.plannedHours.toFixed(1)}h`],
+    ["done", timetableState.stats.done],
+    ["skipped", timetableState.stats.skipped],
+    ["remaining", timetableState.stats.remaining]
+  ] as const;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: "color-mix(in srgb, var(--accent-timetable) 40%, transparent)", background: "color-mix(in srgb, var(--accent-timetable) 14%, transparent)", color: ACCENT }}>
+            <CalendarClock className="h-5 w-5" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Timetable</h1>
+            <p className="text-sm text-[#A3A3A3]">Plan your week. Follow the current block.</p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <StatusChip tone="info">{timetableState.activeTemplate.name}</StatusChip>
+          <ActionButton accent={ACCENT} icon={Plus} onClick={() => resetForm(selectedDay)}>Add block</ActionButton>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+        <div className="space-y-5 lg:col-span-8">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <GlassCard accent={ACCENT} glow hover={false}>
+              <SectionTitle action={<Clock className="h-3.5 w-3.5" style={{ color: ACCENT }} />}>Current block</SectionTitle>
+              {timetableState.currentBlock ? (
+                <div className="space-y-3">
+                  <div>
+                    <p className="text-xl font-semibold text-[#F5F5F5]">{timetableState.currentBlock.title}</p>
+                    <p className="font-mono text-xs text-[#A3A3A3]">{timetableState.currentBlock.startTime} - {timetableState.currentBlock.endTime} / {timetableState.currentBlock.category}</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <ActionButton accent={ACCENT} icon={Check} onClick={() => void runCurrentAction("timetable.mark_done")}>Done</ActionButton>
+                    <ActionButton accent={SECONDARY} icon={ArrowRight} variant="soft" onClick={() => void runCurrentAction("timetable.mark_skipped")}>Skip</ActionButton>
+                  </div>
+                </div>
+              ) : (
+                <EmptyState>No block is active right now.</EmptyState>
+              )}
+            </GlassCard>
+
+            <GlassCard accent={SECONDARY} hover={false}>
+              <SectionTitle action={<ArrowRight className="h-3.5 w-3.5" style={{ color: SECONDARY }} />}>Next block</SectionTitle>
+              {timetableState.nextBlock ? (
+                <div>
+                  <p className="text-xl font-semibold text-[#F5F5F5]">{timetableState.nextBlock.title}</p>
+                  <p className="font-mono text-xs text-[#A3A3A3]">{titleCaseDay(timetableState.nextBlock.day)} / {timetableState.nextBlock.startTime} - {timetableState.nextBlock.endTime}</p>
+                  {timetableState.nextBlock.notes && <p className="mt-3 line-clamp-2 text-sm text-[#A3A3A3]">{timetableState.nextBlock.notes}</p>}
+                </div>
+              ) : (
+                <EmptyState>No upcoming block remains today.</EmptyState>
+              )}
+            </GlassCard>
+          </div>
+
+          <GlassCard hover={false}>
+            <SectionTitle action={<span className="font-mono text-[10px] text-[#525252]">{formatLocalDate(selectedDate)}</span>}>Day timeline</SectionTitle>
+            <div className="mb-4 flex flex-wrap gap-2">
+              {TIMETABLE_DAYS.map((day) => {
+                const count = sortedBlocks.filter((block) => block.day === day).length;
+                const active = day === selectedDay;
+                return (
+                  <button
+                    key={day}
+                    type="button"
+                    onClick={() => { setSelectedDay(day); setForm((current) => ({ ...current, day })); }}
+                    className="rounded-full border px-3 py-1.5 text-xs"
+                    style={{
+                      borderColor: active ? ACCENT : "var(--border)",
+                      background: active ? "color-mix(in srgb, var(--accent-timetable) 14%, transparent)" : "var(--surface-2)",
+                      color: active ? ACCENT : "var(--text-muted)"
+                    }}
+                  >
+                    {titleCaseDay(day).slice(0, 3)} <span className="font-mono">{count}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {selectedBlocks.length === 0 ? (
+              <EmptyState>No blocks planned for {titleCaseDay(selectedDay)}.</EmptyState>
+            ) : (
+              <div className="space-y-2">
+                {selectedBlocks.map((block) => {
+                  const conflicts = eventConflicts(block);
+                  return (
+                    <article key={block.id} className="glass-card flex flex-wrap items-center gap-3 p-3">
+                      <div className="w-28 shrink-0 font-mono text-xs text-[#A3A3A3]">{block.startTime} - {block.endTime}</div>
+                      <div className="h-10 w-[3px] rounded-full" style={{ background: block.accent || ACCENT }} />
+                      <div className="min-w-[14rem] flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="font-semibold text-[#F5F5F5]">{block.title}</p>
+                          <StatusChip tone={block.status === "done" ? "ok" : block.status === "skipped" ? "warn" : "info"}>{block.status}</StatusChip>
+                          {conflicts.length > 0 && <StatusChip tone="warn">{conflicts.length} conflict{conflicts.length === 1 ? "" : "s"}</StatusChip>}
+                        </div>
+                        <p className="mt-0.5 text-xs text-[#A3A3A3]">{block.category} / {blockHours(block).toFixed(1)}h{block.notes ? ` / ${block.notes}` : ""}</p>
+                      </div>
+                      <div className="ml-auto flex flex-wrap gap-2">
+                        <button type="button" onClick={() => loadBlock(block)}>Edit</button>
+                        <button type="button" onClick={() => void markBlock(block, "timetable.mark_done")}>Done</button>
+                        <button type="button" onClick={() => void markBlock(block, "timetable.mark_skipped")}>Skip</button>
+                        <button type="button" className="danger-button" onClick={() => void deleteBlock(block)}>Delete</button>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle>Weekly overview</SectionTitle>
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-7">
+              {TIMETABLE_DAYS.map((day) => {
+                const dayBlocks = sortedBlocks.filter((block) => block.day === day);
+                const hours = dayBlocks.reduce((sum, block) => sum + blockHours(block), 0);
+                return (
+                  <button key={day} type="button" onClick={() => setSelectedDay(day)} className="glass-card min-h-28 p-3 text-left">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-[#F5F5F5]">{titleCaseDay(day).slice(0, 3)}</span>
+                      <span className="font-mono text-[10px] text-[#A3A3A3]">{hours.toFixed(1)}h</span>
+                    </div>
+                    <div className="space-y-1">
+                      {dayBlocks.slice(0, 3).map((block) => (
+                        <div key={block.id} className="truncate rounded-md border px-2 py-1 text-[10px]" style={{ borderColor: "var(--border)", color: block.status === "done" ? "var(--success)" : block.status === "skipped" ? "var(--warning)" : "var(--text-muted)" }}>
+                          {block.startTime} {block.title}
+                        </div>
+                      ))}
+                      {dayBlocks.length > 3 && <p className="font-mono text-[10px] text-[#525252]">+{dayBlocks.length - 3} more</p>}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </GlassCard>
+        </div>
+
+        <div className="space-y-5 lg:col-span-4">
+          <GlassCard hover={false}>
+            <SectionTitle>Quick stats</SectionTitle>
+            <div className="grid grid-cols-2 gap-2">
+              {statCards.map(([label, value]) => (
+                <div key={label} className="glass-card p-3">
+                  <p className="text-[10px] uppercase tracking-[0.12em] text-[#525252]">{label}</p>
+                  <p className="mt-1 font-mono text-lg text-[#F5F5F5]">{value}</p>
+                </div>
+              ))}
+            </div>
+          </GlassCard>
+
+          <GlassCard accent={ACCENT} hover={false}>
+            <SectionTitle>{editingId ? "Edit block" : "Add block"}</SectionTitle>
+            <div className="space-y-3">
+              <label>Title<input value={form.title} onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))} placeholder="Study, work, gym" /></label>
+              <div className="grid grid-cols-2 gap-2">
+                <label>Day<select value={form.day} onChange={(event) => setForm((current) => ({ ...current, day: event.target.value as TimetableDay }))}>{TIMETABLE_DAYS.map((day) => <option key={day} value={day}>{titleCaseDay(day)}</option>)}</select></label>
+                <label>Category<input value={form.category} onChange={(event) => setForm((current) => ({ ...current, category: event.target.value }))} placeholder="Focus" /></label>
+                <label>Start<input type="time" value={form.startTime} onChange={(event) => setForm((current) => ({ ...current, startTime: event.target.value }))} /></label>
+                <label>End<input type="time" value={form.endTime} onChange={(event) => setForm((current) => ({ ...current, endTime: event.target.value }))} /></label>
+              </div>
+              <label>Notes<textarea value={form.notes} onChange={(event) => setForm((current) => ({ ...current, notes: event.target.value }))} placeholder="Optional routine notes" /></label>
+              <div className="flex flex-wrap gap-2">
+                <ActionButton accent={ACCENT} icon={Save} onClick={() => void saveBlock()}>{editingId ? "Update" : "Save"}</ActionButton>
+                <ActionButton accent={SECONDARY} variant="ghost" onClick={() => resetForm(form.day)}>Reset</ActionButton>
+              </div>
+              {message && <p className="text-xs text-[#A3A3A3]">{message}</p>}
+            </div>
+          </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle>Day controls</SectionTitle>
+            <div className="flex flex-wrap gap-2">
+              <ActionButton accent={ACCENT} icon={Copy} onClick={() => void copyDay()}>Copy day</ActionButton>
+              <ActionButton accent={SECONDARY} icon={FileStack} variant="ghost" disabled title="Template duplication will reuse the same action spine later.">Duplicate template</ActionButton>
+              <button type="button" className="danger-button" onClick={() => void clearDay()}>Clear day</button>
+            </div>
+            <p className="mt-3 font-mono text-[10px] text-[#525252]">{timetableState.timetablePath}</p>
+          </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle>Calendar conflicts</SectionTitle>
+            {selectedEvents.length === 0 ? (
+              <EmptyState>No Calendar events on {formatLocalDate(selectedDate)}.</EmptyState>
+            ) : (
+              <div className="space-y-2">
+                {selectedEvents.slice(0, 6).map((event) => (
+                  <div key={event.id} className="glass-card p-2.5">
+                    <p className="truncate text-sm font-medium text-[#F5F5F5]">{event.title}</p>
+                    <p className="font-mono text-[10px] text-[#A3A3A3]">{event.allDay ? "all-day" : `${event.startTime ?? "no start"} - ${event.endTime ?? "open"}`} / {event.sourceModule}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle>Today summary</SectionTitle>
+            <p className="text-sm text-[#A3A3A3]">{todayBlocks.length} block{todayBlocks.length === 1 ? "" : "s"} today. {timetableState.currentBlock ? `Now: ${timetableState.currentBlock.title}.` : "No block is active right now."}</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <ActionButton accent={ACCENT} icon={NotebookPen} variant="ghost" disabled title="Journal summary action placeholder.">Send to Journal</ActionButton>
+              <ActionButton accent={SECONDARY} icon={Search} variant="ghost" onClick={() => void onAction("timetable.current_block", "module_ui")}>Ask now</ActionButton>
+            </div>
+          </GlassCard>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function CalendarView({
@@ -13115,7 +14929,6 @@ function DeckView({
   onRefresh: () => Promise<void>;
   refreshEvents: () => Promise<void>;
 }) {
-  const projectActions = actions.filter((action) => action.id.startsWith("dev.project."));
   const [endpointStatuses, setEndpointStatuses] = useState<Record<string, string>>({});
   const [visibleEndpoints, setVisibleEndpoints] = useState<Record<string, boolean>>({});
   const [lastResponse, setLastResponse] = useState("");
@@ -13125,7 +14938,6 @@ function DeckView({
   const [actionSearch, setActionSearch] = useState("");
   const [moduleFilter, setModuleFilter] = useState("all");
   const [dangerFilter, setDangerFilter] = useState("all");
-  const [projectFilter, setProjectFilter] = useState("all");
   const [pinnedOnly, setPinnedOnly] = useState(false);
   const [routineOnly, setRoutineOnly] = useState(false);
   const [routineStatus, setRoutineStatus] = useState("");
@@ -13151,22 +14963,31 @@ function DeckView({
   const dangerOptions = useMemo(() => Array.from(new Set(actions.map((action) => action.dangerLevel))).sort(), [actions]);
   const actionSearchTerm = actionSearch.trim().toLowerCase();
   const filteredActions = useMemo(() => actions.filter((action) => {
-    const projectMatch = action.id.match(/^dev\.project\.([a-z0-9-]+)\./);
     const matchesSearch = !actionSearchTerm
       || action.id.toLowerCase().includes(actionSearchTerm)
       || action.title.toLowerCase().includes(actionSearchTerm);
     const matchesModule = moduleFilter === "all" || action.module === moduleFilter;
     const matchesDanger = dangerFilter === "all" || action.dangerLevel === dangerFilter;
-    const matchesProject = projectFilter === "all" || projectMatch?.[1] === projectFilter;
     const matchesPinned = !pinnedOnly || pinnedActionIds.includes(action.id);
     const matchesRoutine = !routineOnly || action.id.startsWith("deck.routine.");
-    return matchesSearch && matchesModule && matchesDanger && matchesProject && matchesPinned && matchesRoutine;
-  }).sort((a, b) => a.id.localeCompare(b.id)), [actions, actionSearchTerm, dangerFilter, moduleFilter, pinnedActionIds, pinnedOnly, projectFilter, routineOnly]);
-  const projectActionGroups = useMemo(() => projects.map((project) => ({
-    project,
-    actions: filteredActions.filter((action) => action.id.startsWith(`dev.project.${project.id}.`))
-  })).filter((group) => group.actions.length > 0), [filteredActions, projects]);
+    return matchesSearch && matchesModule && matchesDanger && matchesPinned && matchesRoutine;
+  }).sort((a, b) => a.id.localeCompare(b.id)), [actions, actionSearchTerm, dangerFilter, moduleFilter, pinnedActionIds, pinnedOnly, routineOnly]);
   const browserActions = filteredActions.filter((action) => !action.id.startsWith("dev.project."));
+  const streamDeckCatalogGroups = useMemo(() => createStreamDeckActionCatalog(projects), [projects]);
+  const streamDeckCatalogActionIds = useMemo(() => new Set(streamDeckCatalogGroups.flatMap((group) => group.items.map((item) => item.actionId).filter((id): id is string => Boolean(id)))), [streamDeckCatalogGroups]);
+  const curatedBrowserActions = useMemo(() => browserActions.filter((action) => streamDeckCatalogActionIds.has(action.id)), [browserActions, streamDeckCatalogActionIds]);
+  const visibleStreamDeckGroups = useMemo(() => streamDeckCatalogGroups.map((group) => ({
+    ...group,
+    items: group.items.filter((item) => {
+      const action = item.actionId ? actions.find((candidate) => candidate.id === item.actionId) : undefined;
+      const searchText = `${item.title} ${item.description ?? ""} ${item.actionId ?? ""} ${group.title} ${item.category}`.toLowerCase();
+      const matchesSearch = !actionSearchTerm || searchText.includes(actionSearchTerm);
+      const matchesPinned = deckFilter !== "pinned" || Boolean(item.actionId && pinnedActionIds.includes(item.actionId));
+      const matchesModule = moduleFilter === "all" || action?.module === moduleFilter || item.category.toLowerCase() === moduleFilter.toLowerCase();
+      const matchesDanger = dangerFilter === "all" || action?.dangerLevel === dangerFilter;
+      return matchesSearch && matchesPinned && matchesModule && matchesDanger;
+    })
+  })).filter((group) => group.items.length > 0), [actions, actionSearchTerm, dangerFilter, deckFilter, moduleFilter, pinnedActionIds, streamDeckCatalogGroups]);
 
   function showDeckToast(message: string, tone: ToastTone): void {
     const id = `deck-toast-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -13236,7 +15057,7 @@ function DeckView({
     }
   }
 
-  async function runEndpointAction(actionId: string): Promise<void> {
+  async function runEndpointAction(actionId: string, params: Record<string, unknown> = {}): Promise<void> {
     const action = actions.find((item) => item.id === actionId);
     const needsConfirmation = action?.dangerLevel === "danger" || action?.dangerLevel === "critical";
     const confirmedDangerous = needsConfirmation
@@ -13253,7 +15074,7 @@ function DeckView({
       const response = await fetch(endpointForAction(actionId), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ test: true, confirmedDangerous })
+        body: JSON.stringify({ ...params, test: true, confirmedDangerous: Boolean(params.confirmedDangerous) || confirmedDangerous })
       });
 
       if (!response.ok) {
@@ -13457,8 +15278,7 @@ function DeckView({
   }
 
   const ACCENT_DECK = "#A855F7";
-  const pinnedResolved = pinnedActionIds.map((id) => actions.find((a) => a.id === id)).filter((a): a is ActionDefinition => Boolean(a));
-  const deckTiles = (deckFilter === "pinned" ? pinnedResolved : [...pinnedResolved, ...browserActions.filter((a) => !pinnedActionIds.includes(a.id))]).slice(0, 16);
+  const catalogItemCount = streamDeckCatalogGroups.reduce((total, group) => total + group.items.length, 0);
   const lanOn = Boolean(appInfo?.streamDeckSettings.lanEnabled);
   const tokenOn = Boolean(appInfo?.streamDeckSettings.tokenEnabled);
 
@@ -13484,28 +15304,75 @@ function DeckView({
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
         <div className="space-y-4 lg:col-span-8">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {(["all", "pinned"] as const).map((f) => (
               <button key={f} type="button" onClick={() => setDeckFilter(f)} className="rounded-full border px-3 py-1 text-xs font-medium capitalize transition-all" style={deckFilter === f ? { borderColor: `${ACCENT_DECK}55`, background: `${ACCENT_DECK}1a`, color: ACCENT_DECK } : { borderColor: "#1f1f1f", color: "#A3A3A3" }}>{f}</button>
             ))}
+            <span className="rounded-full border border-[#1f1f1f] px-3 py-1 font-mono text-[10px] text-[#A3A3A3]">{catalogItemCount} Stream Deck pack actions</span>
           </div>
-          {deckTiles.length === 0 ? (
-            <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-[#262626] py-12 text-center"><LayoutGrid className="h-8 w-8 text-[#525252]" /><p className="mt-2 text-sm text-[#A3A3A3]">No {deckFilter === "pinned" ? "pinned " : ""}actions</p></div>
+          <div className="rounded-xl border border-[#1f1f1f] bg-[#0A0A0A] px-4 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-[#F5F5F5]">Curated Stream Deck action catalog</p>
+                <p className="text-xs text-[#A3A3A3]">These grouped user-facing actions are the same actions exported in the Stream Deck pack.</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <input value={actionSearch} onChange={(event) => setActionSearch(event.target.value)} placeholder="Search catalog" className="h-8 rounded-lg border border-[#262626] bg-[#0d0d0d] px-3 text-xs text-[#F5F5F5] placeholder:text-[#525252]" />
+                <select value={moduleFilter} onChange={(event) => setModuleFilter(event.target.value)} className="h-8 rounded-lg border border-[#262626] bg-[#0d0d0d] px-2 text-xs text-[#F5F5F5]">
+                  <option value="all">All modules</option>{moduleOptions.map((module) => <option value={module} key={module}>{module}</option>)}
+                </select>
+                <select value={dangerFilter} onChange={(event) => setDangerFilter(event.target.value)} className="h-8 rounded-lg border border-[#262626] bg-[#0d0d0d] px-2 text-xs text-[#F5F5F5]">
+                  <option value="all">All levels</option>{dangerOptions.map((danger) => <option value={danger} key={danger}>{danger}</option>)}
+                </select>
+              </div>
+            </div>
+          </div>
+          {visibleStreamDeckGroups.length === 0 ? (
+            <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-[#262626] py-12 text-center"><LayoutGrid className="h-8 w-8 text-[#525252]" /><p className="mt-2 text-sm text-[#A3A3A3]">No matching Stream Deck catalog actions</p></div>
           ) : (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-              {deckTiles.map((action) => {
-                const meta = MODULE_META[action.moduleId] ?? { icon: Command, accent: "#A855F7" };
-                const Icon = meta.icon;
-                const pinned = pinnedActionIds.includes(action.id);
-                return (
-                  <button key={action.id} type="button" onClick={() => void runEndpointAction(action.id)} className="glass-card lift group relative flex aspect-square flex-col items-center justify-center gap-2.5 p-3" style={{ boxShadow: `inset 0 0 24px ${meta.accent}10` }} title={action.id}>
-                    {pinned && <Pin className="absolute right-2 top-2 h-3 w-3 text-[#525252]" />}
-                    <div className="flex h-12 w-12 items-center justify-center rounded-xl transition-transform group-active:scale-90" style={{ background: `${meta.accent}18`, color: meta.accent, boxShadow: `0 0 16px ${meta.accent}33` }}><Icon className="h-6 w-6" /></div>
-                    <span className="text-center text-xs font-medium text-[#F5F5F5]">{action.title}</span>
-                    {endpointStatuses[action.id] && <span className="text-[9px] text-[#525252]">{endpointStatuses[action.id]}</span>}
-                  </button>
-                );
-              })}
+            <div className="space-y-3">
+              {visibleStreamDeckGroups.map((group) => (
+                <section key={group.id} className="rounded-xl border border-[#1f1f1f] bg-[#0A0A0A] p-3">
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h2 className="text-sm font-semibold text-[#F5F5F5]">{group.title}</h2>
+                      <p className="text-xs text-[#A3A3A3]">{group.description}</p>
+                    </div>
+                    <span className="font-mono text-[10px] text-[#525252]">{group.items.length} actions</span>
+                  </div>
+                  <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                    {group.items.map((item) => {
+                      const action = item.actionId ? actions.find((candidate) => candidate.id === item.actionId) : undefined;
+                      const meta = MODULE_META[action?.moduleId ?? "deck"] ?? { icon: LayoutGrid, accent: ACCENT_DECK };
+                      const Icon = meta.icon;
+                      const pinned = Boolean(item.actionId && pinnedActionIds.includes(item.actionId));
+                      const disabled = item.placeholder || !item.actionId || !action;
+                      return (
+                        <article key={`${group.id}-${item.file}`} className="glass-card flex min-h-[7.25rem] flex-col justify-between p-3" style={{ boxShadow: `inset 0 0 18px ${meta.accent}0f` }}>
+                          <div className="flex items-start gap-2.5">
+                            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ background: `${meta.accent}18`, color: meta.accent }}><Icon className="h-4 w-4" /></div>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-start gap-2">
+                                <strong className="min-w-0 flex-1 truncate text-sm text-[#F5F5F5]">{item.title}</strong>
+                                {pinned && <Pin className="h-3 w-3 shrink-0 text-[#525252]" />}
+                              </div>
+                              <p className="mt-1 line-clamp-2 text-xs text-[#A3A3A3]">{item.description ?? action?.description ?? item.note ?? "Stream Deck action."}</p>
+                            </div>
+                          </div>
+                          <div className="mt-3 flex items-center justify-between gap-2">
+                            <span className="truncate font-mono text-[10px] text-[#525252]">{action?.module ?? item.category} · {action?.category ?? item.category}</span>
+                            {disabled ? (
+                              <StatusChip tone="warn" dot={false}>not configured</StatusChip>
+                            ) : (
+                              <button type="button" onClick={() => void runEndpointAction(item.actionId as string, item.params ?? {})} className="rounded-lg border border-[#262626] px-2.5 py-1 text-xs text-[#F5F5F5] hover:border-[#3a3a3a]">Run/Test</button>
+                            )}
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                </section>
+              ))}
             </div>
           )}
         </div>
@@ -13609,7 +15476,7 @@ function DeckView({
             </div>
           </Panel>
 
-          <Panel title="Action Browser">
+          <Panel title="Curated Stream Deck Action Browser">
             <div className="deck-filter-grid">
               <label>Search<input value={actionSearch} onChange={(event) => setActionSearch(event.target.value)} placeholder="Action title or ID" /></label>
               <label>Module<select value={moduleFilter} onChange={(event) => setModuleFilter(event.target.value)}><option value="all">All modules</option>{moduleOptions.map((module) => <option value={module} key={module}>{module}</option>)}</select></label>
@@ -13617,18 +15484,23 @@ function DeckView({
               <label className="checkbox-row"><input type="checkbox" checked={pinnedOnly} onChange={(event) => setPinnedOnly(event.target.checked)} /><span>Pinned only</span></label>
             </div>
             <div className="deck-panel-scroll">
-              {browserActions.length === 0 ? <EmptyState>No matching actions.</EmptyState> : browserActions.map((action) => renderDeckActionRow(action))}
+              {curatedBrowserActions.length === 0 ? <EmptyState>No matching Stream Deck catalog actions.</EmptyState> : curatedBrowserActions.map((action) => renderDeckActionRow(action))}
             </div>
           </Panel>
 
-          <Panel title="Dev Project Actions">
+          <Panel title="Dev Stream Deck Actions">
             <div className="deck-panel-scroll">
-              {projectActionGroups.length === 0 ? <EmptyState>No matching Dev project actions.</EmptyState> : projectActionGroups.map((group) => (
-                <section className="deck-project-group" key={group.project.id}>
-                  <div className="deck-project-group__header"><strong>{group.project.name}</strong><span>{group.actions.length} actions</span></div>
-                  <div className="deck-action-table">{group.actions.map((action) => renderDeckActionRow(action, "accent-dev"))}</div>
+              {streamDeckCatalogGroups.find((group) => group.id === "dev")?.items.filter((item) => item.actionId).length === 0 ? <EmptyState>No configured Dev Stream Deck actions.</EmptyState> : (
+                <section className="deck-project-group">
+                  <div className="deck-project-group__header"><strong>Dev</strong><span>Export pack actions only</span></div>
+                  <div className="deck-action-table">
+                    {streamDeckCatalogGroups.find((group) => group.id === "dev")?.items.map((item) => {
+                      const action = item.actionId ? actions.find((candidate) => candidate.id === item.actionId) : undefined;
+                      return action ? renderDeckActionRow(action, "accent-dev") : null;
+                    })}
+                  </div>
                 </section>
-              ))}
+              )}
             </div>
           </Panel>
         </div>
@@ -14117,11 +15989,13 @@ function AuditView({
 }
 
 function SettingsView({
+  actions,
   userName,
   onUserNameChange,
   appInfo,
   backupState,
   calendarState,
+  weatherState,
   ambientVoiceState,
   speechState,
   ttsDiagnostics,
@@ -14140,11 +16014,13 @@ function SettingsView({
   onPerformanceChanged,
   onRefresh
 }: {
+  actions: ActionDefinition[];
   userName: string;
   onUserNameChange: (name: string) => void;
   appInfo: AppInfo | null;
   backupState: BackupState;
   calendarState: CalendarState;
+  weatherState: WeatherState;
   ambientVoiceState: AmbientVoiceState;
   speechState: SpeechServiceState;
   ttsDiagnostics: TtsDiagnostics;
@@ -14186,6 +16062,7 @@ function SettingsView({
     { id: "performance", label: "Performance Mode", icon: Cpu, accent: "#F59E0B" },
     { id: "startup", label: "Startup & Tray", icon: Power, accent: "#A855F7" },
     { id: "nudges", label: "Reminders & Nudges", icon: Bell, accent: "#14B8A6" },
+    { id: "weather", label: "Weather", icon: CloudSun, accent: "var(--accent-weather)" },
     { id: "data", label: "Data Management", icon: Trash2, accent: "#FB4D6A" },
     { id: "diagnostics", label: "Diagnostics", icon: Wrench, accent: "#3B82F6" }
   ];
@@ -14195,6 +16072,8 @@ function SettingsView({
   const [backupMessage, setBackupMessage] = useState("");
   const [healthState, setHealthState] = useState<AppHealthState | null>(null);
   const [healthStatus, setHealthStatus] = useState("");
+  const [voiceValidationResults, setVoiceValidationResults] = useState<VoiceValidationResult[]>([]);
+  const [voiceValidationStatus, setVoiceValidationStatus] = useState("");
   const [performanceForm, setPerformanceForm] = useState<PerformanceModeSettings>(performanceModeSettings);
   const [performanceBusy, setPerformanceBusy] = useState(false);
   const [performanceSaving, setPerformanceSaving] = useState(false);
@@ -14294,6 +16173,9 @@ function SettingsView({
     dailyJournalReminderEnabled: calendarState.nudgeSettings.dailyJournalReminderEnabled,
     backupReminderAfterDays: String(calendarState.nudgeSettings.backupReminderAfterDays)
   });
+  const [weatherForm, setWeatherForm] = useState<WeatherSettings>(weatherState.settings);
+  const [weatherBusy, setWeatherBusy] = useState(false);
+  const [weatherStatus, setWeatherStatus] = useState("");
 
   useEffect(() => {
     setBackupOptions(backupState.defaultOptions);
@@ -14340,6 +16222,10 @@ function SettingsView({
     });
   }, [calendarState.nudgeSettings]);
 
+  useEffect(() => {
+    setWeatherForm(weatherState.settings);
+  }, [weatherState.settings]);
+
   // App Health checks are on-demand only — never auto-run on Settings open.
 
   const rows = [
@@ -14366,6 +16252,9 @@ function SettingsView({
     ["Tray window mode", appInfo?.appLifecycleSettings.trayModeActive ? "hidden in tray" : "normal window"],
     ["Performance mode", performanceModeState.enabled ? `ON / ${performanceModeState.reason}` : "OFF"],
     ["Performance settings", appInfo?.performanceModeSettingsPath ?? "Loading"],
+    ["Weather settings", appInfo?.weatherSettingsPath ?? weatherState.settingsPath],
+    ["Weather cache", appInfo?.weatherCachePath ?? weatherState.cachePath],
+    ["Weather status", `${weatherState.settings.weatherEnabled ? "enabled" : "disabled"} / ${weatherState.status}`],
     ["Backup folder", appInfo?.backupFolderPath ?? backupState.backupFolderPath ?? "Loading"],
     ["Restore staging", appInfo?.restoreStagingPath ?? backupState.restoreStagingPath ?? "Loading"],
     ["Package mode", appInfo?.packageMode ?? "Loading"],
@@ -14883,18 +16772,32 @@ function SettingsView({
     setHealthStatus("Running DexNest App Health checks...");
     const result = await onAction("system.health.run_checks", "module_ui", {}) as { ok?: boolean; health?: AppHealthState; error?: string };
     if (result.health) {
-      setHealthState(result.health);
-      setHealthStatus(`Checked ${formatLocalDateTime(result.health.checkedAt)}.`);
+      const health = addVoiceValidationHealth(result.health, actions, appInfo?.voiceWorkflowSettings ?? defaultVoiceWorkflowSettings);
+      setHealthState(health);
+      setHealthStatus(`Checked ${formatLocalDateTime(health.checkedAt)}.`);
       return;
     }
 
     try {
-      const health = await getBridge().getAppHealth();
+      const health = addVoiceValidationHealth(await getBridge().getAppHealth(), actions, appInfo?.voiceWorkflowSettings ?? defaultVoiceWorkflowSettings);
       setHealthState(health);
       setHealthStatus(`Checked ${formatLocalDateTime(health.checkedAt)}.`);
     } catch (error) {
       setHealthStatus(error instanceof Error ? error.message : "DexNest App Health check failed.");
     }
+  }
+
+  function runVoiceValidation(): void {
+    const results = validateVoiceCapabilities(actions, appInfo?.voiceWorkflowSettings ?? defaultVoiceWorkflowSettings);
+    const broken = voiceValidationBroken(results);
+    setVoiceValidationResults(results);
+    setVoiceValidationStatus(broken.length > 0 ? `${broken.length} displayed phrases need cleanup.` : `${results.length} displayed phrases resolve without broken routes.`);
+    void onAction("voice.validate_capabilities", "module_ui", {
+      displayedPhraseCount: results.length,
+      brokenPhraseCount: broken.length,
+      confirmationPhraseCount: results.filter((result) => result.status === "needs_confirmation").length,
+      status: broken.length > 0 ? "failed" : "success"
+    });
   }
 
   async function updateCommandSettings(params: Record<string, unknown>): Promise<void> {
@@ -14922,6 +16825,54 @@ function SettingsView({
       }
     });
     await onRefresh();
+  }
+
+  async function saveWeatherSettings(): Promise<void> {
+    setWeatherBusy(true);
+    setWeatherStatus("");
+    try {
+      const latitude = weatherForm.latitude === null ? null : Number(weatherForm.latitude);
+      const longitude = weatherForm.longitude === null ? null : Number(weatherForm.longitude);
+      await onAction("weather.update_settings", "module_ui", {
+        ...weatherForm,
+        latitude: Number.isFinite(latitude) ? latitude : null,
+        longitude: Number.isFinite(longitude) ? longitude : null
+      });
+      await onRefresh();
+      setWeatherStatus("Weather settings saved.");
+    } catch (error) {
+      setWeatherStatus(error instanceof Error ? error.message : "Weather settings failed to save.");
+    } finally {
+      setWeatherBusy(false);
+    }
+  }
+
+  async function refreshWeatherNow(): Promise<void> {
+    setWeatherBusy(true);
+    setWeatherStatus("");
+    try {
+      const result = await onAction("weather.refresh", "module_ui", { refreshReason: "manual" }) as { message?: string; error?: string; weatherState?: WeatherState };
+      await onRefresh();
+      setWeatherStatus(result.message ?? result.error ?? "Weather refresh finished.");
+    } catch (error) {
+      setWeatherStatus(error instanceof Error ? error.message : "Weather refresh failed.");
+    } finally {
+      setWeatherBusy(false);
+    }
+  }
+
+  async function toggleWeatherEnabled(enabled: boolean): Promise<void> {
+    setWeatherBusy(true);
+    setWeatherStatus("");
+    try {
+      const result = await onAction("weather.toggle_enabled", "module_ui", { enabled }) as { message?: string; weatherState?: WeatherState };
+      await onRefresh();
+      setWeatherStatus(result.message ?? (enabled ? "Weather enabled." : "Weather disabled."));
+    } catch (error) {
+      setWeatherStatus(error instanceof Error ? error.message : "Weather toggle failed.");
+    } finally {
+      setWeatherBusy(false);
+    }
   }
 
   function healthTone(status: HealthStatus): "success" | "warning" | "error" {
@@ -14977,8 +16928,17 @@ function SettingsView({
             <GlassCard hover={false}>
               <SectionTitle action={<span className="font-mono text-[10px] text-[#525252]">J=Hey Jarvis · P=push-to-talk · T=typed · D=Deck/shortcut</span>}>Things you can say</SectionTitle>
               <p className="mb-3 text-xs text-[#A3A3A3]">Speak through Hey Jarvis, push-to-talk, the Ask DexNest mic, or type — all route through the same capability resolver (fast-path → rules → local LLM). Confirmation is only asked where the action already requires it.</p>
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <ActionButton accent="var(--accent-command)" variant="ghost" icon={CheckCircle2} onClick={runVoiceValidation}>Validate voice commands</ActionButton>
+                {voiceValidationStatus && (
+                  <>
+                    <StatusChip tone={voiceValidationBroken(voiceValidationResults).length > 0 ? "warn" : "ok"}>{voiceValidationBroken(voiceValidationResults).length > 0 ? "review" : "validated"}</StatusChip>
+                    <span className="text-xs text-[#A3A3A3]">{voiceValidationStatus}</span>
+                  </>
+                )}
+              </div>
               <div className="space-y-4">
-                {VOICE_CAPABILITY_GROUPS.map((group) => (
+                {getVoiceCapabilityGroups(actions).map((group) => (
                   <div key={group.module}>
                     <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider" style={{ color: group.accent }}>{group.module}</p>
                     <div className="space-y-1.5">
@@ -14995,6 +16955,25 @@ function SettingsView({
                   </div>
                 ))}
               </div>
+              {voiceValidationResults.length > 0 && (
+                <div className="mt-4 rounded-lg border border-[#262626] bg-[#0a0a0a] p-3">
+                  <p className="mb-2 text-xs font-semibold text-[#F5F5F5]">Validation details</p>
+                  <div className="max-h-64 space-y-1 overflow-y-auto pr-1">
+                    {voiceValidationResults.map((result) => {
+                      const tone = result.status === "works" ? "ok" : result.status === "needs_confirmation" ? "warn" : "error";
+                      return (
+                        <div key={`${result.module}-${result.phrase}`} className="grid grid-cols-1 gap-1 rounded-md border border-[#141414] px-2 py-1.5 text-xs md:grid-cols-[8rem_minmax(0,1fr)_8rem_minmax(0,1fr)_auto] md:items-center">
+                          <span className="truncate text-[#A3A3A3]">{result.module}</span>
+                          <span className="truncate font-mono text-[#F5F5F5]">{result.phrase}</span>
+                          <span className="font-mono text-[#525252]">{result.routerUsed}</span>
+                          <span className="truncate font-mono text-[#A3A3A3]">{result.actionId ?? result.workflow ?? result.message}</span>
+                          <StatusChip tone={tone} dot={false}>{result.status.replace("_", " ")}</StatusChip>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </GlassCard>
           )}
           {settingsSection === "controls" && (
@@ -15989,6 +17968,126 @@ function SettingsView({
       </Panel>
           )}
 
+          {settingsSection === "weather" && (
+      <Panel title="Weather">
+        <div className="settings-grid">
+          <article>
+            <span>Weather</span>
+            <strong>{weatherState.settings.weatherEnabled ? "Enabled" : "Disabled"}</strong>
+            <p>Optional online weather. Off by default.</p>
+          </article>
+          <article>
+            <span>Provider</span>
+            <strong>Open-Meteo</strong>
+            <p>No API key. Only used when Weather is enabled and refreshed.</p>
+          </article>
+          <article>
+            <span>Cache</span>
+            <strong>{weatherState.status}</strong>
+            <p className="technical">{weatherState.cache.fetchedAt ? formatLocalDateTime(weatherState.cache.fetchedAt) : "No cached weather yet."}</p>
+          </article>
+        </div>
+        <div className="registry-controls">
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={weatherForm.weatherEnabled}
+              onChange={(event) => setWeatherForm((current) => ({ ...current, weatherEnabled: event.target.checked }))}
+            />
+            <span>Enable Weather</span>
+          </label>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={weatherForm.showWeatherOnCommand}
+              onChange={(event) => setWeatherForm((current) => ({ ...current, showWeatherOnCommand: event.target.checked }))}
+            />
+            <span>Show compact Weather card on Command</span>
+          </label>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              checked={weatherForm.refreshOnCommandOpen}
+              onChange={(event) => setWeatherForm((current) => ({ ...current, refreshOnCommandOpen: event.target.checked }))}
+            />
+            <span>Refresh stale Weather when Command opens</span>
+          </label>
+          <label>
+            Location name
+            <input
+              value={weatherForm.locationName}
+              onChange={(event) => setWeatherForm((current) => ({ ...current, locationName: event.target.value }))}
+              placeholder="Regina, SK"
+            />
+          </label>
+          <label>
+            Latitude
+            <input
+              type="number"
+              step="0.0001"
+              value={weatherForm.latitude ?? ""}
+              onChange={(event) => setWeatherForm((current) => ({ ...current, latitude: event.target.value === "" ? null : Number(event.target.value) }))}
+              placeholder="50.4452"
+            />
+          </label>
+          <label>
+            Longitude
+            <input
+              type="number"
+              step="0.0001"
+              value={weatherForm.longitude ?? ""}
+              onChange={(event) => setWeatherForm((current) => ({ ...current, longitude: event.target.value === "" ? null : Number(event.target.value) }))}
+              placeholder="-104.6189"
+            />
+          </label>
+          <label>
+            Units
+            <select value={weatherForm.units} onChange={(event) => setWeatherForm((current) => ({ ...current, units: event.target.value as WeatherUnits }))}>
+              <option value="metric">Metric</option>
+              <option value="imperial">Imperial</option>
+            </select>
+          </label>
+          <label>
+            Refresh mode
+            <select value={weatherForm.refreshMode} onChange={(event) => setWeatherForm((current) => ({ ...current, refreshMode: event.target.value as WeatherRefreshMode }))}>
+              <option value="manual">Manual only</option>
+              <option value="every_30_min">Every 30 minutes</option>
+              <option value="every_1_hour">Every hour</option>
+              <option value="every_2_hours">Every 2 hours</option>
+            </select>
+          </label>
+        </div>
+        <div className="settings-grid">
+          <article>
+            <span>Current</span>
+            <strong>{weatherState.cache.temperature === null ? "No data" : `${Math.round(weatherState.cache.temperature)} ${weatherTemperatureUnit(weatherState.cache.units)}`}</strong>
+            <p>{weatherState.cache.condition || weatherState.cache.error || "Refresh after enabling Weather."}</p>
+          </article>
+          <article>
+            <span>Next auto refresh</span>
+            <strong>{weatherState.nextRefreshAt ? formatLocalDateTime(weatherState.nextRefreshAt) : "Manual"}</strong>
+            <p>{weatherState.autoRefreshActive ? "Auto-refresh is scheduled." : "No Weather timer active."}</p>
+          </article>
+        </div>
+        <div className="button-row">
+          <button type="button" disabled={weatherBusy} className={weatherBusy ? "is-busy" : undefined} onClick={() => void saveWeatherSettings()}>
+            {weatherBusy && <Spinner size="sm" />}
+            Save Weather settings
+          </button>
+          <button type="button" disabled={weatherBusy || !weatherForm.weatherEnabled} onClick={() => void refreshWeatherNow()}>
+            {weatherBusy && <Spinner size="sm" />}
+            Refresh Weather now
+          </button>
+          <button type="button" disabled={weatherBusy} onClick={() => void toggleWeatherEnabled(!weatherState.settings.weatherEnabled)}>
+            {weatherState.settings.weatherEnabled ? "Disable Weather" : "Enable Weather"}
+          </button>
+        </div>
+        {weatherStatus && <p className="inline-status">{weatherStatus}</p>}
+        <p className="technical">{weatherState.settingsPath}</p>
+        <p className="technical">{weatherState.cachePath}</p>
+      </Panel>
+          )}
+
 
           {settingsSection === "data" && (
             <DataManagementSection onAction={onAction} onRefresh={onRefresh} />
@@ -16301,19 +18400,28 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
   );
 }
 
-try {
-  document.documentElement.setAttribute("data-reduce-motion", localStorage.getItem("dexnest:reduceMotion") === "1" ? "true" : "false");
-  document.documentElement.setAttribute("data-grain", localStorage.getItem("dexnest:grain") === "0" ? "false" : "true");
-} catch { /* ignore */ }
+// Exposed for the headless voice-command validation harness (scripts/dev tooling
+// and tests). These are pure functions/data with no DOM dependency.
+export { validateVoiceCapabilities, voiceValidationBroken, getVoiceCapabilityGroups, defaultVoiceWorkflowSettings };
 
-const root = document.getElementById("root");
+// Browser-only bootstrap. Guarded so the module can be imported in a headless
+// (Node) context — e.g. the voice-command validation harness — without trying to
+// mount React or touch the DOM. In the real renderer `document` always exists.
+if (typeof document !== "undefined") {
+  try {
+    document.documentElement.setAttribute("data-reduce-motion", localStorage.getItem("dexnest:reduceMotion") === "1" ? "true" : "false");
+    document.documentElement.setAttribute("data-grain", localStorage.getItem("dexnest:grain") === "0" ? "false" : "true");
+  } catch { /* ignore */ }
 
-if (!root) {
-  throw new Error("DexNest root element was not found.");
+  const root = document.getElementById("root");
+
+  if (!root) {
+    throw new Error("DexNest root element was not found.");
+  }
+
+  createRoot(root).render(
+    <React.StrictMode>
+      <DexNestApp />
+    </React.StrictMode>
+  );
 }
-
-createRoot(root).render(
-  <React.StrictMode>
-    <DexNestApp />
-  </React.StrictMode>
-);
