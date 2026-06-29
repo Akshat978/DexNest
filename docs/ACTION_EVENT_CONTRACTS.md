@@ -20,7 +20,7 @@ type DexNestAction = {
   undoActionId?: string | null;
   handlerType: "internal_function" | "local_command" | "http_endpoint" | "file_operation" | "routine";
   handlerRef: string;
-  allowedTriggers: Array<"command" | "deck" | "stream_deck_http" | "keyboard_shortcut" | "tray" | "assistant" | "ambient_voice" | "push_to_talk" | "voice" | "routine" | "module_ui">;
+  allowedTriggers: Array<"command" | "deck" | "stream_deck_http" | "keyboard_shortcut" | "tray" | "assistant" | "ambient_voice" | "ambient_wake_word" | "push_to_talk" | "voice" | "routine" | "module_ui">;
   enabled: boolean;
 };
 ```
@@ -73,7 +73,7 @@ type DexNestEvent = {
   actionId?: string;
   eventType: string;
   status: "success" | "failed" | "skipped" | "cancelled" | "pending";
-  source: "command" | "deck" | "stream_deck_http" | "keyboard_shortcut" | "tray" | "assistant" | "ambient_voice" | "push_to_talk" | "voice" | "routine" | "module_ui" | "system";
+  source: "command" | "deck" | "stream_deck_http" | "keyboard_shortcut" | "tray" | "assistant" | "ambient_voice" | "ambient_wake_word" | "push_to_talk" | "voice" | "routine" | "module_ui" | "system";
   target?: string;
   entityType?: string;
   entityId?: string;

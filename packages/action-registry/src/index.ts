@@ -132,7 +132,7 @@ export const seededActions = [
     undoActionId: null,
     handlerType: "internal_function" as const,
     handlerRef: id === "backup.open" || id === "system.health.open" || id === "system.performance.open" ? "desktop.view.settings" : (id as string),
-    allowedTriggers: ["command", "deck", "keyboard_shortcut", "tray", "assistant", "ambient_voice", "push_to_talk", "voice", "module_ui"] as Array<"command" | "deck" | "keyboard_shortcut" | "tray" | "assistant" | "ambient_voice" | "push_to_talk" | "voice" | "module_ui">,
+    allowedTriggers: ["command", "deck", "keyboard_shortcut", "tray", "assistant", "ambient_voice", "ambient_wake_word", "push_to_talk", "voice", "module_ui"] as Array<"command" | "deck" | "keyboard_shortcut" | "tray" | "assistant" | "ambient_voice" | "ambient_wake_word" | "push_to_talk" | "voice" | "module_ui">,
     enabled: true,
     status: "available" as const
   })),
@@ -2234,6 +2234,7 @@ export const seededActions = [
     ["voice.ambient.test_microphone", "Test Ambient Microphone", "Test local speech capture availability for Ambient Nest.", "voice.ambient", "safe", false],
     ["voice.ambient.test_command", "Test Ambient Command", "Route a typed Ambient Nest test command through Ask DexNest.", "voice.ambient", "safe", false],
     ["voice.ambient.toggle", "Toggle Ambient Voice", "Enable or disable the DexNest Ambient Voice setting.", "voice.ambient", "caution", false],
+    ["voice.wake_word", "Wake Word Detected", "Record local DexNest wake-word engine events without audio or transcript content.", "voice.ambient", "safe", false],
     ["voice.workflow.update_settings", "Update Voice Workflow Settings", "Update local DexNest Capture/Finder voice workflow settings.", "voice.workflow", "caution", false],
     ["voice.workflow.start", "Start Voice Workflow", "Start a local DexNest voice workflow such as Capture voice mode.", "voice.workflow", "safe", false],
     ["voice.workflow.stop", "Stop Voice Workflow", "Stop or cancel a local DexNest voice workflow.", "voice.workflow", "safe", false],
@@ -2258,7 +2259,7 @@ export const seededActions = [
     undoActionId: null,
     handlerType: "internal_function" as const,
     handlerRef: id as string,
-    allowedTriggers: ["command", "deck", "tray", "keyboard_shortcut", "ambient_voice", "push_to_talk", "voice", "module_ui"] as Array<"command" | "deck" | "tray" | "keyboard_shortcut" | "ambient_voice" | "push_to_talk" | "voice" | "module_ui">,
+    allowedTriggers: ["command", "deck", "tray", "keyboard_shortcut", "ambient_voice", "ambient_wake_word", "push_to_talk", "voice", "module_ui"] as Array<"command" | "deck" | "tray" | "keyboard_shortcut" | "ambient_voice" | "ambient_wake_word" | "push_to_talk" | "voice" | "module_ui">,
     enabled: true,
     status: id === "voice.start_dictation_placeholder" ? "placeholder" as const : "available" as const
   })),
@@ -2775,6 +2776,7 @@ export const seededActions = [
     ["external.govee.update_group", "Update Govee Group", "Create or update a local Govee device group.", "external.govee.settings", "caution"],
     ["external.govee.delete_group", "Delete Govee Group", "Delete a local Govee device group.", "external.govee.settings", "danger"],
     ["external.govee.remove_api_key", "Remove Govee API Key", "Remove the Govee API key reference from DexNest External Devices settings.", "external.govee.settings", "danger"],
+    ["external.govee.migrate_key", "Move Govee Key to Integration Keychain", "Move an existing Secure Vault Govee API key into the local encrypted Integration Keychain.", "external.govee.settings", "caution"],
     ["external.govee.turn_on", "Turn On Govee Device", "Turn on a Govee light by device ID or alias.", "external.govee", "caution"],
     ["external.govee.turn_off", "Turn Off Govee Device", "Turn off a Govee light by device ID or alias.", "external.govee", "caution"],
     ["external.govee.toggle", "Toggle Govee Device", "Toggle a Govee light by device ID or alias using cached state where available.", "external.govee", "caution"],
@@ -2796,7 +2798,7 @@ export const seededActions = [
     undoActionId: null,
     handlerType: "internal_function" as const,
     handlerRef: id,
-    allowedTriggers: ["command", "deck", "stream_deck_http", "keyboard_shortcut", "assistant", "ambient_voice", "push_to_talk", "voice", "routine", "module_ui"] as Array<"command" | "deck" | "stream_deck_http" | "keyboard_shortcut" | "assistant" | "ambient_voice" | "push_to_talk" | "voice" | "routine" | "module_ui">,
+    allowedTriggers: ["command", "deck", "stream_deck_http", "keyboard_shortcut", "assistant", "ambient_voice", "ambient_wake_word", "push_to_talk", "voice", "routine", "module_ui"] as Array<"command" | "deck" | "stream_deck_http" | "keyboard_shortcut" | "assistant" | "ambient_voice" | "ambient_wake_word" | "push_to_talk" | "voice" | "routine" | "module_ui">,
     enabled: true,
     status: "available" as const
   })),

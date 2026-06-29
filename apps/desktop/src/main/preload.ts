@@ -53,6 +53,21 @@ contextBridge.exposeInMainWorld("dexNest", {
   checkSpeechModel: () => ipcRenderer.invoke("dexnest:check-speech-model"),
   installSpeechModel: () => ipcRenderer.invoke("dexnest:install-speech-model"),
   warmSpeechEngine: () => ipcRenderer.invoke("dexnest:warm-speech-engine"),
+  getWakeEngineState: () => ipcRenderer.invoke("dexnest:get-wake-engine-state"),
+  checkWakeEngine: () => ipcRenderer.invoke("dexnest:check-wake-engine"),
+  startWakeEngine: () => ipcRenderer.invoke("dexnest:start-wake-engine"),
+  stopWakeEngine: () => ipcRenderer.invoke("dexnest:stop-wake-engine"),
+  voiceOverlay: (payload: { type?: string; state?: string; level?: number }) => ipcRenderer.send("dexnest:voice-overlay", payload),
+  onVoiceOverlay: (callback: (payload: { type?: string; state?: string; level?: number; animations?: boolean }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: { type?: string; state?: string; level?: number; animations?: boolean }) => callback(payload);
+    ipcRenderer.on("dexnest-overlay:update", listener);
+    return () => ipcRenderer.removeListener("dexnest-overlay:update", listener);
+  },
+  onWakeDetected: (callback: (payload: { source: string; score: number | null }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: { source: string; score: number | null }) => callback(payload);
+    ipcRenderer.on("dexnest:wake-detected", listener);
+    return () => ipcRenderer.removeListener("dexnest:wake-detected", listener);
+  },
   openSpeechModelFolder: () => ipcRenderer.invoke("dexnest:open-speech-model-folder"),
   transcribeSpeech: (payload: { audioBytes?: ArrayBuffer | Uint8Array | number[]; mimeType?: string; source?: string; sourceModule?: string; language?: string; manualOverride?: boolean }) =>
     ipcRenderer.invoke("dexnest:transcribe-speech", payload),

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import QRCode from "qrcode";
 import { formatLocalDate, formatLocalDateTime, getLocalTodayDateString, parseLocalDateInput, resolveRelativeLocalDate, toLocalDateInputValue } from "@dexnest/shared-types";
@@ -132,6 +132,7 @@ interface ActionDefinition {
 interface ExternalDevicesSettings {
   goveeEnabled: boolean;
   goveeApiKeySecretId: string | null;
+  goveeApiKeyCredentialId?: string | null;
   defaultDeviceAlias: string | null;
   allowVoiceControl: boolean;
   allowStreamDeckControl: boolean;
@@ -146,6 +147,19 @@ interface AmbientVoiceSettings {
   ambientVoiceEnabled: boolean;
   wakeWordEnabled: boolean;
   wakeWord: string;
+  wakeWordEngine?: "placeholder" | "openwakeword" | "porcupine_optional" | "custom";
+  wakeWordSensitivity?: number;
+  listenAfterWakeMs?: number;
+  wakeCooldownMs?: number;
+  pauseWakeWordInPerformanceMode?: boolean;
+  playWakeSound?: boolean;
+  requireVisibleIndicator?: boolean;
+  allowWakeWordWhileLocked?: boolean;
+  allowWakeWordDeviceControl?: boolean;
+  allowWakeWordSensitiveLookup?: boolean;
+  selectedWakeMicDeviceId?: string | null;
+  wakePhraseMode?: "custom_nest" | "hey_jarvis" | "alexa" | "custom_path";
+  wakeCustomModelPath?: string | null;
   pushToTalkEnabled: boolean;
   pushToTalkShortcut: string;
   pushToTalkShortcutStatus: "active" | "disabled" | "failed" | "paused";
@@ -162,6 +176,16 @@ interface AmbientVoiceSettings {
   allowSensitiveLookups: boolean;
   speakResponses: boolean;
   speakSensitiveAnswers: boolean;
+  speakErrors?: boolean;
+  speakConfirmations?: boolean;
+  speakWorkflowStatus?: boolean;
+  wakeChimeEnabled?: boolean;
+  wakeChimeVolume?: number;
+  voiceOverlayEnabled?: boolean;
+  voiceOverlayScreen?: string;
+  voiceOverlayPosition?: string;
+  voiceOverlaySize?: "compact" | "normal";
+  voiceOverlayAnimations?: boolean;
   voiceName?: string | null;
   voiceRate: number;
   voiceVolume: number;
@@ -200,6 +224,19 @@ interface SpeechSettings {
   silenceThreshold?: number | "auto";
   autoStopOnSilence?: boolean;
   micPrewarmEnabled?: boolean;
+  keepSpeechModelWarm?: boolean;
+  selectedInputDeviceId?: string | null;
+  noiseSuppression?: boolean;
+  echoCancellation?: boolean;
+  autoGainControl?: boolean;
+  vadMode?: "auto" | "manual";
+  noiseFloor?: number;
+  speechThresholdMargin?: number;
+  maxPostSpeechListenMs?: number;
+  requireSpeechStart?: boolean;
+  adaptiveSilenceThreshold?: boolean;
+  mainSpeakerMode?: boolean;
+  speakerVerificationEnabled?: boolean;
   keepAudioForDebug: boolean;
   pauseInPerformanceMode: boolean;
   autoSendAfterSpeech: boolean;
@@ -221,13 +258,85 @@ interface VoiceWorkflowSettings {
   updatedAt: string;
 }
 
+type VadStopReason = "stopped_by_silence" | "stopped_by_timeout" | "stopped_by_max_recording" | "no_speech" | "stopped_by_post_speech_window";
+
 interface SpeechCaptureMetrics {
   micClickToRecordingMs: number;
   recordingDurationMs: number;
   speechDetectedAtMs: number | null;
   silenceStopDelayMs: number | null;
   transcriptionLatencyMs?: number;
+  routingLatencyMs?: number;
+  actionLatencyMs?: number;
   vadOutcome: "speech" | "no_speech" | "max_recording";
+  stopReason?: VadStopReason;
+  noiseFloor?: number;
+  speechThreshold?: number;
+  wakeToRecordingStartMs?: number | null;
+  wakeToSearchNavigationMs?: number | null;
+  ttsAttempted?: boolean;
+  ttsSpoken?: boolean;
+  ttsBlockedReason?: string;
+}
+
+interface TtsDiagnostics {
+  available: boolean;
+  voicesCount: number;
+  selectedVoice: string;
+  lastAttemptedAt: string | null;
+  lastSpoken: boolean;
+  blockedReason: string;
+  error: string;
+  lastSource: string;
+  lastActionId: string;
+  lastTextPreview: string;
+}
+
+interface QueuedAssistantCommand {
+  id: string;
+  text: string;
+  source: string;
+  metrics?: Partial<SpeechCaptureMetrics>;
+}
+
+// Live VAD meter for diagnostics (mic level + threshold + state).
+interface VadLiveMeter {
+  level: number;
+  noiseFloor: number;
+  speechThreshold: number;
+  state: "idle" | "waiting" | "speech_detected" | "silence" | "stopped_by_silence" | "stopped_by_timeout";
+}
+
+// --- Lightweight renderer performance instrumentation (Phase 23.12) ---------
+// Records the most recent module-switch render time (to first paint) so it can
+// be shown in Settings diagnostics. Module-level + subscribe so it never causes
+// the whole App to re-render on every measurement.
+interface PerfStats {
+  lastModule: string;
+  lastModuleSwitchMs: number | null;
+  worstModuleSwitchMs: number | null;
+}
+let perfStats: PerfStats = { lastModule: "", lastModuleSwitchMs: null, worstModuleSwitchMs: null };
+const perfListeners = new Set<() => void>();
+function getPerfStats(): PerfStats { return perfStats; }
+function subscribePerf(listener: () => void): () => void { perfListeners.add(listener); return () => perfListeners.delete(listener); }
+function recordModuleSwitch(view: string, ms: number): void {
+  const rounded = Math.round(ms);
+  perfStats = {
+    lastModule: view,
+    lastModuleSwitchMs: rounded,
+    worstModuleSwitchMs: Math.max(rounded, perfStats.worstModuleSwitchMs ?? 0)
+  };
+  for (const listener of perfListeners) { listener(); }
+}
+
+let vadLiveMeter: VadLiveMeter = { level: 0, noiseFloor: 0, speechThreshold: 0.03, state: "idle" };
+const vadMeterListeners = new Set<() => void>();
+function getVadLiveMeter(): VadLiveMeter { return { ...vadLiveMeter }; }
+function subscribeVadMeter(listener: () => void): () => void { vadMeterListeners.add(listener); return () => vadMeterListeners.delete(listener); }
+function setVadLiveMeter(patch: Partial<VadLiveMeter>): void {
+  vadLiveMeter = { ...vadLiveMeter, ...patch };
+  for (const listener of vadMeterListeners) { listener(); }
 }
 
 // --- Renderer microphone pre-warm manager (Phase 23A.1) --------------------
@@ -287,7 +396,33 @@ async function refreshMicPermission(): Promise<void> {
 
 // Pre-warm the mic stream + AudioContext. Safe to call repeatedly; no-op when
 // already ready. Returns true when the stream is ready to record.
-async function prewarmMic(): Promise<boolean> {
+// Build audio constraints from settings: selected input device + WebRTC noise
+// suppression / echo cancellation / auto gain (all default on).
+function micAudioConstraints(settings?: SpeechSettings): MediaTrackConstraints {
+  const constraints: MediaTrackConstraints = {
+    noiseSuppression: settings?.noiseSuppression !== false,
+    echoCancellation: settings?.echoCancellation !== false,
+    autoGainControl: settings?.autoGainControl !== false
+  };
+  if (settings?.selectedInputDeviceId) {
+    constraints.deviceId = { exact: settings.selectedInputDeviceId };
+  }
+  return constraints;
+}
+
+function micConstraintKey(settings?: SpeechSettings): string {
+  return `${settings?.selectedInputDeviceId ?? "default"}|${settings?.noiseSuppression !== false}|${settings?.echoCancellation !== false}|${settings?.autoGainControl !== false}`;
+}
+
+let micActiveConstraintKey = "";
+
+async function prewarmMic(settings?: SpeechSettings): Promise<boolean> {
+  const key = micConstraintKey(settings);
+  // Re-acquire when the device or audio constraints changed.
+  if (settings && key !== micActiveConstraintKey && micWarm.stream) {
+    micWarm.stream.getTracks().forEach((track) => track.stop());
+    micWarm.stream = null;
+  }
   if (micWarm.stream && micWarm.stream.getAudioTracks().some((track) => track.readyState === "live")) {
     setMicWarmState({ streamStatus: "ready" });
     return true;
@@ -298,7 +433,8 @@ async function prewarmMic(): Promise<boolean> {
   }
   setMicWarmState({ streamStatus: "requesting", error: null });
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: settings ? micAudioConstraints(settings) : true });
+    micActiveConstraintKey = key;
     micWarm.stream = stream;
     if (!micWarm.audioContext || micWarm.audioContext.state === "closed") {
       micWarm.audioContext = new AudioContext();
@@ -326,6 +462,63 @@ function releaseMic(blocked = false): void {
   }
   micWarm.audioContext = null;
   setMicWarmState({ streamStatus: blocked ? "blocked" : "unavailable", audioContextStatus: "closed" });
+}
+
+// List audio input devices (labels need an active permission/stream).
+async function listAudioInputDevices(): Promise<{ deviceId: string; label: string }[]> {
+  try {
+    if (!navigator.mediaDevices?.enumerateDevices) {
+      return [];
+    }
+    if (!micWarm.stream) {
+      await prewarmMic();
+    }
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    return devices
+      .filter((device) => device.kind === "audioinput")
+      .map((device) => ({ deviceId: device.deviceId, label: device.label || `Microphone ${device.deviceId.slice(0, 6)}` }));
+  } catch {
+    return [];
+  }
+}
+
+// Listen silently for `durationMs` and return the average RMS noise floor.
+async function calibrateNoiseFloor(settings: SpeechSettings, durationMs = 2000): Promise<number> {
+  const ready = await prewarmMic(settings);
+  if (!ready || !micWarm.stream) {
+    throw new Error("Microphone is not available for calibration.");
+  }
+  const ctx = micWarm.audioContext ?? new AudioContext();
+  micWarm.audioContext = ctx;
+  if (ctx.state === "suspended") {
+    await ctx.resume().catch(() => undefined);
+  }
+  const source = ctx.createMediaStreamSource(micWarm.stream);
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 1024;
+  source.connect(analyser);
+  const data = new Uint8Array(analyser.fftSize);
+  let sum = 0;
+  let frames = 0;
+  const started = Date.now();
+  return new Promise<number>((resolve) => {
+    const timer = window.setInterval(() => {
+      analyser.getByteTimeDomainData(data);
+      const rms = Math.sqrt(data.reduce((total, value) => {
+        const normalized = (value - 128) / 128;
+        return total + normalized * normalized;
+      }, 0) / data.length);
+      sum += rms;
+      frames += 1;
+      setVadLiveMeter({ level: Number(rms.toFixed(4)), state: "waiting" });
+      if (Date.now() - started > durationMs) {
+        window.clearInterval(timer);
+        try { source.disconnect(); } catch { /* ignore */ }
+        setVadLiveMeter({ state: "idle" });
+        resolve(Number((sum / Math.max(1, frames)).toFixed(4)));
+      }
+    }, 60);
+  });
 }
 
 interface SpeechModelStatus {
@@ -408,6 +601,10 @@ interface ExternalDevicesState {
   secureVaultSetup: boolean;
   secureVaultUnlocked: boolean;
   apiKeyStored: boolean;
+  apiKeyInKeychain?: boolean;
+  keychainStorageMethod?: "electron_safeStorage" | "windows_dpapi" | "dev_insecure" | null;
+  keychainAvailable?: boolean;
+  hasLegacyVaultKey?: boolean;
   providerStatus: "disabled" | "ready" | "needs_secure_vault" | "locked" | "missing_api_key";
   providerMessage: string;
   devices: ExternalDeviceCacheItem[];
@@ -1408,6 +1605,12 @@ interface DexNestBridge {
   checkSpeechModel: () => Promise<{ ok: boolean; status: SpeechModelStatus; speechState: SpeechServiceState }>;
   installSpeechModel: () => Promise<{ ok: boolean; status: SpeechModelStatus; speechState: SpeechServiceState }>;
   warmSpeechEngine: () => Promise<{ ok: boolean; error?: string; speechState: SpeechServiceState }>;
+  getWakeEngineState: () => Promise<WakeEngineState>;
+  checkWakeEngine: () => Promise<{ ok: boolean; report: Record<string, unknown>; error?: string; state: WakeEngineState }>;
+  startWakeEngine: () => Promise<{ ok: boolean; status: string; error?: string; state: WakeEngineState }>;
+  stopWakeEngine: () => Promise<{ ok: boolean; state: WakeEngineState }>;
+  voiceOverlay: (payload: { type?: string; state?: string; level?: number }) => void;
+  onWakeDetected: (callback: (payload: { source: string; score: number | null }) => void) => () => void;
   openSpeechModelFolder: () => Promise<{ ok: boolean; path?: string; error?: string }>;
   transcribeSpeech: (payload: { audioBytes?: number[]; mimeType?: string; source?: string; sourceModule?: string; language?: string; manualOverride?: boolean }) => Promise<SpeechTranscriptionResult>;
   getAssistantSecurityState: () => Promise<AssistantSecurityState>;
@@ -1550,8 +1753,18 @@ const defaultAmbientVoiceSettings: AmbientVoiceSettings = {
   allowClipboardActions: true,
   allowDevActions: true,
   allowSensitiveLookups: true,
-  speakResponses: false,
+  speakResponses: true,
   speakSensitiveAnswers: false,
+  speakErrors: true,
+  speakConfirmations: true,
+  speakWorkflowStatus: true,
+  wakeChimeEnabled: true,
+  wakeChimeVolume: 0.35,
+  voiceOverlayEnabled: true,
+  voiceOverlayScreen: "primary",
+  voiceOverlayPosition: "bottom_center",
+  voiceOverlaySize: "compact",
+  voiceOverlayAnimations: true,
   voiceName: null,
   voiceRate: 1,
   voiceVolume: 1,
@@ -2027,6 +2240,12 @@ const fallbackBridge: DexNestBridge = {
   checkSpeechModel: async () => ({ ok: false, status: defaultSpeechState.modelStatus, speechState: defaultSpeechState }),
   installSpeechModel: async () => ({ ok: false, status: defaultSpeechState.modelStatus, speechState: defaultSpeechState }),
   warmSpeechEngine: async () => ({ ok: false, error: "Bridge unavailable", speechState: defaultSpeechState }),
+  getWakeEngineState: async () => defaultWakeEngineState,
+  checkWakeEngine: async () => ({ ok: false, report: {}, error: "Bridge unavailable", state: defaultWakeEngineState }),
+  startWakeEngine: async () => ({ ok: false, status: "engine_missing", error: "Bridge unavailable", state: defaultWakeEngineState }),
+  stopWakeEngine: async () => ({ ok: true, state: defaultWakeEngineState }),
+  voiceOverlay: () => undefined,
+  onWakeDetected: () => () => undefined,
   openSpeechModelFolder: async () => ({ ok: false, error: "Bridge unavailable" }),
   transcribeSpeech: async () => ({ transcript: "", engine: "faster_whisper", model: "base.en", language: "en", durationMs: 0, status: "failed", error: "Bridge unavailable", speechState: defaultSpeechState }),
   getAssistantSecurityState: async () => ({
@@ -2484,10 +2703,12 @@ function externalDeviceRouteFromText(text: string, actions: ActionDefinition[]):
     actionId = "external.govee.turn_off";
   } else if (/\btoggle\b/i.test(normalized)) {
     actionId = "external.govee.toggle";
-  } else if (/\b(dim|brighten|brightness|percent|%)\b/i.test(normalized)) {
+  } else if (/\b(dim|brighten|brightness|percent)\b/i.test(normalized) || /\b\d{1,3}\b/.test(normalized)) {
+    // Note: normalizeVoiceCommand strips "%", so brightness is also detected from
+    // a bare number ("set lights to 40[%]" → "set lights to 40").
     actionId = "external.govee.set_brightness";
-    const percent = normalized.match(/\b(\d{1,3})\s*(?:percent|%)?\b/);
-    params.brightness = percent ? Number(percent[1]) : /\bdim\b/i.test(normalized) ? 25 : /\bbrighten\b/i.test(normalized) ? 75 : 60;
+    const percent = normalized.match(/\b(\d{1,3})\b/);
+    params.brightness = percent ? Math.min(100, Math.max(1, Number(percent[1]))) : /\bdim\b/i.test(normalized) ? 25 : /\bbrighten\b/i.test(normalized) ? 75 : 60;
   } else if (/\b(warm|temperature|kelvin|cool white|white)\b/i.test(normalized)) {
     actionId = "external.govee.set_color_temperature";
     params.kelvin = /\bwarm\b/i.test(normalized) ? 2700 : 5000;
@@ -2949,6 +3170,155 @@ const defaultJournalVoiceState: JournalVoiceState = {
   error: ""
 };
 
+// --- Local wake word "Nest" MVP (Phase 23.8) -------------------------------
+// This MVP ships the wake-word SERVICE INTERFACE and a manual Test trigger.
+// No real always-on local wake engine (openWakeWord/Porcupine) is bundled yet,
+// so the engine status is reported honestly as a placeholder — faster-whisper is
+// never run continuously to fake wake detection.
+type WakeWordStatus =
+  | "disabled"
+  | "starting"
+  | "listening_for_nest"
+  | "wake_detected"
+  | "recording_command"
+  | "transcribing"
+  | "routing"
+  | "paused_by_performance_mode"
+  | "error";
+
+interface WakeWordMetrics {
+  wakeDetectedAt: number | null;
+  commandRecordingStartLatencyMs: number | null;
+  totalWakeToActionMs: number | null;
+}
+
+interface WakeWordServiceState {
+  status: WakeWordStatus;
+  engine: string;
+  engineInstalled: boolean;
+  lastError: string;
+  metrics: WakeWordMetrics;
+}
+
+// Real main-process wake engine state (Phase 23.9).
+interface WakeEngineState {
+  status: "disabled" | "starting" | "listening_for_nest" | "wake_detected" | "recording_command" | "paused_by_performance_mode" | "engine_missing" | "error";
+  installStatus: "unknown" | "ready" | "missing_dependencies" | "missing_model";
+  lastError: string;
+  detectionsCount: number;
+  lastDetectedAt: number | null;
+  scriptPath: string;
+}
+
+const defaultWakeEngineState: WakeEngineState = {
+  status: "disabled",
+  installStatus: "unknown",
+  lastError: "",
+  detectionsCount: 0,
+  lastDetectedAt: null,
+  scriptPath: ""
+};
+
+type WakeListener = (source: string) => void;
+
+// Clean service interface. A real engine would implement detection inside start()
+// and invoke the registered onWake callback; the placeholder only exposes the
+// shape and lets the Test trigger fire the same callback path.
+const wakeWordService = (() => {
+  let started = false;
+  let sensitivity = 0.5;
+  let listener: WakeListener | null = null;
+  return {
+    start(): void { started = true; },
+    stop(): void { started = false; },
+    isRunning(): boolean { return started; },
+    status(): { running: boolean; engineInstalled: boolean } {
+      // No local engine bundled in this MVP → not installed.
+      return { running: started, engineInstalled: false };
+    },
+    onWake(callback: WakeListener): void { listener = callback; },
+    setSensitivity(value: number): void { sensitivity = Math.min(1, Math.max(0, value)); },
+    getSensitivity(): number { return sensitivity; },
+    // Used by the Test wake trigger (and a real engine on detection).
+    fireWake(source = "ambient_wake_word"): void { listener?.(source); },
+    dispose(): void { started = false; listener = null; }
+  };
+})();
+
+// Set when a wake word fires so the next shared capture can measure
+// wake→recording-start latency (Phase 23.10). 0 = not from a wake.
+let lastWakeDetectedAtForMetric = 0;
+
+const defaultTtsDiagnostics: TtsDiagnostics = {
+  available: typeof window !== "undefined" && "speechSynthesis" in window,
+  voicesCount: 0,
+  selectedVoice: "System default",
+  lastAttemptedAt: null,
+  lastSpoken: false,
+  blockedReason: "",
+  error: "",
+  lastSource: "",
+  lastActionId: "",
+  lastTextPreview: ""
+};
+
+function getTtsDiagnosticsSnapshot(selectedVoiceName?: string | null): Pick<TtsDiagnostics, "available" | "voicesCount" | "selectedVoice"> {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+    return { available: false, voicesCount: 0, selectedVoice: selectedVoiceName || "System default" };
+  }
+  const voices = window.speechSynthesis.getVoices();
+  const selected = selectedVoiceName ? voices.find((voice) => voice.name === selectedVoiceName) : null;
+  return {
+    available: true,
+    voicesCount: voices.length,
+    selectedVoice: selected?.name ?? selectedVoiceName ?? "System default"
+  };
+}
+
+function clampTtsRate(value: number | undefined): number {
+  return Math.min(2, Math.max(0.5, Number.isFinite(value) ? Number(value) : 1));
+}
+
+function clampTtsVolume(value: number | undefined): number {
+  return Math.min(1, Math.max(0, Number.isFinite(value) ? Number(value) : 1));
+}
+
+// Short local "wake" chime via WebAudio (no audio file, no network).
+function playWakeChime(volume = 0.35): void {
+  try {
+    const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!Ctx) {
+      return;
+    }
+    const peak = Math.max(0.0002, Math.min(0.3, volume * 0.26));
+    const ctx = new Ctx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    // Short + soft so it cannot block recording or bleed into the command
+    // (echo cancellation on the capture stream also suppresses it).
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(740, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(990, ctx.currentTime + 0.07);
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(peak, ctx.currentTime + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.1);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.12);
+    osc.onended = () => void ctx.close().catch(() => undefined);
+  } catch {
+    // ignore — chime is best-effort
+  }
+}
+
+// Remove a leading wake word ("Nest, turn off lights" → "turn off lights").
+function stripWakeWord(transcript: string, wakeWord: string): string {
+  const word = (wakeWord || "Nest").trim();
+  const pattern = new RegExp(`^\\s*${word.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}\\b[\\s,.:!-]*`, "i");
+  return transcript.replace(pattern, "").trim() || transcript.trim();
+}
+
 type VoiceWorkflowMode = "none" | "assistant_command" | "journal_dictation" | "capture_note" | "finder_add" | "calendar_create";
 type VoiceWorkflowStatus = "idle" | "starting" | "listening" | "transcribing" | "saving" | "saved" | "candidate" | "lookup_complete" | "paused" | "cancelled" | "error";
 
@@ -3381,6 +3751,48 @@ function assistantPendingText(route: VoiceRouteResult): string {
   }
 }
 
+// --- Alexa-style spoken responses (Phase 23.11) ----------------------------
+type DexNestErrorCode =
+  | "provider_unavailable"
+  | "device_not_found"
+  | "credential_missing"
+  | "credential_unavailable"
+  | "confirmation_required"
+  | "performance_mode_paused"
+  | "speech_unavailable"
+  | "action_failed"
+  | "permission_denied"
+  | "unknown";
+
+// Normalize a raw action error into a safe code + short spoken sentence. Never
+// exposes API keys, stack traces, or raw provider responses.
+function normalizeActionError(message: string): { code: DexNestErrorCode; spoken: string } {
+  const t = (message || "").toLowerCase();
+  if (/credential is unavailable|could not decrypt|reconnect govee/.test(t)) {
+    return { code: "credential_unavailable", spoken: "Govee is not connected." };
+  }
+  if (/not configured|api key|unlock secure vault|not connected|integration keychain/.test(t)) {
+    return { code: "credential_missing", spoken: "Govee is not connected." };
+  }
+  if (/no .*device matched|device .*not found|no govee device|empty/.test(t)) {
+    return { code: "device_not_found", spoken: "I couldn't find that light." };
+  }
+  if (/timed out|network|unreachable|http \d|could not reach|developer-api/.test(t)) {
+    return { code: "provider_unavailable", spoken: "I couldn't reach Govee." };
+  }
+  if (/performance mode/.test(t)) {
+    return { code: "performance_mode_paused", spoken: "Speech is paused by Performance Mode." };
+  }
+  if (/confirm/.test(t)) {
+    return { code: "confirmation_required", spoken: "Open DexNest to confirm." };
+  }
+  if (/permission|denied|disabled in settings/.test(t)) {
+    return { code: "permission_denied", spoken: "That is disabled in Settings." };
+  }
+  return { code: "action_failed", spoken: "Sorry, that didn't work." };
+}
+
+
 function assistantSuccessText(route: VoiceRouteResult, resultCount: number): string {
   switch (route.intent) {
     case "smart_lookup":
@@ -3499,9 +3911,31 @@ function assistantNeedsConfirm(route: VoiceRouteResult, actions: ActionDefinitio
 
 function DexNestApp() {
   const [activeView, setActiveView] = useState<ViewId>("command");
+  const activeViewRef = useRef<ViewId>("command");
+  useEffect(() => { activeViewRef.current = activeView; }, [activeView]);
+  // Load heavy, view-specific state once when entering its view (covers every
+  // navigation path). While on the view, refreshShellData keeps it fresh.
+  useEffect(() => {
+    if (activeView === "search") { void getBridge().getSearchState().then(setSearchState).catch(() => undefined); }
+    else if (activeView === "vault") { void getBridge().getVaultState().then(setVaultState).catch(() => undefined); }
+    else if (activeView === "finder") { void getBridge().getFinderState().then(setFinderState).catch(() => undefined); }
+    else if (activeView === "finance") { void getBridge().getFinanceState().then(setFinanceState).catch(() => undefined); }
+    else if (activeView === "capture") { void getBridge().getCaptureState().then(setCaptureState).catch(() => undefined); }
+    else if (activeView === "heatmap") { void getBridge().getHeatmapState().then(setHeatmapState).catch(() => undefined); }
+    if (activeView === "settings") {
+      void getBridge().getHeatmapState().then(setHeatmapState).catch(() => undefined);
+      void getBridge().getBackupState().then(setBackupState).catch(() => undefined);
+    }
+  }, [activeView]);
+  // Coalesce concurrent shell refreshes so bursts (clipboard listener + hotkey +
+  // UI action) collapse into a single pass instead of stacking heavy reloads.
+  const refreshInFlightRef = useRef(false);
+  const refreshPendingRef = useRef(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [busyCount, setBusyCount] = useState(0);
   const [initialLoadDone, setInitialLoadDone] = useState(false);
+  const [bootReady, setBootReady] = useState(false);
+  const [bootStatus, setBootStatus] = useState("Loading DexNest…");
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [actions, setActions] = useState<ActionDefinition[]>([]);
   const [projects, setProjects] = useState<DexNestProject[]>([]);
@@ -3747,11 +4181,24 @@ function DexNestApp() {
   const [assistantFocusSignal, setAssistantFocusSignal] = useState(0);
   const [assistantListenSignal, setAssistantListenSignal] = useState(0);
   const [assistantListenSource, setAssistantListenSource] = useState("voice");
+  const [assistantQueuedCommand, setAssistantQueuedCommand] = useState<QueuedAssistantCommand | null>(null);
+  const [assistantQueuedCommandSignal, setAssistantQueuedCommandSignal] = useState(0);
   const [ambientVoiceState, setAmbientVoiceState] = useState<AmbientVoiceState>(defaultAmbientVoiceState);
   const [speechState, setSpeechState] = useState<SpeechServiceState>(defaultSpeechState);
+  const [ttsDiagnostics, setTtsDiagnostics] = useState<TtsDiagnostics>(defaultTtsDiagnostics);
   const [voiceWorkflowSettings, setVoiceWorkflowSettings] = useState<VoiceWorkflowSettings>(defaultVoiceWorkflowSettings);
   const [voiceWorkflow, setVoiceWorkflow] = useState<VoiceWorkflowState>(defaultVoiceWorkflowState);
   const [journalVoice, setJournalVoice] = useState<JournalVoiceState>(defaultJournalVoiceState);
+  const [wakeWordState, setWakeWordState] = useState<WakeWordServiceState>({
+    status: "disabled",
+    engine: "placeholder",
+    engineInstalled: false,
+    lastError: "",
+    metrics: { wakeDetectedAt: null, commandRecordingStartLatencyMs: null, totalWakeToActionMs: null }
+  });
+  const wakeDetectedAtRef = useRef<number | null>(null);
+  const ambientCommandCaptureActiveRef = useRef(false);
+  const [wakeEngineState, setWakeEngineState] = useState<WakeEngineState>(defaultWakeEngineState);
   const journalLoopActiveRef = useRef(false);
   const captureLoopActiveRef = useRef(false);
   const captureVoiceDraftRef = useRef("");
@@ -4249,6 +4696,244 @@ function DexNestApp() {
     }
   }, [speechState.performancePaused, journalVoice.mode, journalVoice.status]);
 
+  // --- Wake word "Nest" MVP (Phase 23.8) ----------------------------------
+  function wakePerfPaused(): boolean {
+    return Boolean(speechStateRef.current.performancePaused) && (ambientVoiceState.settings.pauseWakeWordInPerformanceMode ?? true);
+  }
+
+  // Passive desktop voice-overlay signal. Never controls capture; only displays
+  // state. Suppressed when the overlay is disabled or speech is perf-paused.
+  function signalVoiceOverlay(payload: { type?: string; state?: string; level?: number }): void {
+    if (!(ambientVoiceState.settings.voiceOverlayEnabled ?? true)) {
+      return;
+    }
+    if (payload.type !== "hide" && wakePerfPaused()) {
+      return;
+    }
+    getBridge().voiceOverlay(payload);
+  }
+
+  async function refreshWakeEngine(): Promise<void> {
+    setWakeEngineState(await getBridge().getWakeEngineState());
+  }
+
+  async function checkWakeEngine(): Promise<void> {
+    const result = await getBridge().checkWakeEngine();
+    setWakeEngineState(result.state);
+  }
+
+  function startWakeService(): void {
+    const settings = ambientVoiceState.settings;
+    if (!settings.wakeWordEnabled) {
+      setWakeWordState((current) => ({ ...current, status: "disabled" }));
+      return;
+    }
+    // Drive the REAL main-process wake engine (openWakeWord sidecar). It reports
+    // engine_missing honestly when deps/model are absent — no fake detection.
+    void getBridge().startWakeEngine().then((result) => {
+      setWakeEngineState(result.state);
+      setWakeWordState((current) => ({
+        ...current,
+        engine: settings.wakeWordEngine ?? "openwakeword",
+        engineInstalled: result.state.installStatus === "ready",
+        status: result.state.status === "engine_missing" ? "error" : result.state.status === "listening_for_nest" || result.state.status === "starting" ? "listening_for_nest" : current.status,
+        lastError: result.state.lastError
+      }));
+    });
+  }
+
+  function stopWakeService(): void {
+    void getBridge().stopWakeEngine().then((result) => setWakeEngineState(result.state));
+    setWakeWordState((current) => ({ ...current, status: "disabled" }));
+  }
+
+  // Wake detected → START RECORDING IMMEDIATELY. The chime, navigation and
+  // indicator update happen asynchronously afterwards so none of them delay the
+  // command capture (Phase 23.10). The mic is kept pre-warmed while listening so
+  // recorder.start() fires in well under 150ms.
+  function updateWakeMetrics(patch: Partial<SpeechCaptureMetrics>): void {
+    if (lastSpeechCaptureMetrics) {
+      lastSpeechCaptureMetrics = { ...lastSpeechCaptureMetrics, ...patch };
+    }
+    setWakeWordState((current) => ({
+      ...current,
+      metrics: {
+        ...current.metrics,
+        commandRecordingStartLatencyMs: patch.wakeToRecordingStartMs ?? current.metrics.commandRecordingStartLatencyMs,
+        totalWakeToActionMs: current.metrics.wakeDetectedAt ? Date.now() - current.metrics.wakeDetectedAt : current.metrics.totalWakeToActionMs
+      }
+    }));
+  }
+
+  async function startAmbientCommandCapture(source: string, wakeAt: number): Promise<void> {
+    if (ambientCommandCaptureActiveRef.current) {
+      return;
+    }
+    ambientCommandCaptureActiveRef.current = true;
+    let wakeToSearchNavigationMs: number | null = null;
+    let overlayLevelTimer: number | null = null;
+    try {
+      void getBridge().updateAmbientVoiceState({
+        currentState: "listening",
+        lastActionResult: "Recording wake command.",
+        lastSource: source
+      });
+      // Desktop overlay: switch to live listening + stream normalized mic level.
+      signalVoiceOverlay({ type: "state", state: "listening" });
+      overlayLevelTimer = window.setInterval(() => {
+        signalVoiceOverlay({ type: "level", level: Math.min(1, getVadLiveMeter().level * 4) });
+      }, 90);
+      const capturePromise = runSharedSpeechCapture({
+        speechState: speechStateRef.current,
+        source,
+        sourceModule: "ambient_wake_word"
+      });
+      wakeToSearchNavigationMs = Date.now() - wakeAt;
+      setActiveView("search");
+      setAssistantFocusSignal((value) => value + 1);
+      if ((ambientVoiceState.settings.wakeChimeEnabled ?? ambientVoiceState.settings.playWakeSound ?? true)) {
+        const chimeVolume = ambientVoiceState.settings.wakeChimeVolume ?? 0.35;
+        window.setTimeout(() => playWakeChime(chimeVolume), 0);
+      }
+
+      const result = await capturePromise;
+      if (overlayLevelTimer) { window.clearInterval(overlayLevelTimer); overlayLevelTimer = null; }
+      if (result.speechState) {
+        setSpeechState(result.speechState);
+      }
+      const metrics = { ...(result.metrics ?? {}), wakeToSearchNavigationMs };
+      updateWakeMetrics(metrics);
+      if (result.status === "success" && result.transcript.trim()) {
+        // Overlay → processing pulse while routing; speak/done is signalled by the route.
+        signalVoiceOverlay({ type: "state", state: "transcribing" });
+        setAssistantQueuedCommand({
+          id: createClientId("ambient-command"),
+          text: result.transcript.trim(),
+          source,
+          metrics
+        });
+        setAssistantQueuedCommandSignal((value) => value + 1);
+        void getBridge().updateAmbientVoiceState({
+          currentState: "processing",
+          lastRecognizedCommand: result.transcript.trim().replace(/\s+/g, " ").slice(0, 120),
+          lastActionResult: "Routing wake command.",
+          lastSource: source
+        });
+        return;
+      }
+      // No speech captured → fade the overlay out.
+      signalVoiceOverlay({ type: "hide" });
+      await getBridge().updateAmbientVoiceState({
+        currentState: "idle",
+        lastActionResult: result.error ?? "No wake command captured.",
+        lastSource: source
+      });
+      setWakeWordState((current) => ({
+        ...current,
+        status: ambientVoiceState.settings.wakeWordEnabled && !wakePerfPaused() ? "listening_for_nest" : "disabled",
+        lastError: result.error ?? ""
+      }));
+      void refreshAmbientVoice();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Wake command capture failed.";
+      signalVoiceOverlay({ type: "error", state: "error" });
+      window.setTimeout(() => signalVoiceOverlay({ type: "hide" }), 1600);
+      setWakeWordState((current) => ({ ...current, status: "error", lastError: message }));
+      await getBridge().updateAmbientVoiceState({
+        currentState: "idle",
+        lastActionResult: message,
+        lastSource: source
+      });
+      void refreshAmbientVoice();
+    } finally {
+      if (overlayLevelTimer) { window.clearInterval(overlayLevelTimer); }
+      ambientCommandCaptureActiveRef.current = false;
+    }
+  }
+
+  function onWakeDetected(source = "ambient_wake_word"): void {
+    if (wakePerfPaused()) {
+      setWakeWordState((current) => ({ ...current, status: "paused_by_performance_mode" }));
+      return;
+    }
+    const wakeAt = Date.now();
+    wakeDetectedAtRef.current = wakeAt;
+    lastWakeDetectedAtForMetric = wakeAt;
+    setWakeWordState((current) => ({
+      ...current,
+      status: "recording_command",
+      metrics: { ...current.metrics, wakeDetectedAt: wakeAt, commandRecordingStartLatencyMs: null, totalWakeToActionMs: null }
+    }));
+    // Desktop overlay: quick bright wake pulse (does not block capture).
+    signalVoiceOverlay({ type: "state", state: "wake_detected" });
+    void startAmbientCommandCapture(source, wakeAt);
+    void getBridge().logUiEvent({ view: "ambient_voice", target: "wake_word", summary: "Wake detected; recording command." });
+  }
+
+  function testWakeTrigger(): void {
+    onWakeDetected("ambient_wake_word");
+  }
+
+  // Register the wake callback once (placeholder/Test trigger + real engine event).
+  useEffect(() => {
+    wakeWordService.onWake(onWakeDetected);
+    const unsubscribe = getBridge().onWakeDetected?.((payload) => onWakeDetected(payload.source || "ambient_wake_word"));
+    void refreshWakeEngine();
+    return () => {
+      wakeWordService.dispose();
+      unsubscribe?.();
+    };
+  }, []);
+
+  // Start/stop the wake service to match the enabled setting + Performance Mode.
+  useEffect(() => {
+    if (ambientVoiceState.settings.wakeWordEnabled && !wakePerfPaused()) {
+      startWakeService();
+    } else if (wakePerfPaused() && ambientVoiceState.settings.wakeWordEnabled) {
+      wakeWordService.stop();
+      setWakeWordState((current) => ({ ...current, status: "paused_by_performance_mode" }));
+    } else {
+      wakeWordService.stop();
+      setWakeWordState((current) => ({ ...current, status: "disabled" }));
+    }
+  }, [ambientVoiceState.settings.wakeWordEnabled, ambientVoiceState.settings.pauseWakeWordInPerformanceMode, speechState.performancePaused]);
+
+  // Keep the renderer microphone pre-warmed the WHOLE time the wake engine is
+  // listening (regardless of which view is open), so a wake event records in
+  // <150ms instead of paying a cold getUserMedia. The Python wake sidecar and
+  // this renderer stream coexist in Windows shared-capture mode.
+  useEffect(() => {
+    const wakeListening = ambientVoiceState.settings.wakeWordEnabled && !wakePerfPaused();
+    if (wakeListening && speechState.settings.micPrewarmEnabled !== false && speechState.settings.speechEngine === "faster_whisper") {
+      void prewarmMic(speechState.settings);
+      // Warm the transcription engine too so the first wake command is not a cold start.
+      if (speechState.settings.keepSpeechModelWarm !== false && (speechState.engineState === undefined || speechState.engineState === "unavailable")) {
+        void getBridge().warmSpeechEngine().then((result) => setSpeechState(result.speechState)).catch(() => undefined);
+      }
+    }
+  }, [ambientVoiceState.settings.wakeWordEnabled, speechState.performancePaused, speechState.settings.micPrewarmEnabled, speechState.settings.speechEngine, speechState.settings.selectedInputDeviceId]);
+
+  // After a wake command finishes, the listen pipeline returns control; reset to
+  // listening_for_nest if still enabled (respecting cooldown is best-effort here).
+  useEffect(() => {
+    if (wakeWordState.status === "recording_command") {
+      const cooldown = ambientVoiceState.settings.wakeCooldownMs ?? 1500;
+      const timer = window.setTimeout(() => {
+        setWakeWordState((current) => {
+          if (current.status !== "recording_command") {
+            return current;
+          }
+          return {
+            ...current,
+            status: ambientVoiceState.settings.wakeWordEnabled && !wakePerfPaused() ? "listening_for_nest" : "disabled",
+            metrics: { ...current.metrics, totalWakeToActionMs: current.metrics.wakeDetectedAt ? Date.now() - current.metrics.wakeDetectedAt : null }
+          };
+        });
+      }, (ambientVoiceState.settings.maxListeningSeconds + 2) * 1000 + cooldown);
+      return () => window.clearTimeout(timer);
+    }
+  }, [wakeWordState.status]);
+
   useEffect(() => {
     if (voiceWorkflow.mode === "capture_note" && !["paused", "saved", "cancelled", "error"].includes(voiceWorkflow.status) && speechState.performancePaused) {
       captureLoopActiveRef.current = false;
@@ -4268,12 +4953,45 @@ function DexNestApp() {
     }
   }
 
+  // Boot warm-up: load data, then auto-warm the local speech model, microphone,
+  // and (if enabled) the wake listener — behind a "Getting DexNest ready" splash.
+  // Each step is gated by its setting so users who disable voice pay nothing, and
+  // the splash is capped so a slow first model download never hangs startup.
+  async function runBootWarmup(): Promise<void> {
+    setBootStatus("Loading DexNest…");
+    await track(refreshShellData());
+    setInitialLoadDone(true);
+    await Promise.all([refreshAssistantSettings(), refreshAssistantSecurity(), refreshAmbientVoice()]);
+    const speech = await getBridge().getSpeechState();
+    setSpeechState(speech);
+    const blocked = speech.performancePaused;
+
+    if (!blocked && speech.settings.speechEngine === "faster_whisper" && speech.settings.keepSpeechModelWarm !== false) {
+      setBootStatus("Warming local speech model…");
+      await getBridge().warmSpeechEngine().then((result) => setSpeechState(result.speechState)).catch(() => undefined);
+    }
+
+    if (!blocked && speech.settings.micPrewarmEnabled !== false) {
+      setBootStatus("Preparing microphone…");
+      await refreshMicPermission();
+      // Only pre-warm when permission is already granted — never prompt at boot.
+      if (getMicWarmState().permission === "granted") {
+        await prewarmMic(speech.settings).catch(() => undefined);
+      }
+    }
+    // The wake engine is started by its own effect when wakeWordEnabled.
+    setBootStatus("DexNest ready");
+    setBootReady(true);
+  }
+
   useEffect(() => {
-    void track(refreshShellData()).finally(() => setInitialLoadDone(true));
-    void refreshAssistantSettings();
-    void refreshAssistantSecurity();
-    void refreshAmbientVoice();
-    void refreshSpeechState();
+    // Safety cap: reveal the app even if a first-time model download is slow
+    // (warming continues in the background).
+    const cap = window.setTimeout(() => {
+      setInitialLoadDone(true);
+      setBootReady(true);
+    }, 9000);
+    void runBootWarmup().finally(() => window.clearTimeout(cap));
   }, []);
 
   useEffect(() => {
@@ -4302,59 +5020,73 @@ function DexNestApp() {
   }, []);
 
   async function refreshShellData(): Promise<void> {
-    const [info, nextActions, nextProjects, nextCommandResults, nextPinnedActionIds, nextClipboardState, nextDropState, nextToolsState, nextVaultState, nextSearchState, nextJournalState, nextCalendarState, nextFinderState, nextFinanceState, nextCaptureState, nextHeatmapState, nextRoutinesState, nextBackupState, nextPerformanceState, nextPerformanceSettings, nextCommandStats, nextEvents, nextAmbientVoiceState, nextSpeechState, nextVoiceWorkflowSettings] = await Promise.all([
-      getBridge().getAppInfo(),
-      getBridge().listActions(),
-      getBridge().listProjects(),
-      getBridge().listCommandResults(),
-      getBridge().listPinnedActions(),
-      getBridge().getClipboardState(),
-      getBridge().getDropState(),
-      getBridge().getToolsState(),
-      getBridge().getVaultState(),
-      getBridge().getSearchState(),
-      getBridge().getJournalState(),
-      getBridge().getCalendarState(),
-      getBridge().getFinderState(),
-      getBridge().getFinanceState(),
-      getBridge().getCaptureState(),
-      getBridge().getHeatmapState(),
-      getBridge().getRoutinesState(),
-      getBridge().getBackupState(),
-      getBridge().getPerformanceModeState(),
-      getBridge().getPerformanceModeSettings(),
-      getBridge().getCommandStats(),
-      getBridge().listEvents(),
-      getBridge().getAmbientVoiceState(),
-      getBridge().getSpeechState(),
-      getBridge().getVoiceWorkflowSettings()
-    ]);
+    // Coalesce: if a refresh is already running, mark one more pass and return.
+    if (refreshInFlightRef.current) {
+      refreshPendingRef.current = true;
+      return;
+    }
+    refreshInFlightRef.current = true;
+    try {
+      const view = activeViewRef.current;
+      // Always-needed lightweight/global states (sidebar, dashboard, indicators).
+      const [info, nextActions, nextProjects, nextCommandResults, nextPinnedActionIds, nextClipboardState, nextDropState, nextToolsState, nextJournalState, nextCalendarState, nextRoutinesState, nextPerformanceState, nextPerformanceSettings, nextCommandStats, nextEvents, nextAmbientVoiceState, nextSpeechState, nextVoiceWorkflowSettings] = await Promise.all([
+        getBridge().getAppInfo(),
+        getBridge().listActions(),
+        getBridge().listProjects(),
+        getBridge().listCommandResults(),
+        getBridge().listPinnedActions(),
+        getBridge().getClipboardState(),
+        getBridge().getDropState(),
+        getBridge().getToolsState(),
+        getBridge().getJournalState(),
+        getBridge().getCalendarState(),
+        getBridge().getRoutinesState(),
+        getBridge().getPerformanceModeState(),
+        getBridge().getPerformanceModeSettings(),
+        getBridge().getCommandStats(),
+        getBridge().listEvents(),
+        getBridge().getAmbientVoiceState(),
+        getBridge().getSpeechState(),
+        getBridge().getVoiceWorkflowSettings()
+      ]);
 
-    setAppInfo(info);
-    setActions(nextActions);
-    setProjects(nextProjects);
-    setCommandResults(nextCommandResults);
-    setPinnedActionIds(nextPinnedActionIds);
-    setClipboardState(nextClipboardState);
-    setDropState(nextDropState);
-    setToolsState(nextToolsState);
-    setVaultState(nextVaultState);
-    setSearchState(nextSearchState);
-    setJournalState(nextJournalState);
-    setCalendarState(nextCalendarState);
-    setFinderState(nextFinderState);
-    setFinanceState(nextFinanceState);
-    setCaptureState(nextCaptureState);
-    setHeatmapState(nextHeatmapState);
-    setRoutinesState(nextRoutinesState);
-    setBackupState(nextBackupState);
-    setPerformanceModeState(nextPerformanceState);
-    setPerformanceModeSettings(nextPerformanceSettings);
-    setCommandStats(nextCommandStats);
-    setEvents(nextEvents);
-    setAmbientVoiceState(nextAmbientVoiceState);
-    setSpeechState(nextSpeechState);
-    setVoiceWorkflowSettings(nextVoiceWorkflowSettings);
+      setAppInfo(info);
+      setActions(nextActions);
+      setProjects(nextProjects);
+      setCommandResults(nextCommandResults);
+      setPinnedActionIds(nextPinnedActionIds);
+      setClipboardState(nextClipboardState);
+      setDropState(nextDropState);
+      setToolsState(nextToolsState);
+      setJournalState(nextJournalState);
+      setCalendarState(nextCalendarState);
+      setRoutinesState(nextRoutinesState);
+      setPerformanceModeState(nextPerformanceState);
+      setPerformanceModeSettings(nextPerformanceSettings);
+      setCommandStats(nextCommandStats);
+      setEvents(nextEvents);
+      setAmbientVoiceState(nextAmbientVoiceState);
+      setSpeechState(nextSpeechState);
+      setVoiceWorkflowSettings(nextVoiceWorkflowSettings);
+
+      // Heavy, view-specific states (large arrays / disk reads / aggregation):
+      // fetch only when their view is active so a normal action never reloads
+      // the entire search index, vault, finance, etc. (the main cause of the
+      // per-action freeze). Navigating to a view always refreshes it.
+      if (view === "search") { setSearchState(await getBridge().getSearchState()); }
+      if (view === "vault") { setVaultState(await getBridge().getVaultState()); }
+      if (view === "finder") { setFinderState(await getBridge().getFinderState()); }
+      if (view === "finance") { setFinanceState(await getBridge().getFinanceState()); }
+      if (view === "capture") { setCaptureState(await getBridge().getCaptureState()); }
+      if (view === "heatmap" || view === "settings") { setHeatmapState(await getBridge().getHeatmapState()); }
+      if (view === "settings") { setBackupState(await getBridge().getBackupState()); }
+    } finally {
+      refreshInFlightRef.current = false;
+      if (refreshPendingRef.current) {
+        refreshPendingRef.current = false;
+        void refreshShellData();
+      }
+    }
   }
 
   async function refreshEvents(): Promise<void> {
@@ -4424,6 +5156,18 @@ function DexNestApp() {
     );
   }
 
+  // Lightweight runner for the voice/assistant pipeline. The assistant renders
+  // results from the returned value and manages its own chat state, so it does
+  // not need the heavy 25-state shell reload (or the blocking "Working" pill)
+  // after every — often logging-only — call. This is the main reason a spoken
+  // command used to take several seconds after the action itself completed.
+  // Only the event log is refreshed (cheap, in the background) for the audit view.
+  async function runAssistantAction(actionId: string, source = "module_ui", params: unknown = {}) {
+    const result = await getBridge().runAction({ actionId, source, params });
+    void getBridge().listEvents().then(setEvents).catch(() => undefined);
+    return result;
+  }
+
   async function runUiAction(actionId: string, source = "module_ui", params: unknown = {}) {
     const action = actions.find((item) => item.id === actionId);
     const result = await runAction(actionId, source, params);
@@ -4437,11 +5181,18 @@ function DexNestApp() {
   }
 
   async function navigate(view: ViewId): Promise<void> {
+    // Switch instantly — the view renders from already-loaded state. The view's
+    // open-action is logged and shell data refreshed in the BACKGROUND (no busy
+    // spinner), so opening Dev/Deck/Clipboard/Settings never feels hung.
     const actionId = views.find((item) => item.id === view)?.actionId;
+    const switchStartedAt = performance.now();
     setActiveView(view);
+    // Measure time from switch request to the next painted frame.
+    requestAnimationFrame(() => requestAnimationFrame(() => recordModuleSwitch(view, performance.now() - switchStartedAt)));
     if (actionId) {
-      await runAction(actionId);
+      void getBridge().runAction({ actionId, source: "module_ui", params: {} }).catch(() => undefined);
     }
+    void refreshShellData().catch(() => undefined);
   }
 
   async function handleAction(actionId: string): Promise<void> {
@@ -4455,21 +5206,36 @@ function DexNestApp() {
   }
 
   const isBusy = busyCount > 0;
+  // Only show the centered overlay once an operation runs longer than a moment,
+  // so fast actions/navigation never flash a blocking spinner.
+  const [showBusyOverlay, setShowBusyOverlay] = useState(false);
+  useEffect(() => {
+    if (!isBusy) {
+      setShowBusyOverlay(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setShowBusyOverlay(true), 350);
+    return () => window.clearTimeout(timer);
+  }, [isBusy]);
 
   return (
     <div className="app-shell" data-sidebar-collapsed={sidebarCollapsed}>
       {isBusy && <div className="app-loading-bar" aria-hidden="true" />}
-      {isBusy && (
-        <div className="app-busy-pill" role="status" aria-live="polite">
-          <Spinner size="sm" />
-          <span>Working…</span>
+      {showBusyOverlay && (
+        <div className="app-busy-overlay" role="status" aria-live="polite">
+          <div className="app-busy-overlay__inner">
+            <Spinner size="lg" />
+            <span>Working…</span>
+          </div>
         </div>
       )}
-      {!initialLoadDone && (
+      {!bootReady && (
         <div className="app-initial-overlay" role="status" aria-live="polite">
           <div className="app-initial-overlay__inner">
+            <span className="brand__mark app-initial-overlay__logo" aria-hidden="true" />
+            <strong>Getting DexNest ready</strong>
             <Spinner size="lg" />
-            <span>Loading DexNest…</span>
+            <span>{bootStatus}</span>
           </div>
         </div>
       )}
@@ -4542,7 +5308,18 @@ function DexNestApp() {
               <strong>{voiceWorkflow.error || voiceWorkflow.lastTranscriptPreview || `${voiceWorkflow.chunksCount} chunk${voiceWorkflow.chunksCount === 1 ? "" : "s"}`}</strong>
             </div>
           )}
-          {journalVoice.mode !== "journal_dictation" && voiceWorkflow.mode === "none" && ambientVoiceState.settings.visibleListeningIndicator && (
+          {journalVoice.mode !== "journal_dictation" && voiceWorkflow.mode === "none" && ambientVoiceState.settings.wakeWordEnabled && wakeWordState.status !== "disabled" && (
+            <div className="ambient-indicator" data-state={wakeWordState.status === "paused_by_performance_mode" ? "paused" : wakeWordState.status === "recording_command" ? "listening" : wakeWordState.status === "transcribing" || wakeWordState.status === "routing" ? "processing" : wakeWordState.status === "wake_detected" ? "listening" : "idle"}>
+              <span>
+                {wakeWordState.status === "paused_by_performance_mode" ? "Wake word paused by Performance Mode"
+                  : wakeWordState.status === "wake_detected" ? "Nest heard"
+                  : wakeWordState.status === "recording_command" ? "Listening…"
+                  : wakeWordState.status === "transcribing" || wakeWordState.status === "routing" ? "Processing…"
+                  : `Listening for ${ambientVoiceState.settings.wakeWord || "Nest"}`}
+              </span>
+            </div>
+          )}
+          {journalVoice.mode !== "journal_dictation" && voiceWorkflow.mode === "none" && !(ambientVoiceState.settings.wakeWordEnabled && wakeWordState.status !== "disabled") && ambientVoiceState.settings.visibleListeningIndicator && (
             <div className="ambient-indicator" data-state={ambientVoiceState.currentState}>
               <span>{ambientVoiceState.pausedByPerformanceMode ? "Nest paused by Performance Mode" : `Nest ${ambientVoiceState.currentState}`}</span>
               {ambientVoiceState.lastRecognizedCommand && <strong>{ambientVoiceState.lastRecognizedCommand}</strong>}
@@ -4635,6 +5412,10 @@ function DexNestApp() {
               assistantFocusSignal={assistantFocusSignal}
               assistantListenSignal={assistantListenSignal}
               assistantListenSource={assistantListenSource}
+              assistantQueuedCommand={assistantQueuedCommand}
+              assistantQueuedCommandSignal={assistantQueuedCommandSignal}
+              onTtsDiagnosticsChange={setTtsDiagnostics}
+              onWakeMetricsUpdate={updateWakeMetrics}
               journalVoiceActive={journalVoice.mode === "journal_dictation"}
               onStartJournalVoice={startJournalVoice}
               onJournalControl={handleJournalControl}
@@ -4661,6 +5442,7 @@ function DexNestApp() {
                 error: ""
               }))}
               onAction={runUiAction}
+              assistantAction={runAssistantAction}
               onRefresh={refreshShellData}
             />
           )}
@@ -4747,7 +5529,15 @@ function DexNestApp() {
               performanceModeSettings={performanceModeSettings}
               ambientVoiceState={ambientVoiceState}
               speechState={speechState}
+              ttsDiagnostics={ttsDiagnostics}
+              wakeWordState={wakeWordState}
+              wakeEngineState={wakeEngineState}
+              onTestWake={testWakeTrigger}
+              onStartWake={startWakeService}
+              onStopWake={stopWakeService}
+              onCheckWake={checkWakeEngine}
               onSpeechStateChanged={setSpeechState}
+              onTtsDiagnosticsChange={setTtsDiagnostics}
               onAmbientVoiceChanged={async (settings) => {
                 await getBridge().saveAmbientVoiceSettings(settings);
                 await refreshAmbientVoice();
@@ -4797,6 +5587,10 @@ function AskDexNest({
   focusSignal,
   listenSignal,
   listenSource,
+  queuedCommand,
+  queuedCommandSignal,
+  onTtsDiagnosticsChange,
+  onWakeMetricsUpdate,
   journalVoiceActive,
   onStartJournalVoice,
   onJournalControl,
@@ -4820,6 +5614,10 @@ function AskDexNest({
   focusSignal: number;
   listenSignal: number;
   listenSource: string;
+  queuedCommand: QueuedAssistantCommand | null;
+  queuedCommandSignal: number;
+  onTtsDiagnosticsChange: (diagnostics: TtsDiagnostics) => void;
+  onWakeMetricsUpdate: (patch: Partial<SpeechCaptureMetrics>) => void;
   journalVoiceActive: boolean;
   onStartJournalVoice: (source?: string) => Promise<void>;
   onJournalControl: (control: JournalVoiceControl) => void;
@@ -4855,6 +5653,7 @@ function AskDexNest({
   const [secEnabled, setSecEnabled] = useState(securityState.settings.trustedSessionEnabled);
   const [secSpeak, setSecSpeak] = useState(securityState.settings.speakSensitiveAnswers);
   const [secLockOnClose, setSecLockOnClose] = useState(securityState.settings.lockOnAppClose);
+  const ttsUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
 
   useEffect(() => {
     setAssistantEngineEnabled(assistantSettings.localIntentEngineEnabled);
@@ -4891,9 +5690,19 @@ function AskDexNest({
     }
   }, [listenSignal]);
 
-  // Pre-warm the mic while Ask DexNest is open so the first mic click starts
-  // recording instantly. Gated by the setting, faster-whisper, and Performance
-  // Mode; released when Performance Mode blocks speech.
+  useEffect(() => {
+    if (queuedCommandSignal > 0 && queuedCommand?.text.trim()) {
+      if (queuedCommand.metrics) {
+        onWakeMetricsUpdate(queuedCommand.metrics);
+      }
+      void sendAssistant(queuedCommand.text, queuedCommand.source);
+    }
+  }, [queuedCommandSignal]);
+
+  // Pre-warm the mic AND the faster-whisper engine while Ask DexNest is open so
+  // the first mic click records instantly with the configured noise constraints
+  // and the first transcription is not a cold-start. Gated by the setting,
+  // faster-whisper, and Performance Mode; released when Performance Mode blocks.
   useEffect(() => {
     const blocked = speechState.performancePaused || ambientVoiceState.pausedByPerformanceMode;
     if (blocked) {
@@ -4901,9 +5710,14 @@ function AskDexNest({
       return;
     }
     if (speechState.settings.micPrewarmEnabled !== false && speechState.settings.speechEngine === "faster_whisper") {
-      void prewarmMic();
+      // Pass settings so the warm stream uses the selected device + noise
+      // suppression and matches the capture constraints (no re-acquire = instant).
+      void prewarmMic(speechState.settings);
+      if (speechState.settings.keepSpeechModelWarm !== false && (speechState.engineState === undefined || speechState.engineState === "unavailable")) {
+        void getBridge().warmSpeechEngine().then((result) => onSpeechStateChange(result.speechState)).catch(() => undefined);
+      }
     }
-  }, [speechState.performancePaused, ambientVoiceState.pausedByPerformanceMode, speechState.settings.micPrewarmEnabled, speechState.settings.speechEngine]);
+  }, [speechState.performancePaused, ambientVoiceState.pausedByPerformanceMode, speechState.settings.micPrewarmEnabled, speechState.settings.speechEngine, speechState.settings.selectedInputDeviceId, speechState.settings.noiseSuppression, speechState.settings.echoCancellation, speechState.settings.autoGainControl]);
 
   // Tick the session countdown; refresh state when it expires so the UI re-locks.
   useEffect(() => {
@@ -4931,14 +5745,16 @@ function AskDexNest({
 
   function spokenTemplate(route: VoiceRouteResult, ok: boolean, resultCount: number, fallback: string): string {
     if (!ok) {
-      return "That failed.";
+      // Normalize the raw error into a short, safe spoken sentence.
+      return normalizeActionError(fallback).spoken;
     }
     if (route.actionId?.startsWith("external.govee.")) {
       if (route.actionId.endsWith(".turn_on")) return "Lights are on.";
       if (route.actionId.endsWith(".turn_off")) return "Lights are off.";
-      if (route.actionId.endsWith(".set_brightness")) return "Brightness set.";
-      if (route.actionId.endsWith(".set_color")) return "Color changed.";
-      if (route.actionId.endsWith(".set_color_temperature")) return "Color temperature changed.";
+      if (route.actionId.endsWith(".set_brightness")) return `Lights set to ${Number(route.params.brightness ?? 0)} percent.`;
+      if (route.actionId.endsWith(".set_color")) return `Lights set to ${String(route.params.color ?? "the colour")}.`;
+      if (route.actionId.endsWith(".set_color_temperature")) return "Lights set.";
+      if (route.actionId.endsWith(".toggle")) return "Lights toggled.";
       return "Device updated.";
     }
     if (route.actionId === "system.performance.enable") return "Performance Mode is on.";
@@ -4958,12 +5774,22 @@ function AskDexNest({
     return fallback.replace(/\s+/g, " ").slice(0, 120);
   }
 
-  async function speakDexNestResponse(text: string, context: { sensitivity: VoiceSensitivity; source: string; actionId?: string; allowSpeakSensitive?: boolean }): Promise<void> {
+  async function speakDexNestResponse(text: string, context: { sensitivity: VoiceSensitivity; source: string; actionId?: string; allowSpeakSensitive?: boolean; kind?: "success" | "error" | "confirmation" | "workflow" }): Promise<void> {
     const settings = ambientVoiceState.settings;
+    const speakableSources = ["ambient_wake_word", "push_to_talk", "assistant", "voice"];
     let blockedReason = "";
     let spoken = false;
+    let ttsError = "";
     if (!settings.speakResponses) {
       blockedReason = "disabled";
+    } else if (!speakableSources.includes(context.source)) {
+      blockedReason = "source_not_spoken";
+    } else if (context.kind === "error" && settings.speakErrors === false) {
+      blockedReason = "speak_errors_off";
+    } else if (context.kind === "confirmation" && settings.speakConfirmations === false) {
+      blockedReason = "speak_confirmations_off";
+    } else if (context.kind === "workflow" && settings.speakWorkflowStatus === false) {
+      blockedReason = "speak_workflow_off";
     } else if (settings.muteInPerformanceMode && (speechState.performancePaused || ambientVoiceState.pausedByPerformanceMode)) {
       blockedReason = "performance_mode";
     } else if (typeof window === "undefined" || !("speechSynthesis" in window)) {
@@ -4981,39 +5807,82 @@ function AskDexNest({
       : settings.shortResponsesOnly
         ? text.replace(/\s+/g, " ").slice(0, 90)
         : text.replace(/\s+/g, " ").slice(0, 180);
+    const ttsAttempted = Boolean(!blockedReason && spokenText.trim());
+    const diagnosticsBase = {
+      ...defaultTtsDiagnostics,
+      ...getTtsDiagnosticsSnapshot(settings.voiceName),
+      lastAttemptedAt: new Date().toISOString(),
+      lastSource: context.source,
+      lastActionId: context.actionId ?? "",
+      lastTextPreview: spokenText.replace(/\s+/g, " ").slice(0, 80)
+    };
 
     if (!blockedReason && spokenText.trim()) {
       try {
         const utterance = new SpeechSynthesisUtterance(spokenText);
-        utterance.rate = settings.voiceRate || 1;
-        utterance.volume = settings.voiceVolume ?? 1;
+        utterance.rate = clampTtsRate(settings.voiceRate);
+        utterance.volume = clampTtsVolume(settings.voiceVolume);
         const voices = window.speechSynthesis.getVoices();
         const selectedVoice = settings.voiceName ? voices.find((voice) => voice.name === settings.voiceName) : undefined;
         if (selectedVoice) {
           utterance.voice = selectedVoice;
         }
+        ttsUtteranceRef.current = utterance;
+        utterance.onstart = () => {
+          spoken = true;
+          onTtsDiagnosticsChange({ ...diagnosticsBase, lastSpoken: true, blockedReason: "", error: "" });
+        };
+        const overlayAmbient = (context.source === "ambient_wake_word" || context.source === "push_to_talk") && (ambientVoiceState.settings.voiceOverlayEnabled ?? true);
         utterance.onend = () => {
+          ttsUtteranceRef.current = null;
+          onTtsDiagnosticsChange({ ...diagnosticsBase, lastSpoken: true, blockedReason: "", error: "" });
+          if (overlayAmbient) { getBridge().voiceOverlay({ type: "hide" }); }
           void getBridge().updateAmbientVoiceState({ currentState: "idle", lastSource: context.source });
+          void onAmbientVoiceChange();
+        };
+        utterance.onerror = (event) => {
+          ttsUtteranceRef.current = null;
+          ttsError = event.error || "speech_synthesis_error";
+          blockedReason = ttsError;
+          onTtsDiagnosticsChange({ ...diagnosticsBase, lastSpoken: false, blockedReason, error: ttsError });
+          if (overlayAmbient) { getBridge().voiceOverlay({ type: "hide" }); }
+          void getBridge().updateAmbientVoiceState({ currentState: "idle", lastActionResult: `TTS failed: ${ttsError}`, lastSource: context.source });
           void onAmbientVoiceChange();
         };
         window.speechSynthesis.cancel();
         window.speechSynthesis.speak(utterance);
         spoken = true;
+        onTtsDiagnosticsChange({ ...diagnosticsBase, lastSpoken: true, blockedReason: "", error: "" });
+        if (overlayAmbient) { getBridge().voiceOverlay({ type: "state", state: "speaking" }); }
         void getBridge().updateAmbientVoiceState({ currentState: "speaking", lastActionResult: sensitive && !canSpeakSensitive ? "Sensitive answer hidden for speech." : "Speaking response.", lastSource: context.source });
         window.setTimeout(() => {
           void getBridge().updateAmbientVoiceState({ currentState: "idle", lastSource: context.source });
           void onAmbientVoiceChange();
         }, Math.min(4000, Math.max(1000, spokenText.length * 45)));
-      } catch {
+      } catch (error) {
         blockedReason = "speak_failed";
+        ttsError = error instanceof Error ? error.message : "speak_failed";
+        ttsUtteranceRef.current = null;
+        onTtsDiagnosticsChange({ ...diagnosticsBase, lastSpoken: false, blockedReason, error: ttsError });
       }
+    } else {
+      onTtsDiagnosticsChange({ ...diagnosticsBase, lastSpoken: false, blockedReason: blockedReason || (sensitive && !canSpeakSensitive ? "sensitive_blocked" : ""), error: "" });
+      // Nothing spoken (disabled/blocked) — fade the desktop overlay out.
+      if ((context.source === "ambient_wake_word" || context.source === "push_to_talk") && (ambientVoiceState.settings.voiceOverlayEnabled ?? true)) {
+        getBridge().voiceOverlay({ type: "hide" });
+      }
+    }
+    if (context.source === "ambient_wake_word") {
+      onWakeMetricsUpdate({ ttsAttempted, ttsSpoken: spoken, ttsBlockedReason: blockedReason || (sensitive && !canSpeakSensitive ? "sensitive_blocked" : "") });
     }
 
     await onAction("voice.tts_response", context.source, {
       actionId: context.actionId,
       sensitivity: context.sensitivity,
+      ttsAttempted,
       ttsSpoken: spoken,
-      blockedReason: blockedReason || (sensitive && !canSpeakSensitive ? "sensitive_blocked" : "")
+      blockedReason: blockedReason || (sensitive && !canSpeakSensitive ? "sensitive_blocked" : ""),
+      error: ttsError
     });
   }
 
@@ -5029,15 +5898,23 @@ function AskDexNest({
       confidence: route.confidence,
       sensitivity: route.sensitivity
     });
+    const actionStartedAt = Date.now();
     const result = await onAction(route.actionId, commandSource, route.params) as {
       ok?: boolean;
       error?: string;
       smartResults?: SmartLookupResult[];
       results?: SearchResult[] | FinderItem[];
     };
-    const smartResults = result.smartResults ?? [];
+    const actionLatencyMs = Date.now() - actionStartedAt;
+    if (commandSource === "ambient_wake_word") {
+      onWakeMetricsUpdate({ actionLatencyMs });
+    }
+    // External device actions return one entry per device (e.g. a 2-lamp group).
+    // Those are not search results — never render them as cards.
+    const isDeviceAction = route.intent === "external_device_control";
+    const smartResults = isDeviceAction ? [] : (result.smartResults ?? []);
     const finderResults = route.targetModule === "finder" ? (result.results ?? []) as FinderItem[] : [];
-    const searchResults = route.targetModule === "finder" ? [] : (result.results ?? []) as SearchResult[];
+    const searchResults = (route.targetModule === "finder" || isDeviceAction) ? [] : (result.results ?? []) as SearchResult[];
     const resultCount = smartResults.length + searchResults.length + finderResults.length;
     await onAction("assistant.routed", commandSource, {
       router: routerUsed,
@@ -5045,7 +5922,8 @@ function AskDexNest({
       targetModule: route.targetModule,
       sensitivity: route.sensitivity,
       status: result.ok === false ? "failed" : "completed",
-      resultCount
+      resultCount,
+      actionLatencyMs
     });
     // If a trusted session unlocked auto-reveal, the session may have changed; refresh.
     if (smartResults.some((item) => item.sensitive)) {
@@ -5058,13 +5936,17 @@ function AskDexNest({
         : route.intent === "finder_reverse_lookup"
           ? finderReverseLookupAnswer(String(route.params.query ?? ""), finderResults)
           : assistantAnswerText(route, smartResults, resultCount);
+    // Phase 23.11: show the short spoken line in chat for device/system/error
+    // replies so the visible text matches what DexNest says aloud.
+    const shortReply = spokenTemplate(route, result.ok !== false, resultCount, answerText);
+    const useSpokenInChat = Boolean(route.actionId?.startsWith("external.govee.")) || Boolean(route.actionId?.startsWith("system.performance.")) || result.ok === false;
     updateAssistantMessage(messageId, {
       awaitingConfirm: false,
       resolved: result.ok === false ? "failed" : "ran",
       smartResults,
       searchResults,
       finderResults,
-      text: answerText
+      text: useSpokenInChat ? shortReply : answerText
     });
     if (route.intent === "finder_search" || route.intent === "finder_reverse_lookup") {
       onFinderLookupComplete(answerText, commandSource);
@@ -5098,11 +5980,24 @@ function AskDexNest({
       sensitivity: route.sensitivity,
       source: commandSource,
       actionId: route.actionId,
-      allowSpeakSensitive: Boolean(route.intent === "smart_lookup")
+      allowSpeakSensitive: Boolean(route.intent === "smart_lookup"),
+      kind: result.ok === false ? "error" : "success"
     });
   }
 
   function ambientRouteBlockedMessage(route: VoiceRouteResult, commandSource: string): string | null {
+    // Wake-word commands (Phase 23.8) have their own allow-list + safer copy.
+    if (commandSource === "ambient_wake_word") {
+      if (route.intent === "external_device_control" && !(ambientVoiceState.settings.allowWakeWordDeviceControl ?? true)) {
+        return "Wake-word device control is disabled in Settings.";
+      }
+      if (route.intent === "smart_lookup" || route.sensitivity === "sensitive") {
+        if (!(ambientVoiceState.settings.allowWakeWordSensitiveLookup ?? false)) {
+          return "Open DexNest to ask sensitive questions.";
+        }
+      }
+      return null;
+    }
     if (commandSource !== "ambient_voice" && commandSource !== "push_to_talk") {
       return null;
     }
@@ -5122,7 +6017,14 @@ function AskDexNest({
   }
 
   async function sendAssistant(rawText = voiceInput, commandSource = "voice"): Promise<void> {
-    const text = rawText.trim();
+    // Strip the leading wake phrase from wake-triggered commands ("Hey Jarvis,
+    // turn off lights" → "turn off lights"). The phrase depends on the engine mode.
+    const wakePhraseText = ambientVoiceState.settings.wakePhraseMode === "hey_jarvis"
+      ? "hey jarvis"
+      : ambientVoiceState.settings.wakePhraseMode === "alexa"
+        ? "alexa"
+        : (ambientVoiceState.settings.wakeWord || "Nest");
+    const text = (commandSource === "ambient_wake_word" ? stripWakeWord(rawText, wakePhraseText) : rawText).trim();
     if (!text || assistantBusy) {
       return;
     }
@@ -5142,6 +6044,9 @@ function AskDexNest({
         routerUsed: "fast_path",
         resolved: "info"
       });
+      if (!speechState.performancePaused) {
+        await speakDexNestResponse("Journal started.", { sensitivity: "none", source: commandSource, actionId: "voice.workflow.journal_start", kind: "workflow" });
+      }
       await onStartJournalVoice(commandSource);
       return;
     }
@@ -5159,6 +6064,10 @@ function AskDexNest({
           routerUsed: "fast_path",
           resolved: "info"
         });
+        await speakDexNestResponse(
+          control === "save" ? "Journal saved." : control === "pause" ? "Journal paused." : control === "resume" ? "Journal resumed." : "Journal saved.",
+          { sensitivity: "none", source: commandSource, actionId: `voice.workflow.journal_${control}`, kind: "workflow" }
+        );
         return;
       }
     }
@@ -5190,10 +6099,15 @@ function AskDexNest({
       }
     }
     setAssistantBusy(true);
+    const routingStartedAt = Date.now();
 
     // Fast deterministic router runs first; obvious commands never reach Ollama.
     const fastRoute = fastCommandRouter(text, actions, voiceWorkflowSettings);
     const ruleRoute = fastRoute ?? routeVoiceCommand(text, actions, voiceWorkflowSettings);
+    const initialRoutingLatencyMs = Date.now() - routingStartedAt;
+    if (commandSource === "ambient_wake_word") {
+      onWakeMetricsUpdate({ routingLatencyMs: initialRoutingLatencyMs });
+    }
     await getBridge().updateAmbientVoiceState({
       currentState: "processing",
       lastRecognizedCommand: text,
@@ -5205,7 +6119,8 @@ function AskDexNest({
       router: fastRoute ? "fast_path" : "rules",
       intent: ruleRoute.intent,
       sensitivity: ruleRoute.sensitivity,
-      status: "received"
+      status: "received",
+      routingLatencyMs: initialRoutingLatencyMs
     });
 
     try {
@@ -5260,6 +6175,10 @@ function AskDexNest({
           lastActionResult: blockedMessage,
           lastSource: commandSource
         });
+        // Speak the safe blocked message (e.g. "Open DexNest to ask sensitive questions.").
+        if (ambientVoiceState.settings.speakConfirmations !== false) {
+          await speakDexNestResponse(blockedMessage, { sensitivity: "none", source: commandSource, actionId: route.actionId });
+        }
         void onAmbientVoiceChange();
         return;
       }
@@ -5339,7 +6258,8 @@ function AskDexNest({
         await speakDexNestResponse(candidate.missingFields.length > 0 ? "I need a time or date." : "Review the calendar event in DexNest.", {
           sensitivity: candidate.sensitivity,
           source: commandSource,
-          actionId: "voice.workflow.calendar_candidate"
+          actionId: "voice.workflow.calendar_candidate",
+          kind: "workflow"
         });
         return;
       }
@@ -5394,7 +6314,8 @@ function AskDexNest({
           await speakDexNestResponse("Open DexNest to confirm.", {
             sensitivity: route.sensitivity,
             source: commandSource,
-            actionId: route.actionId
+            actionId: route.actionId,
+            kind: "confirmation"
           });
         }
         await getBridge().updateAmbientVoiceState({
@@ -7084,25 +8005,27 @@ function ClipboardView({
             {filteredHistory.length === 0 ? (
               <EmptyState>No Clipboard history matches this filter.</EmptyState>
             ) : (
-              filteredHistory.map((item) => (
-                <article
-                  className="clipboard-history-row accent-clipboard"
-                  key={item.id}
-                  title={`${item.source ?? "manual"} / ${formatBytes(item.byteLength)} / ${formatLocalDateTime(item.createdAt)}`}
-                >
-                  <strong className="clipboard-history-text">{item.preview || "Saved clipboard text"}</strong>
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label="Copy clipboard item"
-                    title="Copy"
-                    onClick={() => void copyHistoryItem(item.id)}
+              <LimitedList items={filteredHistory} step={50}>
+                {(item) => (
+                  <article
+                    className="clipboard-history-row accent-clipboard"
+                    key={item.id}
+                    title={`${item.source ?? "manual"} / ${formatBytes(item.byteLength)} / ${formatLocalDateTime(item.createdAt)}`}
                   >
-                    <span className="copy-icon" aria-hidden="true" />
-                    <span className="sr-only">Copy</span>
-                  </button>
-                </article>
-              ))
+                    <strong className="clipboard-history-text">{item.preview || "Saved clipboard text"}</strong>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label="Copy clipboard item"
+                      title="Copy"
+                      onClick={() => void copyHistoryItem(item.id)}
+                    >
+                      <span className="copy-icon" aria-hidden="true" />
+                      <span className="sr-only">Copy</span>
+                    </button>
+                  </article>
+                )}
+              </LimitedList>
             )}
           </div>
         </Panel>
@@ -8314,7 +9237,7 @@ function VaultView({
           {vaultState.documents.length === 0 ? (
             <p className="empty-inline">No Vault documents yet.</p>
           ) : (
-            vaultState.documents.map((document) => {
+            <LimitedList items={vaultState.documents} step={50}>{(document) => {
               const expanded = expandedDocumentIds.includes(document.id);
               return (
                 <article className="vault-document accent-vault" data-expanded={expanded} key={document.id}>
@@ -8357,7 +9280,7 @@ function VaultView({
                   )}
                 </article>
               );
-            })
+            }}</LimitedList>
           )}
         </div>
       </Panel>
@@ -8621,7 +9544,7 @@ function SecureVaultView({
           {filteredItems.length === 0 ? (
             <p className="empty-inline">No secure items yet.</p>
           ) : (
-            filteredItems.map((item) => {
+            <LimitedList items={filteredItems} step={50}>{(item) => {
               const revealed = revealedIds.includes(item.id);
               return (
                 <article className="data-item accent-vault" key={item.id}>
@@ -8643,7 +9566,7 @@ function SecureVaultView({
                   </div>
                 </article>
               );
-            })
+            }}</LimitedList>
           )}
         </div>
       </Panel>
@@ -9150,6 +10073,31 @@ function EmptyState({ children }: { children: React.ReactNode }) {
   return <p className="empty-state">{children}</p>;
 }
 
+// Renders a long list capped to `step` rows with a "Show more" button, so views
+// like Audit / Clipboard / Finder never paint thousands of DOM nodes at once.
+function LimitedList<T>({
+  items,
+  step = 50,
+  children
+}: {
+  items: T[];
+  step?: number;
+  children: (item: T, index: number) => React.ReactNode;
+}) {
+  const [limit, setLimit] = useState(step);
+  const visible = limit >= items.length ? items : items.slice(0, limit);
+  return (
+    <>
+      {visible.map((item, index) => children(item, index))}
+      {items.length > limit && (
+        <button type="button" className="show-more-row" onClick={() => setLimit((value) => value + step)}>
+          Show {Math.min(step, items.length - limit)} more ({items.length - limit} remaining)
+        </button>
+      )}
+    </>
+  );
+}
+
 function PathText({ children }: { children: React.ReactNode }) {
   return <span className="technical technical--truncate">{children}</span>;
 }
@@ -9197,7 +10145,7 @@ function getLastSpeechMetrics(): SpeechCaptureMetrics | null {
 async function recordSpeechAudio(settings: SpeechSettings): Promise<{ audioBytes: number[]; mimeType: string; durationMs: number; metrics: SpeechCaptureMetrics }> {
   const clickAt = Date.now();
   // Use the pre-warmed stream when available so recording starts instantly.
-  const ready = await prewarmMic();
+  const ready = await prewarmMic(settings);
   if (!ready || !micWarm.stream) {
     throw new Error(micWarm.state.error ?? "Microphone is not available.");
   }
@@ -9217,12 +10165,18 @@ async function recordSpeechAudio(settings: SpeechSettings): Promise<{ audioBytes
   const endSilenceMs = settings.endSilenceTimeoutMs ?? 900;
   const minSpeechMs = settings.minSpeechMs ?? 300;
   const maxRecordingMs = Math.max(3, settings.maxRecordingSeconds) * 1000;
+  const maxPostSpeechMs = settings.maxPostSpeechListenMs ?? 2500;
+  const requireSpeechStart = settings.requireSpeechStart !== false;
+  const margin = settings.speechThresholdMargin ?? 0.018;
 
   let stopTimer: number | null = null;
   let vadTimer: number | null = null;
   let speechDetectedAt: number | null = null;
   let silenceStopDelayMs: number | null = null;
   let vadOutcome: SpeechCaptureMetrics["vadOutcome"] = "speech";
+  let stopReason: VadStopReason = "stopped_by_silence";
+  let measuredNoiseFloor = 0;
+  let usedThreshold = 0.03;
   let recordingStartedAt = clickAt;
 
   setMicWarmState({ streamStatus: "recording" });
@@ -9243,11 +10197,8 @@ async function recordSpeechAudio(settings: SpeechSettings): Promise<{ audioBytes
     // Hard safety cap (not the normal stop).
     stopTimer = window.setTimeout(() => {
       if (recorder.state !== "inactive") {
-        if (speechDetectedAt === null) {
-          vadOutcome = "no_speech";
-        } else {
-          vadOutcome = "max_recording";
-        }
+        vadOutcome = speechDetectedAt === null ? "no_speech" : "max_recording";
+        stopReason = speechDetectedAt === null ? "no_speech" : "stopped_by_max_recording";
         recorder.stop();
       }
     }, maxRecordingMs);
@@ -9259,20 +10210,23 @@ async function recordSpeechAudio(settings: SpeechSettings): Promise<{ audioBytes
       source.connect(analyser);
       const data = new Uint8Array(analyser.fftSize);
 
-      // Auto-calibrate the silence threshold from the first frames of ambient
-      // noise, or use the configured numeric value.
-      let autoFloor = 0;
-      let autoFrames = 0;
-      const configuredThreshold = typeof settings.silenceThreshold === "number" ? settings.silenceThreshold : null;
+      // Baseline noise floor: calibrated value (vadMode manual / adaptive off) or
+      // measured from the first ~6 frames of ambient noise.
+      const configuredThreshold = (settings.vadMode === "manual" && typeof settings.silenceThreshold === "number") ? settings.silenceThreshold : null;
+      const presetFloor = (settings.vadMode === "manual" || settings.adaptiveSilenceThreshold === false) ? (settings.noiseFloor ?? 0) : 0;
+      let autoFloor = presetFloor;
+      let autoFrames = presetFloor > 0 ? 6 : 0;
 
       let speechMsAccum = 0;
       let quietSince: number | null = null;
+      // Last frame with clearly loud/close speech (the "main speaker"). Used to
+      // stop even when quieter background voices keep the level above threshold.
+      let lastStrongSpeechAt: number | null = null;
       const frameMs = 60;
 
       const finishVad = () => {
-        if (source) {
-          try { source.disconnect(); } catch { /* ignore */ }
-        }
+        try { source.disconnect(); } catch { /* ignore */ }
+        setVadLiveMeter({ state: vadOutcome === "no_speech" ? "stopped_by_silence" : stopReason === "stopped_by_silence" ? "stopped_by_silence" : "stopped_by_timeout" });
       };
 
       vadTimer = window.setInterval(() => {
@@ -9282,30 +10236,50 @@ async function recordSpeechAudio(settings: SpeechSettings): Promise<{ audioBytes
           return total + normalized * normalized;
         }, 0) / data.length);
 
-        // Threshold: configured value or auto floor (ambient + margin).
-        if (configuredThreshold === null && autoFrames < 6) {
+        if (autoFrames < 6) {
           autoFloor += rms;
           autoFrames += 1;
         }
-        const threshold = configuredThreshold ?? Math.max(0.012, (autoFloor / Math.max(1, autoFrames)) + 0.018);
+        measuredNoiseFloor = autoFloor / Math.max(1, autoFrames);
+        const threshold = configuredThreshold ?? Math.max(0.012, measuredNoiseFloor + margin);
+        // "Strong"/close speech threshold (relative to the floor) — your speaking
+        // voice resets the post-speech window each frame, so it only counts down
+        // once you actually stop; quiet background voices stay under it.
+        const strongThreshold = threshold + Math.max(0.02, threshold * (settings.mainSpeakerMode ? 1.4 : 0.6));
+        usedThreshold = threshold;
 
         const now = Date.now();
         const elapsed = now - recordingStartedAt;
+        // Live meter for diagnostics.
+        setVadLiveMeter({ level: Number(rms.toFixed(4)), noiseFloor: Number(measuredNoiseFloor.toFixed(4)), speechThreshold: Number(threshold.toFixed(4)), state: speechDetectedAt === null ? "waiting" : (rms > threshold ? "speech_detected" : "silence") });
 
         if (rms > threshold) {
           speechMsAccum += frameMs;
           quietSince = null;
+          if (rms > strongThreshold) {
+            lastStrongSpeechAt = now;
+          }
           if (speechDetectedAt === null && speechMsAccum >= minSpeechMs) {
             speechDetectedAt = now - recordingStartedAt;
+            lastStrongSpeechAt = lastStrongSpeechAt ?? now;
+          }
+          // After the user's main speech, if only weak/background level remains
+          // for longer than the post-speech window, stop (don't listen forever).
+          if (speechDetectedAt !== null && lastStrongSpeechAt !== null && now - lastStrongSpeechAt > maxPostSpeechMs && recorder.state !== "inactive") {
+            vadOutcome = "speech";
+            stopReason = "stopped_by_post_speech_window";
+            finishVad();
+            recorder.stop();
           }
           return;
         }
 
         // Silence frame.
         if (speechDetectedAt === null) {
-          // No confirmed speech yet — cancel cleanly after the initial window.
-          if (elapsed > initialSilenceMs && recorder.state !== "inactive") {
+          // requireSpeechStart: cancel cleanly if no real speech began in time.
+          if ((requireSpeechStart ? elapsed > initialSilenceMs : elapsed > initialSilenceMs) && recorder.state !== "inactive") {
             vadOutcome = "no_speech";
+            stopReason = "no_speech";
             finishVad();
             recorder.stop();
           }
@@ -9316,6 +10290,7 @@ async function recordSpeechAudio(settings: SpeechSettings): Promise<{ audioBytes
         if (now - quietSince > endSilenceMs && recorder.state !== "inactive") {
           silenceStopDelayMs = now - quietSince;
           vadOutcome = "speech";
+          stopReason = "stopped_by_silence";
           finishVad();
           recorder.stop();
         }
@@ -9330,18 +10305,28 @@ async function recordSpeechAudio(settings: SpeechSettings): Promise<{ audioBytes
     if (vadTimer !== null) {
       window.clearInterval(vadTimer);
     }
+    setVadLiveMeter({ state: "idle" });
     // Keep the stream + AudioContext warm for the next mic click.
     setMicWarmState({ streamStatus: micWarm.stream ? "ready" : "unavailable" });
   }
 
   const blob = new Blob(chunks, { type: preferredMimeType });
   const buffer = await blob.arrayBuffer();
+  // wake→recording-start latency when this capture was triggered by a wake word.
+  const wakeToRecordingStartMs = lastWakeDetectedAtForMetric && (recordingStartedAt - lastWakeDetectedAtForMetric) >= 0 && (recordingStartedAt - lastWakeDetectedAtForMetric) < 10000
+    ? recordingStartedAt - lastWakeDetectedAtForMetric
+    : null;
+  lastWakeDetectedAtForMetric = 0;
   const metrics: SpeechCaptureMetrics = {
     micClickToRecordingMs: recordingStartedAt - clickAt,
     recordingDurationMs: Date.now() - recordingStartedAt,
     speechDetectedAtMs: speechDetectedAt,
     silenceStopDelayMs,
-    vadOutcome
+    vadOutcome,
+    stopReason,
+    noiseFloor: Number(measuredNoiseFloor.toFixed(4)),
+    speechThreshold: Number(usedThreshold.toFixed(4)),
+    wakeToRecordingStartMs
   };
   lastSpeechCaptureMetrics = metrics;
   return {
@@ -10739,7 +11724,7 @@ function FinanceView({
 
       <Panel title="Transactions">
         <div className="action-list">
-          {financeState.transactions.length === 0 ? <p>No Finance transactions yet.</p> : financeState.transactions.map((transaction) => (
+          {financeState.transactions.length === 0 ? <p>No Finance transactions yet.</p> : <LimitedList items={financeState.transactions} step={50}>{(transaction) => (
             <CollapsibleListItem
               accentClass="accent-finance"
               key={transaction.id}
@@ -10762,7 +11747,7 @@ function FinanceView({
               {transaction.receiptFilePath && <p className="technical">{transaction.receiptFilePath}</p>}
               <p className="technical">{transaction.id}</p>
             </CollapsibleListItem>
-          ))}
+          )}</LimitedList>}
         </div>
       </Panel>
 
@@ -11303,19 +12288,19 @@ function CaptureView({
 
       <Panel title={`Shared Inbox (${captureState.inbox.length})`}>
         <div className="action-list">
-          {captureState.inbox.length === 0 ? <p>No Capture inbox items yet.</p> : captureState.inbox.map(renderCaptureItem)}
+          {captureState.inbox.length === 0 ? <p>No Capture inbox items yet.</p> : <LimitedList items={captureState.inbox} step={50}>{renderCaptureItem}</LimitedList>}
         </div>
       </Panel>
 
       <div className="dashboard-grid">
         <Panel title={`Routed Items (${captureState.routed.length})`}>
           <div className="action-list action-list--compact">
-            {captureState.routed.length === 0 ? <p>No routed items yet.</p> : captureState.routed.map(renderCaptureItem)}
+            {captureState.routed.length === 0 ? <p>No routed items yet.</p> : <LimitedList items={captureState.routed} step={50}>{renderCaptureItem}</LimitedList>}
           </div>
         </Panel>
         <Panel title={`Archived (${captureState.archived.length})`}>
           <div className="action-list action-list--compact">
-            {captureState.archived.length === 0 ? <p>No archived captures.</p> : captureState.archived.map(renderCaptureItem)}
+            {captureState.archived.length === 0 ? <p>No archived captures.</p> : <LimitedList items={captureState.archived} step={50}>{renderCaptureItem}</LimitedList>}
           </div>
         </Panel>
       </div>
@@ -11347,6 +12332,10 @@ function SearchView({
   assistantFocusSignal,
   assistantListenSignal,
   assistantListenSource,
+  assistantQueuedCommand,
+  assistantQueuedCommandSignal,
+  onTtsDiagnosticsChange,
+  onWakeMetricsUpdate,
   journalVoiceActive,
   onStartJournalVoice,
   onJournalControl,
@@ -11356,6 +12345,7 @@ function SearchView({
   onFinderLookupComplete,
   onFinderMemorySaved,
   onAction,
+  assistantAction,
   onRefresh
 }: {
   searchState: SearchState;
@@ -11372,6 +12362,10 @@ function SearchView({
   assistantFocusSignal: number;
   assistantListenSignal: number;
   assistantListenSource: string;
+  assistantQueuedCommand: QueuedAssistantCommand | null;
+  assistantQueuedCommandSignal: number;
+  onTtsDiagnosticsChange: (diagnostics: TtsDiagnostics) => void;
+  onWakeMetricsUpdate: (patch: Partial<SpeechCaptureMetrics>) => void;
   journalVoiceActive: boolean;
   onStartJournalVoice: (source?: string) => Promise<void>;
   onJournalControl: (control: JournalVoiceControl) => void;
@@ -11389,6 +12383,7 @@ function SearchView({
     searchState?: SearchState;
     savedSearch?: SavedSearch;
   }>;
+  assistantAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>;
   onRefresh: () => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
@@ -11410,11 +12405,12 @@ function SearchView({
   const [searching, setSearching] = useState(false);
 
   const currentParams = { query, sourceModule, fileType, dateFrom, dateTo };
-  const recentRecovery = searchState.index
+  // Memoize so typing in the query box does not re-sort the whole index each keystroke.
+  const recentRecovery = useMemo(() => searchState.index
     .filter((item) => Boolean(item.filePath))
     .slice()
     .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
-    .slice(0, 6);
+    .slice(0, 6), [searchState.index]);
 
   async function rebuildIndex(): Promise<void> {
     if (!window.confirm("Rebuild the local DexNest Search index now? This is user-triggered and allowed during Performance Mode.")) {
@@ -11597,10 +12593,14 @@ function SearchView({
           speechState={speechState}
           voiceWorkflowSettings={voiceWorkflowSettings}
           onSpeechStateChange={onSpeechStateChange}
-          onAction={onAction}
+          onAction={assistantAction}
           focusSignal={assistantFocusSignal}
           listenSignal={assistantListenSignal}
           listenSource={assistantListenSource}
+          queuedCommand={assistantQueuedCommand}
+          queuedCommandSignal={assistantQueuedCommandSignal}
+          onTtsDiagnosticsChange={onTtsDiagnosticsChange}
+          onWakeMetricsUpdate={onWakeMetricsUpdate}
           journalVoiceActive={journalVoiceActive}
           onStartJournalVoice={onStartJournalVoice}
           onJournalControl={onJournalControl}
@@ -12477,16 +13477,18 @@ function AuditView({
         {events.length === 0 ? (
           <p className="empty-state">No events yet. Run an action to populate Audit.</p>
         ) : (
-          events.map((event) => (
-            <article className="event-row" key={event.id}>
-              <p className="technical">{formatLocalDateTime(event.timestamp)}</p>
-              <p>{event.module}</p>
-              <p className="technical">{event.actionId ?? "none"}</p>
-              <p>{event.status}</p>
-              <p>{event.source}</p>
-              <p>{event.summary}</p>
-            </article>
-          ))
+          <LimitedList items={events} step={50}>
+            {(event) => (
+              <article className="event-row" key={event.id}>
+                <p className="technical">{formatLocalDateTime(event.timestamp)}</p>
+                <p>{event.module}</p>
+                <p className="technical">{event.actionId ?? "none"}</p>
+                <p>{event.status}</p>
+                <p>{event.source}</p>
+                <p>{event.summary}</p>
+              </article>
+            )}
+          </LimitedList>
         )}
       </div>
     </section>
@@ -12499,11 +13501,19 @@ function SettingsView({
   calendarState,
   ambientVoiceState,
   speechState,
+  ttsDiagnostics,
   performanceModeState,
   performanceModeSettings,
+  wakeWordState,
+  wakeEngineState,
+  onTestWake,
+  onStartWake,
+  onStopWake,
+  onCheckWake,
   onAction,
   onAmbientVoiceChanged,
   onSpeechStateChanged,
+  onTtsDiagnosticsChange,
   onPerformanceChanged,
   onRefresh
 }: {
@@ -12512,14 +13522,23 @@ function SettingsView({
   calendarState: CalendarState;
   ambientVoiceState: AmbientVoiceState;
   speechState: SpeechServiceState;
+  ttsDiagnostics: TtsDiagnostics;
   performanceModeState: PerformanceModeState;
   performanceModeSettings: PerformanceModeSettings;
+  wakeWordState: WakeWordServiceState;
+  wakeEngineState: WakeEngineState;
+  onTestWake: () => void;
+  onStartWake: () => void;
+  onStopWake: () => void;
+  onCheckWake: () => Promise<void>;
   onAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>;
   onAmbientVoiceChanged: (settings: Partial<AmbientVoiceSettings>) => Promise<void>;
   onSpeechStateChanged: (state: SpeechServiceState) => void;
+  onTtsDiagnosticsChange: (diagnostics: TtsDiagnostics) => void;
   onPerformanceChanged: (settings?: Partial<PerformanceModeSettings>, enabled?: boolean) => Promise<void>;
   onRefresh: () => Promise<void>;
 }) {
+  const perf = useSyncExternalStore(subscribePerf, getPerfStats, getPerfStats);
   const [backupOptions, setBackupOptions] = useState<BackupOptions>(backupState.defaultOptions);
   const [restorePath, setRestorePath] = useState("");
   const [restorePreview, setRestorePreview] = useState<BackupPreview | null>(null);
@@ -12537,12 +13556,32 @@ function SettingsView({
   const [speechStatus, setSpeechStatus] = useState("");
   const [micWarmUi, setMicWarmUi] = useState<MicWarmState>(getMicWarmState());
   const [speechMetrics, setSpeechMetrics] = useState<SpeechCaptureMetrics | null>(getLastSpeechMetrics());
+  const [audioDevices, setAudioDevices] = useState<{ deviceId: string; label: string }[]>([]);
+  const [vadMeter, setVadMeter] = useState<VadLiveMeter>(getVadLiveMeter());
+  const settingsTtsUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
 
   useEffect(() => {
     const unsubscribe = subscribeMicWarm(() => setMicWarmUi(getMicWarmState()));
+    const unsubscribeMeter = subscribeVadMeter(() => setVadMeter(getVadLiveMeter()));
     void refreshMicPermission();
-    return unsubscribe;
+    void listAudioInputDevices().then(setAudioDevices);
+    return () => { unsubscribe(); unsubscribeMeter(); };
   }, []);
+
+  useEffect(() => {
+    const refresh = () => {
+      onTtsDiagnosticsChange({
+        ...ttsDiagnostics,
+        ...getTtsDiagnosticsSnapshot(ambientForm.voiceName)
+      });
+    };
+    refresh();
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+      return;
+    }
+    window.speechSynthesis.addEventListener?.("voiceschanged", refresh);
+    return () => window.speechSynthesis.removeEventListener?.("voiceschanged", refresh);
+  }, [ambientForm.voiceName]);
 
   useEffect(() => {
     // Pre-warm the mic while Speech settings are open, gated by the setting and
@@ -12552,9 +13591,35 @@ function SettingsView({
       return;
     }
     if (speechForm.micPrewarmEnabled !== false && speechForm.speechEngine === "faster_whisper") {
-      void prewarmMic();
+      void prewarmMic(speechForm);
     }
-  }, [speechState.performancePaused, speechForm.micPrewarmEnabled, speechForm.speechEngine]);
+  }, [speechState.performancePaused, speechForm.micPrewarmEnabled, speechForm.speechEngine, speechForm.selectedInputDeviceId, speechForm.noiseSuppression, speechForm.echoCancellation, speechForm.autoGainControl]);
+
+  async function refreshAudioDevices(): Promise<void> {
+    setAudioDevices(await listAudioInputDevices());
+  }
+
+  async function calibrateRoomNoise(): Promise<void> {
+    if (speechState.performancePaused) {
+      setSpeechStatus("Speech is paused by Performance Mode — calibration unavailable.");
+      return;
+    }
+    setSpeechBusy(true);
+    setSpeechStatus("Calibrating room noise — stay silent for 2 seconds…");
+    try {
+      const floor = await calibrateNoiseFloor(speechForm, 2000);
+      const next = { ...speechForm, noiseFloor: floor, vadMode: "auto" as const };
+      setSpeechForm(next);
+      await getBridge().saveSpeechSettings({ noiseFloor: floor, vadMode: "auto" });
+      onSpeechStateChanged(await getBridge().getSpeechState());
+      void onAction("speech.transcribe", "module_ui", { sourceModule: "settings_calibration", status: "success", noiseFloor: floor });
+      setSpeechStatus(`Room noise floor: ${floor.toFixed(3)}. Speech threshold ≈ ${(floor + (speechForm.speechThresholdMargin ?? 0.018)).toFixed(3)}.`);
+    } catch (error) {
+      setSpeechStatus(error instanceof Error ? error.message : "Calibration failed.");
+    } finally {
+      setSpeechBusy(false);
+    }
+  }
   const [lifecycleForm, setLifecycleForm] = useState<AppLifecycleSettings>(appInfo?.appLifecycleSettings ?? defaultAppLifecycleSettings);
   const [lifecycleSaving, setLifecycleSaving] = useState(false);
   const [lifecycleBusy, setLifecycleBusy] = useState(false);
@@ -12768,23 +13833,75 @@ function SettingsView({
     setAmbientStatus("Ambient test command recorded. Use Ask DexNest for the live routing path.");
   }
 
+  function testVoiceOverlay(): void {
+    // Scripted preview: wake pulse → listening → processing → speaking → fade.
+    const bridge = getBridge();
+    bridge.voiceOverlay({ type: "state", state: "wake_detected" });
+    const levels = window.setInterval(() => bridge.voiceOverlay({ type: "level", level: 0.3 + Math.random() * 0.6 }), 100);
+    window.setTimeout(() => bridge.voiceOverlay({ type: "state", state: "listening" }), 500);
+    window.setTimeout(() => { window.clearInterval(levels); bridge.voiceOverlay({ type: "state", state: "transcribing" }); }, 2600);
+    window.setTimeout(() => bridge.voiceOverlay({ type: "state", state: "speaking" }), 3800);
+    window.setTimeout(() => bridge.voiceOverlay({ type: "hide" }), 5400);
+    setAmbientStatus("Testing desktop voice overlay…");
+  }
+
   async function testLocalTts(): Promise<void> {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) {
       setAmbientStatus("Local OS speech synthesis is not available in this renderer.");
+      onTtsDiagnosticsChange({
+        ...defaultTtsDiagnostics,
+        available: false,
+        lastAttemptedAt: new Date().toISOString(),
+        lastSpoken: false,
+        blockedReason: "speech_synthesis_unavailable",
+        lastSource: "module_ui",
+        lastActionId: "voice.tts_response",
+        lastTextPreview: "DexNest voice test."
+      });
       await onAction("voice.tts_response", "module_ui", { ttsSpoken: false, blockedReason: "speech_synthesis_unavailable", sensitivity: "none" });
       return;
     }
-    const utterance = new SpeechSynthesisUtterance("DexNest voice response test.");
-    utterance.rate = ambientForm.voiceRate || 1;
-    utterance.volume = ambientForm.voiceVolume ?? 1;
-    const voice = ambientForm.voiceName ? window.speechSynthesis.getVoices().find((item) => item.name === ambientForm.voiceName) : undefined;
-    if (voice) {
-      utterance.voice = voice;
+    const phrase = "DexNest voice test.";
+    const diagnosticsBase = {
+      ...defaultTtsDiagnostics,
+      ...getTtsDiagnosticsSnapshot(ambientForm.voiceName),
+      lastAttemptedAt: new Date().toISOString(),
+      lastSource: "module_ui",
+      lastActionId: "voice.tts_response",
+      lastTextPreview: phrase
+    };
+    try {
+      const utterance = new SpeechSynthesisUtterance(phrase);
+      utterance.rate = clampTtsRate(ambientForm.voiceRate);
+      utterance.volume = clampTtsVolume(ambientForm.voiceVolume);
+      const voice = ambientForm.voiceName ? window.speechSynthesis.getVoices().find((item) => item.name === ambientForm.voiceName) : undefined;
+      if (voice) {
+        utterance.voice = voice;
+      }
+      settingsTtsUtteranceRef.current = utterance;
+      utterance.onstart = () => onTtsDiagnosticsChange({ ...diagnosticsBase, lastSpoken: true, blockedReason: "", error: "" });
+      utterance.onend = () => {
+        settingsTtsUtteranceRef.current = null;
+        onTtsDiagnosticsChange({ ...diagnosticsBase, lastSpoken: true, blockedReason: "", error: "" });
+      };
+      utterance.onerror = (event) => {
+        settingsTtsUtteranceRef.current = null;
+        const error = event.error || "speech_synthesis_error";
+        onTtsDiagnosticsChange({ ...diagnosticsBase, lastSpoken: false, blockedReason: error, error });
+        setAmbientStatus(`Voice test failed: ${error}`);
+      };
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utterance);
+      onTtsDiagnosticsChange({ ...diagnosticsBase, lastSpoken: true, blockedReason: "", error: "" });
+      setAmbientStatus("Speaking local test phrase.");
+      await onAction("voice.tts_response", "module_ui", { ttsAttempted: true, ttsSpoken: true, sensitivity: "none", actionId: "voice.tts_response" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Voice test failed.";
+      settingsTtsUtteranceRef.current = null;
+      onTtsDiagnosticsChange({ ...diagnosticsBase, lastSpoken: false, blockedReason: "speak_failed", error: message });
+      setAmbientStatus(message);
+      await onAction("voice.tts_response", "module_ui", { ttsAttempted: true, ttsSpoken: false, blockedReason: "speak_failed", error: message, sensitivity: "none", actionId: "voice.tts_response" });
     }
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(utterance);
-    setAmbientStatus("Speaking local test phrase.");
-    await onAction("voice.tts_response", "module_ui", { ttsSpoken: true, sensitivity: "none", actionId: "voice.tts_response" });
   }
 
   function updateSpeechOption<K extends keyof SpeechSettings>(key: K, value: SpeechSettings[K]): void {
@@ -12866,6 +13983,7 @@ function SettingsView({
         micClickToRecordingMs: result.metrics?.micClickToRecordingMs ?? null,
         speechDetectedAtMs: result.metrics?.speechDetectedAtMs ?? null,
         silenceStopDelayMs: result.metrics?.silenceStopDelayMs ?? null,
+        stopReason: result.metrics?.stopReason ?? null,
         transcriptionLatencyMs: result.metrics?.transcriptionLatencyMs ?? null,
         vadOutcome: result.metrics?.vadOutcome ?? null
       });
@@ -13269,6 +14387,60 @@ function SettingsView({
             </select>
           </label>
           <label>
+            Input microphone
+            <select value={speechForm.selectedInputDeviceId ?? ""} onChange={(event) => updateSpeechOption("selectedInputDeviceId", event.target.value || null)}>
+              <option value="">Default microphone</option>
+              {audioDevices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label}</option>)}
+            </select>
+          </label>
+          <div className="button-row">
+            <button type="button" disabled={speechBusy} onClick={() => void refreshAudioDevices()}>Refresh devices</button>
+            <button type="button" disabled={speechBusy} onClick={() => void calibrateRoomNoise()}>Calibrate room noise (2s)</button>
+          </div>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={speechForm.noiseSuppression !== false} onChange={(event) => updateSpeechOption("noiseSuppression", event.target.checked)} />
+            <span>Noise suppression</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={speechForm.echoCancellation !== false} onChange={(event) => updateSpeechOption("echoCancellation", event.target.checked)} />
+            <span>Echo cancellation</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={speechForm.autoGainControl !== false} onChange={(event) => updateSpeechOption("autoGainControl", event.target.checked)} />
+            <span>Auto gain control</span>
+          </label>
+          <label>
+            VAD mode
+            <select value={speechForm.vadMode ?? "auto"} onChange={(event) => updateSpeechOption("vadMode", event.target.value as "auto" | "manual")}>
+              <option value="auto">auto (adaptive)</option>
+              <option value="manual">manual</option>
+            </select>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={speechForm.mainSpeakerMode === true} onChange={(event) => updateSpeechOption("mainSpeakerMode", event.target.checked)} />
+            <span>Main speaker mode (prefer closer/louder speech, ignore quiet background voices)</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={speechForm.requireSpeechStart !== false} onChange={(event) => updateSpeechOption("requireSpeechStart", event.target.checked)} />
+            <span>Require real speech to start (ignore background noise)</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={speechForm.adaptiveSilenceThreshold !== false} onChange={(event) => updateSpeechOption("adaptiveSilenceThreshold", event.target.checked)} />
+            <span>Adaptive silence threshold (uses noise floor)</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={speechForm.speakerVerificationEnabled === true} disabled onChange={() => undefined} />
+            <span>Speaker verification — not implemented (placeholder)</span>
+          </label>
+          <label>
+            Max background continuation (ms)
+            <input type="number" min="800" max="8000" step="100" value={speechForm.maxPostSpeechListenMs ?? 2500} onChange={(event) => updateSpeechOption("maxPostSpeechListenMs", Number(event.target.value) || 2500)} />
+          </label>
+          <label>
+            Speech threshold margin
+            <input type="number" min="0.002" max="0.2" step="0.002" value={speechForm.speechThresholdMargin ?? 0.018} onChange={(event) => updateSpeechOption("speechThresholdMargin", Number(event.target.value) || 0.018)} />
+          </label>
+          <label>
             Max recording seconds (safety cap)
             <input type="number" min="3" max="30" value={speechForm.maxRecordingSeconds} onChange={(event) => updateSpeechOption("maxRecordingSeconds", Number(event.target.value) || 30)} />
           </label>
@@ -13346,8 +14518,18 @@ function SettingsView({
           <div className="settings-row"><span>Mic permission</span><strong className="technical">{micWarmUi.permission}</strong></div>
           <div className="settings-row"><span>Mic stream</span><strong className="technical">{speechState.performancePaused ? "blocked (performance mode)" : micWarmUi.streamStatus}{micWarmUi.error ? ` · ${micWarmUi.error}` : ""}</strong></div>
           <div className="settings-row"><span>Audio context</span><strong className="technical">{micWarmUi.audioContextStatus}</strong></div>
+          <div className="settings-row">
+            <span>Mic level (VAD)</span>
+            <strong className="technical">
+              <span className="vad-meter" aria-hidden="true"><span className="vad-meter__fill" style={{ width: `${Math.min(100, Math.round(vadMeter.level * 600))}%` }} /><span className="vad-meter__threshold" style={{ left: `${Math.min(100, Math.round(vadMeter.speechThreshold * 600))}%` }} /></span>
+              {" "}{vadMeter.state} · level {vadMeter.level.toFixed(3)} · floor {vadMeter.noiseFloor.toFixed(3)} · thr {vadMeter.speechThreshold.toFixed(3)}
+            </strong>
+          </div>
           {speechMetrics && (
-            <div className="settings-row"><span>Last capture metrics</span><strong className="technical">mic→rec {speechMetrics.micClickToRecordingMs}ms · speech@{speechMetrics.speechDetectedAtMs ?? "—"}ms · silence-stop {speechMetrics.silenceStopDelayMs ?? "—"}ms · rec {speechMetrics.recordingDurationMs}ms · transcribe {speechMetrics.transcriptionLatencyMs ?? "—"}ms · {speechMetrics.vadOutcome}</strong></div>
+            <div className="settings-row"><span>Last capture metrics</span><strong className="technical">{speechMetrics.wakeToRecordingStartMs != null ? `wake→rec ${speechMetrics.wakeToRecordingStartMs}ms · ` : ""}mic→rec {speechMetrics.micClickToRecordingMs}ms · speech@{speechMetrics.speechDetectedAtMs ?? "—"}ms · silence-stop {speechMetrics.silenceStopDelayMs ?? "—"}ms · rec {speechMetrics.recordingDurationMs}ms · transcribe {speechMetrics.transcriptionLatencyMs ?? "—"}ms · stop: {speechMetrics.stopReason ?? speechMetrics.vadOutcome} · floor {speechMetrics.noiseFloor ?? "—"} · thr {speechMetrics.speechThreshold ?? "—"}</strong></div>
+          )}
+          {speechMetrics && (
+            <div className="settings-row"><span>Wake command metrics</span><strong className="technical">wake-&gt;Search {speechMetrics.wakeToSearchNavigationMs ?? "-"}ms / route {speechMetrics.routingLatencyMs ?? "-"}ms / action {speechMetrics.actionLatencyMs ?? "-"}ms / TTS {speechMetrics.ttsAttempted ? (speechMetrics.ttsSpoken ? "spoken" : `blocked ${speechMetrics.ttsBlockedReason ?? ""}`) : "not attempted"}</strong></div>
           )}
           {speechState.engineState && (
             <div className="settings-row"><span>Engine state</span><strong className="technical">{speechState.engineState}</strong></div>
@@ -13376,11 +14558,84 @@ function SettingsView({
             <p className="technical">{ambientVoiceState.settings.pushToTalkShortcut}</p>
           </article>
           <article>
-            <span>Wake word</span>
-            <strong>{ambientVoiceState.wakeWordStatus}</strong>
-            <p>Wake-word listening stays placeholder-only and off by default.</p>
+            <span>Wake word state</span>
+            <strong>{speechState.performancePaused && (ambientForm.pauseWakeWordInPerformanceMode ?? true) ? "paused_by_performance_mode" : wakeWordState.status}</strong>
+            <p className="technical">engine: {ambientForm.wakeWordEngine ?? "placeholder"} · {wakeWordState.engineInstalled ? "installed" : "wake engine not installed"}</p>
+          </article>
+          <article>
+            <span>TTS diagnostics</span>
+            <strong>{ttsDiagnostics.available ? "available" : "unavailable"} / {ttsDiagnostics.lastSpoken ? "spoken" : "not spoken"}</strong>
+            <p className="technical">{ttsDiagnostics.voicesCount} voices / {ttsDiagnostics.selectedVoice}{ttsDiagnostics.blockedReason ? ` / blocked: ${ttsDiagnostics.blockedReason}` : ""}{ttsDiagnostics.error ? ` / error: ${ttsDiagnostics.error}` : ""}</p>
+          </article>
+          <article>
+            <span>Module switch render</span>
+            <strong>{perf.lastModuleSwitchMs != null ? `${perf.lastModuleSwitchMs}ms` : "—"}</strong>
+            <p className="technical">last: {perf.lastModule || "—"} · worst: {perf.worstModuleSwitchMs != null ? `${perf.worstModuleSwitchMs}ms` : "—"}</p>
           </article>
         </div>
+
+        <div className="journal-voice" data-active={ambientForm.wakeWordEnabled} data-status={wakeWordState.status}>
+          <div className="section-heading">
+            <p>Local wake phrase “{ambientForm.wakePhraseMode === "hey_jarvis" ? "Hey Jarvis" : ambientForm.wakePhraseMode === "alexa" ? "Alexa" : ambientForm.wakePhraseMode === "custom_path" ? "Custom model" : (ambientForm.wakeWord || "Nest")}” (openWakeWord). Wake phrase is local and visible. Whisper only starts after wake.</p>
+            <p className="technical">
+              engine: {wakeEngineState.status} · install: {wakeEngineState.installStatus} · detections: {wakeEngineState.detectionsCount}
+              {wakeEngineState.lastDetectedAt ? ` · last ${formatLocalDateTime(new Date(wakeEngineState.lastDetectedAt).toISOString())}` : ""}
+              {wakeWordState.metrics.totalWakeToActionMs ? ` · wake→done ${wakeWordState.metrics.totalWakeToActionMs}ms` : ""}
+            </p>
+            {wakeEngineState.lastError && wakeEngineState.status !== "listening_for_nest" && (
+              <p className="technical">blocker: {wakeEngineState.lastError}</p>
+            )}
+            {wakeEngineState.installStatus === "missing_dependencies" && (
+              <p className="technical">Install: <span className="technical">{`"${wakeEngineState.scriptPath ? "sidecars/speech/.venv/Scripts/python.exe" : "python"}" -m pip install openwakeword sounddevice numpy`}</span>, then add a “Nest” model at sidecars/wake-word/models/nest.onnx.</p>
+            )}
+          </div>
+          <label>
+            Wake phrase
+            <select value={ambientForm.wakePhraseMode ?? "hey_jarvis"} onChange={(event) => updateAmbientOption("wakePhraseMode", event.target.value as "custom_nest" | "hey_jarvis" | "alexa" | "custom_path")}>
+              <option value="hey_jarvis">Hey Jarvis (built-in, works now)</option>
+              <option value="alexa">Alexa (built-in, if available)</option>
+              <option value="custom_nest">Nest (custom model — sidecars/wake-word/models/nest.onnx)</option>
+              <option value="custom_path">Custom model path…</option>
+            </select>
+          </label>
+          {ambientForm.wakePhraseMode === "custom_path" && (
+            <label>
+              Custom wake model path
+              <input value={ambientForm.wakeCustomModelPath ?? ""} onChange={(event) => updateAmbientOption("wakeCustomModelPath", event.target.value || null)} placeholder="C:\\path\\to\\model.onnx" />
+            </label>
+          )}
+          <label className="checkbox-row">
+            <input type="checkbox" checked={ambientForm.wakeWordEnabled} onChange={(event) => updateAmbientOption("wakeWordEnabled", event.target.checked)} />
+            <span>Enable wake word (off by default). Uses the local openWakeWord engine; Test trigger always works.</span>
+          </label>
+          <label>
+            Wake sensitivity ({(ambientForm.wakeWordSensitivity ?? 0.5).toFixed(2)})
+            <input type="range" min="0" max="1" step="0.05" value={ambientForm.wakeWordSensitivity ?? 0.5} onChange={(event) => updateAmbientOption("wakeWordSensitivity", Number(event.target.value))} />
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={ambientForm.allowWakeWordDeviceControl ?? true} onChange={(event) => updateAmbientOption("allowWakeWordDeviceControl", event.target.checked)} />
+            <span>Allow wake-word device control (lights)</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={ambientForm.allowWakeWordSensitiveLookup ?? false} onChange={(event) => updateAmbientOption("allowWakeWordSensitiveLookup", event.target.checked)} />
+            <span>Allow wake-word sensitive lookups (off by default)</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={ambientForm.pauseWakeWordInPerformanceMode ?? true} onChange={(event) => updateAmbientOption("pauseWakeWordInPerformanceMode", event.target.checked)} />
+            <span>Pause wake word in Performance Mode</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={ambientForm.playWakeSound ?? true} onChange={(event) => updateAmbientOption("playWakeSound", event.target.checked)} />
+            <span>Play wake chime</span>
+          </label>
+          <div className="button-row">
+            <button type="button" onClick={() => void onCheckWake()}>Check wake engine</button>
+            <button type="button" onClick={() => onTestWake()} disabled={speechState.performancePaused && (ambientForm.pauseWakeWordInPerformanceMode ?? true)}>Test wake trigger</button>
+            <button type="button" onClick={() => onStartWake()}>Start wake service</button>
+            <button type="button" onClick={() => onStopWake()}>Stop wake service</button>
+          </div>
+        </div>
+
         <div className="registry-controls">
           <label className="checkbox-row">
             <input type="checkbox" checked={ambientForm.ambientVoiceEnabled} onChange={(event) => updateAmbientOption("ambientVoiceEnabled", event.target.checked)} />
@@ -13416,11 +14671,23 @@ function SettingsView({
           </label>
           <label className="checkbox-row">
             <input type="checkbox" checked={ambientForm.speakResponses} onChange={(event) => updateAmbientOption("speakResponses", event.target.checked)} />
-            <span>Speak safe responses with local OS speech synthesis</span>
+            <span>Speak responses with local OS speech synthesis (Alexa-style)</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={ambientForm.speakErrors !== false} onChange={(event) => updateAmbientOption("speakErrors", event.target.checked)} />
+            <span>Speak errors (e.g. “I couldn’t reach Govee.”)</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={ambientForm.speakConfirmations !== false} onChange={(event) => updateAmbientOption("speakConfirmations", event.target.checked)} />
+            <span>Speak confirmations (e.g. “Open DexNest to confirm.”)</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={ambientForm.speakWorkflowStatus !== false} onChange={(event) => updateAmbientOption("speakWorkflowStatus", event.target.checked)} />
+            <span>Speak workflow status (journal started/saved, calendar)</span>
           </label>
           <label className="checkbox-row">
             <input type="checkbox" checked={ambientForm.speakSensitiveAnswers} onChange={(event) => updateAmbientOption("speakSensitiveAnswers", event.target.checked)} />
-            <span>Allow spoken sensitive answers only while trusted session is unlocked</span>
+            <span>⚠️ Speak sensitive answers aloud — only while the trusted session is unlocked. Off by default; spoken values like SIN or passport numbers can be overheard.</span>
           </label>
           <label className="checkbox-row">
             <input type="checkbox" checked={ambientForm.shortResponsesOnly} onChange={(event) => updateAmbientOption("shortResponsesOnly", event.target.checked)} />
@@ -13464,8 +14731,35 @@ function SettingsView({
             <span>Allow Dev routes with existing action safety rules</span>
           </label>
         </div>
+        <div className="section-heading"><p>Desktop Voice Overlay</p></div>
+        <div className="settings-grid">
+          <label className="checkbox-row">
+            <input type="checkbox" checked={ambientForm.voiceOverlayEnabled !== false} onChange={(event) => updateAmbientOption("voiceOverlayEnabled", event.target.checked)} />
+            <span>Show a glowing voice wave on the desktop (bottom-center) while listening/speaking</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={ambientForm.voiceOverlayAnimations !== false} onChange={(event) => updateAmbientOption("voiceOverlayAnimations", event.target.checked)} />
+            <span>Animations enabled (off shows a simple glowing ring; respects reduced motion)</span>
+          </label>
+          <label>
+            Overlay size
+            <select value={ambientForm.voiceOverlaySize ?? "compact"} onChange={(event) => updateAmbientOption("voiceOverlaySize", event.target.value === "normal" ? "normal" : "compact")}>
+              <option value="compact">Compact</option>
+              <option value="normal">Normal</option>
+            </select>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={ambientForm.wakeChimeEnabled !== false} onChange={(event) => updateAmbientOption("wakeChimeEnabled", event.target.checked)} />
+            <span>Play a short soft wake chime</span>
+          </label>
+          <label>
+            Wake chime volume ({((ambientForm.wakeChimeVolume ?? 0.35)).toFixed(2)})
+            <input type="range" min="0" max="1" step="0.05" value={ambientForm.wakeChimeVolume ?? 0.35} onChange={(event) => updateAmbientOption("wakeChimeVolume", Number(event.target.value))} />
+          </label>
+          <div className="settings-row"><span>Overlay position</span><strong>Bottom center · primary display</strong></div>
+        </div>
         <p className="ambient-note">
-          Ambient Nest uses visible push-to-talk speech capture and the existing Ask DexNest route. No raw mic audio is stored, and sensitive answers stay masked unless the trusted session and spoken-sensitive settings are both enabled.
+          Ambient Nest uses visible push-to-talk speech capture and the existing Ask DexNest route. No raw mic audio is stored, and sensitive answers stay masked unless the trusted session and spoken-sensitive settings are both enabled. The desktop overlay is click-through, never steals focus, and only shows visual state — never transcript content.
         </p>
         <div className="button-row">
           <button type="button" className="button-primary" onClick={() => void saveAmbientVoiceOptions()} disabled={ambientSaving}>
@@ -13479,6 +14773,9 @@ function SettingsView({
           </button>
           <button type="button" onClick={() => void testLocalTts()}>
             Test voice
+          </button>
+          <button type="button" onClick={() => testVoiceOverlay()}>
+            Test overlay
           </button>
         </div>
         {ambientVoiceState.settings.pushToTalkShortcutLastError && <p className="status-text status-text--error">{ambientVoiceState.settings.pushToTalkShortcutLastError}</p>}
@@ -13600,9 +14897,18 @@ function SettingsView({
               type="password"
               value={goveeApiKeyInput}
               onChange={(event) => setGoveeApiKeyInput(event.target.value)}
-              placeholder={externalState.apiKeyStored ? "Stored securely; enter replacement" : "Paste Govee API key"}
+              placeholder={externalState.apiKeyInKeychain ? "Stored in Integration Keychain; enter replacement" : "Paste Govee API key"}
             />
           </label>
+          <p className="technical">
+            {externalState.apiKeyInKeychain
+              ? `API key stored in Integration Keychain (${externalState.keychainStorageMethod ?? "encrypted"}). Works without unlocking Secure Vault.`
+              : externalState.hasLegacyVaultKey
+                ? "Govee key is still in Secure Vault — use “Move Govee key to Integration Keychain” so lights work without unlocking."
+                : externalState.keychainAvailable === false
+                  ? "Secure local encryption (safeStorage) is unavailable on this system."
+                  : "Paste your Govee API key and Save — it is encrypted into the local Integration Keychain (never stored in plaintext)."}
+          </p>
           <label>
             Default alias
             <input value={externalForm.defaultDeviceAlias ?? ""} onChange={(event) => updateExternalOption("defaultDeviceAlias", event.target.value || null)} placeholder="room lights" />
@@ -13636,12 +14942,15 @@ function SettingsView({
           </button>
           <button type="button" disabled={externalBusy} onClick={() => void runExternalAction("external.govee.test_connection")}>Test connection</button>
           <button type="button" disabled={externalBusy} onClick={() => void runExternalAction("external.govee.refresh_devices")}>Refresh devices</button>
+          {externalState.hasLegacyVaultKey && (
+            <button type="button" disabled={externalBusy} onClick={() => void runExternalAction("external.govee.migrate_key")}>Move Govee key to Integration Keychain</button>
+          )}
           <button
             type="button"
             className="button-danger"
             disabled={externalBusy || !externalState.apiKeyStored}
             onClick={() => {
-              if (window.confirm("Remove the Govee API key reference from DexNest External Devices settings?")) {
+              if (window.confirm("Remove the Govee API key from DexNest?")) {
                 void runExternalAction("external.govee.remove_api_key", { confirmedDangerous: true });
               }
             }}

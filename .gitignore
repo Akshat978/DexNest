@@ -9,6 +9,8 @@ release/
 .env.*
 local-data/
 sidecars/**/.venv/
+sidecars/wake-word/models/
+sidecars/**/__pycache__/
 *.db
 *.sqlite
 *.db-wal

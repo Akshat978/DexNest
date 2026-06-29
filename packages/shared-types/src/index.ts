@@ -35,6 +35,7 @@ export type DexNestActionTrigger =
   | "tray"
   | "assistant"
   | "ambient_voice"
+  | "ambient_wake_word"
   | "push_to_talk"
   | "voice"
   | "routine"

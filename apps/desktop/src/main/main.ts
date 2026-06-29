@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, shell, Tray } from "electron";
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, safeStorage, screen, shell, Tray } from "electron";
 import { exec, execFile, execFileSync } from "node:child_process";
 import { copyFileSync, cpSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -87,6 +87,7 @@ const externalDevicesSettingsPath = join(settingsRoot, "external-devices-setting
 const externalDevicesCachePath = join(settingsRoot, "external-devices-cache.json");
 const externalDevicesGroupsPath = join(settingsRoot, "external-devices-groups.json");
 const goveeLocalApiKeyPath = join(settingsRoot, "govee-api-key.local.json");
+const integrationKeychainPath = join(settingsRoot, "integration-keychain.json");
 const performanceModeSettingsPath = join(settingsRoot, "performance-mode-settings.json");
 const appLifecycleSettingsPath = join(settingsRoot, "app-lifecycle-settings.json");
 const searchIndexStatusPath = join(settingsRoot, "search-index-status.json");
@@ -224,6 +225,20 @@ interface AmbientVoiceSettings {
   ambientVoiceEnabled: boolean;
   wakeWordEnabled: boolean;
   wakeWord: string;
+  // Phase 23.8 wake-word MVP settings.
+  wakeWordEngine?: "placeholder" | "openwakeword" | "porcupine_optional" | "custom";
+  wakeWordSensitivity?: number;
+  listenAfterWakeMs?: number;
+  wakeCooldownMs?: number;
+  pauseWakeWordInPerformanceMode?: boolean;
+  playWakeSound?: boolean;
+  requireVisibleIndicator?: boolean;
+  allowWakeWordWhileLocked?: boolean;
+  allowWakeWordDeviceControl?: boolean;
+  allowWakeWordSensitiveLookup?: boolean;
+  selectedWakeMicDeviceId?: string | null;
+  wakePhraseMode?: "custom_nest" | "hey_jarvis" | "alexa" | "custom_path";
+  wakeCustomModelPath?: string | null;
   pushToTalkEnabled: boolean;
   pushToTalkShortcut: string;
   pushToTalkShortcutStatus: "active" | "disabled" | "failed" | "paused";
@@ -240,6 +255,9 @@ interface AmbientVoiceSettings {
   allowSensitiveLookups: boolean;
   speakResponses: boolean;
   speakSensitiveAnswers: boolean;
+  speakErrors?: boolean;
+  speakConfirmations?: boolean;
+  speakWorkflowStatus?: boolean;
   voiceName?: string | null;
   voiceRate: number;
   voiceVolume: number;
@@ -247,6 +265,13 @@ interface AmbientVoiceSettings {
   muteInPerformanceMode: boolean;
   maxListeningSeconds: number;
   commandCooldownMs: number;
+  wakeChimeEnabled?: boolean;
+  wakeChimeVolume?: number;
+  voiceOverlayEnabled?: boolean;
+  voiceOverlayScreen?: string;
+  voiceOverlayPosition?: string;
+  voiceOverlaySize?: "compact" | "normal";
+  voiceOverlayAnimations?: boolean;
   updatedAt: string;
 }
 
@@ -498,6 +523,19 @@ interface SpeechSettings {
   silenceThreshold?: number | "auto";
   autoStopOnSilence?: boolean;
   micPrewarmEnabled?: boolean;
+  // Voice Audio Focus / noise hardening.
+  selectedInputDeviceId?: string | null;
+  noiseSuppression?: boolean;
+  echoCancellation?: boolean;
+  autoGainControl?: boolean;
+  vadMode?: "auto" | "manual";
+  noiseFloor?: number;
+  speechThresholdMargin?: number;
+  maxPostSpeechListenMs?: number;
+  requireSpeechStart?: boolean;
+  adaptiveSilenceThreshold?: boolean;
+  mainSpeakerMode?: boolean;
+  speakerVerificationEnabled?: boolean;
   keepAudioForDebug: boolean;
   pauseInPerformanceMode: boolean;
   autoSendAfterSpeech: boolean;
@@ -707,6 +745,7 @@ interface SecureVaultState {
 interface ExternalDevicesSettings {
   goveeEnabled: boolean;
   goveeApiKeySecretId: string | null;
+  goveeApiKeyCredentialId?: string | null;
   defaultDeviceAlias: string | null;
   allowVoiceControl: boolean;
   allowStreamDeckControl: boolean;
@@ -749,6 +788,10 @@ interface ExternalDevicesState {
   secureVaultSetup: boolean;
   secureVaultUnlocked: boolean;
   apiKeyStored: boolean;
+  apiKeyInKeychain: boolean;
+  keychainStorageMethod: IntegrationStorageMethod | null;
+  keychainAvailable: boolean;
+  hasLegacyVaultKey: boolean;
   providerStatus: "disabled" | "ready" | "needs_secure_vault" | "locked" | "missing_api_key";
   providerMessage: string;
   devices: ExternalDeviceCacheItem[];
@@ -2279,6 +2322,7 @@ function defaultExternalDevicesSettings(): ExternalDevicesSettings {
   return {
     goveeEnabled: false,
     goveeApiKeySecretId: null,
+    goveeApiKeyCredentialId: null,
     defaultDeviceAlias: null,
     allowVoiceControl: true,
     allowStreamDeckControl: true,
@@ -2303,6 +2347,7 @@ function saveExternalDevicesSettings(input: Partial<ExternalDevicesSettings>): E
     ...current,
     ...input,
     goveeApiKeySecretId: input.goveeApiKeySecretId === undefined ? current.goveeApiKeySecretId : input.goveeApiKeySecretId,
+    goveeApiKeyCredentialId: input.goveeApiKeyCredentialId === undefined ? current.goveeApiKeyCredentialId : input.goveeApiKeyCredentialId,
     defaultDeviceAlias: input.defaultDeviceAlias === undefined ? current.defaultDeviceAlias : input.defaultDeviceAlias,
     updatedAt: new Date().toISOString()
   };
@@ -2329,21 +2374,25 @@ function externalDevicesState(): ExternalDevicesState {
   const settings = loadExternalDevicesSettings();
   const secureSetup = Boolean(loadSecureVaultFile());
   const secureUnlocked = Boolean(secureVaultKey);
-  const apiKeyStored = Boolean(settings.goveeApiKeySecretId);
+  const keychainCredential = findIntegrationCredential("govee", settings.goveeApiKeyCredentialId);
+  const apiKeyInKeychain = Boolean(keychainCredential);
+  const hasLegacyVaultKey = Boolean(settings.goveeApiKeySecretId) && !apiKeyInKeychain;
+  const apiKeyStored = apiKeyInKeychain || Boolean(settings.goveeApiKeySecretId) || Boolean(readLocalGoveeApiKey());
+  const keychainAvailable = integrationKeychainAvailableMethod() !== null;
   let providerStatus: ExternalDevicesState["providerStatus"] = "ready";
-  let providerMessage = "Govee is ready for user-triggered actions.";
+  let providerMessage = "Govee is ready (key in Integration Keychain, no Vault unlock needed).";
   if (!settings.goveeEnabled) {
     providerStatus = "disabled";
     providerMessage = "Govee provider is disabled.";
-  } else if (!secureSetup) {
-    providerStatus = "needs_secure_vault";
-    providerMessage = "Set up Secure Vault before saving a Govee API key.";
+  } else if (apiKeyInKeychain) {
+    providerStatus = "ready";
+    providerMessage = "Govee key is stored in the Integration Keychain — works without unlocking the Vault.";
   } else if (!apiKeyStored) {
     providerStatus = "missing_api_key";
-    providerMessage = "Save a Govee API key securely to enable device control.";
-  } else if (!secureUnlocked) {
+    providerMessage = "Save your Govee API key to the Integration Keychain to enable device control.";
+  } else if (hasLegacyVaultKey && !secureUnlocked) {
     providerStatus = "locked";
-    providerMessage = "Unlock Secure Vault to use the stored Govee API key.";
+    providerMessage = "Your Govee key is still in Secure Vault. Move it to the Integration Keychain so lights work without unlocking the Vault.";
   }
   return {
     settingsPath: externalDevicesSettingsPath,
@@ -2353,11 +2402,127 @@ function externalDevicesState(): ExternalDevicesState {
     secureVaultSetup: secureSetup,
     secureVaultUnlocked: secureUnlocked,
     apiKeyStored,
+    apiKeyInKeychain,
+    keychainStorageMethod: keychainCredential?.storageMethod ?? null,
+    keychainAvailable,
+    hasLegacyVaultKey,
     providerStatus,
     providerMessage,
     devices: loadExternalDevicesCache(),
     groups: loadExternalDeviceGroups()
   };
+}
+
+// --- Integration Keychain (app/service credentials, not personal secrets) ---
+// Stores integration API keys (e.g. Govee) encrypted with the OS user-bound
+// Electron safeStorage (DPAPI on Windows) so DexNest can read them at startup
+// without unlocking the Secure Vault. The Secure Vault stays reserved for
+// personal secrets (passwords, passport, SIN, …). The plaintext key is never
+// persisted, logged, or returned to the renderer.
+type IntegrationStorageMethod = "electron_safeStorage" | "windows_dpapi" | "dev_insecure";
+
+interface IntegrationCredential {
+  id: string;
+  provider: string;
+  label: string;
+  encryptedValue: string;
+  createdAt: string;
+  updatedAt: string;
+  storageMethod: IntegrationStorageMethod;
+}
+
+function integrationInsecureAllowed(): boolean {
+  return process.env.DEXNEST_ALLOW_INSECURE_KEYCHAIN === "1";
+}
+
+function loadIntegrationKeychain(): IntegrationCredential[] {
+  return readJsonFile<IntegrationCredential[]>(integrationKeychainPath, []);
+}
+
+function saveIntegrationKeychain(items: IntegrationCredential[]): IntegrationCredential[] {
+  return writeJsonFile(integrationKeychainPath, items);
+}
+
+function integrationKeychainAvailableMethod(): IntegrationStorageMethod | null {
+  if (safeStorage.isEncryptionAvailable()) {
+    return "electron_safeStorage";
+  }
+  return integrationInsecureAllowed() ? "dev_insecure" : null;
+}
+
+function encryptIntegrationValue(value: string): { encryptedValue: string; storageMethod: IntegrationStorageMethod } {
+  if (safeStorage.isEncryptionAvailable()) {
+    return { encryptedValue: safeStorage.encryptString(value).toString("base64"), storageMethod: "electron_safeStorage" };
+  }
+  if (integrationInsecureAllowed()) {
+    // Explicit dev/testing fallback only. Never the default.
+    return { encryptedValue: Buffer.from(value, "utf8").toString("base64"), storageMethod: "dev_insecure" };
+  }
+  throw new Error("Secure local encryption (safeStorage) is not available on this system.");
+}
+
+function decryptIntegrationCredential(credential: IntegrationCredential): string {
+  if (credential.storageMethod === "dev_insecure") {
+    return Buffer.from(credential.encryptedValue, "base64").toString("utf8");
+  }
+  // electron_safeStorage / windows_dpapi
+  return safeStorage.decryptString(Buffer.from(credential.encryptedValue, "base64"));
+}
+
+function findIntegrationCredential(provider: string, id?: string | null): IntegrationCredential | undefined {
+  const items = loadIntegrationKeychain();
+  if (id) {
+    const byId = items.find((item) => item.id === id);
+    if (byId) {
+      return byId;
+    }
+  }
+  return items.find((item) => item.provider === provider);
+}
+
+// Upsert one credential per provider. Returns the credential id.
+function setIntegrationCredential(provider: string, label: string, value: string): { id: string; storageMethod: IntegrationStorageMethod } {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error("A credential value is required.");
+  }
+  const { encryptedValue, storageMethod } = encryptIntegrationValue(trimmed);
+  const items = loadIntegrationKeychain();
+  const existing = items.find((item) => item.provider === provider);
+  const now = new Date().toISOString();
+  const credential: IntegrationCredential = {
+    id: existing?.id ?? createId("integration-cred"),
+    provider,
+    label,
+    encryptedValue,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+    storageMethod
+  };
+  saveIntegrationKeychain(existing ? items.map((item) => (item.id === existing.id ? credential : item)) : [credential, ...items]);
+  return { id: credential.id, storageMethod };
+}
+
+function getIntegrationCredentialValue(provider: string, id?: string | null): string | null {
+  const credential = findIntegrationCredential(provider, id);
+  if (!credential) {
+    return null;
+  }
+  try {
+    return decryptIntegrationCredential(credential);
+  } catch {
+    return null;
+  }
+}
+
+function removeIntegrationCredential(provider: string): boolean {
+  const items = loadIntegrationKeychain();
+  const next = items.filter((item) => item.provider !== provider);
+  if (next.length === items.length) {
+    return false;
+  }
+  saveIntegrationKeychain(next);
+  return true;
 }
 
 function upsertGoveeApiKeySecret(apiKey: string): string {
@@ -2457,10 +2622,24 @@ function readGoveeApiKey(): string {
   if (!settings.goveeEnabled) {
     throw new ExternalDeviceActionError("disabled", "provider_disabled", "Govee is disabled in External Devices settings.");
   }
+  // 1) Integration Keychain (preferred) — readable at startup without the Vault.
+  const credential = findIntegrationCredential("govee", settings.goveeApiKeyCredentialId);
+  if (credential) {
+    try {
+      const value = decryptIntegrationCredential(credential);
+      if (value) {
+        return value;
+      }
+    } catch {
+      throw new ExternalDeviceActionError("auth_failed", "govee_credential_unavailable", "Govee credential is unavailable. Reconnect Govee.", { missingRequirement: "govee_api_key" });
+    }
+  }
+  // 2) Legacy local file (dev) — kept only for backward compatibility.
   const localApiKey = readLocalGoveeApiKey();
   if (localApiKey) {
     return localApiKey;
   }
+  // 3) Legacy Secure Vault secret (un-migrated) — requires unlock; offer migration.
   if (!settings.goveeApiKeySecretId) {
     throw new ExternalDeviceActionError("missing_requirement", "missing_api_key", "Govee API key is not configured.", { missingRequirement: "govee_api_key" });
   }
@@ -2472,7 +2651,7 @@ function readGoveeApiKey(): string {
   try {
     key = requireSecureVaultKey();
   } catch {
-    throw new ExternalDeviceActionError("locked", "secure_vault_locked", "Unlock Secure Vault in DexNest to use Govee actions.", { missingRequirement: "secure_vault_unlock" });
+    throw new ExternalDeviceActionError("locked", "secure_vault_locked", "Move the Govee key to the Integration Keychain (External Devices settings) so lights work without unlocking the Vault.", { missingRequirement: "secure_vault_unlock" });
   }
   const item = file.items.find((candidate) => candidate.id === settings.goveeApiKeySecretId);
   if (!item) {
@@ -2897,6 +3076,19 @@ function defaultAmbientVoiceSettings(): AmbientVoiceSettings {
     ambientVoiceEnabled: false,
     wakeWordEnabled: false,
     wakeWord: "Nest",
+    wakeWordEngine: "placeholder",
+    wakeWordSensitivity: 0.5,
+    listenAfterWakeMs: 8000,
+    wakeCooldownMs: 1500,
+    pauseWakeWordInPerformanceMode: true,
+    playWakeSound: true,
+    requireVisibleIndicator: true,
+    allowWakeWordWhileLocked: false,
+    allowWakeWordDeviceControl: true,
+    allowWakeWordSensitiveLookup: false,
+    selectedWakeMicDeviceId: null,
+    wakePhraseMode: "hey_jarvis",
+    wakeCustomModelPath: null,
     pushToTalkEnabled: true,
     pushToTalkShortcut: "CommandOrControl+Alt+N",
     pushToTalkShortcutStatus: "disabled",
@@ -2911,8 +3103,11 @@ function defaultAmbientVoiceSettings(): AmbientVoiceSettings {
     allowClipboardActions: true,
     allowDevActions: true,
     allowSensitiveLookups: true,
-    speakResponses: false,
+    speakResponses: true,
     speakSensitiveAnswers: false,
+    speakErrors: true,
+    speakConfirmations: true,
+    speakWorkflowStatus: true,
     voiceName: null,
     voiceRate: 1,
     voiceVolume: 1,
@@ -2920,6 +3115,13 @@ function defaultAmbientVoiceSettings(): AmbientVoiceSettings {
     muteInPerformanceMode: true,
     maxListeningSeconds: 8,
     commandCooldownMs: 1200,
+    wakeChimeEnabled: true,
+    wakeChimeVolume: 0.35,
+    voiceOverlayEnabled: true,
+    voiceOverlayScreen: "primary",
+    voiceOverlayPosition: "bottom_center",
+    voiceOverlaySize: "compact",
+    voiceOverlayAnimations: true,
     updatedAt: new Date().toISOString()
   };
 }
@@ -2974,6 +3176,19 @@ function saveAmbientVoiceSettings(input: Partial<AmbientVoiceSettings>, source: 
     ambientVoiceEnabled: typeof input.ambientVoiceEnabled === "boolean" ? input.ambientVoiceEnabled : current.ambientVoiceEnabled,
     wakeWordEnabled: typeof input.wakeWordEnabled === "boolean" ? input.wakeWordEnabled : current.wakeWordEnabled,
     wakeWord: typeof input.wakeWord === "string" && input.wakeWord.trim() ? input.wakeWord.trim() : current.wakeWord,
+    wakeWordEngine: input.wakeWordEngine ?? current.wakeWordEngine ?? "placeholder",
+    wakeWordSensitivity: Math.min(1, Math.max(0, Number(input.wakeWordSensitivity ?? current.wakeWordSensitivity ?? 0.5))),
+    listenAfterWakeMs: Math.min(20000, Math.max(2000, Number(input.listenAfterWakeMs ?? current.listenAfterWakeMs ?? 8000))),
+    wakeCooldownMs: Math.min(10000, Math.max(0, Number(input.wakeCooldownMs ?? current.wakeCooldownMs ?? 1500))),
+    pauseWakeWordInPerformanceMode: typeof input.pauseWakeWordInPerformanceMode === "boolean" ? input.pauseWakeWordInPerformanceMode : (current.pauseWakeWordInPerformanceMode ?? true),
+    playWakeSound: typeof input.playWakeSound === "boolean" ? input.playWakeSound : (current.playWakeSound ?? true),
+    requireVisibleIndicator: typeof input.requireVisibleIndicator === "boolean" ? input.requireVisibleIndicator : (current.requireVisibleIndicator ?? true),
+    allowWakeWordWhileLocked: typeof input.allowWakeWordWhileLocked === "boolean" ? input.allowWakeWordWhileLocked : (current.allowWakeWordWhileLocked ?? false),
+    allowWakeWordDeviceControl: typeof input.allowWakeWordDeviceControl === "boolean" ? input.allowWakeWordDeviceControl : (current.allowWakeWordDeviceControl ?? true),
+    allowWakeWordSensitiveLookup: typeof input.allowWakeWordSensitiveLookup === "boolean" ? input.allowWakeWordSensitiveLookup : (current.allowWakeWordSensitiveLookup ?? false),
+    selectedWakeMicDeviceId: input.selectedWakeMicDeviceId === undefined ? (current.selectedWakeMicDeviceId ?? null) : (input.selectedWakeMicDeviceId || null),
+    wakePhraseMode: input.wakePhraseMode === "custom_nest" || input.wakePhraseMode === "hey_jarvis" || input.wakePhraseMode === "alexa" || input.wakePhraseMode === "custom_path" ? input.wakePhraseMode : (current.wakePhraseMode ?? "hey_jarvis"),
+    wakeCustomModelPath: input.wakeCustomModelPath === undefined ? (current.wakeCustomModelPath ?? null) : (input.wakeCustomModelPath || null),
     pushToTalkEnabled: typeof input.pushToTalkEnabled === "boolean" ? input.pushToTalkEnabled : current.pushToTalkEnabled,
     pushToTalkShortcut: normalizeAmbientShortcut(input.pushToTalkShortcut ?? current.pushToTalkShortcut),
     visibleListeningIndicator: typeof input.visibleListeningIndicator === "boolean" ? input.visibleListeningIndicator : current.visibleListeningIndicator,
@@ -2987,6 +3202,9 @@ function saveAmbientVoiceSettings(input: Partial<AmbientVoiceSettings>, source: 
     allowDevActions: typeof input.allowDevActions === "boolean" ? input.allowDevActions : current.allowDevActions,
     allowSensitiveLookups: typeof input.allowSensitiveLookups === "boolean" ? input.allowSensitiveLookups : current.allowSensitiveLookups,
     speakResponses: typeof input.speakResponses === "boolean" ? input.speakResponses : current.speakResponses,
+    speakErrors: typeof input.speakErrors === "boolean" ? input.speakErrors : (current.speakErrors ?? true),
+    speakConfirmations: typeof input.speakConfirmations === "boolean" ? input.speakConfirmations : (current.speakConfirmations ?? true),
+    speakWorkflowStatus: typeof input.speakWorkflowStatus === "boolean" ? input.speakWorkflowStatus : (current.speakWorkflowStatus ?? true),
     speakSensitiveAnswers: typeof input.speakSensitiveAnswers === "boolean" ? input.speakSensitiveAnswers : current.speakSensitiveAnswers,
     voiceName: typeof input.voiceName === "string" && input.voiceName.trim() ? input.voiceName.trim() : null,
     voiceRate: Math.min(2, Math.max(0.5, Number.isFinite(Number(input.voiceRate ?? current.voiceRate)) ? Number(input.voiceRate ?? current.voiceRate) : (current.voiceRate || 1))),
@@ -2995,6 +3213,13 @@ function saveAmbientVoiceSettings(input: Partial<AmbientVoiceSettings>, source: 
     muteInPerformanceMode: typeof input.muteInPerformanceMode === "boolean" ? input.muteInPerformanceMode : current.muteInPerformanceMode,
     maxListeningSeconds: Math.min(30, Math.max(3, Number(input.maxListeningSeconds ?? current.maxListeningSeconds) || current.maxListeningSeconds)),
     commandCooldownMs: Math.min(10000, Math.max(500, Number(input.commandCooldownMs ?? current.commandCooldownMs) || current.commandCooldownMs)),
+    wakeChimeEnabled: typeof input.wakeChimeEnabled === "boolean" ? input.wakeChimeEnabled : (current.wakeChimeEnabled ?? true),
+    wakeChimeVolume: Math.min(1, Math.max(0, Number(input.wakeChimeVolume ?? current.wakeChimeVolume ?? 0.35))),
+    voiceOverlayEnabled: typeof input.voiceOverlayEnabled === "boolean" ? input.voiceOverlayEnabled : (current.voiceOverlayEnabled ?? true),
+    voiceOverlayScreen: typeof input.voiceOverlayScreen === "string" ? input.voiceOverlayScreen : (current.voiceOverlayScreen ?? "primary"),
+    voiceOverlayPosition: typeof input.voiceOverlayPosition === "string" ? input.voiceOverlayPosition : (current.voiceOverlayPosition ?? "bottom_center"),
+    voiceOverlaySize: input.voiceOverlaySize === "normal" || input.voiceOverlaySize === "compact" ? input.voiceOverlaySize : (current.voiceOverlaySize ?? "compact"),
+    voiceOverlayAnimations: typeof input.voiceOverlayAnimations === "boolean" ? input.voiceOverlayAnimations : (current.voiceOverlayAnimations ?? true),
     pushToTalkShortcutStatus: current.pushToTalkShortcutStatus,
     pushToTalkShortcutLastError: current.pushToTalkShortcutLastError,
     updatedAt: new Date().toISOString()
@@ -3002,6 +3227,10 @@ function saveAmbientVoiceSettings(input: Partial<AmbientVoiceSettings>, source: 
   const saved = writeJsonFile(ambientVoiceSettingsPath, next);
   registerAmbientVoiceShortcut();
   createDexNestTray();
+  // Hide the desktop overlay immediately if it was turned off.
+  if (!(saved.voiceOverlayEnabled ?? true)) { hideVoiceOverlay(); }
+  // Restart the wake engine on enable/sensitivity/mic changes (or stop it).
+  reconcileWakeEngine();
   localDb.appendActionEvent({
     module: "DexNest Voice",
     actionId: "voice.ambient.update_settings",
@@ -4862,13 +5091,6 @@ function startClipboardListener(): void {
     let text = "";
     try {
       text = clipboard.readText();
-      const settings = loadClipboardSettings();
-      saveClipboardSettings({
-        ...settings,
-        lastReadAt: new Date().toISOString(),
-        lastReadPreview: previewText(text),
-        lastReadError: null
-      });
     } catch (error) {
       const settings = loadClipboardSettings();
       saveClipboardSettings({
@@ -4878,9 +5100,19 @@ function startClipboardListener(): void {
       });
       return;
     }
+    // Fast path: nothing changed → no disk read/write on this tick (avoids
+    // continuous JSON writes that stalled the main process every interval).
     if (!text || text === lastClipboardListenerText) {
       return;
     }
+    // Record the read only when the clipboard actually changed.
+    const settings = loadClipboardSettings();
+    saveClipboardSettings({
+      ...settings,
+      lastReadAt: new Date().toISOString(),
+      lastReadPreview: previewText(text),
+      lastReadError: null
+    });
 
     if (clipboardHotkeyBusy) {
       lastClipboardListenerText = text;
@@ -5525,7 +5757,7 @@ function defaultSpeechSettings(): SpeechSettings {
     modelSizeOptions: ["tiny.en", "base.en", "small.en"],
     device: "cpu",
     computeType: "int8",
-    maxRecordingSeconds: 30,
+    maxRecordingSeconds: 15,
     silenceStopEnabled: true,
     vadEnabled: true,
     initialSilenceTimeoutMs: 4000,
@@ -5534,6 +5766,18 @@ function defaultSpeechSettings(): SpeechSettings {
     silenceThreshold: "auto",
     autoStopOnSilence: true,
     micPrewarmEnabled: true,
+    selectedInputDeviceId: null,
+    noiseSuppression: true,
+    echoCancellation: true,
+    autoGainControl: true,
+    vadMode: "auto",
+    noiseFloor: 0,
+    speechThresholdMargin: 0.018,
+    maxPostSpeechListenMs: 1500,
+    requireSpeechStart: true,
+    adaptiveSilenceThreshold: true,
+    mainSpeakerMode: false,
+    speakerVerificationEnabled: false,
     keepAudioForDebug: false,
     pauseInPerformanceMode: true,
     autoSendAfterSpeech: true,
@@ -5588,6 +5832,18 @@ function saveSpeechSettings(input: Partial<SpeechSettings>): SpeechSettings {
     silenceThreshold: input.silenceThreshold === "auto" || typeof input.silenceThreshold === "number" ? input.silenceThreshold : (current.silenceThreshold ?? "auto"),
     autoStopOnSilence: typeof input.autoStopOnSilence === "boolean" ? input.autoStopOnSilence : (current.autoStopOnSilence ?? true),
     micPrewarmEnabled: typeof input.micPrewarmEnabled === "boolean" ? input.micPrewarmEnabled : (current.micPrewarmEnabled ?? true),
+    selectedInputDeviceId: input.selectedInputDeviceId === undefined ? (current.selectedInputDeviceId ?? null) : (input.selectedInputDeviceId || null),
+    noiseSuppression: typeof input.noiseSuppression === "boolean" ? input.noiseSuppression : (current.noiseSuppression ?? true),
+    echoCancellation: typeof input.echoCancellation === "boolean" ? input.echoCancellation : (current.echoCancellation ?? true),
+    autoGainControl: typeof input.autoGainControl === "boolean" ? input.autoGainControl : (current.autoGainControl ?? true),
+    vadMode: input.vadMode === "manual" || input.vadMode === "auto" ? input.vadMode : (current.vadMode ?? "auto"),
+    noiseFloor: Math.min(1, Math.max(0, Number(input.noiseFloor ?? current.noiseFloor ?? 0))),
+    speechThresholdMargin: Math.min(0.2, Math.max(0.002, Number(input.speechThresholdMargin ?? current.speechThresholdMargin ?? 0.018))),
+    maxPostSpeechListenMs: Math.min(8000, Math.max(800, Number(input.maxPostSpeechListenMs ?? current.maxPostSpeechListenMs ?? 2500))),
+    requireSpeechStart: typeof input.requireSpeechStart === "boolean" ? input.requireSpeechStart : (current.requireSpeechStart ?? true),
+    adaptiveSilenceThreshold: typeof input.adaptiveSilenceThreshold === "boolean" ? input.adaptiveSilenceThreshold : (current.adaptiveSilenceThreshold ?? true),
+    mainSpeakerMode: typeof input.mainSpeakerMode === "boolean" ? input.mainSpeakerMode : (current.mainSpeakerMode ?? false),
+    speakerVerificationEnabled: typeof input.speakerVerificationEnabled === "boolean" ? input.speakerVerificationEnabled : (current.speakerVerificationEnabled ?? false),
     keepAudioForDebug: typeof input.keepAudioForDebug === "boolean" ? input.keepAudioForDebug : current.keepAudioForDebug,
     pauseInPerformanceMode: typeof input.pauseInPerformanceMode === "boolean" ? input.pauseInPerformanceMode : current.pauseInPerformanceMode,
     autoSendAfterSpeech: typeof input.autoSendAfterSpeech === "boolean" ? input.autoSendAfterSpeech : current.autoSendAfterSpeech,
@@ -6052,6 +6308,226 @@ async function transcribeWithWarmWorker(audioPath: string, language: string, vad
     speechWorkerDiag.lastError = String(result.error ?? "Speech transcription failed.");
   }
   return result;
+}
+
+// --- Real local wake-word engine ("Nest") — Phase 23.9 --------------------
+// Spawns the openWakeWord sidecar (sidecars/wake-word). When dependencies or a
+// local "Nest" model are missing it reports an honest engine_missing status with
+// the exact blocker; it never fakes detection with continuous Whisper.
+const wakeWordSidecarScriptPath = join(repoRoot, "sidecars", "wake-word", "wake_word_sidecar.py");
+const wakeWordModelsDir = join(repoRoot, "sidecars", "wake-word", "models");
+
+type WakeEngineRuntimeStatus =
+  | "disabled"
+  | "starting"
+  | "listening_for_nest"
+  | "wake_detected"
+  | "recording_command"
+  | "paused_by_performance_mode"
+  | "engine_missing"
+  | "error";
+
+interface WakeEngineState {
+  status: WakeEngineRuntimeStatus;
+  installStatus: "unknown" | "ready" | "missing_dependencies" | "missing_model";
+  lastError: string;
+  detectionsCount: number;
+  lastDetectedAt: number | null;
+  scriptPath: string;
+}
+
+let wakeWorker: ReturnType<typeof spawn> | null = null;
+let wakeWorkerStdout = "";
+let wakeEngineRuntime: WakeEngineState = {
+  status: "disabled",
+  installStatus: "unknown",
+  lastError: "",
+  detectionsCount: 0,
+  lastDetectedAt: null,
+  scriptPath: wakeWordSidecarScriptPath
+};
+
+function wakeEngineState(): WakeEngineState {
+  const settings = loadAmbientVoiceSettings();
+  let status = wakeEngineRuntime.status;
+  if (!settings.wakeWordEnabled) {
+    status = "disabled";
+  } else if (ambientPausedByPerformanceMode(settings) && (settings.pauseWakeWordInPerformanceMode ?? true)) {
+    status = "paused_by_performance_mode";
+  }
+  return { ...wakeEngineRuntime, status };
+}
+
+function logWakeEngineMeta(eventType: string, status: DexNestEventStatus, summary: string, metadata: Record<string, unknown> = {}, errorMessage: string | null = null): void {
+  localDb.appendActionEvent({
+    module: "DexNest Voice",
+    actionId: "voice.wake_word",
+    eventType,
+    status,
+    source: "ambient_wake_word",
+    summary,
+    metadataJson: { provider: "openwakeword", ...metadata },
+    errorMessage
+  });
+}
+
+async function checkWakeEngine(): Promise<{ ok: boolean; report: Record<string, unknown>; error?: string }> {
+  const pythonPath = speechPythonPath();
+  if (!pythonPath) {
+    wakeEngineRuntime.installStatus = "missing_dependencies";
+    wakeEngineRuntime.lastError = "Python with the wake sidecar is not available.";
+    return { ok: false, report: {}, error: wakeEngineRuntime.lastError };
+  }
+  if (!existsSync(wakeWordSidecarScriptPath)) {
+    wakeEngineRuntime.installStatus = "missing_dependencies";
+    wakeEngineRuntime.lastError = "Wake-word sidecar script is missing.";
+    return { ok: false, report: {}, error: wakeEngineRuntime.lastError };
+  }
+  try {
+    const settings = loadAmbientVoiceSettings();
+    const { stdout } = await execFileAsync(pythonPath, [
+      wakeWordSidecarScriptPath,
+      "--check",
+      "--phrase", settings.wakePhraseMode ?? "hey_jarvis",
+      "--model-path", settings.wakeCustomModelPath ?? "",
+      "--models-dir", wakeWordModelsDir
+    ], repoRoot, 20000);
+    const line = stdout.trim().split(/\r?\n/).filter(Boolean).at(-1) ?? "{}";
+    const report = JSON.parse(line) as Record<string, unknown>;
+    const ok = report.ok === true;
+    const deps = (report.deps ?? {}) as Record<string, boolean>;
+    wakeEngineRuntime.installStatus = ok ? "ready" : (!deps.openwakeword || !deps.sounddevice ? "missing_dependencies" : "missing_model");
+    wakeEngineRuntime.lastError = ok ? "" : String(report.error ?? "Wake engine is not available.");
+    return { ok, report, error: ok ? undefined : wakeEngineRuntime.lastError };
+  } catch (error) {
+    wakeEngineRuntime.installStatus = "missing_dependencies";
+    wakeEngineRuntime.lastError = error instanceof Error ? error.message : "Wake engine check failed.";
+    return { ok: false, report: {}, error: wakeEngineRuntime.lastError };
+  }
+}
+
+function handleWakeWorkerLine(line: string): void {
+  let message: Record<string, unknown>;
+  try {
+    message = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return;
+  }
+  const type = String(message.type ?? "");
+  if (type === "ready") {
+    wakeEngineRuntime.status = "listening_for_nest";
+    wakeEngineRuntime.installStatus = "ready";
+    wakeEngineRuntime.lastError = "";
+    logWakeEngineMeta("wake_engine_started", "success", "Wake engine is listening for the wake word.", { model: message.model ?? null });
+    return;
+  }
+  if (type === "fatal") {
+    wakeEngineRuntime.status = "engine_missing";
+    wakeEngineRuntime.lastError = String(message.error ?? "Wake engine failed to start.");
+    logWakeEngineMeta("wake_engine_failed", "failed", "Wake engine could not start.", {}, wakeEngineRuntime.lastError);
+    stopWakeEngine();
+    return;
+  }
+  if (type === "wake") {
+    wakeEngineRuntime.status = "wake_detected";
+    wakeEngineRuntime.detectionsCount += 1;
+    wakeEngineRuntime.lastDetectedAt = Date.now();
+    // Metadata only — no audio, no transcript.
+    logWakeEngineMeta("wake_detected", "success", "Wake word detected.", { score: typeof message.score === "number" ? message.score : null, detectionsCount: wakeEngineRuntime.detectionsCount });
+    // Tell the renderer to run the shared Speech Service + routing.
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("dexnest:wake-detected", { source: "ambient_wake_word", score: typeof message.score === "number" ? message.score : null });
+    }
+  }
+}
+
+function startWakeEngine(): { ok: boolean; status: WakeEngineRuntimeStatus; error?: string } {
+  const settings = loadAmbientVoiceSettings();
+  if (!settings.wakeWordEnabled) {
+    wakeEngineRuntime.status = "disabled";
+    return { ok: false, status: "disabled", error: "Wake word is disabled." };
+  }
+  if (ambientPausedByPerformanceMode(settings) && (settings.pauseWakeWordInPerformanceMode ?? true)) {
+    stopWakeEngine();
+    wakeEngineRuntime.status = "paused_by_performance_mode";
+    return { ok: false, status: "paused_by_performance_mode", error: "Speech is paused by Performance Mode." };
+  }
+  if (wakeWorker) {
+    return { ok: true, status: wakeEngineRuntime.status };
+  }
+  const pythonPath = speechPythonPath();
+  if (!pythonPath || !existsSync(wakeWordSidecarScriptPath)) {
+    wakeEngineRuntime.status = "engine_missing";
+    wakeEngineRuntime.installStatus = "missing_dependencies";
+    wakeEngineRuntime.lastError = "Wake engine sidecar/python is unavailable.";
+    return { ok: false, status: "engine_missing", error: wakeEngineRuntime.lastError };
+  }
+  wakeEngineRuntime.status = "starting";
+  wakeWorkerStdout = "";
+  const deviceId = settings.selectedWakeMicDeviceId ?? "";
+  const child = spawn(pythonPath, [
+    wakeWordSidecarScriptPath,
+    "--phrase", settings.wakePhraseMode ?? "hey_jarvis",
+    "--model-path", settings.wakeCustomModelPath ?? "",
+    "--sensitivity", String(settings.wakeWordSensitivity ?? 0.5),
+    "--models-dir", wakeWordModelsDir,
+    "--cooldown-ms", String(settings.wakeCooldownMs ?? 1500),
+    ...(deviceId ? ["--device", deviceId] : [])
+  ], { cwd: repoRoot, windowsHide: true });
+  wakeWorker = child;
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => {
+    wakeWorkerStdout += chunk;
+    let index = wakeWorkerStdout.indexOf("\n");
+    while (index >= 0) {
+      const line = wakeWorkerStdout.slice(0, index).trim();
+      wakeWorkerStdout = wakeWorkerStdout.slice(index + 1);
+      if (line) {
+        handleWakeWorkerLine(line);
+      }
+      index = wakeWorkerStdout.indexOf("\n");
+    }
+  });
+  child.on("error", (error: Error) => {
+    wakeEngineRuntime.status = "engine_missing";
+    wakeEngineRuntime.lastError = error.message;
+    stopWakeEngine();
+  });
+  child.on("exit", () => {
+    if (wakeWorker === child) {
+      wakeWorker = null;
+      if (wakeEngineRuntime.status !== "disabled" && wakeEngineRuntime.status !== "engine_missing") {
+        wakeEngineRuntime.status = loadAmbientVoiceSettings().wakeWordEnabled ? "error" : "disabled";
+      }
+    }
+  });
+  return { ok: true, status: "starting" };
+}
+
+function stopWakeEngine(): void {
+  if (wakeWorker) {
+    try { wakeWorker.stdin?.write(`${JSON.stringify({ type: "shutdown" })}\n`); } catch { /* ignore */ }
+    try { wakeWorker.kill(); } catch { /* ignore */ }
+  }
+  wakeWorker = null;
+  wakeWorkerStdout = "";
+  if (wakeEngineRuntime.status !== "engine_missing") {
+    wakeEngineRuntime.status = "disabled";
+  }
+  logWakeEngineMeta("wake_engine_stopped", "success", "Wake engine stopped.");
+}
+
+// Pause/restart the wake engine to match enabled + Performance Mode.
+function reconcileWakeEngine(): void {
+  const settings = loadAmbientVoiceSettings();
+  if (settings.wakeWordEnabled && !(ambientPausedByPerformanceMode(settings) && (settings.pauseWakeWordInPerformanceMode ?? true))) {
+    startWakeEngine();
+  } else {
+    stopWakeEngine();
+    if (settings.wakeWordEnabled) {
+      wakeEngineRuntime.status = "paused_by_performance_mode";
+    }
+  }
 }
 
 async function checkSpeechModel(install = false): Promise<SpeechModelStatus> {
@@ -6753,9 +7229,9 @@ function resolveCommandPath(command: string, setupMessage: string): string {
   return resolvedPath;
 }
 
-function execFileAsync(file: string, args: string[], cwd?: string): Promise<{ stdout: string; stderr: string }> {
+function execFileAsync(file: string, args: string[], cwd?: string, timeoutMs?: number): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolvePromise, rejectPromise) => {
-    execFile(file, args, { cwd, windowsHide: true, maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
+    execFile(file, args, { cwd, windowsHide: true, maxBuffer: 1024 * 1024 * 10, timeout: timeoutMs }, (error, stdout, stderr) => {
       if (error) {
         rejectPromise(new Error(stderr.trim() || stdout.trim() || error.message));
         return;
@@ -13222,19 +13698,26 @@ async function runExternalDevicesAction(action: DexNestActionDefinition, source:
         requireConfirmationForBrightnessBelow10: typeof params.requireConfirmationForBrightnessBelow10 === "boolean" ? params.requireConfirmationForBrightnessBelow10 : settings.requireConfirmationForBrightnessBelow10,
         requireConfirmationForScenes: typeof params.requireConfirmationForScenes === "boolean" ? params.requireConfirmationForScenes : settings.requireConfirmationForScenes
       };
+      let savedStorageMethod: IntegrationStorageMethod | null = null;
       if (apiKey) {
-        next.goveeApiKeySecretId = upsertGoveeApiKeySecret(apiKey);
+        // Store integration key in the encrypted Integration Keychain (no Vault).
+        const stored = setIntegrationCredential("govee", "Govee API Key", apiKey);
+        next.goveeApiKeyCredentialId = stored.id;
+        savedStorageMethod = stored.storageMethod;
       }
       const saved = saveExternalDevicesSettings(next);
       logExternalDeviceEvent(action.id, "success", source, "Updated DexNest Govee provider settings.", {
         actionType: "update_settings",
         goveeEnabled: saved.goveeEnabled,
-        apiKeyStored: Boolean(saved.goveeApiKeySecretId),
+        // Metadata only — never the key itself.
+        apiKeyStored: Boolean(saved.goveeApiKeyCredentialId || saved.goveeApiKeySecretId),
+        keychainStorageMethod: savedStorageMethod,
+        provider: "govee",
         allowVoiceControl: saved.allowVoiceControl,
         allowStreamDeckControl: saved.allowStreamDeckControl,
         allowKeyboardShortcutControl: saved.allowKeyboardShortcutControl
       }, startedAt);
-      return { ok: true, actionId: action.id, externalDevicesState: externalDevicesState(), message: "Govee settings saved." };
+      return { ok: true, actionId: action.id, externalDevicesState: externalDevicesState(), message: apiKey ? "Govee key saved to Integration Keychain." : "Govee settings saved." };
     }
 
     if (action.id === "external.govee.update_alias") {
@@ -13321,22 +13804,59 @@ async function runExternalDevicesAction(action: DexNestActionDefinition, source:
     }
 
     if (action.id === "external.govee.remove_api_key") {
-      if (settings.goveeApiKeySecretId) {
+      // Remove the Integration Keychain credential (always possible, no Vault).
+      removeIntegrationCredential("govee");
+      // Best-effort: also remove a legacy Vault secret if the Vault is unlocked.
+      if (settings.goveeApiKeySecretId && secureVaultKey !== null) {
         const file = loadSecureVaultFile();
-        if (!file) {
-          throw new Error("Secure Vault is not set up.");
+        if (file) {
+          saveSecureVaultFile({ ...file, items: file.items.filter((item) => item.id !== settings.goveeApiKeySecretId) });
+          touchSecureVaultActivity();
         }
-        const key = requireSecureVaultKey();
-        verifySecureVaultKey(file, key);
-        saveSecureVaultFile({ ...file, items: file.items.filter((item) => item.id !== settings.goveeApiKeySecretId) });
-        touchSecureVaultActivity();
       }
-      const saved = saveExternalDevicesSettings({ goveeApiKeySecretId: null });
-      logExternalDeviceEvent(action.id, "success", source, "Removed Govee API key reference from External Devices settings.", {
+      const saved = saveExternalDevicesSettings({ goveeApiKeyCredentialId: null, goveeApiKeySecretId: null });
+      logExternalDeviceEvent(action.id, "success", source, "Removed Govee API key.", {
         actionType: "remove_api_key",
+        provider: "govee",
         goveeEnabled: saved.goveeEnabled
       }, startedAt);
-      return { ok: true, actionId: action.id, externalDevicesState: externalDevicesState(), message: "Govee API key reference removed." };
+      return { ok: true, actionId: action.id, externalDevicesState: externalDevicesState(), message: "Govee API key removed." };
+    }
+
+    if (action.id === "external.govee.migrate_key") {
+      // One-time migration of an existing Secure Vault Govee key into the
+      // Integration Keychain. Requires the Vault unlocked just for this step.
+      logExternalDeviceEvent(action.id, "pending", source, "Started Govee key migration to Integration Keychain.", { actionType: "migrate_key", provider: "govee" }, startedAt);
+      if (!settings.goveeApiKeySecretId) {
+        throw new ExternalDeviceActionError("missing_requirement", "no_legacy_key", "There is no Secure Vault Govee key to migrate.");
+      }
+      const file = loadSecureVaultFile();
+      if (!file) {
+        throw new ExternalDeviceActionError("not_configured", "secure_vault_not_setup", "Secure Vault is not set up.");
+      }
+      let key: Buffer;
+      try {
+        key = requireSecureVaultKey();
+      } catch {
+        throw new ExternalDeviceActionError("locked", "secure_vault_locked", "Unlock Secure Vault once to migrate the Govee key.", { missingRequirement: "secure_vault_unlock" });
+      }
+      const item = file.items.find((candidate) => candidate.id === settings.goveeApiKeySecretId);
+      if (!item) {
+        throw new ExternalDeviceActionError("missing_requirement", "govee_api_key_missing", "Stored Govee key was not found in Secure Vault.");
+      }
+      const decrypted = decryptSecureValue(item.secret, key);
+      const stored = setIntegrationCredential("govee", "Govee API Key", decrypted);
+      // Remove the Vault copy now that it lives in the keychain.
+      saveSecureVaultFile({ ...file, items: file.items.filter((candidate) => candidate.id !== settings.goveeApiKeySecretId) });
+      touchSecureVaultActivity();
+      const saved = saveExternalDevicesSettings({ goveeApiKeyCredentialId: stored.id, goveeApiKeySecretId: null });
+      logExternalDeviceEvent(action.id, "success", source, "Completed Govee key migration to Integration Keychain.", {
+        actionType: "migrate_key",
+        provider: "govee",
+        keychainStorageMethod: stored.storageMethod,
+        goveeEnabled: saved.goveeEnabled
+      }, startedAt);
+      return { ok: true, actionId: action.id, externalDevicesState: externalDevicesState(), message: "Govee key moved to Integration Keychain." };
     }
 
     if (action.id === "external.govee.test_connection") {
@@ -13413,14 +13933,16 @@ async function runExternalDevicesAction(action: DexNestActionDefinition, source:
       }
     }
 
-    for (const device of target.devices) {
+    // Control all devices in a group concurrently — a 2-lamp group used to take
+    // ~2x as long because each Govee HTTP call ran sequentially.
+    await Promise.all(target.devices.map(async (device) => {
       try {
         await controlDevice(device);
         commandResults.push({ deviceName: device.userAlias || device.deviceName, status: "success" });
       } catch (error) {
         commandResults.push({ deviceName: device.userAlias || device.deviceName, status: "failed", error: safeGoveeError(error) });
       }
-    }
+    }));
 
     const successCount = commandResults.filter((result) => result.status === "success").length;
     const failedCount = commandResults.length - successCount;
@@ -14792,6 +15314,30 @@ function registerIpcHandlers(): void {
     });
     return { ok: true, path: speechModelsRoot };
   });
+  ipcMain.handle("dexnest:get-wake-engine-state", () => wakeEngineState());
+  ipcMain.handle("dexnest:check-wake-engine", async () => {
+    const result = await checkWakeEngine();
+    return { ...result, state: wakeEngineState() };
+  });
+  ipcMain.handle("dexnest:start-wake-engine", () => {
+    const result = startWakeEngine();
+    return { ...result, state: wakeEngineState() };
+  });
+  ipcMain.handle("dexnest:stop-wake-engine", () => {
+    stopWakeEngine();
+    return { ok: true, state: wakeEngineState() };
+  });
+
+  // Desktop voice wave overlay (Phase 24.1) — passive display of voice state.
+  ipcMain.on("dexnest:voice-overlay", (_event, payload: { type?: string; state?: string; level?: number } = {}) => {
+    const settings = loadAmbientVoiceSettings();
+    if (!(settings.voiceOverlayEnabled ?? true)) { hideVoiceOverlay(); return; }
+    if (payload.type === "hide") { hideVoiceOverlay(); return; }
+    if (payload.type === "level") { updateVoiceOverlay(payload); return; }
+    // show / state / error
+    showVoiceOverlay(payload);
+  });
+
   ipcMain.handle("dexnest:warm-speech-engine", async () => {
     const warmResult = await warmSpeechEngine();
     localDb.appendActionEvent({
@@ -14961,6 +15507,198 @@ function registerIpcHandlers(): void {
   );
 }
 
+// --- Desktop ambient voice wave overlay (Phase 24.1) -----------------------
+// A separate frameless, transparent, click-through, always-on-top window that
+// shows a rainbow voice-wave visualizer at the bottom-centre of the primary
+// display. It is purely a passive display of voice state — it never touches the
+// speech/wake pipeline. Driven by IPC from the renderer's voice states.
+let voiceOverlayWindow: BrowserWindow | null = null;
+let voiceOverlayHideTimer: ReturnType<typeof setTimeout> | null = null;
+
+function voiceOverlayHtml(): string {
+  // Self-contained: a canvas visualizer driven by window.dexNest.onVoiceOverlay.
+  // No remote content, no audio, no text — visual state only.
+  return `<!doctype html><html><head><meta charset="utf-8"><style>
+    html,body{margin:0;height:100%;background:transparent;overflow:hidden;}
+    #c{width:100vw;height:100vh;display:block;}
+  </style></head><body><canvas id="c"></canvas><script>
+  (function(){
+    var canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
+    var dpr=window.devicePixelRatio||1;
+    function resize(){canvas.width=innerWidth*dpr;canvas.height=innerHeight*dpr;}
+    resize();addEventListener('resize',resize);
+    var COLORS=['#22d3ee','#3b82f6','#8b5cf6','#d946ef','#ec4899','#fb923c','#34d399'];
+    var state='listening',level=0,targetLevel=0,t=0,raf=null,alpha=0,targetAlpha=0;
+    var animations=true;
+    try{if(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches)animations=false;}catch(e){}
+    function grad(){var g=ctx.createLinearGradient(0,0,canvas.width,0);for(var i=0;i<COLORS.length;i++)g.addColorStop(i/(COLORS.length-1),COLORS[i]);return g;}
+    function drawStatic(){
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      if(alpha<=0.01)return;
+      var W=canvas.width,H=canvas.height,cx=W/2,cy=H/2,rw=W*0.34,rh=H*0.22;
+      ctx.globalAlpha=alpha;ctx.lineWidth=3*dpr;ctx.shadowBlur=16*dpr;
+      ctx.shadowColor=state==='error'?'#fb7185':'#8b5cf6';
+      ctx.strokeStyle=state==='error'?'#fb7185':grad();
+      ctx.beginPath();ctx.ellipse(cx,cy,rw,rh,0,0,Math.PI*2);ctx.stroke();
+    }
+    function loop(){
+      raf=requestAnimationFrame(loop);t+=0.016;
+      level+=(targetLevel-level)*0.2;alpha+=(targetAlpha-alpha)*0.12;
+      if(alpha<0.01&&targetAlpha===0){ctx.clearRect(0,0,canvas.width,canvas.height);cancelAnimationFrame(raf);raf=null;return;}
+      if(!animations){drawStatic();return;}
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      var W=canvas.width,H=canvas.height,cx=W/2,cy=H/2;
+      var amp,speed;
+      if(state==='wake_detected'){amp=0.55;speed=2.6;}
+      else if(state==='listening'){amp=0.22+level*0.6;speed=1.6;}
+      else if(state==='transcribing'||state==='routing'){amp=0.16+0.12*Math.sin(t*1.2);speed=0.7;}
+      else if(state==='speaking'){amp=0.30+0.26*Math.abs(Math.sin(t*3));speed=2.1;}
+      else if(state==='error'){amp=0.42;speed=1.6;}
+      else{amp=0.2;speed=1.0;}
+      var rw=W*0.36,rh=H*0.24;
+      ctx.lineCap='round';
+      for(var l=0;l<3;l++){
+        var phase=t*speed+l*0.8;
+        ctx.beginPath();
+        for(var a=0;a<=Math.PI*2+0.06;a+=0.06){
+          var wob=Math.sin(a*3+phase)*amp*0.5+Math.sin(a*5-phase*1.3)*amp*0.3;
+          var f=1+wob*0.25*(1-l*0.18);
+          var x=cx+Math.cos(a)*rw*f,y=cy+Math.sin(a)*rh*f;
+          if(a===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
+        }
+        ctx.closePath();
+        ctx.strokeStyle=state==='error'?'#fb7185':grad();
+        ctx.lineWidth=(3-l*0.6)*dpr;
+        ctx.shadowBlur=(18-l*4)*dpr;
+        ctx.shadowColor=state==='error'?'#fb7185':'#8b5cf6';
+        ctx.globalAlpha=alpha*(0.9-l*0.22);
+        ctx.stroke();
+      }
+    }
+    function ensure(){if(!raf)loop();}
+    if(window.dexNest&&window.dexNest.onVoiceOverlay){
+      window.dexNest.onVoiceOverlay(function(p){
+        if(!p)return;
+        if(p.type==='level'){targetLevel=Math.max(0,Math.min(1,p.level||0));return;}
+        if(typeof p.animations==='boolean')animations=p.animations;
+        if(p.type==='hide'||p.state==='done'){targetAlpha=0;ensure();return;}
+        if(p.state)state=p.state;
+        targetAlpha=1;ensure();
+      });
+    }
+  })();
+  </script></body></html>`;
+}
+
+function voiceOverlayDimensions(): { width: number; height: number; margin: number } {
+  const size = loadAmbientVoiceSettings().voiceOverlaySize ?? "compact";
+  return size === "normal" ? { width: 560, height: 140, margin: 72 } : { width: 440, height: 104, margin: 64 };
+}
+
+function positionVoiceOverlay(win: BrowserWindow): void {
+  const display = screen.getPrimaryDisplay();
+  const { x, y, width, height } = display.workArea;
+  const dims = voiceOverlayDimensions();
+  win.setBounds({
+    width: dims.width,
+    height: dims.height,
+    x: Math.round(x + (width - dims.width) / 2),
+    y: Math.round(y + height - dims.height - dims.margin)
+  });
+}
+
+function ensureVoiceOverlayWindow(): BrowserWindow | null {
+  if (voiceOverlayWindow && !voiceOverlayWindow.isDestroyed()) {
+    return voiceOverlayWindow;
+  }
+  const dims = voiceOverlayDimensions();
+  const win = new BrowserWindow({
+    width: dims.width,
+    height: dims.height,
+    frame: false,
+    transparent: true,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    focusable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    show: false,
+    hasShadow: false,
+    fullscreenable: false,
+    acceptFirstMouse: false,
+    webPreferences: {
+      preload: join(currentDir, "preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      backgroundThrottling: false
+    }
+  });
+  win.setIgnoreMouseEvents(true, { forward: true });
+  win.setAlwaysOnTop(true, "screen-saver");
+  try { win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch { /* platform dependent */ }
+  positionVoiceOverlay(win);
+  void win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(voiceOverlayHtml()));
+  win.on("closed", () => { voiceOverlayWindow = null; });
+  voiceOverlayWindow = win;
+  return win;
+}
+
+function sendVoiceOverlay(win: BrowserWindow, payload: Record<string, unknown>): void {
+  const dispatch = () => { if (!win.isDestroyed()) win.webContents.send("dexnest-overlay:update", payload); };
+  if (win.webContents.isLoading()) {
+    win.webContents.once("did-finish-load", dispatch);
+  } else {
+    dispatch();
+  }
+}
+
+function scheduleVoiceOverlayAutoHide(): void {
+  if (voiceOverlayHideTimer) { clearTimeout(voiceOverlayHideTimer); }
+  // Safety net: never let the overlay stay stuck if a "done" event is missed.
+  voiceOverlayHideTimer = setTimeout(() => { hideVoiceOverlay(); }, 15000);
+}
+
+function showVoiceOverlay(payload: Record<string, unknown>): void {
+  const settings = loadAmbientVoiceSettings();
+  if (!(settings.voiceOverlayEnabled ?? true)) { hideVoiceOverlay(); return; }
+  const win = ensureVoiceOverlayWindow();
+  if (!win) { return; }
+  positionVoiceOverlay(win);
+  if (!win.isVisible()) { win.showInactive(); }
+  sendVoiceOverlay(win, { ...payload, animations: settings.voiceOverlayAnimations ?? true });
+  scheduleVoiceOverlayAutoHide();
+}
+
+function updateVoiceOverlay(payload: Record<string, unknown>): void {
+  if (!voiceOverlayWindow || voiceOverlayWindow.isDestroyed() || !voiceOverlayWindow.isVisible()) {
+    if (payload.type === "level") { return; }
+    showVoiceOverlay(payload);
+    return;
+  }
+  sendVoiceOverlay(voiceOverlayWindow, payload);
+  if (payload.type !== "level") { scheduleVoiceOverlayAutoHide(); }
+}
+
+function hideVoiceOverlay(): void {
+  if (voiceOverlayHideTimer) { clearTimeout(voiceOverlayHideTimer); voiceOverlayHideTimer = null; }
+  if (voiceOverlayWindow && !voiceOverlayWindow.isDestroyed()) {
+    sendVoiceOverlay(voiceOverlayWindow, { type: "hide" });
+    // Let the fade-out animation play, then actually hide the window so it stops rendering.
+    const win = voiceOverlayWindow;
+    setTimeout(() => { if (win && !win.isDestroyed() && win.isVisible()) win.hide(); }, 500);
+  }
+}
+
+function destroyVoiceOverlay(): void {
+  if (voiceOverlayHideTimer) { clearTimeout(voiceOverlayHideTimer); voiceOverlayHideTimer = null; }
+  if (voiceOverlayWindow && !voiceOverlayWindow.isDestroyed()) {
+    voiceOverlayWindow.destroy();
+  }
+  voiceOverlayWindow = null;
+}
+
 function createWindow(): void {
   const startHidden = shouldStartHiddenToTray();
   rendererReady = false;
@@ -15076,6 +15814,8 @@ app.on("window-all-closed", () => {
 app.on("before-quit", () => {
   isQuittingDexNest = true;
   stopSpeechWorker();
+  stopWakeEngine();
+  destroyVoiceOverlay();
   stopHeatmapTimer();
   stopClipboardListener();
   unregisterClipboardHotkey();

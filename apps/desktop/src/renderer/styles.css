@@ -700,6 +700,22 @@ kbd {
   gap: var(--space-3);
 }
 
+.show-more-row {
+  justify-self: start;
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.show-more-row:hover {
+  color: var(--text);
+}
+
 .event-row {
   display: grid;
   grid-template-columns: 12rem 7rem minmax(12rem, 1fr) 6rem 8rem minmax(16rem, 1.4fr);
@@ -2487,6 +2503,29 @@ kbd {
   pointer-events: none;
 }
 
+.app-busy-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--surface) 55%, transparent);
+  backdrop-filter: blur(1px);
+}
+
+.app-busy-overlay__inner {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  color: var(--text);
+  font-size: 0.9rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-panel);
+}
+
 .app-initial-overlay {
   position: fixed;
   inset: 0;
@@ -2502,6 +2541,16 @@ kbd {
   gap: var(--space-3);
   color: var(--text-muted);
   font-size: 0.9rem;
+}
+
+.app-initial-overlay__inner strong {
+  color: var(--text);
+  font-size: 1.15rem;
+}
+
+.app-initial-overlay__logo {
+  width: 3rem;
+  height: 3rem;
 }
 
 /* Inline "loading…" block for panels waiting on data. */
@@ -2771,4 +2820,34 @@ kbd {
 
 .journal-voice .button-row button {
   width: auto;
+}
+
+/* Voice Audio Focus — live VAD level meter (Phase: noise hardening). */
+.vad-meter {
+  position: relative;
+  display: inline-block;
+  width: 8rem;
+  height: 0.55rem;
+  margin-right: var(--space-2);
+  vertical-align: middle;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.vad-meter__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--accent-voice);
+  border-radius: 999px;
+  transition: width 80ms linear;
+}
+
+.vad-meter__threshold {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--warning);
 }
