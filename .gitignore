@@ -3,11 +3,13 @@ dist/
 out/
 build/
 release/
+reference-ui/
 .vite/
 *.log
 .env
 .env.*
 local-data/
+streamdeck-actions/
 sidecars/**/.venv/
 sidecars/wake-word/models/
 sidecars/**/__pycache__/

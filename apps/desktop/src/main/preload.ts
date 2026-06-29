@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld("dexNest", {
   getRoutinesState: () => ipcRenderer.invoke("dexnest:get-routines-state"),
   getBackupState: () => ipcRenderer.invoke("dexnest:get-backup-state"),
   getExternalDevicesState: () => ipcRenderer.invoke("dexnest:get-external-devices-state"),
+  getDataManagementState: () => ipcRenderer.invoke("dexnest:get-data-management-state"),
   getAppHealth: () => ipcRenderer.invoke("dexnest:get-app-health"),
   getCommandStats: () => ipcRenderer.invoke("dexnest:get-command-stats"),
   getPerformanceModeState: () => ipcRenderer.invoke("dexnest:get-performance-mode-state"),
@@ -67,6 +68,11 @@ contextBridge.exposeInMainWorld("dexNest", {
     const listener = (_event: Electron.IpcRendererEvent, payload: { source: string; score: number | null }) => callback(payload);
     ipcRenderer.on("dexnest:wake-detected", listener);
     return () => ipcRenderer.removeListener("dexnest:wake-detected", listener);
+  },
+  onRunAssistantCommand: (callback: (payload: { text: string; source?: string }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: { text: string; source?: string }) => callback(payload);
+    ipcRenderer.on("dexnest:run-assistant-command", listener);
+    return () => ipcRenderer.removeListener("dexnest:run-assistant-command", listener);
   },
   openSpeechModelFolder: () => ipcRenderer.invoke("dexnest:open-speech-model-folder"),
   transcribeSpeech: (payload: { audioBytes?: ArrayBuffer | Uint8Array | number[]; mimeType?: string; source?: string; sourceModule?: string; language?: string; manualOverride?: boolean }) =>

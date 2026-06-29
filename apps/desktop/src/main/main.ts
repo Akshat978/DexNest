@@ -1,13 +1,16 @@
 import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, safeStorage, screen, shell, Tray } from "electron";
 import { exec, execFile, execFileSync } from "node:child_process";
 import { copyFileSync, cpSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, get as httpGet, type IncomingMessage, type ServerResponse } from "node:http";
+import { get as httpsGet } from "node:https";
+import { createConnection } from "node:net";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { networkInterfaces } from "node:os";
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import AdmZip from "adm-zip";
+import { startSlotHook, stopSlotHook, isSlotHookRunning } from "./clipboardSlotHook.js";
 import { PDFDocument } from "pdf-lib";
 import { Jimp } from "jimp";
 import { createActionRegistry, seededActions } from "@dexnest/action-registry";
@@ -73,6 +76,7 @@ const finderItemsPath = join(settingsRoot, "finder-items.json");
 const financeTransactionsPath = join(settingsRoot, "finance-transactions.json");
 const financeRecurringPath = join(settingsRoot, "finance-recurring.json");
 const financeSettingsPath = join(settingsRoot, "finance-settings.json");
+const financeProfilesPath = join(settingsRoot, "finance-profiles.json");
 const captureItemsPath = join(settingsRoot, "capture-items.json");
 const routinesPath = join(settingsRoot, "routines.json");
 const heatmapEventsPath = join(settingsRoot, "heatmap-events.json");
@@ -91,6 +95,7 @@ const integrationKeychainPath = join(settingsRoot, "integration-keychain.json");
 const performanceModeSettingsPath = join(settingsRoot, "performance-mode-settings.json");
 const appLifecycleSettingsPath = join(settingsRoot, "app-lifecycle-settings.json");
 const searchIndexStatusPath = join(settingsRoot, "search-index-status.json");
+const dataManagementStatusPath = join(settingsRoot, "data-management-status.json");
 const backupsRoot = join(localDataRoot, "backups");
 const restoreStagingRoot = join(backupsRoot, "restore-staging");
 const actionPort = 43217;
@@ -167,6 +172,13 @@ interface DexNestProject {
   };
   urls: string[];
   notes: string;
+  // Lifecycle config (optional) — used by stop/restart/kill-ports/docker/logs/health.
+  ports?: number[];
+  stopCommand?: string;
+  logCommand?: string;
+  logPath?: string;
+  dockerComposeEnabled?: boolean;
+  healthUrl?: string;
   createdAt: string;
   updatedAt: string;
   lastOpenedAt?: string | null;
@@ -181,6 +193,12 @@ interface ProjectInput {
   commands?: Partial<DexNestProject["commands"]>;
   urls?: string[];
   notes?: string;
+  ports?: number[];
+  stopCommand?: string;
+  logCommand?: string;
+  logPath?: string;
+  dockerComposeEnabled?: boolean;
+  healthUrl?: string;
 }
 
 interface RunActionInput {
@@ -397,6 +415,14 @@ interface ClipboardSettings {
   } | null;
   appExclusionRules: string[];
   secretProtectionEnabled: boolean;
+  // Natural slot shortcut sequences: hold Ctrl, tap 1/2/3, then C (save) or V (paste).
+  // Implemented via a low-level keyboard hook that only suppresses Ctrl+digit when
+  // it is completed by C/V (otherwise the digit is re-injected, so browser tab
+  // switching and normal Ctrl+C / Ctrl+V keep working). Off by default.
+  slotSequenceEnabled: boolean;
+  slotSequenceStatus: "active" | "disabled" | "failed";
+  slotSequenceLastError: string | null;
+  slotSequenceWindowMs: number;
 }
 
 interface ClipboardActiveMultiCopySession {
@@ -531,6 +557,7 @@ interface SpeechSettings {
   vadMode?: "auto" | "manual";
   noiseFloor?: number;
   speechThresholdMargin?: number;
+  micSensitivity?: number;
   maxPostSpeechListenMs?: number;
   requireSpeechStart?: boolean;
   adaptiveSilenceThreshold?: boolean;
@@ -714,6 +741,9 @@ interface SecureVaultFile {
   verifier: SecureEncryptedBlob;
   settings: {
     autoLockMinutes: number;
+    // "on_app_exit" (default): stays unlocked for the whole app session, locks only
+    // on manual lock or full quit. "timer": legacy inactivity auto-lock.
+    lockMode?: "on_app_exit" | "timer";
   };
   items: SecureVaultStoredItem[];
 }
@@ -738,6 +768,7 @@ interface SecureVaultState {
   isUnlocked: boolean;
   filePath: string;
   autoLockMinutes: number;
+  lockMode: "on_app_exit" | "timer";
   itemTypes: SecureVaultItemType[];
   items: SecureVaultUnlockedItem[];
 }
@@ -811,6 +842,8 @@ interface SearchIndexRecord {
   searchableText?: string;
   tags?: string[];
   category?: string | null;
+  profileId?: string | null;
+  profileName?: string | null;
   createdAt: string;
   updatedAt: string;
   indexedAt: string;
@@ -960,6 +993,8 @@ interface Nudge {
   message: string;
   sourceModule: string;
   sourceId?: string | null;
+  sourceProfileId?: string | null;
+  sourceProfileName?: string | null;
   date: string;
   time?: string | null;
   priority: NudgePriority;
@@ -1015,8 +1050,23 @@ interface FinderItemInput {
 type FinancePaymentType = "cash" | "debit" | "credit" | "e_transfer" | "other";
 type FinanceRecurringFrequency = "monthly" | "yearly" | "weekly" | "custom";
 
+interface FinanceProfile {
+  id: string;
+  name: string;
+  status: "active" | "archived";
+  createdAt: string;
+  updatedAt: string;
+  isDefault: boolean;
+}
+
+interface FinanceProfilesFile {
+  profiles: FinanceProfile[];
+  activeProfileId: string;
+}
+
 interface FinanceTransaction {
   id: string;
+  profileId: string;
   date: string;
   store: string;
   amount: number;
@@ -1037,6 +1087,7 @@ interface FinanceTransaction {
 interface FinanceTransactionInput {
   id?: string;
   transactionId?: string;
+  profileId?: string;
   date?: string;
   store?: string;
   amount?: number | string;
@@ -1054,6 +1105,7 @@ interface FinanceTransactionInput {
 
 interface FinanceRecurringExpense {
   id: string;
+  profileId: string;
   name: string;
   amount: number;
   currency: string;
@@ -1070,6 +1122,7 @@ interface FinanceRecurringExpense {
 interface FinanceRecurringInput {
   id?: string;
   recurringId?: string;
+  profileId?: string;
   name?: string;
   amount?: number | string;
   currency?: string;
@@ -1560,7 +1613,15 @@ function appHealthState(source: DexNestActionTrigger = "module_ui", writeAudit =
         check("vault-under-local-data", "Vault files path is under local-data", vaultUnderLocalData ? "pass" : "fail", vaultDocumentsRoot, "Keep Vault documents under ./local-data/files/vault."),
         check("drop-folders-exist", "Drop incoming/outgoing folders exist", existsSync(dropIncomingRoot) && existsSync(dropOutgoingRoot) ? "pass" : "fail", `${dropIncomingRoot} / ${dropOutgoingRoot}`, "Open Drop or restart DexNest to recreate Drop folders."),
         check("tools-output-exists", "Tools output folder exists", existsSync(getToolsOutputFolder()) ? "pass" : "fail", getToolsOutputFolder(), "Open Tools or reset output folder."),
-        check("backup-folder-exists", "Backup folder exists", existsSync(backupsRoot) ? "pass" : "fail", backupsRoot, "Open Settings Backup or create a backup.")
+        check("backup-folder-exists", "Backup folder exists", existsSync(backupsRoot) ? "pass" : "fail", backupsRoot, "Open Settings Backup or create a backup."),
+        (() => {
+          const lastDeletion = loadDataManagementStatus();
+          if (!lastDeletion.lastDeletionAt) {
+            return check("data-management-last-deletion", "Data Management last deletion", "pass", "No Data Management deletion has been run.");
+          }
+          const detail = `${formatLocalDateTime(lastDeletion.lastDeletionAt)} — ${lastDeletion.status ?? "unknown"} — cleared: ${lastDeletion.categoriesCleared.join(", ") || "none"} — backup: ${lastDeletion.backupCreated ? lastDeletion.backupFileName ?? "yes" : "none"}`;
+          return check("data-management-last-deletion", "Data Management last deletion", lastDeletion.status === "failed" ? "fail" : lastDeletion.status === "partial" ? "warn" : "pass", detail);
+        })()
       ]
     },
     {
@@ -1599,7 +1660,7 @@ function appHealthState(source: DexNestActionTrigger = "module_ui", writeAudit =
       title: "Security",
       checks: [
         check("secure-vault-setup", "Secure Vault setup", secureState.isSetup ? "pass" : "warn", secureState.isSetup ? "Secure Vault is set up." : "Secure Vault is not set up yet."),
-        check("secure-vault-lock", "Secure Vault lock state", secureState.isSetup && !secureState.isUnlocked ? "pass" : secureState.isSetup ? "warn" : "warn", secureState.isSetup ? (secureState.isUnlocked ? "Secure Vault is currently unlocked." : "Secure Vault is locked.") : "Not configured.", secureState.isUnlocked ? "Lock Secure Vault when not actively using secrets." : undefined),
+        check("secure-vault-lock", "Secure Vault lock state", secureState.isSetup && !secureState.isUnlocked ? "pass" : secureState.isSetup ? "warn" : "warn", secureState.isSetup ? `${secureState.isUnlocked ? "Unlocked" : "Locked"} · lock mode: ${secureState.lockMode === "timer" ? `timer (${secureState.autoLockMinutes} min)` : "stays unlocked until app exit"}.` : "Not configured.", secureState.isUnlocked && secureState.lockMode === "timer" ? "Timer mode auto-locks after inactivity." : undefined),
         check("secure-vault-file", "Secure Vault encrypted file", !secureState.isSetup || existsSync(secureVaultPath) ? "pass" : "fail", secureVaultPath, "Secure Vault setup should create this encrypted file."),
         check("clipboard-secret-protection", "Clipboard secret protection", "warn", "Secret exclusion from Clipboard history is currently policy/placeholder based.", "Do not save secrets into normal Clipboard history."),
         check("clipboard-multicopy-hotkey", "Clipboard multi-copy hotkey", !clipboardSettings.multiCopyHotkeyEnabled ? "warn" : clipboardSettings.multiCopyHotkeyStatus === "active" ? "pass" : "warn", `${clipboardSettings.multiCopyHotkey} / ${clipboardSettings.multiCopyHotkeyStatus}${clipboardSettings.multiCopyHotkeyLastError ? ` / ${clipboardSettings.multiCopyHotkeyLastError}` : ""}`, clipboardSettings.multiCopyHotkeyStatus === "failed" ? "Switch Clipboard fallback hotkey to Ctrl+Alt+C or Ctrl+Shift+X." : undefined),
@@ -1684,7 +1745,22 @@ function appHealthState(source: DexNestActionTrigger = "module_ui", writeAudit =
     });
   }
 
+  lastAppHealthState = state;
   return state;
+}
+
+// App Health checks are ON-DEMAND only (README rule). We cache the last run so
+// opening the App Health view shows the previous result instantly without
+// re-running the (heavy, git-spawning) checks or writing an Audit event.
+let lastAppHealthState: AppHealthState | null = null;
+
+function cachedAppHealthState(): AppHealthState {
+  return lastAppHealthState ?? {
+    overallStatus: "warn",
+    checkedAt: "",
+    summary: { pass: 0, warn: 0, fail: 0 },
+    groups: []
+  };
 }
 
 function addPathToZip(zip: AdmZip, sourcePath: string, archivePath: string, excludePath?: (path: string) => boolean): void {
@@ -1808,6 +1884,287 @@ function createBackup(optionsInput: Partial<BackupOptions> = {}, source: DexNest
     });
     return { ok: false, actionId: "backup.create", error: message, backupState: backupState() };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Settings → Data Management
+//
+// A safe, explicit way to permanently delete selected DexNest-managed data with
+// an optional backup-first. The engine only ever touches DexNest-managed record
+// JSON files and managed file roots under ./local-data (every delete is guarded
+// by isPathInside(localDataRoot, …)). It NEVER deletes app code, schemas, the
+// SQLite database structure, sidecars, node_modules, package files, or arbitrary
+// external files. Deleting a record JSON file lets readJsonFile recreate empty
+// defaults on next load, and managed directories are recreated empty, so the app
+// stays usable immediately after deletion. Previews and audit events expose
+// counts and managed folder paths only — never private content.
+// ---------------------------------------------------------------------------
+
+interface DataManagementCategory {
+  id: string;
+  label: string;
+  description: string;
+  // Sensitive categories (Secure Vault, backups, integration credentials, and any
+  // category that deletes actual managed files) require extra explicit selection
+  // in the UI — they are never part of a single "select all" click without intent.
+  sensitive: boolean;
+  recordFiles: string[];
+  fileRoots: string[];
+  special?: "audit" | "appHealth" | "secureVault" | "credentials";
+}
+
+function dataManagementCatalog(): DataManagementCategory[] {
+  return [
+    { id: "clipboard", label: "Clipboard", description: "Clipboard history, snippets, multi-copy groups, and quick slots. Keeps Clipboard settings.", sensitive: false, recordFiles: [clipboardHistoryPath, clipboardSnippetsPath, clipboardMultiGroupsPath, clipboardActiveMultiCopyPath, clipboardSlotsPath], fileRoots: [] },
+    { id: "drop", label: "Drop", description: "Drop shelf items, received items, and managed Drop files (incoming/outgoing/temp). Keeps Drop settings.", sensitive: true, recordFiles: [dropShelfPath, dropIncomingPath], fileRoots: [dropIncomingRoot, dropOutgoingRoot, dropTempRoot] },
+    { id: "tools", label: "Tools jobs/outputs", description: "Tools job records and managed input/output/temp files. Keeps Tools settings.", sensitive: true, recordFiles: [toolsOutputsPath], fileRoots: [toolsInputRoot, toolsOutputRoot, toolsTempRoot] },
+    { id: "vault", label: "Vault documents/OCR jobs", description: "Vault document records, OCR job records, and managed Vault files. Does NOT touch Secure Vault. Keeps OCR settings.", sensitive: true, recordFiles: [vaultDocumentsPath, vaultOcrJobsPath], fileRoots: [vaultDocumentsRoot, vaultImportsRoot, vaultVersionsRoot, vaultOcrRoot, vaultTempRoot] },
+    { id: "journal", label: "Journal", description: "All journal entries.", sensitive: false, recordFiles: [journalEntriesPath], fileRoots: [] },
+    { id: "calendar", label: "Calendar", description: "Calendar events and reminders/nudges. Keeps reminder settings.", sensitive: false, recordFiles: [calendarEventsPath, nudgesPath], fileRoots: [] },
+    { id: "capture", label: "Capture", description: "Capture items and managed capture files.", sensitive: true, recordFiles: [captureItemsPath], fileRoots: [capturesRoot] },
+    { id: "finance", label: "Finance", description: "Transactions, recurring items, profiles, and managed receipt files. Keeps Finance settings.", sensitive: true, recordFiles: [financeTransactionsPath, financeRecurringPath, financeProfilesPath], fileRoots: [receiptsRoot] },
+    { id: "finder", label: "Finder", description: "Saved Finder items.", sensitive: false, recordFiles: [finderItemsPath], fileRoots: [] },
+    { id: "dev", label: "Dev projects/history/profiles", description: "Dev projects, command run history, and pinned actions.", sensitive: false, recordFiles: [projectsConfigPath, commandResultsPath, pinnedActionsPath], fileRoots: [] },
+    { id: "deck", label: "Deck routines/export status", description: "Deck routines and export status records.", sensitive: false, recordFiles: [routinesPath], fileRoots: [] },
+    { id: "heatmap", label: "Heatmap", description: "Heatmap activity events and goals. Keeps Heatmap settings.", sensitive: false, recordFiles: [heatmapEventsPath, heatmapGoalsPath], fileRoots: [] },
+    { id: "search", label: "Search index", description: "Local search index, index status, and saved searches.", sensitive: false, recordFiles: [savedSearchesPath, searchIndexStatusPath], fileRoots: [searchIndexRoot] },
+    { id: "external", label: "External Devices cached devices/groups", description: "Cached external devices and device groups. Keeps External Devices settings and credentials.", sensitive: false, recordFiles: [externalDevicesCachePath, externalDevicesGroupsPath], fileRoots: [] },
+    { id: "appHealth", label: "App Health cached checks", description: "Last cached App Health check result (in-memory only).", sensitive: false, recordFiles: [], fileRoots: [], special: "appHealth" },
+    { id: "audit", label: "Audit history", description: "All metadata-only audit events. A final deletion summary is written after clearing.", sensitive: false, recordFiles: [], fileRoots: [], special: "audit" },
+    { id: "backups", label: "Backup records/files", description: "All local backup archives and restore staging.", sensitive: true, recordFiles: [], fileRoots: [backupsRoot] },
+    { id: "secureVault", label: "Secure Vault", description: "Encrypted Secure Vault store and managed secure files. Locks the vault.", sensitive: true, recordFiles: [], fileRoots: [vaultSecureRoot], special: "secureVault" },
+    { id: "credentials", label: "Integration credentials/Govee key", description: "Integration keychain and Govee API key, including the saved Govee credential reference.", sensitive: true, recordFiles: [goveeLocalApiKeyPath, integrationKeychainPath], fileRoots: [], special: "credentials" }
+  ];
+}
+
+function countRecordEntries(path: string): number {
+  if (!existsSync(path)) {
+    return 0;
+  }
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as unknown;
+    if (Array.isArray(parsed)) {
+      return parsed.length;
+    }
+    if (parsed && typeof parsed === "object") {
+      return Object.keys(parsed as Record<string, unknown>).length;
+    }
+    return parsed ? 1 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function countDirFiles(root: string): number {
+  if (!existsSync(root)) {
+    return 0;
+  }
+  let count = 0;
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const childPath = join(root, entry.name);
+    if (entry.isDirectory()) {
+      count += countDirFiles(childPath);
+    } else {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+// Deletes everything inside a managed directory but keeps the (recreated) root so
+// the owning module stays usable. Guarded so it can only ever empty a path under
+// ./local-data. Returns the number of files removed.
+function emptyManagedDir(root: string): number {
+  if (!isPathInside(localDataRoot, root)) {
+    return 0;
+  }
+  const removed = countDirFiles(root);
+  if (existsSync(root)) {
+    for (const entry of readdirSync(root)) {
+      rmSync(join(root, entry), { recursive: true, force: true });
+    }
+  }
+  mkdirSync(root, { recursive: true });
+  return removed;
+}
+
+function deleteManagedRecordFile(path: string): boolean {
+  if (!isPathInside(localDataRoot, path) || !existsSync(path)) {
+    return false;
+  }
+  unlinkSync(path);
+  return true;
+}
+
+interface DataManagementStatus {
+  lastDeletionAt: string | null;
+  status: "success" | "partial" | "failed" | null;
+  categoriesCleared: string[];
+  backupCreated: boolean;
+  backupFileName: string | null;
+}
+
+function loadDataManagementStatus(): DataManagementStatus {
+  return readJsonFile<DataManagementStatus>(dataManagementStatusPath, {
+    lastDeletionAt: null,
+    status: null,
+    categoriesCleared: [],
+    backupCreated: false,
+    backupFileName: null
+  });
+}
+
+function dataManagementState() {
+  return {
+    categories: dataManagementCatalog().map((category) => {
+      const records = category.special === "audit" ? localDb.countEvents() : category.recordFiles.reduce((sum, file) => sum + countRecordEntries(file), 0);
+      const files = category.fileRoots.reduce((sum, root) => sum + countDirFiles(root), 0);
+      return {
+        id: category.id,
+        label: category.label,
+        description: category.description,
+        sensitive: category.sensitive,
+        records,
+        files,
+        folders: category.fileRoots
+      };
+    }),
+    lastDeletion: loadDataManagementStatus()
+  };
+}
+
+function previewDataDeletion(categoryIds: string[]) {
+  const catalog = dataManagementCatalog();
+  const selected = catalog.filter((category) => categoryIds.includes(category.id));
+  const items = selected.map((category) => {
+    const records = category.special === "audit" ? localDb.countEvents() : category.recordFiles.reduce((sum, file) => sum + countRecordEntries(file), 0);
+    const files = category.fileRoots.reduce((sum, root) => sum + countDirFiles(root), 0);
+    return {
+      id: category.id,
+      label: category.label,
+      sensitive: category.sensitive,
+      records,
+      files,
+      // Managed folders only — never private content or file names.
+      folders: category.fileRoots.filter((root) => existsSync(root))
+    };
+  });
+  return {
+    items,
+    totalRecords: items.reduce((sum, item) => sum + item.records, 0),
+    totalFiles: items.reduce((sum, item) => sum + item.files, 0),
+    sensitiveSelected: selected.filter((category) => category.sensitive).map((category) => category.id)
+  };
+}
+
+function executeDataDeletion(categoryIds: string[], source: DexNestActionTrigger, createBackupFirst: boolean) {
+  const startedAt = Date.now();
+  const catalog = dataManagementCatalog();
+  const selected = catalog.filter((category) => categoryIds.includes(category.id));
+  const auditSelected = selected.some((category) => category.special === "audit");
+
+  let backupCreated = false;
+  let backupFileName: string | null = null;
+  let backupError: string | null = null;
+  if (createBackupFirst) {
+    const result = createBackup({ includeIndex: true }, source);
+    if (result.ok) {
+      backupCreated = true;
+      backupFileName = result.fileName ?? null;
+    } else {
+      backupError = result.error ?? "Backup failed.";
+    }
+  }
+
+  const results: Array<{ id: string; label: string; recordsCleared: number; filesDeleted: number; ok: boolean; error?: string }> = [];
+
+  for (const category of selected) {
+    try {
+      let recordsCleared = 0;
+      let filesDeleted = 0;
+
+      if (category.special === "audit") {
+        recordsCleared = localDb.clearEvents();
+      } else if (category.special === "appHealth") {
+        lastAppHealthState = null;
+        recordsCleared = 1;
+      } else {
+        for (const file of category.recordFiles) {
+          recordsCleared += countRecordEntries(file);
+          deleteManagedRecordFile(file);
+        }
+        for (const root of category.fileRoots) {
+          filesDeleted += emptyManagedDir(root);
+        }
+      }
+
+      if (category.special === "secureVault") {
+        lockSecureVault();
+        deleteManagedRecordFile(secureVaultPath);
+      }
+
+      if (category.special === "credentials") {
+        // Drop the saved Govee credential reference too, without deleting the
+        // External Devices settings file (preserve required default settings).
+        const settings = loadExternalDevicesSettings();
+        if (settings.goveeApiKeyCredentialId) {
+          saveExternalDevicesSettings({ goveeApiKeyCredentialId: null });
+        }
+      }
+
+      results.push({ id: category.id, label: category.label, recordsCleared, filesDeleted, ok: true });
+    } catch (error) {
+      results.push({ id: category.id, label: category.label, recordsCleared: 0, filesDeleted: 0, ok: false, error: error instanceof Error ? error.message : "Deletion failed." });
+    }
+  }
+
+  const failed = results.filter((result) => !result.ok);
+  const status: DataManagementStatus["status"] = failed.length === 0 ? "success" : failed.length === results.length ? "failed" : "partial";
+
+  const statusRecord: DataManagementStatus = {
+    lastDeletionAt: new Date().toISOString(),
+    status,
+    categoriesCleared: results.filter((result) => result.ok).map((result) => result.label),
+    backupCreated,
+    backupFileName
+  };
+  writeJsonFile(dataManagementStatusPath, statusRecord);
+
+  // Audit metadata only — no private content. If the Audit history was cleared,
+  // this final summary event is written AFTER the clear so it survives as the
+  // record of what happened.
+  const auditSummary = {
+    module: "system",
+    actionId: "system.data.execute_delete",
+    eventType: "data_management_deleted" as const,
+    status: (status === "failed" ? "failed" : "success") as DexNestEventStatus,
+    source,
+    summary: `Data Management deleted ${results.filter((r) => r.ok).length}/${results.length} categories (${statusRecord.categoriesCleared.join(", ") || "none"}).`,
+    metadataJson: {
+      status,
+      backupCreated,
+      categoriesCleared: statusRecord.categoriesCleared,
+      totalRecordsCleared: results.reduce((sum, r) => sum + r.recordsCleared, 0),
+      totalFilesDeleted: results.reduce((sum, r) => sum + r.filesDeleted, 0),
+      failedCategories: failed.map((r) => r.label)
+    },
+    durationMs: Date.now() - startedAt
+  };
+  // Written unconditionally; when Audit was cleared above this becomes the final
+  // surviving record of the deletion.
+  void auditSelected;
+  localDb.appendActionEvent(auditSummary);
+
+  return {
+    ok: status !== "failed",
+    status,
+    results,
+    backupCreated,
+    backupFileName,
+    backupError,
+    lastDeletion: statusRecord,
+    dataManagementState: dataManagementState()
+  };
 }
 
 function isUnsafeZipEntry(entryName: string): boolean {
@@ -2179,7 +2536,9 @@ function defaultSecureVaultFile(masterPassword: string, autoLockMinutes = secure
     kdf,
     verifier: encryptSecureValue(secureVaultVerifierText, key),
     settings: {
-      autoLockMinutes: Math.min(60, Math.max(1, Math.floor(autoLockMinutes)))
+      autoLockMinutes: Math.min(60, Math.max(1, Math.floor(autoLockMinutes))),
+      // Default: stay unlocked for the whole app session (no inactivity timer).
+      lockMode: "on_app_exit"
     },
     items: []
   };
@@ -2272,10 +2631,19 @@ function secureVaultUnlockedItems(): SecureVaultUnlockedItem[] {
   }));
 }
 
+function secureVaultLockMode(): "on_app_exit" | "timer" {
+  return loadSecureVaultFile()?.settings.lockMode === "timer" ? "timer" : "on_app_exit";
+}
+
 function scheduleSecureVaultAutoLock(minutes: number): void {
   if (secureVaultAutoLockTimer) {
     clearTimeout(secureVaultAutoLockTimer);
     secureVaultAutoLockTimer = null;
+  }
+  // Default lock mode keeps the vault unlocked for the whole app session — no
+  // inactivity timer. Only the optional "timer" mode arms an auto-lock.
+  if (secureVaultLockMode() !== "timer") {
+    return;
   }
   secureVaultAutoLockTimer = setTimeout(() => {
     secureVaultKey = null;
@@ -2313,6 +2681,7 @@ function secureVaultState(): SecureVaultState {
     isUnlocked: Boolean(file && secureVaultKey),
     filePath: secureVaultPath,
     autoLockMinutes: file?.settings.autoLockMinutes ?? secureVaultDefaultAutoLockMinutes,
+    lockMode: file?.settings.lockMode === "timer" ? "timer" : "on_app_exit",
     itemTypes: secureVaultItemTypes,
     items: file && secureVaultKey ? secureVaultUnlockedItems() : []
   };
@@ -3080,7 +3449,8 @@ function defaultAmbientVoiceSettings(): AmbientVoiceSettings {
     wakeWordSensitivity: 0.5,
     listenAfterWakeMs: 8000,
     wakeCooldownMs: 1500,
-    pauseWakeWordInPerformanceMode: true,
+    // Wake word stays ON even in Performance Mode — it is the always-available entry point.
+    pauseWakeWordInPerformanceMode: false,
     playWakeSound: true,
     requireVisibleIndicator: true,
     allowWakeWordWhileLocked: false,
@@ -3842,7 +4212,11 @@ function defaultClipboardSettings(): ClipboardSettings {
     combinedSeparator: "\n\n",
     activeMultiCopySession: null,
     appExclusionRules: [],
-    secretProtectionEnabled: true
+    secretProtectionEnabled: true,
+    slotSequenceEnabled: false,
+    slotSequenceStatus: "disabled",
+    slotSequenceLastError: null,
+    slotSequenceWindowMs: 700
   };
 }
 
@@ -4870,6 +5244,52 @@ function scheduleActiveMultiCopyAutoClear(): void {
   }, delayMs);
 }
 
+// Start/stop the low-level keyboard hook for natural slot sequences to match the
+// current setting. The hook only suppresses Ctrl+digit when completed by C/V, so
+// normal Ctrl+C / Ctrl+V and browser tab switching are preserved.
+function reconcileSlotHook(): void {
+  const settings = loadClipboardSettings();
+  const persistStatus = (status: ClipboardSettings["slotSequenceStatus"], error: string | null): void => {
+    const current = loadClipboardSettings();
+    if (current.slotSequenceStatus === status && current.slotSequenceLastError === error) { return; }
+    saveClipboardSettings({ ...current, slotSequenceStatus: status, slotSequenceLastError: error });
+  };
+  if (!settings.slotSequenceEnabled) {
+    stopSlotHook();
+    persistStatus("disabled", null);
+    return;
+  }
+  if (process.platform !== "win32") {
+    persistStatus("failed", "Clipboard slot sequences are currently Windows-only.");
+    return;
+  }
+  if (isSlotHookRunning()) { return; }
+  const result = startSlotHook({
+    windowMs: settings.slotSequenceWindowMs,
+    onSequence: (slot, op) => {
+      if (op === "SAVE") {
+        // The C key is passed through (normal Ctrl+C), so the user's current
+        // selection is copied first. Wait briefly for the OS clipboard to update,
+        // then save the fresh clipboard into the slot.
+        setTimeout(() => {
+          void runRegisteredAction(`clipboard.slot${slot}.save_current`, "keyboard_shortcut", {}).catch(() => undefined);
+        }, 160);
+        return;
+      }
+      void runRegisteredAction(`clipboard.slot${slot}.paste`, "keyboard_shortcut", {}).catch(() => undefined);
+    },
+    onReady: () => persistStatus("active", null),
+    onExit: (error) => {
+      if (loadClipboardSettings().slotSequenceEnabled) {
+        persistStatus("failed", error ?? "Keyboard hook stopped unexpectedly.");
+      }
+    }
+  });
+  if (!result.ok) {
+    persistStatus("failed", result.error ?? "Could not start keyboard hook.");
+  }
+}
+
 function registerClipboardHotkey(): void {
   unregisterClipboardHotkey();
   const settings = loadClipboardSettings();
@@ -5293,9 +5713,55 @@ function saveFinderItems(items: FinderItem[]): FinderItem[] {
   return writeJsonFile(finderItemsPath, items);
 }
 
+// --- Finance profiles (Finance-module-only; not global app profiles) ----------
+
+function loadFinanceProfilesFile(): FinanceProfilesFile {
+  ensureFinanceRoot();
+  const now = new Date().toISOString();
+  const stored = readJsonFile<Partial<FinanceProfilesFile>>(financeProfilesPath, {});
+  let profiles = Array.isArray(stored.profiles) ? stored.profiles.filter((p): p is FinanceProfile => Boolean(p && p.id && p.name)) : [];
+  if (profiles.length === 0) {
+    // First run / migration: create the default Personal Finance profile. Existing
+    // records (no profileId) are treated as belonging to this default profile.
+    profiles = [{ id: "personal", name: "Personal Finance", status: "active", isDefault: true, createdAt: now, updatedAt: now }];
+  }
+  if (!profiles.some((p) => p.isDefault && p.status === "active")) {
+    const firstActive = profiles.find((p) => p.status === "active") ?? profiles[0];
+    profiles = profiles.map((p) => ({ ...p, isDefault: p.id === firstActive.id }));
+  }
+  const defaultId = (profiles.find((p) => p.isDefault) ?? profiles[0]).id;
+  let activeProfileId = typeof stored.activeProfileId === "string" ? stored.activeProfileId : defaultId;
+  // Never leave the active profile pointing at a missing or archived profile.
+  if (!profiles.some((p) => p.id === activeProfileId && p.status === "active")) {
+    activeProfileId = defaultId;
+  }
+  return { profiles, activeProfileId };
+}
+
+function saveFinanceProfilesFile(file: FinanceProfilesFile): FinanceProfilesFile {
+  ensureFinanceRoot();
+  return writeJsonFile(financeProfilesPath, file);
+}
+
+function defaultFinanceProfileId(): string {
+  const { profiles } = loadFinanceProfilesFile();
+  return (profiles.find((p) => p.isDefault) ?? profiles[0]).id;
+}
+
+function activeFinanceProfileId(): string {
+  return loadFinanceProfilesFile().activeProfileId;
+}
+
+function financeProfileName(profileId: string | null | undefined): string {
+  if (!profileId) { return "Personal Finance"; }
+  return loadFinanceProfilesFile().profiles.find((p) => p.id === profileId)?.name ?? "Personal Finance";
+}
+
 function loadFinanceTransactions(): FinanceTransaction[] {
   ensureFinanceRoot();
-  return readJsonFile<FinanceTransaction[]>(financeTransactionsPath, []);
+  const fallbackProfileId = defaultFinanceProfileId();
+  // Migrate-on-load: records without a profileId belong to the default profile.
+  return readJsonFile<FinanceTransaction[]>(financeTransactionsPath, []).map((item) => (item.profileId ? item : { ...item, profileId: fallbackProfileId }));
 }
 
 function saveFinanceTransactions(items: FinanceTransaction[]): FinanceTransaction[] {
@@ -5305,7 +5771,8 @@ function saveFinanceTransactions(items: FinanceTransaction[]): FinanceTransactio
 
 function loadFinanceRecurring(): FinanceRecurringExpense[] {
   ensureFinanceRoot();
-  return readJsonFile<FinanceRecurringExpense[]>(financeRecurringPath, []);
+  const fallbackProfileId = defaultFinanceProfileId();
+  return readJsonFile<FinanceRecurringExpense[]>(financeRecurringPath, []).map((item) => (item.profileId ? item : { ...item, profileId: fallbackProfileId }));
 }
 
 function saveFinanceRecurring(items: FinanceRecurringExpense[]): FinanceRecurringExpense[] {
@@ -5773,6 +6240,7 @@ function defaultSpeechSettings(): SpeechSettings {
     vadMode: "auto",
     noiseFloor: 0,
     speechThresholdMargin: 0.018,
+    micSensitivity: 0.6,
     maxPostSpeechListenMs: 1500,
     requireSpeechStart: true,
     adaptiveSilenceThreshold: true,
@@ -5839,6 +6307,7 @@ function saveSpeechSettings(input: Partial<SpeechSettings>): SpeechSettings {
     vadMode: input.vadMode === "manual" || input.vadMode === "auto" ? input.vadMode : (current.vadMode ?? "auto"),
     noiseFloor: Math.min(1, Math.max(0, Number(input.noiseFloor ?? current.noiseFloor ?? 0))),
     speechThresholdMargin: Math.min(0.2, Math.max(0.002, Number(input.speechThresholdMargin ?? current.speechThresholdMargin ?? 0.018))),
+    micSensitivity: Math.min(1, Math.max(0, Number(input.micSensitivity ?? current.micSensitivity ?? 0.6))),
     maxPostSpeechListenMs: Math.min(8000, Math.max(800, Number(input.maxPostSpeechListenMs ?? current.maxPostSpeechListenMs ?? 2500))),
     requireSpeechStart: typeof input.requireSpeechStart === "boolean" ? input.requireSpeechStart : (current.requireSpeechStart ?? true),
     adaptiveSilenceThreshold: typeof input.adaptiveSilenceThreshold === "boolean" ? input.adaptiveSilenceThreshold : (current.adaptiveSilenceThreshold ?? true),
@@ -6256,8 +6725,9 @@ function startSpeechWorker(settings = loadSpeechSettings()): Promise<{ ok: boole
 
 async function warmSpeechEngine(): Promise<{ ok: boolean; error?: string; engineState: SpeechEngineState; diagnostics: SpeechWorkerDiagnostics }> {
   const settings = loadSpeechSettings();
-  // Part K: never warm/record while paused by Performance Mode.
-  if (performanceModeState().enabled && settings.pauseInPerformanceMode) {
+  // Part K: never warm/record while paused by Performance Mode — UNLESS wake word is
+  // enabled, in which case speech must stay available so wake commands can transcribe.
+  if (performanceModeState().enabled && settings.pauseInPerformanceMode && !loadAmbientVoiceSettings().wakeWordEnabled) {
     speechEngineStateValue = "paused_by_performance_mode";
     return { ok: false, error: "Speech is paused by Performance Mode.", engineState: speechEngineStateValue, diagnostics: speechWorkerDiag };
   }
@@ -6352,9 +6822,8 @@ function wakeEngineState(): WakeEngineState {
   let status = wakeEngineRuntime.status;
   if (!settings.wakeWordEnabled) {
     status = "disabled";
-  } else if (ambientPausedByPerformanceMode(settings) && (settings.pauseWakeWordInPerformanceMode ?? true)) {
-    status = "paused_by_performance_mode";
   }
+  // Wake word is intentionally NOT paused by Performance Mode.
   return { ...wakeEngineRuntime, status };
 }
 
@@ -6447,11 +6916,6 @@ function startWakeEngine(): { ok: boolean; status: WakeEngineRuntimeStatus; erro
     wakeEngineRuntime.status = "disabled";
     return { ok: false, status: "disabled", error: "Wake word is disabled." };
   }
-  if (ambientPausedByPerformanceMode(settings) && (settings.pauseWakeWordInPerformanceMode ?? true)) {
-    stopWakeEngine();
-    wakeEngineRuntime.status = "paused_by_performance_mode";
-    return { ok: false, status: "paused_by_performance_mode", error: "Speech is paused by Performance Mode." };
-  }
   if (wakeWorker) {
     return { ok: true, status: wakeEngineRuntime.status };
   }
@@ -6520,13 +6984,10 @@ function stopWakeEngine(): void {
 // Pause/restart the wake engine to match enabled + Performance Mode.
 function reconcileWakeEngine(): void {
   const settings = loadAmbientVoiceSettings();
-  if (settings.wakeWordEnabled && !(ambientPausedByPerformanceMode(settings) && (settings.pauseWakeWordInPerformanceMode ?? true))) {
+  if (settings.wakeWordEnabled) {
     startWakeEngine();
   } else {
     stopWakeEngine();
-    if (settings.wakeWordEnabled) {
-      wakeEngineRuntime.status = "paused_by_performance_mode";
-    }
   }
 }
 
@@ -6629,7 +7090,7 @@ function speechServiceState(status?: SpeechModelStatus): SpeechServiceState {
       lastError: speechLastError
     },
     windowsFallbackAvailable: process.platform === "win32",
-    performancePaused: performanceModeState().enabled && settings.pauseInPerformanceMode,
+    performancePaused: performanceModeState().enabled && settings.pauseInPerformanceMode && !loadAmbientVoiceSettings().wakeWordEnabled,
     engineState: speechEngineState(),
     warmDiagnostics: { ...speechWorkerDiag }
   };
@@ -6855,7 +7316,9 @@ function assistantSecurityState(): {
   return {
     settings: loadAssistantSecuritySettings(),
     sessionUnlocked: active,
-    sessionExpiresAt: active ? trustedSessionExpiresAt : null,
+    // A non-finite expiry (on_app_exit mode) is reported as null = "no countdown,
+    // unlocked for this app session".
+    sessionExpiresAt: active && Number.isFinite(trustedSessionExpiresAt) ? trustedSessionExpiresAt : null,
     secureVaultUnlocked: secureVaultKey !== null,
     secureVaultSetup: existsSync(secureVaultPath)
   };
@@ -6891,7 +7354,11 @@ function unlockTrustedSession(masterPassword?: string): { ok: boolean; error?: s
       return { ok: false, error: "Invalid master password." };
     }
   }
-  trustedSessionExpiresAt = Date.now() + settings.sessionTimeoutMinutes * 60 * 1000;
+  // In the default "on_app_exit" lock mode the sensitive session also stays open
+  // for the whole app session (no timed expiry) until manual lock or full quit.
+  trustedSessionExpiresAt = secureVaultLockMode() === "timer"
+    ? Date.now() + settings.sessionTimeoutMinutes * 60 * 1000
+    : Number.POSITIVE_INFINITY;
   return { ok: true };
 }
 
@@ -7356,8 +7823,93 @@ function getProjectActionDefinitions(projects = loadProjects()): DexNestActionDe
         description: `Open the first configured local URL for ${project.name}.`,
         handlerType: "http_endpoint",
         handlerRef: project.urls[0] ?? ""
+      },
+      {
+        ...baseAction,
+        id: `${base}.stop`,
+        title: `Stop ${project.name}`,
+        description: `Run the stop routine for ${project.name} (stop command, Docker, configured ports).`,
+        dangerLevel: "danger",
+        requiresConfirmation: true,
+        confirmationRule: "Stops processes for this project.",
+        handlerType: "internal_function",
+        handlerRef: `${base}.stop`
+      },
+      {
+        ...baseAction,
+        id: `${base}.restart`,
+        title: `Restart ${project.name}`,
+        description: `Stop then start ${project.name}.`,
+        dangerLevel: "danger",
+        requiresConfirmation: true,
+        confirmationRule: "Restarts processes for this project.",
+        handlerType: "internal_function",
+        handlerRef: `${base}.restart`
+      },
+      {
+        ...baseAction,
+        id: `${base}.check_health`,
+        title: `Check ${project.name} Health`,
+        description: `Check configured ports, health URL and local URLs for ${project.name}.`,
+        handlerType: "internal_function",
+        handlerRef: `${base}.check_health`
+      },
+      {
+        ...baseAction,
+        id: `${base}.open_urls`,
+        title: `Open ${project.name} URLs`,
+        description: `Open all configured local URLs for ${project.name}.`,
+        handlerType: "http_endpoint",
+        handlerRef: (project.urls ?? []).join(", ")
       }
     ];
+
+    if ((project.ports ?? []).length > 0) {
+      actions.push({
+        ...baseAction,
+        id: `${base}.kill_ports`,
+        title: `Kill ${project.name} Ports`,
+        description: `Kill processes listening on the configured ports for ${project.name}.`,
+        dangerLevel: "danger",
+        requiresConfirmation: true,
+        confirmationRule: "Kills processes on configured ports.",
+        handlerType: "internal_function",
+        handlerRef: `${base}.kill_ports`
+      });
+      actions.push({
+        ...baseAction,
+        id: `${base}.show_processes`,
+        title: `Show ${project.name} Processes`,
+        description: `Show processes listening on configured ports for ${project.name}.`,
+        handlerType: "internal_function",
+        handlerRef: `${base}.show_processes`
+      });
+    }
+
+    if (project.dockerComposeEnabled) {
+      actions.push({
+        ...baseAction,
+        id: `${base}.docker_down`,
+        title: `Stop ${project.name} Docker`,
+        description: `Run docker compose down for ${project.name}.`,
+        dangerLevel: "danger",
+        requiresConfirmation: true,
+        confirmationRule: "Stops Docker Compose containers.",
+        handlerType: "internal_function",
+        handlerRef: `${base}.docker_down`
+      });
+    }
+
+    if ((project.logPath && project.logPath.trim()) || (project.logCommand && project.logCommand.trim())) {
+      actions.push({
+        ...baseAction,
+        id: `${base}.open_logs`,
+        title: `Open ${project.name} Logs`,
+        description: `Open the configured logs for ${project.name}.`,
+        handlerType: "internal_function",
+        handlerRef: `${base}.open_logs`
+      });
+    }
 
     for (const key of ["start", "build", "test", "typecheck", "custom"] as const) {
       if (project.commands[key].trim()) {
@@ -7860,6 +8412,12 @@ function upsertProject(input: ProjectInput): DexNestProject {
     },
     urls: input.urls?.map((url) => url.trim()).filter(Boolean) ?? existingProject?.urls ?? [],
     notes: input.notes?.trim() ?? existingProject?.notes ?? "",
+    ports: (input.ports ?? existingProject?.ports ?? []).map((port) => Number(port)).filter((port) => Number.isInteger(port) && port > 0 && port < 65536),
+    stopCommand: input.stopCommand?.trim() ?? existingProject?.stopCommand ?? "",
+    logCommand: input.logCommand?.trim() ?? existingProject?.logCommand ?? "",
+    logPath: input.logPath?.trim() ?? existingProject?.logPath ?? "",
+    dockerComposeEnabled: typeof input.dockerComposeEnabled === "boolean" ? input.dockerComposeEnabled : (existingProject?.dockerComposeEnabled ?? false),
+    healthUrl: input.healthUrl?.trim() ?? existingProject?.healthUrl ?? "",
     createdAt: existingProject?.createdAt ?? now,
     updatedAt: now,
     lastOpenedAt: existingProject?.lastOpenedAt ?? null
@@ -8305,6 +8863,8 @@ function buildSearchIndexRecords(): SearchIndexRecord[] {
       textPreview: previewText(textBucket(transaction.store, transaction.category, transaction.tags.join(" "), transaction.notes)),
       tags: transaction.tags,
       category: transaction.category,
+      profileId: transaction.profileId,
+      profileName: financeProfileName(transaction.profileId),
       createdAt: transaction.createdAt,
       updatedAt: transaction.updatedAt,
       indexedAt
@@ -8324,6 +8884,8 @@ function buildSearchIndexRecords(): SearchIndexRecord[] {
       textPreview: previewText(textBucket(recurring.category, recurring.frequency, recurring.notes)),
       tags: [recurring.frequency, recurring.paymentType, recurring.active ? "active" : "inactive"],
       category: recurring.category,
+      profileId: recurring.profileId,
+      profileName: financeProfileName(recurring.profileId),
       createdAt: recurring.createdAt,
       updatedAt: recurring.updatedAt,
       indexedAt
@@ -8890,6 +9452,8 @@ function generatedNudgeCandidates(settings: NudgeSettings): Nudge[] {
         message: `${transaction.store} ${kind === "return" ? "return deadline" : "warranty"} in ${daysUntil} day${daysUntil === 1 ? "" : "s"}.`,
         sourceModule: "finance",
         sourceId: transaction.id,
+        sourceProfileId: transaction.profileId,
+        sourceProfileName: financeProfileName(transaction.profileId),
         date: today,
         time: null,
         priority: nudgePriorityForDays(daysUntil),
@@ -8909,6 +9473,8 @@ function generatedNudgeCandidates(settings: NudgeSettings): Nudge[] {
       message: `${recurring.name} is due in ${daysUntil} day${daysUntil === 1 ? "" : "s"}.`,
       sourceModule: "finance",
       sourceId: recurring.id,
+      sourceProfileId: recurring.profileId,
+      sourceProfileName: financeProfileName(recurring.profileId),
       date: today,
       time: null,
       priority: nudgePriorityForDays(daysUntil),
@@ -9119,8 +9685,11 @@ function financeTotalBy<T extends string>(transactions: FinanceTransaction[], ke
 }
 
 function financeState() {
-  const transactions = loadFinanceTransactions().sort((a, b) => b.date.localeCompare(a.date) || Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
-  const recurring = loadFinanceRecurring().sort((a, b) => a.nextDueDate.localeCompare(b.nextDueDate));
+  const profilesFile = loadFinanceProfilesFile();
+  const activeProfileId = profilesFile.activeProfileId;
+  // Dashboard, lists, summary and deadlines all scope to the active profile only.
+  const transactions = loadFinanceTransactions().filter((item) => item.profileId === activeProfileId).sort((a, b) => b.date.localeCompare(a.date) || Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  const recurring = loadFinanceRecurring().filter((item) => item.profileId === activeProfileId).sort((a, b) => a.nextDueDate.localeCompare(b.nextDueDate));
   const settings = loadFinanceSettings();
   const today = todayDateString();
   const currentMonth = financeMonthKey(today);
@@ -9141,6 +9710,9 @@ function financeState() {
     transactions,
     recurring,
     settings,
+    profiles: profilesFile.profiles,
+    activeProfileId,
+    profilesPath: financeProfilesPath,
     transactionsPath: financeTransactionsPath,
     recurringPath: financeRecurringPath,
     settingsPath: financeSettingsPath,
@@ -9190,6 +9762,7 @@ function logFinanceEvent(
 function financeTransactionMetadata(transaction: FinanceTransaction): Record<string, unknown> {
   return {
     transactionId: transaction.id,
+    profileId: transaction.profileId,
     category: transaction.category,
     paymentType: transaction.paymentType,
     amount: transaction.amount,
@@ -9230,6 +9803,7 @@ function normalizeFinanceTransaction(input: FinanceTransactionInput, existing?: 
 
   return {
     id: input.id ?? existing?.id ?? createId("finance-transaction"),
+    profileId: input.profileId || existing?.profileId || activeFinanceProfileId(),
     date: input.date || existing?.date || todayDateString(),
     store: input.store?.trim() || existing?.store || "Unknown store",
     amount: Number(amount.toFixed(2)),
@@ -9257,6 +9831,7 @@ function normalizeFinanceRecurring(input: FinanceRecurringInput, existing?: Fina
 
   return {
     id: input.id ?? existing?.id ?? createId("finance-recurring"),
+    profileId: input.profileId || existing?.profileId || activeFinanceProfileId(),
     name: input.name?.trim() || existing?.name || "Untitled recurring expense",
     amount: Number(amount.toFixed(2)),
     currency: (input.currency?.trim() || existing?.currency || loadFinanceSettings().defaultCurrency || "CAD").toUpperCase(),
@@ -9812,6 +10387,33 @@ function runSecureVaultAction(action: DexNestActionDefinition, source: DexNestAc
     if (action.id === "vault.secure.lock") {
       lockSecureVault();
       logVaultEvent(action.id, "success", source, "Locked DexNest Secure Vault.", {}, startedAt);
+      return { ok: true, actionId: action.id, secure: secureVaultState() };
+    }
+
+    if (action.id === "vault.secure.set_lock_mode") {
+      const file = loadSecureVaultFile();
+      if (!file) {
+        throw new Error("Secure Vault is not set up.");
+      }
+      const lockMode: "on_app_exit" | "timer" = params.lockMode === "timer" ? "timer" : "on_app_exit";
+      const nextAutoLock = params.autoLockMinutes !== undefined
+        ? Math.min(60, Math.max(1, Math.floor(Number(params.autoLockMinutes))))
+        : file.settings.autoLockMinutes;
+      saveSecureVaultFile({ ...file, settings: { ...file.settings, lockMode, autoLockMinutes: nextAutoLock } });
+      // Apply immediately to the live session: arm/clear the inactivity timer.
+      if (secureVaultKey) {
+        scheduleSecureVaultAutoLock(nextAutoLock);
+        // Realign the trusted session expiry to the new mode.
+        if (isTrustedSessionActive()) {
+          trustedSessionExpiresAt = lockMode === "timer"
+            ? Date.now() + loadAssistantSecuritySettings().sessionTimeoutMinutes * 60 * 1000
+            : Number.POSITIVE_INFINITY;
+        }
+      } else if (secureVaultAutoLockTimer) {
+        clearTimeout(secureVaultAutoLockTimer);
+        secureVaultAutoLockTimer = null;
+      }
+      logVaultEvent(action.id, "success", source, `Set Secure Vault lock mode to ${lockMode}.`, { lockMode, autoLockMinutes: nextAutoLock }, startedAt);
       return { ok: true, actionId: action.id, secure: secureVaultState() };
     }
 
@@ -11450,11 +12052,17 @@ function runClipboardAction(action: DexNestActionDefinition, source: DexNestActi
         ? Math.max(1, Math.min(240, Number(params.multiCopyAutoClearMinutes)))
         : currentSettings.multiCopyAutoClearMinutes,
       historyRetentionDays: nextRetention,
-      combinedSeparator: typeof params.combinedSeparator === "string" ? params.combinedSeparator : currentSettings.combinedSeparator
+      combinedSeparator: typeof params.combinedSeparator === "string" ? params.combinedSeparator : currentSettings.combinedSeparator,
+      secretProtectionEnabled: typeof params.secretProtectionEnabled === "boolean" ? params.secretProtectionEnabled : currentSettings.secretProtectionEnabled,
+      slotSequenceEnabled: typeof params.slotSequenceEnabled === "boolean" ? params.slotSequenceEnabled : currentSettings.slotSequenceEnabled,
+      slotSequenceWindowMs: Number.isFinite(Number(params.slotSequenceWindowMs))
+        ? Math.max(200, Math.min(3000, Number(params.slotSequenceWindowMs)))
+        : currentSettings.slotSequenceWindowMs
     };
     saveClipboardSettings(nextSettings);
     registerClipboardHotkey();
     registerKeyboardShortcuts();
+    reconcileSlotHook();
     if (!nextSettings.multiCopyHotkeyEnabled) {
       stopArmedMultiCopyPasteDetection();
     }
@@ -12107,71 +12715,144 @@ function renderDropPhonePage(): string {
     ${tokenCss}
     :root {
       --accent: var(--accent-drop);
-      --font-ui: Inter, system-ui, sans-serif;
+      --font-ui: Inter, system-ui, -apple-system, sans-serif;
       --font-tech: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
-      --radius: 8px;
-      --gap: 12px;
+      --radius: 16px;
+      --radius-sm: 12px;
+      --gap: 14px;
     }
-    * { box-sizing: border-box; }
-    body { margin: 0; font-family: var(--font-ui); background: var(--bg); color: var(--text); }
-    main { display: grid; gap: var(--gap); max-width: 760px; margin: 0 auto; padding: max(16px, env(safe-area-inset-top)) 16px max(96px, env(safe-area-inset-bottom)); }
-    header, section { display: grid; gap: var(--gap); padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
-    header { border-color: var(--accent); }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: var(--font-ui);
+      color: var(--text);
+      background:
+        radial-gradient(120% 72% at 50% -10%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 58%),
+        var(--bg);
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      overscroll-behavior-y: contain;
+    }
+    main { display: grid; gap: var(--gap); max-width: 640px; margin: 0 auto; padding: 0 14px max(112px, calc(env(safe-area-inset-bottom) + 92px)); }
     h1, h2, h3, p { margin: 0; }
-    h1 { font-size: 1.8rem; }
-    h2 { font-size: 1.1rem; }
-    p { line-height: 1.45; }
-    button, input, textarea, a { width: 100%; min-height: 46px; padding: 12px; font: inherit; border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); background: var(--surface-2); }
-    button, a { text-align: center; text-decoration: none; }
-    button:active, a:active { background: var(--surface-hover); }
-    button.primary, a.primary { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
-    textarea { min-height: 120px; resize: vertical; text-align: left; }
-    label { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; color: var(--text-muted); }
-    label input { width: auto; min-height: auto; }
-    .item { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); }
-    .item button, .item a { border-color: var(--accent); }
+    p { line-height: 1.5; }
+
+    /* Sticky brand bar */
+    .topbar {
+      position: sticky; top: 0; z-index: 5;
+      display: flex; align-items: center; gap: 12px;
+      padding: max(14px, calc(env(safe-area-inset-top) + 12px)) 4px 12px;
+      margin-bottom: 2px;
+      background: color-mix(in srgb, var(--bg) 78%, transparent);
+      -webkit-backdrop-filter: blur(16px) saturate(140%);
+      backdrop-filter: blur(16px) saturate(140%);
+    }
+    .brand-icon {
+      width: 42px; height: 42px; flex: none; color: var(--accent);
+      display: grid; place-items: center; border-radius: 13px;
+      border: 1px solid color-mix(in srgb, var(--accent) 38%, transparent);
+      background: color-mix(in srgb, var(--accent) 14%, transparent);
+    }
+    .brand-icon svg { width: 22px; height: 22px; }
+    .brand-text h1 { font-size: 1.15rem; font-weight: 650; letter-spacing: -0.01em; }
+    .brand-text .sub { font-size: 0.72rem; color: var(--text-muted); margin-top: 1px; }
+
+    /* Cards */
+    .card {
+      display: grid; gap: 12px; padding: 16px;
+      border: 1px solid var(--border); border-radius: var(--radius);
+      background: var(--surface);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.015), 0 10px 34px -24px rgba(0,0,0,0.95);
+    }
+    .card-head { display: flex; align-items: center; gap: 9px; }
+    .card-head .bar { width: 3px; height: 14px; border-radius: 3px; background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+    .card-head h2 { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.14em; color: var(--text-muted); }
+
+    /* Controls */
+    button, input, textarea, a.btn {
+      width: 100%; min-height: 48px; padding: 13px 14px; font: inherit;
+      border: 1px solid var(--border); border-radius: var(--radius-sm);
+      color: var(--text); background: var(--surface-2);
+      transition: border-color 0.15s ease, background 0.15s ease, transform 0.08s ease;
+    }
+    button, a.btn { text-align: center; text-decoration: none; cursor: pointer; font-weight: 500; }
+    button:active, a.btn:active { transform: scale(0.985); background: var(--surface-hover); }
+    input:focus, textarea:focus { outline: none; border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+    button.primary, a.primary {
+      border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+      background: color-mix(in srgb, var(--accent) 16%, transparent);
+      color: color-mix(in srgb, var(--accent) 78%, var(--text));
+      font-weight: 600;
+    }
+    textarea { min-height: 116px; resize: vertical; text-align: left; line-height: 1.5; }
+    input[type="file"] { padding: 11px 12px; color: var(--text-muted); font-size: 0.88rem; }
+    input[type="file"]::file-selector-button {
+      margin-right: 12px; padding: 8px 14px; min-height: 0;
+      border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 10px;
+      background: color-mix(in srgb, var(--accent) 14%, transparent);
+      color: color-mix(in srgb, var(--accent) 82%, var(--text)); font: inherit; font-weight: 600;
+    }
+
+    /* Items */
+    .item { display: grid; gap: 10px; padding: 13px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
+    .item > p:first-child { font-size: 0.95rem; overflow-wrap: anywhere; }
     .mono { font-family: var(--font-tech); overflow-wrap: anywhere; }
     .notice, .meta, .file-count { color: var(--text-muted); }
-    .meta, .file-count { font-family: var(--font-tech); font-size: 0.84rem; }
-    .empty { padding: 12px; color: var(--text-muted); border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); }
-    .toast-stack { position: fixed; left: 14px; right: 14px; bottom: max(14px, env(safe-area-inset-bottom)); display: grid; gap: 8px; z-index: 10; }
-    .toast { padding: 12px; border: 1px solid var(--success); border-radius: var(--radius); background: var(--surface-2); color: var(--text); }
-    .toast[data-tone="error"] { border-color: var(--error); }
-    @media (display-mode: standalone) {
-      header { position: sticky; top: 0; z-index: 2; }
-      body { overscroll-behavior-y: contain; }
+    .meta, .file-count { font-family: var(--font-tech); font-size: 0.74rem; }
+    .empty { padding: 18px 14px; text-align: center; color: var(--text-muted); border: 1px dashed var(--border); border-radius: var(--radius-sm); font-size: 0.85rem; }
+    .path-row { display: grid; gap: 4px; padding-top: 2px; }
+    .path-row .label { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-muted); }
+
+    /* Toasts */
+    .toast-stack { position: fixed; left: 14px; right: 14px; bottom: max(16px, calc(env(safe-area-inset-bottom) + 12px)); display: grid; gap: 8px; z-index: 20; pointer-events: none; }
+    .toast {
+      padding: 13px 15px; border: 1px solid color-mix(in srgb, var(--success) 45%, transparent); border-radius: var(--radius-sm);
+      background: color-mix(in srgb, var(--surface-2) 82%, var(--bg));
+      -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+      color: var(--text); font-size: 0.9rem;
+      box-shadow: 0 14px 40px -16px rgba(0,0,0,0.9);
+      animation: toast-in 0.22s cubic-bezier(0.22,1,0.36,1);
     }
+    .toast[data-tone="error"] { border-color: color-mix(in srgb, var(--error) 50%, transparent); }
+    @keyframes toast-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0.001ms !important; transition: none !important; } }
   </style>
 </head>
 <body>
   <main>
-    <header>
-      <h1>DexNest Drop</h1>
+    <header class="topbar">
+      <span class="brand-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 19 7v6l-7 4-7-4V7l7-4Z"/><path d="M12 3v5m0 0 7-3M12 8 5 5m7 3v9"/></svg>
+      </span>
+      <div class="brand-text">
+        <h1>DexNest Drop</h1>
+        <p class="sub">Local Wi-Fi · phone ↔ PC</p>
+      </div>
     </header>
-    <section>
-      <h2>From PC: text</h2>
+    <section class="card">
+      <div class="card-head"><span class="bar"></span><h2>From PC · Text</h2></div>
       <div id="texts"></div>
     </section>
-    <section>
-      <h2>From PC: files</h2>
+    <section class="card">
+      <div class="card-head"><span class="bar"></span><h2>From PC · Files</h2></div>
       <div id="files"></div>
     </section>
-    <section>
-      <h2>Send to PC: text</h2>
+    <section class="card">
+      <div class="card-head"><span class="bar"></span><h2>Send to PC · Text</h2></div>
       <textarea id="note" placeholder="Write a note to save on the PC"></textarea>
       <p id="textStatus" class="notice"></p>
     </section>
-    <section>
-      <h2>Send to PC: files</h2>
-      <p class="notice">Photos/gallery</p>
+    <section class="card">
+      <div class="card-head"><span class="bar"></span><h2>Send to PC · Files</h2></div>
+      <p class="notice">Photos / gallery</p>
       <input id="uploadGallery" type="file" accept="image/*" multiple />
       <p id="gallerySelectedCount" class="file-count">No photos selected</p>
-      <p class="notice">Files/docs</p>
+      <p class="notice">Files / docs</p>
       <input id="uploadFiles" type="file" multiple />
       <p id="selectedCount" class="file-count">No files selected</p>
       <p id="fileStatus" class="notice"></p>
-      <p>PC receive folder:</p>
-      <p id="receivePath" class="mono"></p>
+      <div class="path-row"><span class="label">PC receive folder</span><span id="receivePath" class="mono"></span></div>
     </section>
   </main>
   <div id="toastStack" class="toast-stack" aria-live="polite"></div>
@@ -12990,6 +13671,72 @@ function runFinanceAction(action: DexNestActionDefinition, source: DexNestAction
       return { ok: true, actionId: action.id, financeState: financeState() };
     }
 
+    if (action.id.startsWith("finance.profile.")) {
+      const file = loadFinanceProfilesFile();
+      const now = new Date().toISOString();
+      const profileId = String((input as { profileId?: string }).profileId ?? "");
+      const nameInput = String((input as { name?: string }).name ?? "").trim();
+      const findProfile = (id: string) => file.profiles.find((p) => p.id === id);
+
+      if (action.id === "finance.profile.create") {
+        if (!nameInput) { throw new Error("Profile name is required."); }
+        const base = slugifyProjectId(nameInput) || "profile";
+        let id = base;
+        let suffix = 2;
+        while (file.profiles.some((p) => p.id === id)) { id = `${base}-${suffix}`; suffix += 1; }
+        const profile: FinanceProfile = { id, name: nameInput, status: "active", isDefault: false, createdAt: now, updatedAt: now };
+        const next = saveFinanceProfilesFile({ profiles: [...file.profiles, profile], activeProfileId: id });
+        logFinanceEvent(action.id, "success", source, "Created DexNest Finance profile.", { profileId: id, activeProfileId: next.activeProfileId }, startedAt);
+        return { ok: true, actionId: action.id, financeState: financeState() };
+      }
+
+      const profile = findProfile(profileId);
+      if (!profile) { throw new Error("Finance profile not found."); }
+
+      if (action.id === "finance.profile.rename") {
+        if (!nameInput) { throw new Error("Profile name is required."); }
+        saveFinanceProfilesFile({ ...file, profiles: file.profiles.map((p) => (p.id === profileId ? { ...p, name: nameInput, updatedAt: now } : p)) });
+        logFinanceEvent(action.id, "success", source, "Renamed DexNest Finance profile.", { profileId }, startedAt);
+        return { ok: true, actionId: action.id, financeState: financeState() };
+      }
+
+      if (action.id === "finance.profile.archive") {
+        const activeProfiles = file.profiles.filter((p) => p.status === "active");
+        if (activeProfiles.length <= 1) { throw new Error("Cannot archive the last active profile."); }
+        let profiles = file.profiles.map((p) => (p.id === profileId ? { ...p, status: "archived" as const, isDefault: false, updatedAt: now } : p));
+        // Reassign default and active away from the archived profile.
+        if (!profiles.some((p) => p.isDefault && p.status === "active")) {
+          const nextDefault = profiles.find((p) => p.status === "active");
+          if (nextDefault) { profiles = profiles.map((p) => ({ ...p, isDefault: p.id === nextDefault.id })); }
+        }
+        let activeProfileId = file.activeProfileId;
+        if (activeProfileId === profileId) { activeProfileId = (profiles.find((p) => p.isDefault) ?? profiles.find((p) => p.status === "active"))!.id; }
+        saveFinanceProfilesFile({ profiles, activeProfileId });
+        logFinanceEvent(action.id, "success", source, "Archived DexNest Finance profile (data kept).", { profileId, activeProfileId }, startedAt);
+        return { ok: true, actionId: action.id, financeState: financeState() };
+      }
+
+      if (action.id === "finance.profile.restore") {
+        saveFinanceProfilesFile({ ...file, profiles: file.profiles.map((p) => (p.id === profileId ? { ...p, status: "active" as const, updatedAt: now } : p)) });
+        logFinanceEvent(action.id, "success", source, "Restored DexNest Finance profile.", { profileId }, startedAt);
+        return { ok: true, actionId: action.id, financeState: financeState() };
+      }
+
+      if (action.id === "finance.profile.set_default") {
+        if (profile.status !== "active") { throw new Error("Only an active profile can be the default."); }
+        saveFinanceProfilesFile({ ...file, profiles: file.profiles.map((p) => ({ ...p, isDefault: p.id === profileId, updatedAt: p.id === profileId ? now : p.updatedAt })) });
+        logFinanceEvent(action.id, "success", source, "Set default DexNest Finance profile.", { profileId }, startedAt);
+        return { ok: true, actionId: action.id, financeState: financeState() };
+      }
+
+      if (action.id === "finance.profile.switch") {
+        if (profile.status !== "active") { throw new Error("Cannot switch to an archived profile."); }
+        saveFinanceProfilesFile({ ...file, activeProfileId: profileId });
+        logFinanceEvent(action.id, "success", source, "Switched active DexNest Finance profile.", { profileId }, startedAt);
+        return { ok: true, actionId: action.id, financeState: financeState() };
+      }
+    }
+
     if (action.id === "finance.create_transaction" || action.id === "finance.update_transaction" || action.id === "finance.attach_receipt") {
       const transactions = loadFinanceTransactions();
       const existingId = input.transactionId ?? input.id;
@@ -13026,7 +13773,7 @@ function runFinanceAction(action: DexNestActionDefinition, source: DexNestAction
       const imported = importVaultDocuments({
         paths: [transaction.receiptFilePath],
         category: "Receipts",
-        tags: [...transaction.tags, "finance", "receipt"],
+        tags: [...transaction.tags, "finance", "receipt", `finance-profile:${transaction.profileId}`],
         notes: "",
         sourceModule: "DexNest Finance",
         title: `${transaction.store} receipt`
@@ -13263,6 +14010,205 @@ function normalizeRoutine(input: RoutineInput, existing?: DexNestRoutine): DexNe
   };
 }
 
+// Generate ready-to-use Stream Deck PowerShell scripts that call the local
+// DexNest action endpoint. No secrets / API keys / local-data are written.
+function exportStreamDeckButtonPack(source: DexNestActionTrigger): { ok: boolean; actionId: string; folder: string; scripts: number; shortcuts: number; placeholders: number; categories: number; message: string } {
+  const folder = resolve(repoRoot, "streamdeck-actions");
+  const scriptsRoot = join(folder, "scripts");
+  const shortcutsRoot = join(folder, "shortcuts");
+  const endpointBase = `http://127.0.0.1:${actionPort}/actions`;
+  const healthUrl = `http://127.0.0.1:${actionPort}/health`;
+
+  type Button = { category: string; file: string; title: string; actionId?: string; body?: string; note?: string; placeholder?: boolean };
+  const buttons: Button[] = [
+    // Part A — Core
+    { category: "Core", file: "open-command", title: "Open Command", actionId: "command.open_home", body: "{}" },
+    { category: "Core", file: "open-search", title: "Open Search", actionId: "search.open", body: "{}" },
+    { category: "Core", file: "start-mic", title: "Start Mic / Ask DexNest", actionId: "assistant.start_listening", body: "{}", note: "Starts listening in the background (works minimized/tray); shows the desktop voice overlay and does not force-open the app." },
+    { category: "Core", file: "toggle-performance-mode", title: "Toggle Performance Mode", actionId: "system.performance.toggle", body: "{}" },
+    { category: "Core", file: "lock-sensitive-session", title: "Lock Sensitive Session", actionId: "system.lifecycle.lock_sensitive_session", body: "{}" },
+    { category: "Core", file: "open-app-health", title: "Open App Health", actionId: "system.health.open", body: "{}" },
+    // Part B — Clipboard slots
+    { category: "Clipboard", file: "save-slot-1", title: "Save Clipboard to Slot 1", actionId: "clipboard.slot1.save_current", body: "{}" },
+    { category: "Clipboard", file: "paste-slot-1", title: "Paste Slot 1", actionId: "clipboard.slot1.paste", body: "{}" },
+    { category: "Clipboard", file: "save-slot-2", title: "Save Clipboard to Slot 2", actionId: "clipboard.slot2.save_current", body: "{}" },
+    { category: "Clipboard", file: "paste-slot-2", title: "Paste Slot 2", actionId: "clipboard.slot2.paste", body: "{}" },
+    { category: "Clipboard", file: "save-slot-3", title: "Save Clipboard to Slot 3", actionId: "clipboard.slot3.save_current", body: "{}" },
+    { category: "Clipboard", file: "paste-slot-3", title: "Paste Slot 3", actionId: "clipboard.slot3.paste", body: "{}" },
+    { category: "Clipboard", file: "open-clipboard", title: "Open Clipboard", actionId: "clipboard.open", body: "{}" },
+    // Part C — Multi-copy
+    { category: "Clipboard", file: "multicopy-add", title: "Multi-copy: Add Current", actionId: "clipboard.multi_copy_add_current", body: "{}", note: "Adds the current clipboard to the active multi-copy session (secrets are skipped)." },
+    { category: "Clipboard", file: "multicopy-paste-group", title: "Multi-copy: Paste Group", actionId: "clipboard.paste_multi_copy_group", body: "{}" },
+    { category: "Clipboard", file: "multicopy-clear", title: "Multi-copy: Clear Session", actionId: "clipboard.clear_multi_copy_session", body: "{\"confirmedDangerous\":true}" },
+    // Part D — Drop
+    { category: "Drop", file: "open-drop", title: "Open Drop", actionId: "drop.open", body: "{}" },
+    { category: "Drop", file: "send-clipboard-to-phone", title: "Send Clipboard to Phone", actionId: "drop.send_clipboard_to_drop", body: "{}" },
+    { category: "Drop", file: "copy-latest-phone-text", title: "Copy Latest Phone Text", actionId: "drop.copy_latest_phone_text", body: "{}" },
+    { category: "Drop", file: "open-incoming-folder", title: "Open Incoming Folder", actionId: "drop.open_incoming_folder", body: "{}" },
+    // Part E — Journal / Calendar / Finance / Backup
+    { category: "Journal", file: "start-todays-journal", title: "Start Today's Journal", actionId: "journal.start_today_voice", body: "{}", note: "Starts the journal voice workflow; falls back to opening today's entry if speech is unavailable." },
+    { category: "Journal", file: "save-journal", title: "Save Journal", actionId: "journal.save_voice", body: "{}" },
+    { category: "Journal", file: "open-journal", title: "Open Journal", actionId: "journal.open_today", body: "{}" },
+    { category: "Calendar", file: "open-today-calendar", title: "Open Today's Calendar", actionId: "calendar.show_today", body: "{}" },
+    { category: "Calendar", file: "show-upcoming-events", title: "Show Upcoming Events", actionId: "calendar.show_upcoming", body: "{}" },
+    { category: "Finance", file: "open-finance", title: "Open Finance", actionId: "finance.open", body: "{}" },
+    { category: "Backup", file: "backup-now", title: "Backup Now", actionId: "backup.create", body: "{}" },
+    { category: "Backup", file: "open-backup-folder", title: "Open Backup Folder", actionId: "backup.open_folder", body: "{}" }
+  ];
+
+  // Part F — Dev: per configured project, Start + Stop (Dev Launch Profiles are
+  // not present in this build, so use the existing project start/stop actions).
+  const projects = loadProjects();
+  for (const project of projects) {
+    const hasStart = Boolean(project.commands?.start?.trim());
+    buttons.push(hasStart
+      ? { category: "Dev", file: `start-${project.id}`, title: `Start ${project.name}`, actionId: `dev.project.${project.id}.run_start`, body: "{}" }
+      : { category: "Dev", file: `start-${project.id}`, title: `Start ${project.name}`, placeholder: true, note: `No start command configured for ${project.name}. Set one in DexNest Dev, then re-export.` });
+    buttons.push({ category: "Dev", file: `stop-${project.id}`, title: `Stop ${project.name}`, actionId: `dev.project.${project.id}.stop`, body: "{\"confirmedDangerous\":true}", note: "Stops the project (stop command / Docker / configured ports)." });
+  }
+  if (projects.length === 0) {
+    buttons.push({ category: "Dev", file: "no-projects", title: "No Dev projects configured", placeholder: true, note: "Add a Dev project in DexNest, then re-export to get Start/Stop buttons." });
+  }
+
+  const scriptFor = (button: Button): string => {
+    const lines: string[] = [
+      `# DexNest Stream Deck: ${button.title}${button.placeholder ? " (PLACEHOLDER)" : ""}`,
+      "# Calls the local DexNest action endpoint. No secrets or API keys are stored here.",
+      "# DexNest must be running (window or tray). Endpoint is local-only (127.0.0.1)."
+    ];
+    if (button.note) { lines.push(`# ${button.note}`); }
+    if (button.placeholder || !button.actionId) {
+      lines.push(`Write-Host 'DexNest: ${button.title.replace(/'/g, "''")} is not configured yet. Configure it in DexNest, then re-export.'`);
+      return lines.join("\r\n") + "\r\n";
+    }
+    lines.push("$ErrorActionPreference = 'SilentlyContinue'");
+    lines.push(`$uri = '${endpointBase}/${button.actionId}'`);
+    lines.push(`$body = '${button.body ?? "{}"}'`);
+    lines.push("Invoke-RestMethod -Method Post -Uri $uri -ContentType 'application/json' -Body $body | Out-Null");
+    return lines.join("\r\n") + "\r\n";
+  };
+
+  const categories = [...new Set(buttons.map((button) => button.category))];
+
+  // Write .ps1 scripts under scripts/<Category>/
+  for (const category of categories) { mkdirSync(join(scriptsRoot, category), { recursive: true }); }
+  for (const button of buttons) {
+    writeFileSync(join(scriptsRoot, button.category, `${button.file}.ps1`), scriptFor(button), "utf8");
+  }
+
+  // Generate Windows .lnk shortcuts under shortcuts/<Category>/ (never the Desktop)
+  // so Stream Deck System → Open can select them directly. .lnk files can't be
+  // authored from Node, so use WScript.Shell via PowerShell. Best-effort.
+  let shortcutsCreated = 0;
+  if (process.platform === "win32") {
+    try {
+      for (const category of categories) { mkdirSync(join(shortcutsRoot, category), { recursive: true }); }
+      const psEscape = (value: string) => value.replace(/'/g, "''");
+      const items = buttons.map((button) =>
+        `  @{ lnk='${psEscape(join(shortcutsRoot, button.category, `${button.file}.lnk`))}'; script='${psEscape(join(scriptsRoot, button.category, `${button.file}.ps1`))}'; desc='${psEscape(`DexNest: ${button.title}`)}' }`
+      ).join(",\r\n");
+      const psScript = [
+        "$ErrorActionPreference = 'Stop'",
+        "$ws = New-Object -ComObject WScript.Shell",
+        "$psExe = (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source",
+        "if (-not $psExe) { $psExe = Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe' }",
+        `$work = '${psEscape(folder)}'`,
+        "$items = @(",
+        items,
+        ")",
+        "foreach ($it in $items) {",
+        "  $sc = $ws.CreateShortcut($it.lnk)",
+        "  $sc.TargetPath = $psExe",
+        "  $sc.Arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"' + $it.script + '\"'",
+        "  $sc.WorkingDirectory = $work",
+        "  $sc.WindowStyle = 7",
+        "  $sc.Description = $it.desc",
+        "  $sc.Save()",
+        "}",
+        "Write-Output 'OK'"
+      ].join("\r\n");
+      const encoded = Buffer.from(psScript, "utf16le").toString("base64");
+      execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-STA", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded], { windowsHide: true, timeout: 30000 });
+      shortcutsCreated = buttons.length;
+    } catch {
+      shortcutsCreated = 0;
+    }
+  }
+
+  const buttonsByCategory = categories.flatMap((category) => [
+    `### ${category}`,
+    "",
+    ...buttons.filter((button) => button.category === category).map((button) =>
+      `- **${button.title}** — \`scripts/${button.category}/${button.file}.ps1\` · \`shortcuts/${button.category}/${button.file}.lnk\`${button.placeholder ? " _(placeholder — configure in DexNest, then re-export)_" : ""}`
+    ),
+    ""
+  ]);
+
+  const readme = [
+    "# DexNest Stream Deck Control Pack",
+    "",
+    `Ready-to-use actions that trigger DexNest through its local action endpoint (\`${endpointBase}/<action>\`).`,
+    "Two forms are exported for every action:",
+    "- `scripts/<Category>/*.ps1` — the PowerShell scripts.",
+    "- `shortcuts/<Category>/*.lnk` — Windows shortcuts that run the matching script.",
+    "",
+    "## Use in Stream Deck",
+    "",
+    "**System → Open → choose the `.lnk` file** in the `shortcuts/<Category>/` folder.",
+    "Stream Deck's Open action can select a shortcut directly (no Arguments field needed).",
+    "Each `.lnk` targets `powershell.exe` with `-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"<script>\"` and runs hidden.",
+    "",
+    "Example shortcut path:",
+    "```",
+    `${join(shortcutsRoot, "Core", "open-command.lnk")}`,
+    "```",
+    "",
+    "## Requirements",
+    "",
+    "- **DexNest must be running** (window open or minimized to tray).",
+    "- Stream Deck control must be allowed in DexNest Settings (it is on by default).",
+    "",
+    "## Test the endpoint",
+    "",
+    "```",
+    `Invoke-RestMethod ${healthUrl}`,
+    "```",
+    "",
+    "## Recommended layout",
+    "",
+    "- **Page 1 — Core:** Open Command · Open Search · Start Mic / Ask DexNest · Toggle Performance Mode · Lock Sensitive Session · Open App Health",
+    "- **Page 2 — Clipboard:** Save/Paste Slot 1-3 · Open Clipboard · Multi-copy Add / Paste Group / Clear",
+    "- **Page 3 — Drop & Journal:** Open Drop · Send Clipboard to Phone · Copy Latest Phone Text · Incoming Folder · Start/Save/Open Journal",
+    "- **Page 4 — Calendar / Finance / Backup / Dev:** Today's Calendar · Upcoming Events · Open Finance · Backup Now · Open Backup Folder · Start/Stop each Dev project",
+    "",
+    "## Buttons",
+    "",
+    ...buttonsByCategory,
+    "## Notes",
+    "",
+    "- These scripts and shortcuts contain **no secrets, API keys, or local-data** — only the local action id.",
+    "- **Start Mic / Ask DexNest** works while DexNest is minimized; it shows the desktop voice overlay and does not force-open the app.",
+    "- **Copy Latest Phone Text** copies the most recent incoming phone text to your Windows clipboard; the text is never logged or returned over HTTP.",
+    "- Destructive actions (Clear multi-copy, Stop project) include `confirmedDangerous` in their body, matching DexNest's existing confirmation rules.",
+    "- If you enable PIN/token auth or LAN exposure in DexNest Settings, keep these local-only; the scripts intentionally do not embed any token.",
+    ""
+  ].join("\r\n");
+  writeFileSync(join(folder, "README.md"), readme, "utf8");
+
+  const placeholders = buttons.filter((button) => button.placeholder).length;
+  localDb.appendActionEvent({
+    module: "DexNest Deck",
+    actionId: "deck.export_button_pack",
+    eventType: "deck_button_pack_exported",
+    status: "success",
+    source,
+    summary: `Exported ${buttons.length} Stream Deck scripts + ${shortcutsCreated} shortcuts across ${categories.length} categories (${placeholders} placeholders).`,
+    metadataJson: { folder, scripts: buttons.length, shortcuts: shortcutsCreated, placeholders, categories: categories.length }
+  });
+
+  return { ok: true, actionId: "deck.export_button_pack", folder, scripts: buttons.length, shortcuts: shortcutsCreated, placeholders, categories: categories.length, message: `Exported ${buttons.length} scripts + ${shortcutsCreated} shortcuts to ${folder}.` };
+}
+
 async function runDeckRoutineAction(action: DexNestActionDefinition, source: DexNestActionTrigger, payload: unknown = {}) {
   const startedAt = Date.now();
   const input = typeof payload === "object" && payload !== null ? (payload as RoutineInput & { confirmedDangerous?: boolean }) : {};
@@ -13300,8 +14246,12 @@ async function runDeckRoutineAction(action: DexNestActionDefinition, source: Dex
 
     if (action.id === "deck.routine.run") {
       const routineId = String(input.routineId ?? input.id ?? "");
+      const routineName = typeof (input as { routineName?: unknown }).routineName === "string" ? String((input as { routineName?: unknown }).routineName).trim().toLowerCase() : "";
       const routines = loadRoutines();
-      const routine = routines.find((item) => item.id === routineId);
+      // Resolve by id first; voice commands ("run morning routine") pass a name.
+      const routine = routines.find((item) => item.id === routineId)
+        ?? (routineName ? routines.find((item) => item.name.trim().toLowerCase() === routineName)
+          ?? routines.find((item) => item.name.trim().toLowerCase().includes(routineName)) : undefined);
       if (!routine) {
         throw new Error("Routine not found.");
       }
@@ -14060,6 +15010,224 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
     return runProjectAction(actionId, projectMatch[1], projectMatch[2], source, payload);
   }
 
+  // --- Stream Deck Final Pack helper actions (background mic, multi-copy, latest
+  // phone text, journal voice, open export folder). Metadata-only audit; secrets
+  // are blocked. Handled by id before module dispatch.
+  if (action.id === "assistant.start_listening") {
+    const startedAtListen = Date.now();
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return { ok: false, actionId, error: "DexNest window is not ready." };
+    }
+    // Drive the existing wake/listening pipeline in the renderer. Works while the
+    // app is minimized / hidden in tray; shows the desktop voice overlay and does
+    // NOT force the main window open.
+    mainWindow.webContents.send("dexnest:wake-detected", { source: "stream_deck", score: null });
+    localDb.appendActionEvent({ module: "DexNest Assistant", actionId, eventType: "assistant_listen_started", status: "success", source, summary: "Started DexNest listening from Stream Deck.", metadataJson: { source }, durationMs: Date.now() - startedAtListen });
+    return { ok: true, actionId, message: "Listening…" };
+  }
+
+  if (action.id === "clipboard.multi_copy_add_current") {
+    const startedAtAdd = Date.now();
+    const text = clipboard.readText();
+    if (!text.trim()) {
+      logActionEvent(action, "skipped", source, "Multi-copy add skipped because the clipboard was empty.", {});
+      return { ok: false, actionId, error: "Clipboard is empty." };
+    }
+    if (isProtectedClipboardText(text)) {
+      logActionEvent(action, "skipped", source, "Multi-copy add skipped a Secure Vault protected value.", { protectedSource: "secure_vault" });
+      return { ok: false, actionId, error: clipboardProtectedError() };
+    }
+    if (looksSensitiveClipboardText(text)) {
+      logActionEvent(action, "skipped", source, "Multi-copy add skipped a likely-sensitive clipboard value.", { sensitivityCategory: "likely_sensitive", byteLength: byteLength(text) });
+      return { ok: false, actionId, error: "Clipboard looks sensitive — not added to the multi-copy group." };
+    }
+    const nowAdd = new Date().toISOString();
+    const existingSession = loadClipboardActiveMultiCopySession();
+    const session: ClipboardActiveMultiCopySession = existingSession ?? { id: createId("multi-copy"), startedAt: nowAdd, updatedAt: nowAdd, items: [] };
+    if (session.items.at(-1)?.text === text) {
+      logActionEvent(action, "skipped", source, "Multi-copy add skipped duplicate clipboard value.", { itemCount: session.items.length });
+      return { ok: true, actionId, itemCount: session.items.length, message: `Already in group (${session.items.length}).` };
+    }
+    const item = makeClipboardHistoryItem(text, "multi_copy");
+    const updated = saveClipboardActiveMultiCopySession({ ...session, updatedAt: nowAdd, armedForPasteAt: null, items: [...session.items, item] }) as ClipboardActiveMultiCopySession;
+    const combined = combinedClipboardText(updated.items, loadClipboardSettings().combinedSeparator || "\n\n");
+    clipboard.writeText(combined);
+    lastClipboardListenerText = combined;
+    armActiveMultiCopyForPaste(updated, combined);
+    logActionEvent(action, "success", source, `Added clipboard to multi-copy group (${updated.items.length} items).`, { itemCount: updated.items.length, byteLength: byteLength(item.text) });
+    return { ok: true, actionId, itemCount: updated.items.length, message: `Added to multi-copy (${updated.items.length}).` };
+  }
+
+  if (action.id === "clipboard.paste_multi_copy_group") {
+    const startedAtPaste = Date.now();
+    const session = loadClipboardActiveMultiCopySession();
+    if (!session || session.items.length === 0) {
+      logActionEvent(action, "skipped", source, "Multi-copy paste skipped because the session was empty.", {});
+      return { ok: false, actionId, error: "Multi-copy group is empty." };
+    }
+    const combined = combinedClipboardText(session.items, loadClipboardSettings().combinedSeparator || "\n\n");
+    if (!combined.trim()) {
+      return { ok: false, actionId, error: "Multi-copy group text is empty." };
+    }
+    clipboard.writeText(combined);
+    lastClipboardListenerText = combined;
+    let pasted = false;
+    let pasteError: string | null = null;
+    if (process.platform === "win32") {
+      try { await sendWindowsPasteShortcut(); pasted = true; } catch (error) { pasteError = error instanceof Error ? error.message : "Direct paste failed."; }
+    }
+    logActionEvent(action, pasted ? "success" : "success", source, `${pasted ? "Pasted" : "Copied"} multi-copy group (${session.items.length} items).`, { itemCount: session.items.length, byteLength: byteLength(combined), pasteMode: pasted ? "direct" : "clipboard_fallback" });
+    return { ok: true, actionId, itemCount: session.items.length, pasted, pasteError, message: pasted ? `Pasted ${session.items.length} items.` : `Group copied (${session.items.length}). Press Ctrl+V.` };
+  }
+
+  if (action.id === "drop.copy_latest_phone_text") {
+    const startedAtText = Date.now();
+    const latest = loadDropIncoming()
+      .filter((item): item is DropTextItem => item.type === "text" && Boolean(item.text && item.text.trim()))
+      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
+    if (!latest) {
+      logActionEvent(action, "skipped", source, "No incoming phone text to copy.", { found: false });
+      return { ok: false, actionId, error: "No incoming phone text yet." };
+    }
+    clipboard.writeText(latest.text);
+    lastClipboardListenerText = latest.text;
+    // Metadata only — never log or return the private text content.
+    logActionEvent(action, "success", source, "Copied latest incoming phone text to the clipboard.", { found: true, byteLength: byteLength(latest.text) });
+    return { ok: true, actionId, byteLength: byteLength(latest.text), message: "Latest phone text copied to clipboard." };
+  }
+
+  if (action.id === "journal.start_today_voice" || action.id === "journal.save_voice") {
+    const startedAtJournal = Date.now();
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      return { ok: false, actionId, error: "DexNest window is not ready." };
+    }
+    // Reuse the assistant command pipeline: the renderer enters journal voice mode
+    // ("start today's journal") or saves it ("save journal"), with its own
+    // speech-unavailable fallback. Works while minimized.
+    const text = action.id === "journal.start_today_voice" ? "start today's journal" : "save journal";
+    mainWindow.webContents.send("dexnest:run-assistant-command", { text, source: "stream_deck" });
+    localDb.appendActionEvent({ module: "DexNest Journal", actionId, eventType: action.id === "journal.save_voice" ? "journal_voice_saved" : "journal_voice_started", status: "success", source, summary: action.id === "journal.save_voice" ? "Saved journal from Stream Deck." : "Started today's journal from Stream Deck.", metadataJson: { source }, durationMs: Date.now() - startedAtJournal });
+    return { ok: true, actionId, message: action.id === "journal.save_voice" ? "Saving journal…" : "Starting today's journal…" };
+  }
+
+  if (action.id === "deck.open_export_folder") {
+    const folder = resolve(repoRoot, "streamdeck-actions");
+    if (!existsSync(folder)) {
+      return { ok: false, actionId, error: "Export folder not found. Run Export Final Stream Deck Pack first." };
+    }
+    void shell.openPath(folder);
+    localDb.appendActionEvent({ module: "DexNest Deck", actionId, eventType: "deck_export_folder_opened", status: "success", source, summary: "Opened the Stream Deck export folder.", metadataJson: { folder }, durationMs: 0 });
+    return { ok: true, actionId, folder, message: "Opened export folder." };
+  }
+
+  // --- Delete / clear / remove pass: individual-item removals that were missing.
+  // Metadata-only audit (never content / paths beyond the folder); file deletes
+  // are guarded to their own folder and require confirmation (critical).
+  const dp = (typeof payload === "object" && payload !== null ? payload : {}) as Record<string, unknown>;
+  if (action.id === "clipboard.delete_history_item") {
+    const id = String(dp.id ?? dp.itemId ?? "");
+    const history = loadClipboardHistory();
+    const exists = history.some((item) => item.id === id);
+    saveClipboardHistory(history.filter((item) => item.id !== id));
+    logActionEvent(action, exists ? "success" : "skipped", source, exists ? "Removed one Clipboard history item." : "Clipboard history item not found.", { found: exists });
+    return { ok: exists, actionId, message: exists ? "History item removed." : "Item not found." };
+  }
+
+  if (action.id === "drop.remove_incoming_item") {
+    const id = String(dp.id ?? "");
+    const incoming = loadDropIncoming();
+    const exists = incoming.some((item) => item.id === id);
+    saveDropIncoming(incoming.filter((item) => item.id !== id));
+    logActionEvent(action, exists ? "success" : "skipped", source, exists ? "Removed one incoming Drop item from the list (file kept)." : "Incoming Drop item not found.", { found: exists });
+    if (exists) { broadcastDropUpdate("Incoming Drop item removed.", "drop.incoming_cleared"); }
+    return { ok: exists, actionId, message: exists ? "Removed from list." : "Item not found." };
+  }
+
+  if (action.id === "drop.delete_incoming_file") {
+    const id = String(dp.id ?? "");
+    const incoming = loadDropIncoming();
+    const item = incoming.find((entry) => entry.id === id);
+    if (!item) { return { ok: false, actionId, error: "Incoming Drop item not found." }; }
+    const filePath = item.type === "file" ? item.path : null;
+    if (!filePath || !isPathInside(resolve(dropIncomingRoot), resolve(filePath))) {
+      return { ok: false, actionId, error: "This item has no received file inside the Drop folder." };
+    }
+    try { if (existsSync(filePath)) { unlinkSync(filePath); } } catch (error) {
+      logActionEvent(action, "failed", source, "Failed to delete incoming Drop file from disk.", { found: true }, error instanceof Error ? error.message : null);
+      return { ok: false, actionId, error: "Could not delete the file from disk." };
+    }
+    saveDropIncoming(incoming.filter((entry) => entry.id !== id));
+    logActionEvent(action, "success", source, "Deleted a received Drop file from disk.", { deletedFromDisk: true });
+    broadcastDropUpdate("Incoming Drop file deleted.", "drop.incoming_cleared");
+    return { ok: true, actionId, message: "File deleted from disk." };
+  }
+
+  if (action.id === "tools.delete_output") {
+    const id = String(dp.id ?? "");
+    const outputs = loadToolsOutputs();
+    const exists = outputs.some((item) => item.id === id);
+    saveToolsOutputs(outputs.filter((item) => item.id !== id));
+    logActionEvent(action, exists ? "success" : "skipped", source, exists ? "Removed a Tools output from the list (file kept)." : "Tools output not found.", { found: exists });
+    return { ok: exists, actionId, message: exists ? "Removed from list." : "Output not found." };
+  }
+
+  if (action.id === "tools.delete_output_file") {
+    const id = String(dp.id ?? "");
+    const outputs = loadToolsOutputs();
+    const item = outputs.find((entry) => entry.id === id);
+    if (!item) { return { ok: false, actionId, error: "Tools output not found." }; }
+    const outputFolder = resolve(getToolsOutputFolder());
+    if (!isPathInside(outputFolder, resolve(item.path)) && !isPathInside(resolve(toolsOutputRoot), resolve(item.path))) {
+      return { ok: false, actionId, error: "Output file is outside the DexNest Tools output folder." };
+    }
+    try { if (existsSync(item.path)) { unlinkSync(item.path); } } catch (error) {
+      logActionEvent(action, "failed", source, "Failed to delete Tools output file from disk.", { found: true }, error instanceof Error ? error.message : null);
+      return { ok: false, actionId, error: "Could not delete the file from disk." };
+    }
+    saveToolsOutputs(outputs.filter((entry) => entry.id !== id));
+    logActionEvent(action, "success", source, "Deleted a Tools output file from disk.", { deletedFromDisk: true });
+    return { ok: true, actionId, message: "Output file deleted from disk." };
+  }
+
+  if (action.id === "backup.delete_file") {
+    const fileName = String(dp.fileName ?? "");
+    const requestedPath = typeof dp.path === "string" ? dp.path : (fileName ? join(backupsRoot, sanitizeFileName(fileName)) : "");
+    if (!requestedPath || !isPathInside(resolve(backupsRoot), resolve(requestedPath)) || !resolve(requestedPath).toLowerCase().endsWith(".zip")) {
+      return { ok: false, actionId, error: "Invalid backup file." };
+    }
+    if (!existsSync(requestedPath)) { return { ok: false, actionId, error: "Backup file not found." }; }
+    try { unlinkSync(requestedPath); } catch (error) {
+      logActionEvent(action, "failed", source, "Failed to delete backup file from disk.", {}, error instanceof Error ? error.message : null);
+      return { ok: false, actionId, error: "Could not delete the backup file." };
+    }
+    logActionEvent(action, "success", source, "Deleted a DexNest backup file from disk.", { deletedFromDisk: true });
+    return { ok: true, actionId, backupState: backupState(), message: "Backup deleted." };
+  }
+
+  if (action.id === "system.data.preview_delete") {
+    const categoryIds = Array.isArray(dp.categoryIds) ? (dp.categoryIds as unknown[]).filter((id): id is string => typeof id === "string") : [];
+    if (categoryIds.length === 0) {
+      return { ok: false, actionId, error: "Select at least one category to preview." };
+    }
+    const preview = previewDataDeletion(categoryIds);
+    logActionEvent(action, "success", source, `Previewed Data Management deletion for ${categoryIds.length} categor${categoryIds.length === 1 ? "y" : "ies"}.`, { categoryIds, totalRecords: preview.totalRecords, totalFiles: preview.totalFiles });
+    return { ok: true, actionId, preview };
+  }
+
+  if (action.id === "system.data.execute_delete") {
+    const categoryIds = Array.isArray(dp.categoryIds) ? (dp.categoryIds as unknown[]).filter((id): id is string => typeof id === "string") : [];
+    const confirmText = typeof dp.confirmText === "string" ? dp.confirmText : "";
+    const createBackupFirst = dp.createBackupFirst === true;
+    if (categoryIds.length === 0) {
+      return { ok: false, actionId, error: "Select at least one category to delete." };
+    }
+    if (confirmText !== "DELETE") {
+      return { ok: false, actionId, error: "Type DELETE to confirm." };
+    }
+    const result = executeDataDeletion(categoryIds, source, createBackupFirst);
+    return { actionId, ...result };
+  }
+
   if (action.module === "clipboard") {
     const result = runClipboardAction(action, source, payload);
     if (result) {
@@ -14072,6 +15240,10 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
     if (result) {
       return result;
     }
+  }
+
+  if (action.id === "deck.export_button_pack") {
+    return exportStreamDeckButtonPack(source);
   }
 
   if (action.module === "deck" && action.id.startsWith("deck.routine.")) {
@@ -14559,6 +15731,237 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
   };
 }
 
+// --- Dev project lifecycle helpers (Windows-focused; safe no-op elsewhere) ----
+
+function execCapture(command: string, cwd: string, timeoutMs = 60000): Promise<{ ok: boolean; stdout: string; stderr: string; error: string | null }> {
+  return new Promise((resolveExec) => {
+    exec(command, { cwd, timeout: timeoutMs, maxBuffer: 1024 * 1024, windowsHide: true }, (error, stdout, stderr) => {
+      resolveExec({
+        ok: !error,
+        stdout: stripAnsi(stdout ?? ""),
+        stderr: stripAnsi(stderr ?? ""),
+        error: error instanceof Error ? error.message : null
+      });
+    });
+  });
+}
+
+// Find PIDs that are LISTENING on a specific local port (exact match only, so we
+// never touch unrelated processes).
+async function findPortPids(port: number): Promise<number[]> {
+  if (process.platform !== "win32") { return []; }
+  const result = await execCapture("netstat -ano -p TCP", process.cwd(), 8000);
+  const pids = new Set<number>();
+  for (const line of result.stdout.split(/\r?\n/)) {
+    if (!/LISTENING/i.test(line)) { continue; }
+    const parts = line.trim().split(/\s+/);
+    const local = parts[1] ?? "";
+    const pid = Number(parts[parts.length - 1]);
+    if (local.endsWith(`:${port}`) && Number.isInteger(pid) && pid > 0) {
+      pids.add(pid);
+    }
+  }
+  return [...pids];
+}
+
+async function processImageForPid(pid: number): Promise<string> {
+  if (process.platform !== "win32") { return "unknown"; }
+  const result = await execCapture(`tasklist /FI "PID eq ${pid}" /NH /FO CSV`, process.cwd(), 5000);
+  const match = /^"([^"]+)"/.exec(result.stdout.trim());
+  return match ? match[1] : "unknown";
+}
+
+function checkPortListening(port: number, timeoutMs = 1200): Promise<boolean> {
+  return new Promise((resolveCheck) => {
+    const socket = createConnection({ host: "127.0.0.1", port });
+    let settled = false;
+    const done = (value: boolean): void => {
+      if (settled) { return; }
+      settled = true;
+      socket.destroy();
+      resolveCheck(value);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once("connect", () => done(true));
+    socket.once("timeout", () => done(false));
+    socket.once("error", () => done(false));
+  });
+}
+
+function httpHealthCheck(url: string, timeoutMs = 4000): Promise<{ ok: boolean; status: number | null; error: string | null }> {
+  return new Promise((resolveHealth) => {
+    let getter: typeof httpGet;
+    try {
+      getter = new URL(url).protocol === "https:" ? httpsGet : httpGet;
+    } catch {
+      resolveHealth({ ok: false, status: null, error: "Invalid URL." });
+      return;
+    }
+    const request = getter(url, (response) => {
+      const status = response.statusCode ?? 0;
+      response.resume();
+      resolveHealth({ ok: status > 0 && status < 500, status, error: null });
+    });
+    request.setTimeout(timeoutMs, () => { request.destroy(); resolveHealth({ ok: false, status: null, error: "Timed out." }); });
+    request.on("error", (error) => resolveHealth({ ok: false, status: null, error: error.message }));
+  });
+}
+
+// Persist a lifecycle result so the existing Dev output panel shows it, and log a
+// metadata-only Audit event (never command output / file contents).
+function finishLifecycle(
+  project: DexNestProject,
+  actionId: string,
+  operation: string,
+  source: DexNestActionTrigger,
+  status: "success" | "failed",
+  summary: string,
+  stdout: string,
+  stderr: string,
+  startedAt: number,
+  metadata: Record<string, unknown>
+): { ok: boolean; actionId: string; summary: string; output: string; stdout: string; stderr: string; status: "success" | "failed"; durationMs: number } {
+  const durationMs = Date.now() - startedAt;
+  saveCommandResult({
+    actionId,
+    projectId: project.id,
+    projectName: project.name,
+    commandKey: operation,
+    command: operation,
+    status,
+    stdout: stdout.slice(-4000),
+    stderr: stderr.slice(-4000),
+    summary,
+    durationMs,
+    finishedAt: new Date().toISOString(),
+    errorMessage: status === "failed" ? summary : null
+  });
+  localDb.appendActionEvent({
+    module: "DexNest Dev",
+    actionId,
+    eventType: `project_${operation}`,
+    status: status === "success" ? "success" : "failed",
+    source,
+    summary: `${project.name}: ${summary}`,
+    metadataJson: { ...projectMetadata(project), operation, ...metadata, durationMs }
+  });
+  return { ok: status === "success", actionId, summary, output: summarizeOutput(stdout, stderr), stdout, stderr, status, durationMs };
+}
+
+async function killProjectPorts(project: DexNestProject, source: DexNestActionTrigger, actionId: string, startedAt: number) {
+  const ports = project.ports ?? [];
+  if (ports.length === 0) {
+    return finishLifecycle(project, actionId, "kill_ports", source, "failed", "No ports configured for this project.", "", "", startedAt, { ports: [] });
+  }
+  const lines: string[] = [];
+  let killedCount = 0;
+  for (const port of ports) {
+    const pids = await findPortPids(port);
+    if (pids.length === 0) { lines.push(`Port ${port}: nothing listening.`); continue; }
+    for (const pid of pids) {
+      const image = await processImageForPid(pid);
+      const result = await execCapture(`taskkill /F /PID ${pid}`, process.cwd(), 5000);
+      killedCount += result.ok ? 1 : 0;
+      lines.push(`Port ${port}: ${result.ok ? "killed" : "failed to kill"} PID ${pid} (${image}).`);
+    }
+  }
+  return finishLifecycle(project, actionId, "kill_ports", source, "success", `Cleared ${killedCount} process(es) on ${ports.join(", ")}.`, lines.join("\n"), "", startedAt, { ports, killedCount });
+}
+
+async function dockerDownProject(project: DexNestProject, source: DexNestActionTrigger, actionId: string, startedAt: number, operation = "docker_down") {
+  if (!project.dockerComposeEnabled) {
+    return finishLifecycle(project, actionId, operation, source, "failed", "Docker Compose is not enabled for this project.", "", "", startedAt, { dockerComposeEnabled: false });
+  }
+  const result = await execCapture("docker compose down", project.path, 120000);
+  return finishLifecycle(project, actionId, operation, source, result.ok ? "success" : "failed", result.ok ? "Stopped Docker Compose stack." : (result.error ?? "docker compose down failed."), result.stdout, result.stderr, startedAt, { dockerComposeEnabled: true });
+}
+
+async function stopProject(project: DexNestProject, source: DexNestActionTrigger, actionId: string, startedAt: number, operation = "stop") {
+  const parts: string[] = [];
+  let anyFailure = false;
+  if (project.stopCommand && project.stopCommand.trim()) {
+    const result = await execCapture(project.stopCommand.trim(), project.path, 120000);
+    anyFailure = anyFailure || !result.ok;
+    parts.push(`Stop command: ${result.ok ? "ok" : "failed"}\n${summarizeOutput(result.stdout, result.stderr)}`);
+  }
+  if (project.dockerComposeEnabled) {
+    const result = await execCapture("docker compose down", project.path, 120000);
+    anyFailure = anyFailure || !result.ok;
+    parts.push(`Docker compose down: ${result.ok ? "ok" : "failed"}\n${summarizeOutput(result.stdout, result.stderr)}`);
+  }
+  if ((project.ports ?? []).length > 0) {
+    for (const port of project.ports ?? []) {
+      const pids = await findPortPids(port);
+      for (const pid of pids) {
+        const result = await execCapture(`taskkill /F /PID ${pid}`, process.cwd(), 5000);
+        anyFailure = anyFailure || !result.ok;
+        parts.push(`Port ${port}: ${result.ok ? "killed" : "failed"} PID ${pid}.`);
+      }
+      if (pids.length === 0) { parts.push(`Port ${port}: nothing listening.`); }
+    }
+  }
+  if (parts.length === 0) {
+    return finishLifecycle(project, actionId, operation, source, "failed", "Nothing to stop — configure a stop command, ports, or Docker Compose.", "", "", startedAt, {});
+  }
+  return finishLifecycle(project, actionId, operation, source, anyFailure ? "failed" : "success", anyFailure ? "Stop completed with some failures." : "Project stopped.", parts.join("\n\n"), "", startedAt, { ports: project.ports ?? [], dockerComposeEnabled: Boolean(project.dockerComposeEnabled) });
+}
+
+async function checkProjectHealth(project: DexNestProject, source: DexNestActionTrigger, actionId: string, startedAt: number) {
+  const lines: string[] = [];
+  let allOk = true;
+  for (const port of project.ports ?? []) {
+    const listening = await checkPortListening(port);
+    allOk = allOk && listening;
+    lines.push(`Port ${port}: ${listening ? "listening ✓" : "not responding ✗"}`);
+  }
+  if (project.healthUrl && project.healthUrl.trim()) {
+    const health = await httpHealthCheck(project.healthUrl.trim());
+    allOk = allOk && health.ok;
+    lines.push(`Health ${project.healthUrl.trim()}: ${health.ok ? `ok (${health.status}) ✓` : `failed (${health.status ?? health.error}) ✗`}`);
+  }
+  for (const url of project.urls ?? []) {
+    if (!isLocalUrl(url)) { continue; }
+    const health = await httpHealthCheck(url);
+    lines.push(`URL ${url}: ${health.ok ? `ok (${health.status}) ✓` : `down (${health.status ?? health.error}) ✗`}`);
+  }
+  if (lines.length === 0) {
+    return finishLifecycle(project, actionId, "check_health", source, "failed", "No ports, health URL, or local URLs configured.", "", "", startedAt, {});
+  }
+  return finishLifecycle(project, actionId, "check_health", source, allOk ? "success" : "failed", allOk ? "All health checks passed." : "Some health checks failed.", lines.join("\n"), "", startedAt, { portCount: (project.ports ?? []).length, checkedUrl: Boolean(project.healthUrl) });
+}
+
+async function showProjectProcesses(project: DexNestProject, source: DexNestActionTrigger, actionId: string, startedAt: number) {
+  const ports = project.ports ?? [];
+  if (ports.length === 0) {
+    return finishLifecycle(project, actionId, "show_processes", source, "failed", "No ports configured for this project.", "", "", startedAt, {});
+  }
+  const lines: string[] = [];
+  let found = 0;
+  for (const port of ports) {
+    const pids = await findPortPids(port);
+    if (pids.length === 0) { lines.push(`Port ${port}: free.`); continue; }
+    for (const pid of pids) {
+      const image = await processImageForPid(pid);
+      found += 1;
+      lines.push(`Port ${port}: PID ${pid} — ${image}`);
+    }
+  }
+  return finishLifecycle(project, actionId, "show_processes", source, "success", `${found} process(es) on ${ports.join(", ")}.`, lines.join("\n"), "", startedAt, { ports, found });
+}
+
+function openProjectLogs(project: DexNestProject, source: DexNestActionTrigger, actionId: string, startedAt: number): Promise<ReturnType<typeof finishLifecycle>> | ReturnType<typeof finishLifecycle> {
+  if (project.logPath && project.logPath.trim()) {
+    void shell.openPath(project.logPath.trim());
+    return finishLifecycle(project, actionId, "open_logs", source, "success", `Opened logs at ${project.logPath.trim()}.`, "", "", startedAt, { mode: "path" });
+  }
+  if (project.logCommand && project.logCommand.trim()) {
+    return execCapture(project.logCommand.trim(), project.path, 60000).then((result) =>
+      finishLifecycle(project, actionId, "open_logs", source, result.ok ? "success" : "failed", result.ok ? "Fetched project logs." : (result.error ?? "Log command failed."), result.stdout, result.stderr, startedAt, { mode: "command" })
+    );
+  }
+  return finishLifecycle(project, actionId, "open_logs", source, "failed", "No log path or log command configured.", "", "", startedAt, {});
+}
+
 function runProjectAction(actionId: string, projectId: string, operation: string, source: DexNestActionTrigger, payload: unknown) {
   const projects = loadProjects();
   const project = projects.find((item) => item.id === projectId);
@@ -14654,6 +16057,46 @@ function runProjectAction(actionId: string, projectId: string, operation: string
       metadataJson: { ...projectMetadata(project), url }
     });
     return { ok: true, actionId, message: `Opened ${project.name} URL.` };
+  }
+
+  if (operation === "open_urls") {
+    const opened = (project.urls ?? []).filter((url) => isLocalUrl(url));
+    opened.forEach((url) => void shell.openExternal(url));
+    return finishLifecycle(project, actionId, "open_urls", source, opened.length > 0 ? "success" : "failed", opened.length > 0 ? `Opened ${opened.length} local URL(s).` : "No local URLs configured.", opened.join("\n"), "", Date.now(), { count: opened.length });
+  }
+
+  if (operation === "check_health") {
+    return checkProjectHealth(project, source, actionId, Date.now());
+  }
+
+  if (operation === "show_processes") {
+    return showProjectProcesses(project, source, actionId, Date.now());
+  }
+
+  if (operation === "open_logs") {
+    return openProjectLogs(project, source, actionId, Date.now());
+  }
+
+  if (operation === "kill_ports") {
+    return killProjectPorts(project, source, actionId, Date.now());
+  }
+
+  if (operation === "docker_down") {
+    return dockerDownProject(project, source, actionId, Date.now());
+  }
+
+  if (operation === "stop") {
+    return stopProject(project, source, actionId, Date.now());
+  }
+
+  if (operation === "restart") {
+    const startedAt = Date.now();
+    return stopProject(project, source, actionId, startedAt, "restart").then(async (stopResult) => {
+      await new Promise((r) => setTimeout(r, 600));
+      const startResult = await runProjectCommand(project, "start", source, true);
+      const combinedStdout = `${stopResult.stdout}\n\n--- start ---\n${startResult.stdout}`;
+      return finishLifecycle(project, actionId, "restart", source, startResult.ok ? "success" : "failed", startResult.ok ? "Project restarted." : "Restart failed during start.", combinedStdout, startResult.stderr, startedAt, { ports: project.ports ?? [] });
+    });
   }
 
   if (operation.startsWith("run_")) {
@@ -15211,9 +16654,13 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("dexnest:get-external-devices-state", () => externalDevicesState());
 
+  ipcMain.handle("dexnest:get-data-management-state", () => dataManagementState());
+
   ipcMain.handle("dexnest:select-backup-zip", () => selectBackupZip());
 
-  ipcMain.handle("dexnest:get-app-health", () => appHealthState("module_ui", true));
+  // Read-only: return the last cached result instantly. Checks run only via the
+  // explicit `system.health.run_checks` action (Run checks button).
+  ipcMain.handle("dexnest:get-app-health", () => cachedAppHealthState());
 
   ipcMain.handle("dexnest:get-command-stats", () => commandStats());
 
@@ -15516,74 +16963,46 @@ let voiceOverlayWindow: BrowserWindow | null = null;
 let voiceOverlayHideTimer: ReturnType<typeof setTimeout> | null = null;
 
 function voiceOverlayHtml(): string {
-  // Self-contained: a canvas visualizer driven by window.dexNest.onVoiceOverlay.
-  // No remote content, no audio, no text — visual state only.
+  // Self-contained always-on-top "Listening" card — visually identical to the
+  // in-app AssistantOrb (rainbow sphere + glow rings) so there is a single,
+  // consistent indicator. Shown only while DexNest is listening AND hidden.
   return `<!doctype html><html><head><meta charset="utf-8"><style>
-    html,body{margin:0;height:100%;background:transparent;overflow:hidden;}
-    #c{width:100vw;height:100vh;display:block;}
-  </style></head><body><canvas id="c"></canvas><script>
+    html,body{margin:0;height:100%;background:transparent;overflow:hidden;font-family:Inter,system-ui,-apple-system,sans-serif;}
+    #card{position:absolute;left:50%;bottom:10px;transform:translate(-50%,12px);display:flex;flex-direction:column;align-items:center;gap:12px;padding:20px 24px;border-radius:26px;border:1px solid rgba(99,102,241,0.28);background:rgba(10,10,12,0.86);box-shadow:0 16px 50px -12px rgba(99,102,241,0.5),inset 0 0 30px rgba(99,102,241,0.06);opacity:0;transition:opacity .22s cubic-bezier(.22,1,.36,1),transform .22s cubic-bezier(.22,1,.36,1),border-color .2s ease;}
+    #card.show{opacity:1;transform:translate(-50%,0);}
+    .orbwrap{position:relative;display:flex;align-items:center;justify-content:center;width:84px;height:84px;}
+    .ring{position:absolute;width:67px;height:67px;border-radius:50%;border:1px solid rgba(99,102,241,0.4);animation:glowring 2.4s ease-out infinite;}
+    .ring.r2{border-color:rgba(34,211,238,0.4);animation-delay:.6s;}
+    .ring.r3{border-color:rgba(168,85,247,0.4);animation-delay:1.2s;}
+    .orb{position:relative;width:58px;height:58px;border-radius:50%;overflow:hidden;background:#05070f;box-shadow:inset -6px -10px 22px rgba(0,0,0,0.55),0 0 38px rgba(99,102,241,0.4),0 0 22px rgba(34,211,238,0.3);}
+    .rainbow{position:absolute;inset:-20%;border-radius:50%;background:conic-gradient(from 0deg,#FB4D6A,#FB923C,#FACC15,#4ADE80,#22D3EE,#6366F1,#A855F7,#FB4D6A);filter:blur(6px);opacity:.95;animation:spin 6s linear infinite;}
+    .rainbow2{position:absolute;inset:-10%;border-radius:50%;background:conic-gradient(from 0deg,#FB4D6A,#FB923C,#FACC15,#4ADE80,#22D3EE,#6366F1,#A855F7,#FB4D6A);filter:blur(10px);opacity:.7;mix-blend-mode:screen;animation:spinrev 8s linear infinite;}
+    .inner{position:absolute;inset:0;border-radius:50%;box-shadow:inset 0 0 26px rgba(0,0,0,0.55);}
+    .hl{position:absolute;left:20%;top:16%;width:22px;height:11px;border-radius:50%;background:rgba(255,255,255,0.45);filter:blur(3px);}
+    .label{color:#c7c9ff;font-size:13px;font-weight:500;letter-spacing:.01em;}
+    @keyframes spin{to{transform:rotate(360deg);}}
+    @keyframes spinrev{to{transform:rotate(-360deg);}}
+    @keyframes glowring{0%{transform:scale(.82);opacity:.7;}100%{transform:scale(1.5);opacity:0;}}
+  </style></head><body>
+    <div id="card">
+      <div class="orbwrap">
+        <span class="ring"></span><span class="ring r2"></span><span class="ring r3"></span>
+        <div class="orb"><div class="rainbow"></div><div class="rainbow2"></div><div class="inner"></div><div class="hl"></div></div>
+      </div>
+      <div class="label">Listening…</div>
+    </div>
+  <script>
   (function(){
-    var canvas=document.getElementById('c'),ctx=canvas.getContext('2d');
-    var dpr=window.devicePixelRatio||1;
-    function resize(){canvas.width=innerWidth*dpr;canvas.height=innerHeight*dpr;}
-    resize();addEventListener('resize',resize);
-    var COLORS=['#22d3ee','#3b82f6','#8b5cf6','#d946ef','#ec4899','#fb923c','#34d399'];
-    var state='listening',level=0,targetLevel=0,t=0,raf=null,alpha=0,targetAlpha=0;
-    var animations=true;
-    try{if(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches)animations=false;}catch(e){}
-    function grad(){var g=ctx.createLinearGradient(0,0,canvas.width,0);for(var i=0;i<COLORS.length;i++)g.addColorStop(i/(COLORS.length-1),COLORS[i]);return g;}
-    function drawStatic(){
-      ctx.clearRect(0,0,canvas.width,canvas.height);
-      if(alpha<=0.01)return;
-      var W=canvas.width,H=canvas.height,cx=W/2,cy=H/2,rw=W*0.34,rh=H*0.22;
-      ctx.globalAlpha=alpha;ctx.lineWidth=3*dpr;ctx.shadowBlur=16*dpr;
-      ctx.shadowColor=state==='error'?'#fb7185':'#8b5cf6';
-      ctx.strokeStyle=state==='error'?'#fb7185':grad();
-      ctx.beginPath();ctx.ellipse(cx,cy,rw,rh,0,0,Math.PI*2);ctx.stroke();
-    }
-    function loop(){
-      raf=requestAnimationFrame(loop);t+=0.016;
-      level+=(targetLevel-level)*0.2;alpha+=(targetAlpha-alpha)*0.12;
-      if(alpha<0.01&&targetAlpha===0){ctx.clearRect(0,0,canvas.width,canvas.height);cancelAnimationFrame(raf);raf=null;return;}
-      if(!animations){drawStatic();return;}
-      ctx.clearRect(0,0,canvas.width,canvas.height);
-      var W=canvas.width,H=canvas.height,cx=W/2,cy=H/2;
-      var amp,speed;
-      if(state==='wake_detected'){amp=0.55;speed=2.6;}
-      else if(state==='listening'){amp=0.22+level*0.6;speed=1.6;}
-      else if(state==='transcribing'||state==='routing'){amp=0.16+0.12*Math.sin(t*1.2);speed=0.7;}
-      else if(state==='speaking'){amp=0.30+0.26*Math.abs(Math.sin(t*3));speed=2.1;}
-      else if(state==='error'){amp=0.42;speed=1.6;}
-      else{amp=0.2;speed=1.0;}
-      var rw=W*0.36,rh=H*0.24;
-      ctx.lineCap='round';
-      for(var l=0;l<3;l++){
-        var phase=t*speed+l*0.8;
-        ctx.beginPath();
-        for(var a=0;a<=Math.PI*2+0.06;a+=0.06){
-          var wob=Math.sin(a*3+phase)*amp*0.5+Math.sin(a*5-phase*1.3)*amp*0.3;
-          var f=1+wob*0.25*(1-l*0.18);
-          var x=cx+Math.cos(a)*rw*f,y=cy+Math.sin(a)*rh*f;
-          if(a===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
-        }
-        ctx.closePath();
-        ctx.strokeStyle=state==='error'?'#fb7185':grad();
-        ctx.lineWidth=(3-l*0.6)*dpr;
-        ctx.shadowBlur=(18-l*4)*dpr;
-        ctx.shadowColor=state==='error'?'#fb7185':'#8b5cf6';
-        ctx.globalAlpha=alpha*(0.9-l*0.22);
-        ctx.stroke();
-      }
-    }
-    function ensure(){if(!raf)loop();}
+    var card=document.getElementById('card');
     if(window.dexNest&&window.dexNest.onVoiceOverlay){
       window.dexNest.onVoiceOverlay(function(p){
         if(!p)return;
-        if(p.type==='level'){targetLevel=Math.max(0,Math.min(1,p.level||0));return;}
-        if(typeof p.animations==='boolean')animations=p.animations;
-        if(p.type==='hide'||p.state==='done'){targetAlpha=0;ensure();return;}
-        if(p.state)state=p.state;
-        targetAlpha=1;ensure();
+        if(typeof p.animations==='boolean' && !p.animations){
+          var st=document.createElement('style');st.textContent='.rainbow,.rainbow2,.ring{animation:none!important}';document.head.appendChild(st);
+        }
+        if(p.type==='level')return;
+        if(p.type==='hide'||p.state==='done'||p.state==='transcribing'||p.state==='routing'||p.state==='speaking'){card.classList.remove('show');return;}
+        card.classList.add('show');
       });
     }
   })();
@@ -15592,7 +17011,7 @@ function voiceOverlayHtml(): string {
 
 function voiceOverlayDimensions(): { width: number; height: number; margin: number } {
   const size = loadAmbientVoiceSettings().voiceOverlaySize ?? "compact";
-  return size === "normal" ? { width: 560, height: 140, margin: 72 } : { width: 440, height: 104, margin: 64 };
+  return size === "normal" ? { width: 200, height: 224, margin: 64 } : { width: 168, height: 188, margin: 56 };
 }
 
 function positionVoiceOverlay(win: BrowserWindow): void {
@@ -15788,6 +17207,7 @@ app.whenReady().then(() => {
   startHeatmapTimer();
   startClipboardListener();
   registerClipboardHotkey();
+  reconcileSlotHook();
   registerAmbientVoiceShortcut();
   scheduleActiveMultiCopyAutoClear();
   createWindow();
@@ -15813,6 +17233,9 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   isQuittingDexNest = true;
+  // Full quit always clears the in-memory Secure Vault key + trusted session.
+  lockSecureVault();
+  lockTrustedSession();
   stopSpeechWorker();
   stopWakeEngine();
   destroyVoiceOverlay();
@@ -15822,6 +17245,7 @@ app.on("before-quit", () => {
   unregisterAmbientVoiceShortcut();
   unregisterCommandShortcut();
   unregisterKeyboardShortcuts();
+  stopSlotHook();
   stopArmedMultiCopyPasteDetection();
   if (tray) {
     tray.destroy();

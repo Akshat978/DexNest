@@ -134,6 +134,19 @@ export function createLocalDb(options: CreateLocalDbOptions) {
     });
   }
 
+  function countEvents(): number {
+    const row = getDb().prepare("SELECT COUNT(*) AS count FROM event_log").get() as { count: number };
+    return row.count;
+  }
+
+  // Clears all rows from the event log while preserving the table/index structure.
+  // Used by Settings → Data Management when the Audit history category is deleted.
+  function clearEvents(): number {
+    const before = countEvents();
+    getDb().prepare("DELETE FROM event_log").run();
+    return before;
+  }
+
   function close(): void {
     db?.close();
     db = null;
@@ -145,6 +158,8 @@ export function createLocalDb(options: CreateLocalDbOptions) {
     appendEvent,
     appendActionEvent,
     listRecentEvents,
+    countEvents,
+    clearEvents,
     close
   };
 }

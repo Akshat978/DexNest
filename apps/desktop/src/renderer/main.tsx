@@ -1,11 +1,41 @@
-import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import QRCode from "qrcode";
 import { formatLocalDate, formatLocalDateTime, getLocalTodayDateString, parseLocalDateInput, resolveRelativeLocalDate, toLocalDateInputValue } from "@dexnest/shared-types";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+  Command, Code2, LayoutGrid, ClipboardList, Share2, Wrench, Vault, Sparkles, Inbox,
+  NotebookPen, CalendarDays, PackageSearch, Wallet, Activity, ScrollText, Settings as SettingsIcon,
+  PanelLeft, PanelLeftClose, Mic, Cpu, Lock, Unlock, Search, Bell,
+  Zap, CheckCircle2, AlertTriangle, ChevronRight, Wifi,
+  FileText, Copy, ExternalLink, ShieldAlert, ChevronDown,
+  MapPin, Box, Plus, Check, Clock, DoorOpen, ArrowRightLeft,
+  Smartphone, Monitor, QrCode, Upload, Download, FolderOpen, ShieldCheck, Image as ImageIcon, ClipboardCopy, RefreshCw,
+  CalendarPlus, Archive, Trash2, ArrowUpRight, Paperclip, Type, FileType2,
+  Save, Clipboard as ClipIcon, FileCode,
+  Tag, History as HistoryIcon, CalendarClock, KeyRound,
+  FileStack, Scissors, ScanText, FileImage, Images, FileAudio, UploadCloud, RotateCcw, ArrowRight,
+  HardDriveDownload, Stethoscope,
+  Play, Pause, Square, Smile, Cake, AlertCircle,
+  TrendingDown, Repeat, Receipt, CreditCard, Banknote,
+  Target, EyeOff,
+  Hammer, FlaskConical, TerminalSquare, GitBranch, Circle,
+  Pin, WifiOff, Lightbulb, Power, Plug, Sun, Snowflake, Flame,
+  Palette, Keyboard, AudioLines, User, type LucideIcon
+} from "lucide-react";
+import { GlassCard, SectionTitle } from "./components/ui/GlassCard";
+import { StatusChip } from "./components/ui/StatusChip";
+import { ProgressRing } from "./components/ui/ProgressRing";
+import { ActionButton } from "./components/ui/ActionButton";
+import { AssistantOrb } from "./components/ui/AssistantOrb";
+import { VoiceWaveform } from "./components/ui/VoiceWaveform";
+import { ModuleLoadingOverlay, InlineLoadingState, LoadingStatusCard } from "./components/ui/ModuleLoading";
+import logoUrl from "./logo.png";
 import "@dexnest/shared-ui/tokens.css";
 import "./styles.css";
+import "./theme.css";
 
-type ViewId = "command" | "dev" | "deck" | "clipboard" | "drop" | "tools" | "vault" | "search" | "capture" | "journal" | "calendar" | "finder" | "finance" | "heatmap" | "audit" | "settings";
+type ViewId = "command" | "dev" | "deck" | "clipboard" | "drop" | "tools" | "vault" | "search" | "capture" | "journal" | "calendar" | "finder" | "finance" | "heatmap" | "devices" | "backup" | "health" | "audit" | "settings";
 type ActionStatus = "success" | "failed" | "skipped" | "cancelled" | "pending";
 type ToastTone = "success" | "error";
 type AppCloseBehavior = "minimize_to_tray" | "ask" | "exit";
@@ -232,6 +262,7 @@ interface SpeechSettings {
   vadMode?: "auto" | "manual";
   noiseFloor?: number;
   speechThresholdMargin?: number;
+  micSensitivity?: number;
   maxPostSpeechListenMs?: number;
   requireSpeechStart?: boolean;
   adaptiveSilenceThreshold?: boolean;
@@ -315,19 +346,48 @@ interface PerfStats {
   lastModule: string;
   lastModuleSwitchMs: number | null;
   worstModuleSwitchMs: number | null;
+  lastDataLoadModule: string;
+  lastDataLoadMs: number | null;
+  lastTotalReadyMs: number | null;
+  slowModuleWarning: string | null;
 }
-let perfStats: PerfStats = { lastModule: "", lastModuleSwitchMs: null, worstModuleSwitchMs: null };
+let perfStats: PerfStats = {
+  lastModule: "",
+  lastModuleSwitchMs: null,
+  worstModuleSwitchMs: null,
+  lastDataLoadModule: "",
+  lastDataLoadMs: null,
+  lastTotalReadyMs: null,
+  slowModuleWarning: null
+};
 const perfListeners = new Set<() => void>();
 function getPerfStats(): PerfStats { return perfStats; }
 function subscribePerf(listener: () => void): () => void { perfListeners.add(listener); return () => perfListeners.delete(listener); }
+function emitPerf(): void { for (const listener of perfListeners) { listener(); } }
+// firstPaintMs is approximated by the module-switch time (request → painted frame).
 function recordModuleSwitch(view: string, ms: number): void {
   const rounded = Math.round(ms);
   perfStats = {
+    ...perfStats,
     lastModule: view,
     lastModuleSwitchMs: rounded,
     worstModuleSwitchMs: Math.max(rounded, perfStats.worstModuleSwitchMs ?? 0)
   };
-  for (const listener of perfListeners) { listener(); }
+  emitPerf();
+}
+// Records how long a module's heavy data took to load (off the first-paint path)
+// and the total ready time; warns if a module took over 1000ms end-to-end.
+function recordModuleDataLoaded(view: string, dataMs: number, totalMs: number): void {
+  const data = Math.round(dataMs);
+  const total = Math.round(totalMs);
+  perfStats = {
+    ...perfStats,
+    lastDataLoadModule: view,
+    lastDataLoadMs: data,
+    lastTotalReadyMs: total,
+    slowModuleWarning: total > 1000 ? `${view} took ${total}ms to load` : perfStats.slowModuleWarning
+  };
+  emitPerf();
 }
 
 let vadLiveMeter: VadLiveMeter = { level: 0, noiseFloor: 0, speechThreshold: 0.03, state: "idle" };
@@ -640,6 +700,12 @@ interface DexNestProject {
   };
   urls: string[];
   notes: string;
+  ports?: number[];
+  stopCommand?: string;
+  logCommand?: string;
+  logPath?: string;
+  dockerComposeEnabled?: boolean;
+  healthUrl?: string;
   createdAt: string;
   updatedAt: string;
   lastOpenedAt?: string | null;
@@ -658,6 +724,12 @@ interface ProjectFormState {
   custom: string;
   urls: string;
   notes: string;
+  ports: string;
+  stopCommand: string;
+  logCommand: string;
+  logPath: string;
+  dockerComposeEnabled: boolean;
+  healthUrl: string;
 }
 
 interface ProjectCommandResult {
@@ -725,6 +797,10 @@ interface ClipboardState {
     } | null;
     appExclusionRules: string[];
     secretProtectionEnabled: boolean;
+    slotSequenceEnabled: boolean;
+    slotSequenceStatus: "active" | "disabled" | "failed";
+    slotSequenceLastError: string | null;
+    slotSequenceWindowMs: number;
   };
   multiGroups: Array<{
     id: string;
@@ -893,6 +969,7 @@ interface SecureVaultState {
   isUnlocked: boolean;
   filePath: string;
   autoLockMinutes: number;
+  lockMode?: "on_app_exit" | "timer";
   itemTypes: SecureVaultItemType[];
   items: SecureVaultItem[];
 }
@@ -936,6 +1013,8 @@ interface SearchIndexRecord {
   searchableText?: string;
   tags?: string[];
   category?: string | null;
+  profileId?: string | null;
+  profileName?: string | null;
   createdAt: string;
   updatedAt: string;
   indexedAt: string;
@@ -993,6 +1072,7 @@ type VoiceIntentName =
   | "external_device_control"
   | "performance_mode"
   | "security_action"
+  | "run_action"
   | "unknown";
 
 type VoiceConfidence = "high" | "medium" | "low";
@@ -1203,6 +1283,8 @@ interface Nudge {
   message: string;
   sourceModule: string;
   sourceId?: string | null;
+  sourceProfileId?: string | null;
+  sourceProfileName?: string | null;
   date: string;
   time?: string | null;
   priority: NudgePriority;
@@ -1265,6 +1347,7 @@ type FinanceRecurringFrequency = "monthly" | "yearly" | "weekly" | "custom";
 
 interface FinanceTransaction {
   id: string;
+  profileId?: string;
   date: string;
   store: string;
   amount: number;
@@ -1309,10 +1392,22 @@ interface FinanceSummary {
   transactionCount: number;
 }
 
+interface FinanceProfile {
+  id: string;
+  name: string;
+  status: "active" | "archived";
+  createdAt: string;
+  updatedAt: string;
+  isDefault: boolean;
+}
+
 interface FinanceState {
   transactions: FinanceTransaction[];
   recurring: FinanceRecurringExpense[];
   settings: { defaultCurrency: string; receiptsPath: string };
+  profiles: FinanceProfile[];
+  activeProfileId: string;
+  profilesPath: string;
   transactionsPath: string;
   recurringPath: string;
   settingsPath: string;
@@ -1553,6 +1648,55 @@ interface AppHealthState {
   groups: HealthGroup[];
 }
 
+interface DataManagementCategoryState {
+  id: string;
+  label: string;
+  description: string;
+  sensitive: boolean;
+  records: number;
+  files: number;
+  folders: string[];
+}
+
+interface DataManagementLastDeletion {
+  lastDeletionAt: string | null;
+  status: "success" | "partial" | "failed" | null;
+  categoriesCleared: string[];
+  backupCreated: boolean;
+  backupFileName: string | null;
+}
+
+interface DataManagementState {
+  categories: DataManagementCategoryState[];
+  lastDeletion: DataManagementLastDeletion;
+}
+
+interface DataManagementPreviewItem {
+  id: string;
+  label: string;
+  sensitive: boolean;
+  records: number;
+  files: number;
+  folders: string[];
+}
+
+interface DataManagementPreview {
+  items: DataManagementPreviewItem[];
+  totalRecords: number;
+  totalFiles: number;
+  sensitiveSelected: string[];
+}
+
+interface DataManagementDeleteResult {
+  ok: boolean;
+  status: "success" | "partial" | "failed";
+  results: Array<{ id: string; label: string; recordsCleared: number; filesDeleted: number; ok: boolean; error?: string }>;
+  backupCreated: boolean;
+  backupFileName: string | null;
+  backupError: string | null;
+  lastDeletion: DataManagementLastDeletion;
+}
+
 interface DexNestBridge {
   getAppInfo: () => Promise<AppInfo>;
   listActions: () => Promise<ActionDefinition[]>;
@@ -1575,6 +1719,7 @@ interface DexNestBridge {
   getRoutinesState: () => Promise<RoutinesState>;
   getBackupState: () => Promise<BackupState>;
   getExternalDevicesState: () => Promise<ExternalDevicesState>;
+  getDataManagementState: () => Promise<DataManagementState>;
   getAppHealth: () => Promise<AppHealthState>;
   getCommandStats: () => Promise<CommandStats>;
   getPerformanceModeState: () => Promise<PerformanceModeState>;
@@ -1611,6 +1756,7 @@ interface DexNestBridge {
   stopWakeEngine: () => Promise<{ ok: boolean; state: WakeEngineState }>;
   voiceOverlay: (payload: { type?: string; state?: string; level?: number }) => void;
   onWakeDetected: (callback: (payload: { source: string; score: number | null }) => void) => () => void;
+  onRunAssistantCommand?: (callback: (payload: { text: string; source?: string }) => void) => () => void;
   openSpeechModelFolder: () => Promise<{ ok: boolean; path?: string; error?: string }>;
   transcribeSpeech: (payload: { audioBytes?: number[]; mimeType?: string; source?: string; sourceModule?: string; language?: string; manualOverride?: boolean }) => Promise<SpeechTranscriptionResult>;
   getAssistantSecurityState: () => Promise<AssistantSecurityState>;
@@ -1991,7 +2137,11 @@ const fallbackBridge: DexNestBridge = {
       combinedSeparator: "\n\n",
       activeMultiCopySession: null,
       appExclusionRules: [],
-      secretProtectionEnabled: true
+      secretProtectionEnabled: true,
+      slotSequenceEnabled: false,
+      slotSequenceStatus: "disabled",
+      slotSequenceLastError: null,
+      slotSequenceWindowMs: 700
     },
     multiGroups: [],
     slots: Array.from({ length: 5 }, (_item, index) => ({ slot: index + 1, text: "", preview: "", byteLength: 0, updatedAt: "" })),
@@ -2114,6 +2264,9 @@ const fallbackBridge: DexNestBridge = {
     transactions: [],
     recurring: [],
     settings: { defaultCurrency: "CAD", receiptsPath: "./local-data/files/receipts" },
+    profiles: [],
+    activeProfileId: "",
+    profilesPath: "./local-data/settings/finance-profiles.json",
     transactionsPath: "./local-data/settings/finance-transactions.json",
     recurringPath: "./local-data/settings/finance-recurring.json",
     settingsPath: "./local-data/settings/finance-settings.json",
@@ -2184,6 +2337,10 @@ const fallbackBridge: DexNestBridge = {
     backups: []
   }),
   getExternalDevicesState: async () => defaultExternalDevicesState,
+  getDataManagementState: async () => ({
+    categories: [],
+    lastDeletion: { lastDeletionAt: null, status: null, categoriesCleared: [], backupCreated: false, backupFileName: null }
+  }),
   getAppHealth: async () => ({
     overallStatus: "warn",
     checkedAt: new Date().toISOString(),
@@ -2246,6 +2403,7 @@ const fallbackBridge: DexNestBridge = {
   stopWakeEngine: async () => ({ ok: true, state: defaultWakeEngineState }),
   voiceOverlay: () => undefined,
   onWakeDetected: () => () => undefined,
+  onRunAssistantCommand: () => () => undefined,
   openSpeechModelFolder: async () => ({ ok: false, error: "Bridge unavailable" }),
   transcribeSpeech: async () => ({ transcript: "", engine: "faster_whisper", model: "base.en", language: "en", durationMs: 0, status: "failed", error: "Bridge unavailable", speechState: defaultSpeechState }),
   getAssistantSecurityState: async () => ({
@@ -2278,22 +2436,48 @@ function getBridge(): DexNestBridge {
 
 const views: Array<{ id: ViewId; label: string; accentClass: string; actionId: string }> = [
   { id: "command", label: "Command", accentClass: "accent-command", actionId: "command.open_home" },
-  { id: "dev", label: "Dev", accentClass: "accent-dev", actionId: "dev.open_dashboard" },
-  { id: "deck", label: "Deck", accentClass: "accent-deck", actionId: "deck.test_endpoint" },
+  { id: "search", label: "Search / Ask", accentClass: "accent-search", actionId: "search.open" },
   { id: "clipboard", label: "Clipboard", accentClass: "accent-clipboard", actionId: "clipboard.open" },
   { id: "drop", label: "Drop", accentClass: "accent-drop", actionId: "drop.open" },
   { id: "tools", label: "Tools", accentClass: "accent-tools", actionId: "tools.open" },
   { id: "vault", label: "Vault", accentClass: "accent-vault", actionId: "vault.open" },
-  { id: "search", label: "Search", accentClass: "accent-search", actionId: "search.open" },
-  { id: "capture", label: "Capture", accentClass: "accent-capture", actionId: "capture.open" },
   { id: "journal", label: "Journal", accentClass: "accent-journal", actionId: "journal.open_today" },
   { id: "calendar", label: "Calendar", accentClass: "accent-calendar", actionId: "calendar.show_today" },
   { id: "finder", label: "Finder", accentClass: "accent-finder", actionId: "finder.open" },
+  { id: "capture", label: "Capture", accentClass: "accent-capture", actionId: "capture.open" },
   { id: "finance", label: "Finance", accentClass: "accent-finance", actionId: "finance.open" },
+  { id: "dev", label: "Dev", accentClass: "accent-dev", actionId: "dev.open_dashboard" },
+  { id: "deck", label: "Deck", accentClass: "accent-deck", actionId: "deck.test_endpoint" },
   { id: "heatmap", label: "Heatmap", accentClass: "accent-heatmap", actionId: "heatmap.open" },
-  { id: "audit", label: "Audit", accentClass: "accent-command", actionId: "audit.open_history" },
-  { id: "settings", label: "Settings", accentClass: "accent-command", actionId: "settings.open" }
+  { id: "devices", label: "External Devices", accentClass: "accent-tools", actionId: "" },
+  { id: "backup", label: "Backup", accentClass: "accent-command", actionId: "" },
+  { id: "health", label: "App Health", accentClass: "accent-command", actionId: "" },
+  { id: "settings", label: "Settings", accentClass: "accent-command", actionId: "settings.open" },
+  { id: "audit", label: "Audit", accentClass: "accent-command", actionId: "audit.open_history" }
 ];
+
+// Per-module sidebar icon + accent (ported from reference-ui modules.js).
+const MODULE_META: Record<string, { icon: LucideIcon; accent: string }> = {
+  command: { icon: Command, accent: "#22D3EE" },
+  dev: { icon: Code2, accent: "#3B82F6" },
+  deck: { icon: LayoutGrid, accent: "#A855F7" },
+  clipboard: { icon: ClipboardList, accent: "#8B5CF6" },
+  drop: { icon: Share2, accent: "#38BDF8" },
+  tools: { icon: Wrench, accent: "#F97316" },
+  vault: { icon: Vault, accent: "#10B981" },
+  search: { icon: Sparkles, accent: "#6366F1" },
+  capture: { icon: Inbox, accent: "#EC4899" },
+  journal: { icon: NotebookPen, accent: "#F59E0B" },
+  calendar: { icon: CalendarDays, accent: "#14B8A6" },
+  finder: { icon: PackageSearch, accent: "#84CC16" },
+  finance: { icon: Wallet, accent: "#22C55E" },
+  heatmap: { icon: Activity, accent: "#EF4444" },
+  devices: { icon: Lightbulb, accent: "#FB923C" },
+  backup: { icon: HardDriveDownload, accent: "#0EA5E9" },
+  health: { icon: Stethoscope, accent: "#34D399" },
+  audit: { icon: ScrollText, accent: "#34D399" },
+  settings: { icon: SettingsIcon, accent: "#A3A3A3" }
+};
 
 const moduleCards = [
   ["command", "Command", "Action hub and dashboard.", "available"],
@@ -2341,8 +2525,77 @@ const voiceModuleAliases: Record<string, { module: ViewId; actionId: string }> =
   finder: { module: "finder", actionId: "finder.open" },
   heatmap: { module: "heatmap", actionId: "heatmap.open" },
   audit: { module: "audit", actionId: "audit.open_history" },
-  settings: { module: "settings", actionId: "settings.open" }
+  settings: { module: "settings", actionId: "settings.open" },
+  backup: { module: "backup", actionId: "backup.open" },
+  "app health": { module: "health", actionId: "system.health.open" },
+  health: { module: "health", actionId: "system.health.open" },
+  performance: { module: "settings", actionId: "system.performance.open" },
+  "performance mode": { module: "settings", actionId: "system.performance.open" },
+  "stream deck": { module: "deck", actionId: "deck.test_endpoint" }
 };
+
+// Capability map for the "Things you can say" reference. Every entry routes
+// through the same resolver used by Hey Jarvis, push-to-talk and typed Ask
+// DexNest (fast-path → rules → Ollama). `sources` notes where each works:
+//   J = Hey Jarvis wake word, P = push-to-talk, T = typed Ask DexNest,
+//   D = Stream Deck / shortcut (registered action).
+type VoiceSourceTag = "J" | "P" | "T" | "D";
+interface VoiceCapabilityItem { label: string; examples: string[]; sources: VoiceSourceTag[]; }
+interface VoiceCapabilityGroup { module: string; accent: string; items: VoiceCapabilityItem[]; }
+
+const ALL_VOICE: VoiceSourceTag[] = ["J", "P", "T", "D"];
+const VOICE_NO_DECK: VoiceSourceTag[] = ["J", "P", "T"];
+
+const VOICE_CAPABILITY_GROUPS: VoiceCapabilityGroup[] = [
+  { module: "Core", accent: "#22D3EE", items: [
+    { label: "Open Command", examples: ["open command", "go home"], sources: ALL_VOICE },
+    { label: "Open Settings", examples: ["open settings"], sources: ALL_VOICE },
+    { label: "Show App Health", examples: ["show app health", "open app health"], sources: ALL_VOICE },
+    { label: "Performance Mode on/off", examples: ["turn on performance mode", "turn off performance mode"], sources: ALL_VOICE },
+    { label: "Lock sensitive session", examples: ["lock sensitive session"], sources: ALL_VOICE }
+  ] },
+  { module: "Search / Vault", accent: "#10B981", items: [
+    { label: "Search", examples: ["search work permit", "find document passport"], sources: VOICE_NO_DECK },
+    { label: "Open / Lock Vault", examples: ["open vault", "lock vault"], sources: ALL_VOICE },
+    { label: "Smart Lookup", examples: ["what is my work permit number", "when does my work permit expire"], sources: VOICE_NO_DECK },
+    { label: "Find document", examples: ["find my passport document"], sources: VOICE_NO_DECK }
+  ] },
+  { module: "Journal / Calendar", accent: "#F59E0B", items: [
+    { label: "Journal", examples: ["start today's journal", "save journal", "open journal"], sources: VOICE_NO_DECK },
+    { label: "Calendar", examples: ["show today's calendar", "show upcoming events"], sources: ALL_VOICE },
+    { label: "Add event", examples: ["add meeting with Tim tomorrow at 3"], sources: VOICE_NO_DECK }
+  ] },
+  { module: "Clipboard / Drop", accent: "#8B5CF6", items: [
+    { label: "Clipboard slots", examples: ["show clipboard slots", "paste slot 1", "paste slot 2", "paste slot 3"], sources: ALL_VOICE },
+    { label: "Send clipboard to phone", examples: ["send clipboard to phone"], sources: ALL_VOICE },
+    { label: "Open Drop", examples: ["open drop"], sources: ALL_VOICE }
+  ] },
+  { module: "Dev", accent: "#3B82F6", items: [
+    { label: "Open Dev", examples: ["open dev"], sources: ALL_VOICE },
+    { label: "Run command", examples: ["run typecheck", "run build"], sources: ALL_VOICE },
+    { label: "Project lifecycle", examples: ["start DexNest project", "stop DexNest project", "restart DexNest project"], sources: ALL_VOICE }
+  ] },
+  { module: "Tools / Backup", accent: "#F97316", items: [
+    { label: "Open Tools", examples: ["open tools"], sources: ALL_VOICE },
+    { label: "Backup", examples: ["open backup", "create backup"], sources: ALL_VOICE }
+  ] },
+  { module: "Heatmap", accent: "#EF4444", items: [
+    { label: "Heatmap", examples: ["open heatmap", "pause heatmap", "start heatmap"], sources: ALL_VOICE }
+  ] },
+  { module: "Deck / Routines", accent: "#A855F7", items: [
+    { label: "Open Deck", examples: ["open deck", "show stream deck"], sources: ALL_VOICE },
+    { label: "Run routine", examples: ["run morning routine", "run dev routine", "run end of day routine"], sources: ALL_VOICE }
+  ] },
+  { module: "External Devices", accent: "#FB923C", items: [
+    { label: "Lights", examples: ["turn on lights", "turn off lights", "set lights to 40 percent", "make lights blue"], sources: ALL_VOICE },
+    { label: "Specific device", examples: ["turn on side lamp", "turn off table lamp"], sources: ALL_VOICE }
+  ] },
+  { module: "Finance / Capture / Finder", accent: "#22C55E", items: [
+    { label: "Open modules", examples: ["open finance", "open capture"], sources: ALL_VOICE },
+    { label: "Capture", examples: ["capture this", "remember passport is in black drawer"], sources: VOICE_NO_DECK },
+    { label: "Finder lookup", examples: ["where is my passport", "what is in black drawer"], sources: VOICE_NO_DECK }
+  ] }
+];
 
 function normalizeVoiceCommand(value: string): string {
   return value.toLowerCase().replace(/[^\w\s:'-]/g, " ").replace(/\s+/g, " ").trim();
@@ -2983,6 +3236,60 @@ function routeVoiceCommand(input: string, actions: ActionDefinition[], workflowS
 // Fast deterministic command router (Phase 23 Part D). Handles obvious commands
 // instantly without ever calling Ollama. Returns null for anything it is not
 // confident about, so the rules router + optional LLM can take over.
+// Universal capability fast-path: resolves spoken/typed commands that map
+// directly to registered DexNest actions (clipboard slots, backup, heatmap,
+// Dev project lifecycle, Deck routines). Driven by the action registry + a few
+// runtime patterns, so there is no separate hardcoded voice logic per surface.
+function capabilityFastRoute(normalized: string, trimmed: string, actions: ActionDefinition[]): VoiceRouteResult | null {
+  const has = (actionId: string) => actions.some((action) => action.id === actionId);
+  const make = (actionId: string, params: Record<string, unknown>, explanation: string, intent: VoiceIntentName = "run_action", targetModule = actionId.split(".")[0]): VoiceRouteResult => {
+    const action = actions.find((item) => item.id === actionId);
+    const requiresConfirmation = Boolean(action && (action.dangerLevel === "danger" || action.dangerLevel === "critical" || action.requiresConfirmation));
+    return { intent, targetModule, actionId, params, confidence: "high", requiresConfirmation, sensitivity: "none", explanation };
+  };
+
+  // Paste Clipboard Slot 1/2/3.
+  const slotMatch = normalized.match(/\bslot\s*([123])\b/);
+  if (slotMatch && /\bpaste\b/.test(normalized) && has(`clipboard.slot${slotMatch[1]}.paste`)) {
+    return make(`clipboard.slot${slotMatch[1]}.paste`, {}, `Pastes Clipboard Slot ${slotMatch[1]} into the focused app.`, "run_action", "clipboard");
+  }
+
+  // Create backup.
+  if (/\bbackup\b/.test(normalized) && /\b(create|make|run|start|take|do)\b/.test(normalized) && has("backup.create")) {
+    return make("backup.create", {}, "Creates a local DexNest backup.", "run_action", "backup");
+  }
+
+  // Heatmap pause / start.
+  if (/\bheatmap\b/.test(normalized) && /\bpause\b/.test(normalized) && has("heatmap.pause")) {
+    return make("heatmap.pause", {}, "Pauses DexNest Heatmap tracking.", "run_action", "heatmap");
+  }
+  if (/\bheatmap\b/.test(normalized) && /\b(start|resume|begin|enable)\b/.test(normalized) && has("heatmap.start")) {
+    return make("heatmap.start", {}, "Starts DexNest Heatmap tracking.", "run_action", "heatmap");
+  }
+
+  // Dev project lifecycle: "start/stop/restart <project> [project]".
+  const lifecycle = normalized.match(/\b(start|stop|restart)\b/);
+  if (lifecycle) {
+    const op = lifecycle[1] === "start" ? "run_start" : lifecycle[1];
+    for (const action of actions) {
+      const match = action.id.match(/^dev\.project\.[^.]+\.(run_start|stop|restart)$/);
+      if (!match || match[1] !== op) { continue; }
+      const name = (action.title.match(/^Run (.+) start$/) ?? action.title.match(/^(?:Stop|Restart) (.+)$/))?.[1];
+      if (name && normalized.includes(name.toLowerCase())) {
+        return make(action.id, {}, action.title, "dev_run_command", "dev");
+      }
+    }
+  }
+
+  // Run a Deck routine by name ("run morning routine").
+  const routineMatch = trimmed.match(/\brun\s+(.+?)\s+routine\b/i);
+  if (routineMatch && has("deck.routine.run")) {
+    return make("deck.routine.run", { routineName: routineMatch[1].trim() }, `Runs the ${routineMatch[1].trim()} routine.`, "run_action", "deck");
+  }
+
+  return null;
+}
+
 function fastCommandRouter(text: string, actions: ActionDefinition[], workflowSettings = defaultVoiceWorkflowSettings): VoiceRouteResult | null {
   const trimmed = text.trim();
   if (!trimmed) {
@@ -3001,6 +3308,12 @@ function fastCommandRouter(text: string, actions: ActionDefinition[], workflowSe
   const externalRoute = externalDeviceRouteFromText(trimmed, actions);
   if (externalRoute) {
     return externalRoute;
+  }
+
+  // Universal capability map (registry-driven direct actions).
+  const capabilityRoute = capabilityFastRoute(normalized, trimmed, actions);
+  if (capabilityRoute) {
+    return capabilityRoute;
   }
 
   // Part H: Security — lock sensitive session / lock vault / open secure vault.
@@ -3290,23 +3603,32 @@ function playWakeChime(volume = 0.35): void {
     if (!Ctx) {
       return;
     }
-    const peak = Math.max(0.0002, Math.min(0.3, volume * 0.26));
-    const ctx = new Ctx();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    // Short + soft so it cannot block recording or bleed into the command
-    // (echo cancellation on the capture stream also suppresses it).
-    osc.type = "sine";
-    osc.frequency.setValueAtTime(740, ctx.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(990, ctx.currentTime + 0.07);
-    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(peak, ctx.currentTime + 0.015);
-    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.1);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + 0.12);
-    osc.onended = () => void ctx.close().catch(() => undefined);
+    // Wake detection is not a user gesture, so a fresh AudioContext starts
+    // "suspended" (autoplay policy) and produces no sound. Reuse the already-
+    // resumed pre-warm context when available, otherwise resume before playing.
+    const ctx = (micWarm.audioContext && micWarm.audioContext.state !== "closed") ? micWarm.audioContext : new Ctx();
+    const owned = ctx !== micWarm.audioContext;
+    const play = () => {
+      try {
+        const peak = Math.max(0.0002, Math.min(0.3, volume * 0.26));
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        // Short + soft so it cannot block recording or bleed into the command
+        // (echo cancellation on the capture stream also suppresses it).
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(740, ctx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(990, ctx.currentTime + 0.07);
+        gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(peak, ctx.currentTime + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.1);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.12);
+        if (owned) { osc.onended = () => void ctx.close().catch(() => undefined); }
+      } catch { /* ignore — chime is best-effort */ }
+    };
+    if (ctx.state === "suspended") { void ctx.resume().then(play).catch(play); } else { play(); }
   } catch {
     // ignore — chime is best-effort
   }
@@ -3911,21 +4233,27 @@ function assistantNeedsConfirm(route: VoiceRouteResult, actions: ActionDefinitio
 
 function DexNestApp() {
   const [activeView, setActiveView] = useState<ViewId>("command");
+  const [userName, setUserName] = useState(() => { try { return localStorage.getItem("dexnest:userName") ?? ""; } catch { return ""; } });
+  useEffect(() => { try { localStorage.setItem("dexnest:userName", userName); } catch { /* ignore */ } }, [userName]);
+  const multiCopyAutoStartedRef = useRef(false);
   const activeViewRef = useRef<ViewId>("command");
   useEffect(() => { activeViewRef.current = activeView; }, [activeView]);
-  // Load heavy, view-specific state once when entering its view (covers every
-  // navigation path). While on the view, refreshShellData keeps it fresh.
+  // Per-view loading status drives the in-content loading overlay / error card.
+  // Only heavy, async-loaded views are tracked; light views (Command, Journal,
+  // Calendar, Clipboard, Drop, Tools, Dev, Deck) render from shell state that is
+  // already loaded, so they show their content immediately.
+  const [viewLoad, setViewLoad] = useState<Partial<Record<ViewId, "loading" | "ready" | "error">>>({});
+  // Load heavy, view-specific state when entering its view, behind a loading
+  // state. Runs after first paint (never blocks the switch). While on the view,
+  // refreshShellData keeps data fresh silently (without toggling the overlay).
   useEffect(() => {
-    if (activeView === "search") { void getBridge().getSearchState().then(setSearchState).catch(() => undefined); }
-    else if (activeView === "vault") { void getBridge().getVaultState().then(setVaultState).catch(() => undefined); }
-    else if (activeView === "finder") { void getBridge().getFinderState().then(setFinderState).catch(() => undefined); }
-    else if (activeView === "finance") { void getBridge().getFinanceState().then(setFinanceState).catch(() => undefined); }
-    else if (activeView === "capture") { void getBridge().getCaptureState().then(setCaptureState).catch(() => undefined); }
-    else if (activeView === "heatmap") { void getBridge().getHeatmapState().then(setHeatmapState).catch(() => undefined); }
+    void loadViewData(activeView);
     if (activeView === "settings") {
+      // Settings reads a couple of light states lazily, after first paint.
       void getBridge().getHeatmapState().then(setHeatmapState).catch(() => undefined);
       void getBridge().getBackupState().then(setBackupState).catch(() => undefined);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeView]);
   // Coalesce concurrent shell refreshes so bursts (clipboard listener + hotkey +
   // UI action) collapse into a single pass instead of stacking heavy reloads.
@@ -3966,7 +4294,11 @@ function DexNestApp() {
       combinedSeparator: "\n\n",
       activeMultiCopySession: null,
       appExclusionRules: [],
-      secretProtectionEnabled: true
+      secretProtectionEnabled: true,
+      slotSequenceEnabled: false,
+      slotSequenceStatus: "disabled",
+      slotSequenceLastError: null,
+      slotSequenceWindowMs: 700
     },
     multiGroups: [],
     slots: Array.from({ length: 5 }, (_item, index) => ({ slot: index + 1, text: "", preview: "", byteLength: 0, updatedAt: "" })),
@@ -4089,6 +4421,9 @@ function DexNestApp() {
     transactions: [],
     recurring: [],
     settings: { defaultCurrency: "CAD", receiptsPath: "" },
+    profiles: [],
+    activeProfileId: "",
+    profilesPath: "",
     transactionsPath: "",
     recurringPath: "",
     settingsPath: "",
@@ -4161,6 +4496,8 @@ function DexNestApp() {
     },
     backups: []
   });
+  const [appHealthState, setAppHealthState] = useState<AppHealthState | null>(null);
+  const [externalDevicesState, setExternalDevicesState] = useState<ExternalDevicesState>(defaultExternalDevicesState);
   const [commandStats, setCommandStats] = useState<CommandStats>(emptyCommandStats);
   const [events, setEvents] = useState<EventEntry[]>([]);
   const [performanceModeState, setPerformanceModeState] = useState<PerformanceModeState>(defaultPerformanceModeState);
@@ -4697,17 +5034,28 @@ function DexNestApp() {
   }, [speechState.performancePaused, journalVoice.mode, journalVoice.status]);
 
   // --- Wake word "Nest" MVP (Phase 23.8) ----------------------------------
+  // Wake word is always available — Performance Mode never pauses it.
   function wakePerfPaused(): boolean {
-    return Boolean(speechStateRef.current.performancePaused) && (ambientVoiceState.settings.pauseWakeWordInPerformanceMode ?? true);
+    return false;
   }
 
-  // Passive desktop voice-overlay signal. Never controls capture; only displays
-  // state. Suppressed when the overlay is disabled or speech is perf-paused.
+  // ONE listening indicator, switched by window visibility: when DexNest is
+  // visible, the in-app card shows it; when DexNest is minimized / hidden, the
+  // identical always-on-top desktop card shows it instead. "hide" always passes
+  // through so the desktop card can be dismissed if the window becomes visible.
   function signalVoiceOverlay(payload: { type?: string; state?: string; level?: number }): void {
     if (!(ambientVoiceState.settings.voiceOverlayEnabled ?? true)) {
       return;
     }
-    if (payload.type !== "hide" && wakePerfPaused()) {
+    if (payload.type === "hide") {
+      getBridge().voiceOverlay(payload);
+      return;
+    }
+    if (wakePerfPaused()) {
+      return;
+    }
+    // App is visible → the in-app card already shows the state; don't double up.
+    if (typeof document !== "undefined" && document.visibilityState !== "hidden") {
       return;
     }
     getBridge().voiceOverlay(payload);
@@ -4804,8 +5152,9 @@ function DexNestApp() {
       const metrics = { ...(result.metrics ?? {}), wakeToSearchNavigationMs };
       updateWakeMetrics(metrics);
       if (result.status === "success" && result.transcript.trim()) {
-        // Overlay → processing pulse while routing; speak/done is signalled by the route.
-        signalVoiceOverlay({ type: "state", state: "transcribing" });
+        // Listening is done — hide the desktop "Listening…" card immediately while
+        // routing/answering continues in the background.
+        signalVoiceOverlay({ type: "hide" });
         setAssistantQueuedCommand({
           id: createClientId("ambient-command"),
           text: result.transcript.trim(),
@@ -4819,6 +5168,13 @@ function DexNestApp() {
           lastActionResult: "Routing wake command.",
           lastSource: source
         });
+        // Listening is done — hide the "Listening…" card immediately while routing
+        // continues in the background (don't wait for the long safety timeout).
+        setWakeWordState((current) => ({
+          ...current,
+          status: ambientVoiceState.settings.wakeWordEnabled && !wakePerfPaused() ? "listening_for_nest" : "disabled",
+          metrics: { ...current.metrics, totalWakeToActionMs: current.metrics.wakeDetectedAt ? Date.now() - current.metrics.wakeDetectedAt : current.metrics.totalWakeToActionMs }
+        }));
         return;
       }
       // No speech captured → fade the overlay out.
@@ -4883,6 +5239,18 @@ function DexNestApp() {
       wakeWordService.dispose();
       unsubscribe?.();
     };
+  }, []);
+
+  // Stream Deck (and other triggers) can inject a text command — e.g. "start
+  // today's journal" / "save journal" — through the existing assistant pipeline.
+  useEffect(() => {
+    const unsubscribe = getBridge().onRunAssistantCommand?.((payload) => {
+      const text = (payload?.text ?? "").trim();
+      if (!text) { return; }
+      setAssistantQueuedCommand({ id: createClientId("sd-command"), text, source: payload.source || "stream_deck" });
+      setAssistantQueuedCommandSignal((value) => value + 1);
+    });
+    return () => { unsubscribe?.(); };
   }, []);
 
   // Start/stop the wake service to match the enabled setting + Performance Mode.
@@ -5019,6 +5387,38 @@ function DexNestApp() {
     };
   }, []);
 
+  // Heavy per-view loaders. Each fetches a single view's large state off the
+  // first-paint path. Views not listed here render from already-loaded shell
+  // state and need no loading overlay.
+  const heavyViewLoaders: Partial<Record<ViewId, () => Promise<void>>> = {
+    search: async () => setSearchState(await getBridge().getSearchState()),
+    vault: async () => setVaultState(await getBridge().getVaultState()),
+    finder: async () => setFinderState(await getBridge().getFinderState()),
+    finance: async () => setFinanceState(await getBridge().getFinanceState()),
+    capture: async () => setCaptureState(await getBridge().getCaptureState()),
+    journal: async () => setJournalState(await getBridge().getJournalState()),
+    heatmap: async () => setHeatmapState(await getBridge().getHeatmapState()),
+    backup: async () => setBackupState(await getBridge().getBackupState()),
+    health: async () => setAppHealthState(await getBridge().getAppHealth()),
+    devices: async () => setExternalDevicesState(await getBridge().getExternalDevicesState())
+  };
+
+  async function loadViewData(view: ViewId): Promise<void> {
+    const loader = heavyViewLoaders[view];
+    if (!loader) { return; }
+    const startedAt = performance.now();
+    // Keep showing existing content during a re-entry refresh (already "ready")
+    // so we never flash a spinner over data the user already has.
+    setViewLoad((current) => (current[view] === "ready" ? current : { ...current, [view]: "loading" }));
+    try {
+      await loader();
+      recordModuleDataLoaded(view, performance.now() - startedAt, performance.now() - startedAt);
+      setViewLoad((current) => ({ ...current, [view]: "ready" }));
+    } catch {
+      setViewLoad((current) => ({ ...current, [view]: "error" }));
+    }
+  }
+
   async function refreshShellData(): Promise<void> {
     // Coalesce: if a refresh is already running, mark one more pass and return.
     if (refreshInFlightRef.current) {
@@ -5079,7 +5479,9 @@ function DexNestApp() {
       if (view === "finance") { setFinanceState(await getBridge().getFinanceState()); }
       if (view === "capture") { setCaptureState(await getBridge().getCaptureState()); }
       if (view === "heatmap" || view === "settings") { setHeatmapState(await getBridge().getHeatmapState()); }
-      if (view === "settings") { setBackupState(await getBridge().getBackupState()); }
+      if (view === "settings" || view === "backup") { setBackupState(await getBridge().getBackupState()); }
+      if (view === "health") { setAppHealthState(await getBridge().getAppHealth()); }
+      if (view === "devices") { setExternalDevicesState(await getBridge().getExternalDevicesState()); }
     } finally {
       refreshInFlightRef.current = false;
       if (refreshPendingRef.current) {
@@ -5168,6 +5570,15 @@ function DexNestApp() {
     return result;
   }
 
+  // Multi-copy session is ON by default: auto-start once per app launch if none is active.
+  useEffect(() => {
+    if (!bootReady || multiCopyAutoStartedRef.current) { return; }
+    multiCopyAutoStartedRef.current = true;
+    if (!clipboardState.settings.activeMultiCopySession) {
+      void runUiAction("clipboard.start_multi_copy", "module_ui", {}).then(() => refreshShellData()).catch(() => undefined);
+    }
+  }, [bootReady, clipboardState.settings.activeMultiCopySession]);
+
   async function runUiAction(actionId: string, source = "module_ui", params: unknown = {}) {
     const action = actions.find((item) => item.id === actionId);
     const result = await runAction(actionId, source, params);
@@ -5218,8 +5629,24 @@ function DexNestApp() {
     return () => window.clearTimeout(timer);
   }, [isBusy]);
 
+  // Sidebar status-footer values (display only).
+  const shellWakeOn = Boolean(ambientVoiceState.settings.wakeWordEnabled);
+  const shellPerfOn = Boolean(performanceModeState.enabled);
+  const shellVaultLocked = !assistantSecurityState.sessionUnlocked;
+  const shellDropReady = Boolean(dropState);
+  const shellStatus: Array<{ label: string; icon: LucideIcon; on: boolean; v: string; c: string }> = [
+    { label: "Wake", icon: Mic, on: shellWakeOn, v: shellWakeOn ? "listening" : "off", c: "#06B6D4" },
+    { label: "Perf", icon: Cpu, on: shellPerfOn, v: shellPerfOn ? "on" : "off", c: "#F59E0B" },
+    { label: "Vault", icon: shellVaultLocked ? Lock : Unlock, on: !shellVaultLocked, v: shellVaultLocked ? "locked" : "open", c: shellVaultLocked ? "#EF4444" : "#10B981" },
+    { label: "Drop", icon: Share2, on: shellDropReady, v: shellDropReady ? "ready" : "offline", c: "#38BDF8" }
+  ];
+
   return (
-    <div className="app-shell" data-sidebar-collapsed={sidebarCollapsed}>
+    <div className="grain relative flex h-screen overflow-hidden bg-black" data-sidebar-collapsed={sidebarCollapsed}>
+      <div
+        className="pointer-events-none absolute inset-0 z-0 opacity-60"
+        style={{ background: "radial-gradient(900px 500px at 78% -8%, rgba(34,211,238,0.06), transparent 60%), radial-gradient(700px 500px at 10% 110%, rgba(99,102,241,0.05), transparent 60%)" }}
+      />
       {isBusy && <div className="app-loading-bar" aria-hidden="true" />}
       {showBusyOverlay && (
         <div className="app-busy-overlay" role="status" aria-live="polite">
@@ -5231,59 +5658,166 @@ function DexNestApp() {
       )}
       {!bootReady && (
         <div className="app-initial-overlay" role="status" aria-live="polite">
-          <div className="app-initial-overlay__inner">
-            <span className="brand__mark app-initial-overlay__logo" aria-hidden="true" />
-            <strong>Getting DexNest ready</strong>
-            <Spinner size="lg" />
-            <span>{bootStatus}</span>
+          <div className="app-intro">
+            <div className="app-intro__logo-wrap">
+              <span className="app-intro__halo" aria-hidden="true" />
+              <img src={logoUrl} alt="DexNest" className="app-intro__logo" />
+            </div>
+            <h1 className="app-intro__title">DexNest</h1>
+            <p className="app-intro__tagline">Private · local-first workspace</p>
+            <div className="app-intro__progress" aria-hidden="true"><span /></div>
+            <p className="app-intro__status">{bootStatus}</p>
           </div>
         </div>
       )}
-      <aside className="sidebar" aria-label="DexNest navigation">
-        <div className="brand">
-          <span className="brand__mark" aria-hidden="true" />
-          <div className="brand__text">
-            <p>DexNest</p>
-            <strong>Command Center</strong>
-          </div>
-          <button
-            className="sidebar-toggle"
-            type="button"
-            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-            aria-expanded={!sidebarCollapsed}
-            onClick={() => setSidebarCollapsed((current) => !current)}
-          >
-            {sidebarCollapsed ? ">" : "<"}
-          </button>
+      <aside
+        aria-label="DexNest navigation"
+        className={`relative z-30 flex h-screen flex-col border-r border-[#161616] bg-[#050505] transition-[width] duration-300 ${sidebarCollapsed ? "w-[68px]" : "w-[244px]"}`}
+      >
+        <div className="flex items-center gap-2.5 border-b border-[#161616] px-4 py-4">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-[#1f1f1f] bg-black">
+            <img src={logoUrl} alt="DexNest" className="h-full w-full object-cover" />
+          </span>
+          {!sidebarCollapsed && (
+            <div className="leading-tight">
+              <p className="text-sm font-semibold tracking-tight text-[#F5F5F5]">DexNest</p>
+            </div>
+          )}
         </div>
 
-        <nav className="sidebar__nav">
-          {views.map((view) => (
-            <button
-              className={`nav-button ${view.accentClass}`}
-              data-active={activeView === view.id}
-              key={view.id}
-              title={view.label}
-              type="button"
-              onClick={() => void navigate(view.id)}
-            >
-              <span className="nav-button__dot" aria-hidden="true" />
-              <span className="nav-button__label">{view.label}</span>
-            </button>
-          ))}
+        <nav className="sidebar-scroll flex-1 space-y-0.5 overflow-y-auto px-2.5 py-3">
+          {views.filter((view) => view.id !== "audit").map((view) => {
+            const meta = MODULE_META[view.id] ?? { icon: Command, accent: "#22D3EE" };
+            const Icon = meta.icon;
+            const active = activeView === view.id;
+            return (
+              <button
+                key={view.id}
+                type="button"
+                title={view.label}
+                data-testid={`nav-${view.id}`}
+                onClick={() => void navigate(view.id)}
+                className={`group relative flex w-full items-center gap-3 rounded-lg border px-2.5 py-2 text-sm outline-none transition-colors ${active ? "border-transparent text-[#F5F5F5]" : "border-transparent text-[#A3A3A3] hover:bg-[#0d0d0d] hover:text-[#F5F5F5]"}`}
+                style={active ? { background: `${meta.accent}12`, borderColor: `${meta.accent}26`, boxShadow: `inset 0 0 18px ${meta.accent}10` } : undefined}
+              >
+                {active && (
+                  <span className="absolute -left-px top-1/2 h-5 w-[2.5px] -translate-y-1/2 rounded-r-full" style={{ background: meta.accent, boxShadow: `0 0 8px ${meta.accent}` }} />
+                )}
+                <Icon className="h-[18px] w-[18px] shrink-0" style={{ color: meta.accent, opacity: active ? 1 : 0.68 }} />
+                {!sidebarCollapsed && <span className="truncate font-medium">{view.label}</span>}
+              </button>
+            );
+          })}
         </nav>
+
+        <div className="border-t border-[#161616]">
+          <div className={sidebarCollapsed ? "flex flex-col items-center gap-2.5 px-2 py-3" : "grid grid-cols-2 gap-1.5 px-2.5 py-3"}>
+            {shellStatus.map((s) => {
+              const SIcon = s.icon;
+              return sidebarCollapsed ? (
+                <div key={s.label} title={`${s.label}: ${s.v}`} className="relative">
+                  <SIcon className="h-4 w-4" style={{ color: s.on ? s.c : "#525252" }} />
+                  {s.on && <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full" style={{ background: s.c, boxShadow: `0 0 6px ${s.c}` }} />}
+                </div>
+              ) : (
+                <div key={s.label} className="flex items-center gap-1.5 rounded-md border px-2 py-1.5" style={{ borderColor: s.on ? `${s.c}26` : "#191919", background: s.on ? `${s.c}0f` : "#0a0a0a" }}>
+                  <SIcon className="h-3 w-3 shrink-0" style={{ color: s.on ? s.c : "#525252" }} />
+                  <div className="min-w-0 leading-none">
+                    <p className="text-[9px] uppercase tracking-wider text-[#525252]">{s.label}</p>
+                    <p className="font-mono text-[10px] font-medium" style={{ color: s.on ? s.c : "#525252" }}>{s.v}</p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <button
+          type="button"
+          data-testid="sidebar-toggle"
+          onClick={() => setSidebarCollapsed((current) => !current)}
+          className="flex items-center gap-2 border-t border-[#161616] px-4 py-3 text-[#525252] transition-colors hover:text-[#F5F5F5]"
+        >
+          {sidebarCollapsed ? <PanelLeft className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+          {!sidebarCollapsed && <span className="text-xs">Collapse</span>}
+        </button>
       </aside>
 
-      <div className="workspace">
-        <header className="topbar">
-          <div>
-            <p>DexNest / {activeLabel}</p>
-            <h1>{activeLabel}</h1>
+      <div className="relative z-10 flex min-w-0 flex-1 flex-col">
+        <header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-[#161616] bg-black/70 px-5 backdrop-blur-xl">
+          <button
+            type="button"
+            onClick={() => void navigate("search")}
+            className="group flex h-10 max-w-2xl flex-1 items-center gap-3 rounded-xl border border-[#262626] bg-[#0d0d0d] px-3.5 text-left transition-colors hover:border-[#3a3a3a] hover:bg-[#111]"
+          >
+            <Search className="h-4 w-4 text-[#525252] transition-colors group-hover:text-[#A3A3A3]" />
+            <span className="flex-1 truncate text-sm text-[#6b6b6b]">Search modules, ask DexNest, or run a command…</span>
+            <span className="hidden items-center gap-1 font-mono text-[10px] text-[#A3A3A3] sm:flex">
+              <kbd className="flex h-5 min-w-[20px] items-center justify-center rounded-[5px] border border-[#2a2a2a] bg-[#141414] px-1">Ctrl</kbd>
+              <kbd className="flex h-5 min-w-[20px] items-center justify-center rounded-[5px] border border-[#2a2a2a] bg-[#141414] px-1">K</kbd>
+            </span>
+          </button>
+
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              type="button"
+              title="Toggle Performance Mode"
+              onClick={() => { void getBridge().setPerformanceModeEnabled({ enabled: !performanceModeState.enabled, reason: "manual" }).then(() => refreshShellData()).catch(() => undefined); }}
+              className="hidden h-10 items-center gap-2 rounded-xl border border-[#262626] bg-[#0d0d0d] px-3 transition-colors hover:border-[#3a3a3a] md:flex"
+            >
+              <Cpu className="h-4 w-4" style={{ color: shellPerfOn ? "#F59E0B" : "#525252" }} />
+              <span className="text-xs text-[#A3A3A3]">Perf</span>
+              <span className="rounded-full px-2 py-0.5 text-[10px] font-medium" style={{ background: shellPerfOn ? "#F59E0B20" : "#1f1f1f", color: shellPerfOn ? "#F59E0B" : "#525252" }}>{shellPerfOn ? "on" : "off"}</span>
+            </button>
+
+            <button
+              type="button"
+              title="Ask DexNest"
+              onClick={() => void navigate("search")}
+              className={`relative flex h-10 w-10 items-center justify-center rounded-xl border transition-colors ${shellWakeOn ? "border-[#06B6D4]/50 bg-[#06B6D4]/10 text-[#06B6D4]" : "border-[#262626] bg-[#0d0d0d] text-[#A3A3A3] hover:text-[#F5F5F5]"}`}
+            >
+              {shellWakeOn && <span className="absolute inset-0 animate-ping rounded-xl border border-[#06B6D4]/40" />}
+              <Mic className="h-4 w-4" />
+            </button>
+
+            <button
+              type="button"
+              title="Audit log"
+              onClick={() => void navigate("audit")}
+              className="relative flex h-10 w-10 items-center justify-center rounded-xl border border-[#262626] bg-[#0d0d0d] text-[#A3A3A3] transition-colors hover:text-[#F5F5F5]"
+            >
+              <Bell className="h-4 w-4" />
+            </button>
+
+            <button
+              type="button"
+              title="Edit your name in Settings → Profile"
+              onClick={() => void navigate("settings")}
+              className="flex h-10 items-center gap-2 rounded-xl border border-[#262626] bg-[#0d0d0d] pl-1.5 pr-3 transition-colors hover:border-[#3a3a3a]"
+            >
+              <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-[#22D3EE]/25 to-[#6366F1]/25 font-mono text-[11px] font-semibold text-[#F5F5F5]">{(userName.trim().slice(0, 2) || "DX").toUpperCase()}</span>
+              <span className="hidden max-w-[120px] truncate text-xs font-medium text-[#A3A3A3] lg:block">{userName.trim() || "DexNest"}</span>
+            </button>
           </div>
-          <div className="endpoint-pill">{appInfo?.actionEndpoint ?? "Loading endpoint"}</div>
         </header>
 
-        <main className="content">
+        <main className="flex-1 overflow-y-auto px-6 py-6">
+          <div className="relative mx-auto max-w-[1600px]">
+          {(() => {
+            const heavyStatus = viewLoad[activeView];
+            const isHeavy = Boolean(heavyViewLoaders[activeView]);
+            if (!isHeavy || heavyStatus === "ready") { return null; }
+            const accent = MODULE_META[activeView]?.accent ?? "#22D3EE";
+            const label = views.find((item) => item.id === activeView)?.label ?? "module";
+            const gridViews = new Set<ViewId>(["vault", "finder", "finance", "capture", "journal"]);
+            return (
+              <div className="module-loading-layer">
+                {heavyStatus === "error"
+                  ? <LoadingStatusCard accent={accent} message={`Could not load local data for ${label}.`} onRetry={() => void loadViewData(activeView)} />
+                  : <ModuleLoadingOverlay accent={accent} label={`Loading ${label}…`} subtext="Reading local data" variant={gridViews.has(activeView) ? "skeleton" : "spinner"} />}
+              </div>
+            );
+          })()}
           {journalVoice.mode === "journal_dictation" && (
             <div className="ambient-indicator" data-state={journalVoice.status === "paused" ? "paused" : journalVoice.status === "appending" || journalVoice.status === "saved" ? "processing" : "listening"}>
               <span>
@@ -5308,26 +5842,23 @@ function DexNestApp() {
               <strong>{voiceWorkflow.error || voiceWorkflow.lastTranscriptPreview || `${voiceWorkflow.chunksCount} chunk${voiceWorkflow.chunksCount === 1 ? "" : "s"}`}</strong>
             </div>
           )}
-          {journalVoice.mode !== "journal_dictation" && voiceWorkflow.mode === "none" && ambientVoiceState.settings.wakeWordEnabled && wakeWordState.status !== "disabled" && (
-            <div className="ambient-indicator" data-state={wakeWordState.status === "paused_by_performance_mode" ? "paused" : wakeWordState.status === "recording_command" ? "listening" : wakeWordState.status === "transcribing" || wakeWordState.status === "routing" ? "processing" : wakeWordState.status === "wake_detected" ? "listening" : "idle"}>
-              <span>
-                {wakeWordState.status === "paused_by_performance_mode" ? "Wake word paused by Performance Mode"
-                  : wakeWordState.status === "wake_detected" ? "Nest heard"
-                  : wakeWordState.status === "recording_command" ? "Listening…"
-                  : wakeWordState.status === "transcribing" || wakeWordState.status === "routing" ? "Processing…"
-                  : `Listening for ${ambientVoiceState.settings.wakeWord || "Nest"}`}
-              </span>
+          {journalVoice.mode !== "journal_dictation" && voiceWorkflow.mode === "none" && ambientVoiceState.settings.wakeWordEnabled && wakeWordState.status === "recording_command" && (
+            <div className="wake-orb-overlay" role="status" aria-live="polite">
+              <AssistantOrb size={72} color="#6366F1" state="listening" />
+              <span className="wake-orb-overlay__label">Listening…</span>
             </div>
           )}
-          {journalVoice.mode !== "journal_dictation" && voiceWorkflow.mode === "none" && !(ambientVoiceState.settings.wakeWordEnabled && wakeWordState.status !== "disabled") && ambientVoiceState.settings.visibleListeningIndicator && (
-            <div className="ambient-indicator" data-state={ambientVoiceState.currentState}>
-              <span>{ambientVoiceState.pausedByPerformanceMode ? "Nest paused by Performance Mode" : `Nest ${ambientVoiceState.currentState}`}</span>
-              {ambientVoiceState.lastRecognizedCommand && <strong>{ambientVoiceState.lastRecognizedCommand}</strong>}
-            </div>
-          )}
-
+          <AnimatePresence mode="wait">
+          <motion.div
+            key={activeView}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -6 }}
+            transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+          >
           {activeView === "command" && (
             <CommandView
+              userName={userName}
               appInfo={appInfo}
               actions={actions}
               clipboardState={clipboardState}
@@ -5339,6 +5870,7 @@ function DexNestApp() {
               performanceModeSettings={performanceModeSettings}
               onOpenAssistant={openAssistantFromCommand}
               onAction={runUiAction}
+              onNavigate={(view) => void navigate(view)}
               onPerformanceToggle={async (enabled) => {
                 await getBridge().setPerformanceModeEnabled({ enabled, reason: "manual" });
                 await refreshShellData();
@@ -5519,9 +6051,20 @@ function DexNestApp() {
               onRefresh={refreshShellData}
             />
           )}
+          {activeView === "devices" && (
+            <ExternalDevicesView externalState={externalDevicesState} onStateChange={setExternalDevicesState} onAction={runUiAction} onRefresh={refreshShellData} />
+          )}
+          {activeView === "backup" && (
+            <BackupView backupState={backupState} onAction={runUiAction} onRefresh={refreshShellData} />
+          )}
+          {activeView === "health" && (
+            <AppHealthView healthState={appHealthState} onRunChecks={async () => { const r = await runUiAction("system.health.run_checks", "module_ui", {}) as { health?: AppHealthState }; setAppHealthState(r?.health ?? await getBridge().getAppHealth()); }} onAction={runUiAction} />
+          )}
           {activeView === "audit" && <AuditView events={events} onRefresh={handleAction} refreshEvents={refreshEvents} />}
           {activeView === "settings" && (
             <SettingsView
+              userName={userName}
+              onUserNameChange={setUserName}
               appInfo={appInfo}
               backupState={backupState}
               calendarState={calendarState}
@@ -5556,6 +6099,9 @@ function DexNestApp() {
               onRefresh={refreshShellData}
             />
           )}
+          </motion.div>
+          </AnimatePresence>
+          </div>
         </main>
       </div>
     </div>
@@ -6504,9 +7050,16 @@ function AskDexNest({
 
   return (
     <div className="assistant accent-search">
+      <div className="assistant__orbhead">
+        <AssistantOrb size={48} color="#6366F1" state={voiceListening ? "listening" : assistantBusy ? "processing" : "idle"} />
+        <div className="assistant__orbhead-text">
+          <strong>DexNest</strong>
+          <span>{assistantBusy ? "Processing…" : voiceListening ? "Listening…" : speechState.performancePaused ? "Ready · wake paused" : "Ready · local only"}</span>
+        </div>
+        {voiceListening && <VoiceWaveform gemini color="#6366F1" bars={12} height={20} />}
+      </div>
       <div className="section-heading section-heading--row">
         <div>
-          <p>Ask DexNest in plain language across your documents, Vault, OCR, notes, and local memory.</p>
           <p className="technical">Local-only · no cloud · sensitive answers stay masked{assistantSettings.localIntentEngineEnabled ? " · local LLM on" : " · rules only"}</p>
         </div>
         <label className="assistant__debug-toggle">
@@ -6520,7 +7073,7 @@ function AskDexNest({
           <span className="technical">Trusted session disabled. Sensitive answers always require Reveal.</span>
         ) : securityState.sessionUnlocked ? (
           <>
-            <span className="assistant__session-state">🔓 Sensitive session unlocked · {formatSessionRemaining(remainingMs)} left</span>
+            <span className="assistant__session-state">🔓 Sensitive session unlocked · {securityState.sessionExpiresAt ? `${formatSessionRemaining(remainingMs)} left` : "until app exit"}</span>
             <button type="button" onClick={() => void lockSensitiveSession()}>Lock now</button>
           </>
         ) : (
@@ -6550,21 +7103,7 @@ function AskDexNest({
 
       <div className="assistant__transcript" ref={assistantScrollRef}>
         {assistantMessages.length === 0 ? (
-          <div className="assistant__empty">
-            <p>Try one of these:</p>
-            <div className="assistant__examples">
-              {[
-                "What is my work permit number?",
-                "Where did I put my passport?",
-                "Find my passport document",
-                "Search work permit",
-                "Add meeting with Tim tomorrow at 3",
-                "Run typecheck"
-              ].map((example) => (
-                <button type="button" key={example} disabled={assistantBusy} onClick={() => void sendAssistant(example)}>{example}</button>
-              ))}
-            </div>
-          </div>
+          <div className="assistant__empty" />
         ) : (
           assistantMessages.map((message) => (
             <div className={`assistant__msg assistant__msg--${message.role}`} key={message.id}>
@@ -6650,8 +7189,8 @@ function AskDexNest({
       </div>
 
       <div className="assistant__inputbar">
-        <button type="button" className={voiceListening ? "is-busy" : undefined} disabled={voiceListening} onClick={() => void startVoiceListening()} title="Click to speak (no always-on mic)">
-          {voiceListening ? "Listening…" : "Mic"}
+        <button type="button" className={voiceListening ? "is-busy" : undefined} disabled={voiceListening} onClick={() => void startVoiceListening()} title="Click to speak (no always-on mic)" aria-label={voiceListening ? "Listening" : "Speak"}>
+          {voiceListening ? "Listening…" : <Mic className="h-4 w-4" />}
         </button>
         <input
           ref={voiceInputRef}
@@ -6741,6 +7280,7 @@ function AskDexNest({
 }
 
 function CommandView({
+  userName,
   appInfo,
   actions,
   clipboardState,
@@ -6752,9 +7292,11 @@ function CommandView({
   performanceModeSettings,
   onOpenAssistant,
   onAction,
+  onNavigate,
   onPerformanceToggle,
   onPinnedActionsChange
 }: {
+  userName: string;
   appInfo: AppInfo | null;
   actions: ActionDefinition[];
   clipboardState: ClipboardState;
@@ -6766,6 +7308,7 @@ function CommandView({
   performanceModeSettings: PerformanceModeSettings;
   onOpenAssistant: () => void;
   onAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>;
+  onNavigate: (view: ViewId) => void;
   onPerformanceToggle: (enabled: boolean) => Promise<void>;
   onPinnedActionsChange: (actionIds: string[]) => Promise<void>;
 }) {
@@ -6919,301 +7462,186 @@ function CommandView({
     ["Heatmap", commandStats.heatmapStatus]
   ] as const;
 
+  const dxHour = new Date().getHours();
+  const dxGreeting = dxHour < 12 ? "Good morning" : dxHour < 18 ? "Good afternoon" : "Good evening";
+  const dxActionsToday = commandStats.actionsRunToday || 0;
+  const dxFailedToday = commandStats.failedActionsToday || 0;
+  const dxSuccessRate = dxActionsToday > 0 ? Math.round(((dxActionsToday - dxFailedToday) / dxActionsToday) * 100) : 100;
+  const quickActions = pinnedActions.slice(0, 6);
+  const perfPauses = ["OCR queue", "Heatmap", "Indexing", "Backups"];
+
   return (
-    <section className="view-stack" aria-labelledby="command-title">
-      <PageHeader eyebrow="Offline-first spine" title="Command Home" titleId="command-title" />
-
-      <Panel title="Performance Mode">
-        <div className="performance-card">
-          <div>
-            <div className="status-row">
-              <StatusBadge tone={performanceModeState.enabled ? "warning" : "success"}>
-                {performanceModeState.enabled ? "ON" : "OFF"}
-              </StatusBadge>
-              <StatusBadge tone="info">Gaming Mode</StatusBadge>
-            </div>
-            <p>{performanceModeState.enabled ? `Reason: ${performanceModeState.reason}` : "Heavy DexNest workers are available when you start them."}</p>
-            <p className="technical">
-              {performanceModeState.pausedWorkers.length ? `Paused: ${performanceModeState.pausedWorkers.join(", ")}` : "No workers paused."}
-            </p>
-            {performanceModeSettings.autoEnableWhenFullscreen && <p>Fullscreen auto-enable is a safe placeholder for later.</p>}
-          </div>
-          <button
-            type="button"
-            className={performanceBusy ? "is-busy" : undefined}
-            disabled={performanceBusy}
-            onClick={() => void toggleCommandPerformanceMode()}
-          >
-            {performanceBusy && <Spinner size="sm" />}
-            {performanceBusy ? "Updating..." : performanceModeState.enabled ? "Turn off" : "Turn on"}
-          </button>
+    <div className="space-y-6">
+      {/* Greeting + system summary */}
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <p className="font-mono text-xs text-[#22D3EE]">{new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" })} · local</p>
+          <h1 className="mt-1 text-3xl font-semibold tracking-tight text-[#F5F5F5]">{dxGreeting}{userName.trim() ? `, ${userName.trim()}` : ""}.</h1>
         </div>
-      </Panel>
+        <div className="flex flex-wrap items-center gap-2">
+          {[
+            { label: "systems", value: "all local", c: "#22D3EE" },
+            { label: "perf", value: performanceModeState.enabled ? "on" : "off", c: performanceModeState.enabled ? "#F59E0B" : "#525252" },
+            { label: "attention", value: `${commandStats.activeNudges}`, c: commandStats.activeNudges ? "#F59E0B" : "#525252" },
+            { label: "upcoming", value: `${commandStats.calendarUpcoming}`, c: "#14B8A6" }
+          ].map((s) => (
+            <span key={s.label} className="inline-flex items-center gap-1.5 rounded-full border border-[#1f1f1f] bg-[#0a0a0a] px-2.5 py-1 text-[11px]">
+              <span className="h-1.5 w-1.5 rounded-full" style={{ background: s.c, boxShadow: `0 0 6px ${s.c}` }} />
+              <span className="text-[#525252]">{s.label}</span>
+              <span className="font-mono font-medium" style={{ color: s.c }}>{s.value}</span>
+            </span>
+          ))}
+        </div>
+      </div>
 
-      <Panel title="Command Palette">
-        <div className="command-palette">
-          <label>
-            Search and run
-            <input
-              autoComplete="off"
-              value={paletteQuery}
-              onChange={(event) => {
-                setPaletteQuery(event.target.value);
-                setPaletteIndex(0);
-                setPaletteMessage("");
-              }}
-              onKeyDown={handlePaletteKeyDown}
-              placeholder="Search action title, ID, or module"
-            />
-          </label>
-          <p>Select an action with Up/Down, press Enter to run. Type <span className="technical">compress PDF -&gt; send to phone</span> to see the chaining placeholder.</p>
-          {commandChainRequested && <StatusBadge tone="info">Command chaining coming soon</StatusBadge>}
-          <div className="command-palette__results" role="listbox" aria-label="Command palette actions">
-            {paletteActions.length === 0 ? (
-              <EmptyState>No actions match this command.</EmptyState>
-            ) : (
-              paletteActions.map((action, index) => (
+      {/* Quick actions (pinned) */}
+      <div>
+        <SectionTitle>Quick Actions</SectionTitle>
+        {quickActions.length === 0 ? (
+          <GlassCard hover={false}><p className="text-xs text-[#A3A3A3]">Pin actions from the Action Registry below to see them here.</p></GlassCard>
+        ) : (
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+            {quickActions.map((action) => {
+              const meta = MODULE_META[action.moduleId] ?? { icon: Command, accent: "#22D3EE" };
+              const Icon = meta.icon;
+              return (
                 <button
-                  className={`command-palette__row accent-${action.moduleId}`}
-                  data-active={index === paletteIndex}
                   key={action.id}
                   type="button"
-                  onMouseEnter={() => setPaletteIndex(index)}
-                  onClick={() => void runPaletteAction(action)}
+                  onClick={() => void runRegistryActionFromSource(action, "module_ui")}
+                  className="glass-card lift group flex flex-col gap-2.5 p-3.5 text-left"
+                  style={{ boxShadow: `inset 0 0 22px ${meta.accent}0d` }}
                 >
-                  <span className="command-palette__label">
-                    <strong>{action.title}</strong>
-                    <span className="technical">{action.id}</span>
-                  </span>
-                  <span className="command-palette__meta">
-                    {pinnedActionIds.includes(action.id) && <StatusBadge tone="success">pinned</StatusBadge>}
-                    <StatusBadge tone={action.dangerLevel === "safe" ? "success" : action.dangerLevel === "caution" ? "warning" : "error"}>{action.dangerLevel}</StatusBadge>
-                    <span className="technical">{action.module}</span>
-                  </span>
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg" style={{ background: `${meta.accent}18`, color: meta.accent }}>
+                    <Icon className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <p className="truncate text-sm font-medium text-[#F5F5F5]">{action.title}</p>
+                    <p className="truncate text-xs text-[#525252]">{viewFromAction(action) ? "Open" : action.module}</p>
+                  </div>
                 </button>
-              ))
-            )}
+              );
+            })}
           </div>
-          {paletteMessage && <p className="inline-status">{paletteMessage}</p>}
-        </div>
-      </Panel>
-
-      <Panel title="Ask DexNest">
-        <div className="ask-launcher accent-search">
-          <div>
-            <h3>Ask DexNest</h3>
-            <p>Search documents, Vault, OCR, notes, and local memory.</p>
-          </div>
-          <button type="button" onClick={() => onOpenAssistant()}>Open Ask DexNest</button>
-        </div>
-      </Panel>
-
-      <Panel title="Nudges">
-        <div className="section-heading section-heading--row">
-          <p>Urgent and today nudges from local DexNest data.</p>
-          <button type="button" onClick={() => void onAction("calendar.nudge.refresh", "module_ui")}>Refresh nudges</button>
-        </div>
-        <div className="action-list action-list--compact">
-          {topNudges.length === 0 ? (
-            <EmptyState>No active nudges for today.</EmptyState>
-          ) : (
-            topNudges.map((nudge) => (
-              <article className="data-item data-item--stacked accent-calendar" key={nudge.id}>
-                <div className="section-heading section-heading--row">
-                  <strong>{nudge.title}</strong>
-                  <StatusBadge tone={nudge.priority === "urgent" ? "error" : nudge.priority === "normal" ? "warning" : "info"}>{nudge.priority}</StatusBadge>
-                </div>
-                <span>{nudge.message}</span>
-                <span className="technical">{formatLocalDate(nudge.date)} / {nudge.sourceModule}</span>
-              </article>
-            ))
-          )}
-        </div>
-      </Panel>
-
-      <div className="module-grid">
-        {moduleCards.map(([id, title, description, status]) => (
-          <article className={`module-card accent-${id}`} key={id}>
-            <div>
-              <div className="module-card__header">
-                <h3>{title}</h3>
-                <span
-                  className="module-card__status"
-                  data-status={status}
-                  aria-label={status === "available" ? "Available" : "Placeholder"}
-                  title={status === "available" ? "Available" : "Placeholder"}
-                >
-                  {status === "available" ? "✓" : "×"}
-                </span>
-              </div>
-              <p>{description}</p>
-            </div>
-          </article>
-        ))}
+        )}
       </div>
 
-      <div className="dashboard-grid">
-        <Panel title="Pinned Actions">
-          <div className="action-list action-list--compact">
-            {pinnedActions.length === 0 ? (
-              <EmptyState>No pinned actions yet.</EmptyState>
+      {/* Cockpit grid */}
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+        <div className="space-y-5 lg:col-span-8">
+          {/* Attention / nudges */}
+          <GlassCard accent="#F59E0B" hover={false}>
+            <SectionTitle action={<button type="button" onClick={() => void onAction("calendar.nudge.refresh", "module_ui")} className="text-[10px] text-[#525252] hover:text-[#A3A3A3]">refresh</button>}>Attention</SectionTitle>
+            {topNudges.length === 0 ? (
+              <p className="text-xs text-[#525252]">No active nudges for today.</p>
             ) : (
-              pinnedActions.map((action) => (
-                <article className={`action-row accent-${action.moduleId}`} key={action.id}>
-                  <div>
-                    <h3>{action.title}</h3>
-                    <p className="technical">{action.id}</p>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {topNudges.map((nudge) => (
+                  <div key={nudge.id} className="glass-card flex items-center gap-3 p-2.5 text-left">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ background: `${nudge.priority === "urgent" ? "#EF4444" : "#F59E0B"}14`, color: nudge.priority === "urgent" ? "#EF4444" : "#F59E0B" }}>
+                      <AlertTriangle className="h-4 w-4" />
+                    </div>
+                    <span className="min-w-0 flex-1 truncate text-xs text-[#F5F5F5]" title={nudge.message}>{nudge.title}</span>
+                    <span className="shrink-0 text-[10px] font-medium" style={{ color: nudge.priority === "urgent" ? "#EF4444" : "#F59E0B" }}>{nudge.priority}</span>
                   </div>
-                  <div>
-                    <button type="button" onClick={() => void movePinnedAction(action.id, -1)}>
-                      Up
-                    </button>
-                    <button type="button" onClick={() => void movePinnedAction(action.id, 1)}>
-                      Down
-                    </button>
-                    <button type="button" onClick={() => void runRegistryActionFromSource(action, "module_ui")}>
-                      {viewFromAction(action) ? "Open" : "Run"}
-                    </button>
-                    <button type="button" onClick={() => void togglePinnedAction(action.id)}>
-                      Unpin
-                    </button>
-                  </div>
-                </article>
-              ))
-            )}
-          </div>
-        </Panel>
-        <Panel title="Stats">
-          <div className="section-heading section-heading--row">
-            <p>Updated {formatLocalDateTime(commandStats.updatedAt)}</p>
-            <button type="button" onClick={() => void onAction("command.refresh_stats")}>
-              Refresh stats
-            </button>
-          </div>
-          <div className="stats-grid">
-            {statCards.map(([label, value]) => (
-              <article key={label}>
-                <span>{label}</span>
-                <strong>{value}</strong>
-              </article>
-            ))}
-          </div>
-        </Panel>
-        <Panel title="Today">
-          <div className="action-list action-list--compact">
-            {calendarState.todayEvents.length === 0 ? (
-              <EmptyState>No Calendar events today.</EmptyState>
-            ) : (
-              calendarState.todayEvents.slice(0, 4).map((event) => (
-                <article className="data-item accent-calendar" key={event.id}>
-                  <strong>{event.title}</strong>
-                  <span>{event.allDay ? "All-day" : event.startTime || "No time"} / {event.reminderLevel}</span>
-                </article>
-              ))
-            )}
-          </div>
-        </Panel>
-        <Panel title="Shortcuts">
-          <div className="shortcut-list">
-            <article>
-              <div>
-                <strong>Open Command</strong>
-                <span>{appInfo?.commandShortcutStatus ?? "loading"}</span>
-              </div>
-              <kbd>{shortcutLabel(appInfo?.commandShortcut ?? "CommandOrControl+Space")}</kbd>
-            </article>
-            <article>
-              <div>
-                <strong>Multi-copy</strong>
-                <span>{clipboardState.settings.multiCopyHotkeyStatus}</span>
-              </div>
-              <kbd>{shortcutLabel(clipboardState.settings.multiCopyHotkey)}</kbd>
-            </article>
-            <article>
-              <div>
-                <strong>Voice dictation</strong>
-                <span>Windows fallback</span>
-              </div>
-              <kbd>Win + H</kbd>
-            </article>
-            <article>
-              <div>
-                <strong>Tray access</strong>
-                <span>{appInfo?.trayStatus ?? "loading"}</span>
-              </div>
-              <kbd>Tray</kbd>
-            </article>
-          </div>
-        </Panel>
-      </div>
-
-      <Panel title="Recent Activity">
-        <div className="action-list action-list--compact">
-          {events.length === 0 ? (
-            <EmptyState>No recent events yet.</EmptyState>
-          ) : (
-            events.slice(0, 10).map((event) => (
-              <article className="data-item data-item--stacked accent-command" key={event.id}>
-                <strong>{event.summary}</strong>
-                <span>{event.module} / {event.status} / {event.source}</span>
-                <span className="technical">{formatLocalDateTime(event.timestamp)} / {event.actionId ?? "no action"}</span>
-              </article>
-            ))
-          )}
-        </div>
-      </Panel>
-
-      <details className="collapsible-panel">
-        <summary>Action Registry ({actions.length})</summary>
-        <div className="collapsible-panel__body">
-          <div className="registry-controls">
-            <label>
-              Module
-              <select value={moduleFilter} onChange={(event) => setModuleFilter(event.target.value)}>
-                <option value="all">All modules</option>
-                {modules.map((module) => (
-                  <option value={module} key={module}>{module}</option>
                 ))}
-              </select>
-            </label>
-            <label>
-              Search
-              <input
-                value={actionSearch}
-                onChange={(event) => setActionSearch(event.target.value)}
-                placeholder="Action ID or title"
-              />
-            </label>
-          </div>
-          <div className="action-list">
-            {filteredActions.length === 0 ? (
-              <p>No registered actions found.</p>
-            ) : (
-              filteredActions.map((action) => (
-                <article className={`action-row accent-${action.moduleId}`} key={action.id}>
-                  <div>
-                    <h3>{action.title}</h3>
-                    <p>{action.description}</p>
-                    <p className="technical">{action.id}</p>
-                  </div>
-                  <div>
-                    <span>{action.module}</span>
-                    <span>{action.dangerLevel}</span>
-                    <span>{action.reversible ? "reversible" : "not reversible"}</span>
-                    <button type="button" onClick={() => void runRegistryActionFromSource(action, "module_ui")}>
-                      {viewFromAction(action) ? "Open" : "Run"}
-                    </button>
-                    <button type="button" onClick={() => void togglePinnedAction(action.id)}>
-                      {pinnedActionIds.includes(action.id) ? "Unpin" : "Pin"}
-                    </button>
-                  </div>
-                </article>
-              ))
+              </div>
             )}
-          </div>
+          </GlassCard>
+
+          {/* Today */}
+          <GlassCard hover={false}>
+            <SectionTitle action={<button type="button" onClick={() => onNavigate("calendar")} className="flex items-center gap-0.5 text-[10px] text-[#525252] hover:text-[#A3A3A3]">open calendar <ChevronRight className="h-3 w-3" /></button>}>Today</SectionTitle>
+            {calendarState.todayEvents.length === 0 ? (
+              <p className="text-xs text-[#525252]">No Calendar events today.</p>
+            ) : (
+              <div className="space-y-0.5">
+                {calendarState.todayEvents.slice(0, 6).map((event) => (
+                  <div key={event.id} className="flex items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-[#0d0d0d]">
+                    <span className="w-12 font-mono text-xs text-[#A3A3A3]">{event.allDay ? "all-day" : event.startTime || "—"}</span>
+                    <span className="h-7 w-px bg-[#14B8A655]" />
+                    <span className="flex-1 truncate text-sm text-[#F5F5F5]">{event.title}</span>
+                    <span className="rounded-full border border-[#14B8A633] bg-[#14B8A610] px-2 py-0.5 text-[10px] font-medium text-[#14B8A6]">{event.reminderLevel}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </GlassCard>
+
+          {/* Recent activity */}
+          <GlassCard hover={false}>
+            <SectionTitle action={<button type="button" onClick={() => onNavigate("audit")} className="text-[10px] text-[#525252] hover:text-[#A3A3A3]">view all</button>}>Recent Activity</SectionTitle>
+            {events.length === 0 ? (
+              <p className="text-xs text-[#525252]">No recent events yet.</p>
+            ) : (
+              <div className="space-y-0.5">
+                {events.slice(0, 8).map((event) => (
+                  <div key={event.id} className="flex items-center gap-3 rounded-lg px-2 py-1.5 transition-colors hover:bg-[#0d0d0d]">
+                    {event.status === "failed" ? <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-[#EF4444]" /> : <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-[#22C55E]" />}
+                    <span className="font-mono text-xs text-[#F5F5F5]">{event.actionId ?? event.eventType}</span>
+                    <span className="rounded border border-[#1f1f1f] px-1.5 py-0.5 text-[9px] text-[#A3A3A3]">{event.module}</span>
+                    <span className="ml-auto truncate font-mono text-[10px] text-[#525252]" title={event.summary}>{formatLocalDateTime(event.timestamp)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </GlassCard>
         </div>
-      </details>
-    </section>
+
+        {/* Right rail */}
+        <div className="space-y-5 lg:col-span-4">
+          <GlassCard accent="#06B6D4" hover={false} className="flex items-center gap-4">
+            <AssistantOrb size={72} state="idle" />
+            <div className="flex-1">
+              <SectionTitle>Ask DexNest</SectionTitle>
+              <p className="text-sm text-[#F5F5F5]">Search docs, Vault, memory</p>
+              <p className="mt-0.5 text-xs text-[#525252]">“Hey Jarvis” or open the assistant</p>
+              <ActionButton icon={Mic} accent="#06B6D4" className="mt-3" onClick={() => onOpenAssistant()}>Open</ActionButton>
+            </div>
+          </GlassCard>
+
+          <GlassCard accent="#F59E0B" hover={false}>
+            <SectionTitle action={<StatusChip tone={performanceModeState.enabled ? "paused" : "info"}>{performanceModeState.enabled ? "on" : "off"}</StatusChip>}>Performance Mode</SectionTitle>
+            <p className="mb-2.5 text-xs text-[#A3A3A3]">When on, DexNest pauses background work:</p>
+            <div className="mb-3 grid grid-cols-2 gap-1.5">
+              {perfPauses.map((p) => (
+                <span key={p} className="flex items-center gap-1.5 rounded-md border border-[#1f1f1f] bg-[#0a0a0a] px-2 py-1 text-[11px] text-[#A3A3A3]">
+                  <span className="h-1 w-1 rounded-full" style={{ background: performanceModeState.enabled ? "#F59E0B" : "#525252" }} />{p}
+                </span>
+              ))}
+            </div>
+            <p className="mb-3 flex items-center gap-1.5 text-[11px] text-[#22D3EE]"><Mic className="h-3 w-3" />Wake word stays active</p>
+            <ActionButton icon={Cpu} accent="#F59E0B" variant={performanceModeState.enabled ? "solid" : "soft"} className="w-full justify-center" disabled={performanceBusy} onClick={() => void toggleCommandPerformanceMode()}>
+              {performanceBusy ? "Updating…" : performanceModeState.enabled ? "Turn off" : "Turn on"}
+            </ActionButton>
+          </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle action={<StatusChip tone={dxFailedToday > 0 ? "warn" : "ok"}>{dxFailedToday > 0 ? "check" : "healthy"}</StatusChip>}>System Health</SectionTitle>
+            <div className="flex items-center justify-around">
+              <ProgressRing value={dxSuccessRate} color="#34D399" sub="today" />
+              <div className="space-y-1.5 text-xs">
+                <p className="text-[#A3A3A3]">actions today <span className="font-mono text-[#F5F5F5]">{dxActionsToday}</span></p>
+                <p className="text-[#A3A3A3]">failed <span className="font-mono" style={{ color: dxFailedToday ? "#EF4444" : "#F5F5F5" }}>{dxFailedToday}</span></p>
+                <p className="text-[#A3A3A3]">nudges <span className="font-mono text-[#F5F5F5]">{commandStats.activeNudges}</span></p>
+              </div>
+            </div>
+          </GlassCard>
+
+          <GlassCard accent="#A855F7" hover={false}>
+            <SectionTitle action={<span className="flex items-center gap-1 text-[10px] text-[#22C55E]"><Wifi className="h-3 w-3" />local</span>}>Stream Deck</SectionTitle>
+            <p className="mb-2.5 font-mono text-[10px] text-[#525252]">{appInfo?.actionEndpoint ?? "localhost"}</p>
+            <div className="grid grid-cols-4 gap-1.5">
+              {Array.from({ length: 8 }).map((_, i) => (
+                <button key={i} type="button" onClick={() => onNavigate("deck")} className="flex aspect-square items-center justify-center rounded-md border border-[#1f1f1f] bg-[#0d0d0d] text-[#525252] transition-colors hover:border-[#A855F7]/40 hover:text-[#A855F7]">
+                  {i === 0 ? <Zap className="h-3.5 w-3.5 text-[#A855F7]" /> : <Command className="h-3 w-3" />}
+                </button>
+              ))}
+            </div>
+          </GlassCard>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -7228,7 +7656,13 @@ const emptyProjectForm: ProjectFormState = {
   typecheck: "",
   custom: "",
   urls: "",
-  notes: ""
+  notes: "",
+  ports: "",
+  stopCommand: "",
+  logCommand: "",
+  logPath: "",
+  dockerComposeEnabled: false,
+  healthUrl: ""
 };
 
 function projectToForm(project: DexNestProject): ProjectFormState {
@@ -7244,7 +7678,13 @@ function projectToForm(project: DexNestProject): ProjectFormState {
     typecheck: project.commands.typecheck,
     custom: project.commands.custom,
     urls: project.urls.join("\n"),
-    notes: project.notes
+    notes: project.notes,
+    ports: (project.ports ?? []).join(", "),
+    stopCommand: project.stopCommand ?? "",
+    logCommand: project.logCommand ?? "",
+    logPath: project.logPath ?? "",
+    dockerComposeEnabled: Boolean(project.dockerComposeEnabled),
+    healthUrl: project.healthUrl ?? ""
   };
 }
 
@@ -7263,7 +7703,13 @@ function formToProjectInput(form: ProjectFormState) {
       custom: form.custom
     },
     urls: form.urls.split(/\r?\n|,/).map((url) => url.trim()).filter(Boolean),
-    notes: form.notes
+    notes: form.notes,
+    ports: form.ports.split(/[\s,]+/).map((port) => Number(port.trim())).filter((port) => Number.isInteger(port) && port > 0 && port < 65536),
+    stopCommand: form.stopCommand,
+    logCommand: form.logCommand,
+    logPath: form.logPath,
+    dockerComposeEnabled: form.dockerComposeEnabled,
+    healthUrl: form.healthUrl
   };
 }
 
@@ -7303,6 +7749,7 @@ function DevView({
   const [commandRunResults, setCommandRunResults] = useState<Record<string, ProjectCommandResult>>(commandResults);
   const [expandedLogIds, setExpandedLogIds] = useState<Record<string, boolean>>({});
   const [saveStatus, setSaveStatus] = useState<{ tone: "success" | "error"; message: string } | null>(null);
+  const [selectedDevId, setSelectedDevId] = useState<string | null>(null);
 
   useEffect(() => {
     setCommandRunResults((current) => ({ ...commandResults, ...current }));
@@ -7347,12 +7794,13 @@ function DevView({
     await onProjectsChanged();
   }
 
-  async function runProjectAction(project: DexNestProject, actionId: string, command?: string): Promise<void> {
-    const confirmedDangerous = command && isDangerousCommand(command)
-      ? window.confirm("This command looks destructive. Run it anyway?")
+  async function runProjectAction(project: DexNestProject, actionId: string, command?: string, dangerous = false): Promise<void> {
+    const needsConfirm = dangerous || Boolean(command && isDangerousCommand(command));
+    const confirmedDangerous = needsConfirm
+      ? window.confirm(dangerous ? "This will stop or kill processes for this project. Continue?" : "This command looks destructive. Run it anyway?")
       : false;
 
-    if (command && isDangerousCommand(command) && !confirmedDangerous) {
+    if (needsConfirm && !confirmedDangerous) {
       return;
     }
 
@@ -7430,183 +7878,215 @@ function DevView({
     }));
   }
 
+  const ACCENT_DEV = "#3B82F6";
+  const selProject = projects.find((p) => p.id === selectedDevId) ?? projects[0] ?? null;
+  const devCmds: Array<{ key: "start" | "build" | "typecheck" | "test"; label: string; icon: LucideIcon; c: string }> = [
+    { key: "start", label: "dev", icon: Play, c: "#22C55E" },
+    { key: "build", label: "build", icon: Hammer, c: "#F59E0B" },
+    { key: "typecheck", label: "typecheck", icon: ShieldCheck, c: "#3B82F6" },
+    { key: "test", label: "test", icon: FlaskConical, c: "#A855F7" }
+  ];
+  const runsList = Object.values(commandRunResults).filter((r) => r.finishedAt).sort((a, b) => (Date.parse(b.finishedAt || "") || 0) - (Date.parse(a.finishedAt || "") || 0));
+  const selRuns = selProject ? runsList.filter((r) => r.projectId === selProject.id) : [];
+  const latestRun = selRuns[0];
+
   return (
-    <section className="view-stack" aria-labelledby="dev-title">
-      <PageHeader eyebrow="DexNest Dev" title="Project Dashboard" titleId="dev-title" />
-
-      <Panel title={form.id ? "Edit Project" : "Add Project"}>
-        <div className="project-form">
-          <label>
-            Name
-            <input value={form.name} onChange={(event) => updateForm("name", event.target.value)} />
-          </label>
-          <label>
-            Path
-            <input className="technical" value={form.path} onChange={(event) => updateForm("path", event.target.value)} />
-          </label>
-          <label>
-            Description
-            <input value={form.description} onChange={(event) => updateForm("description", event.target.value)} />
-          </label>
-          <label>
-            Local URLs
-            <textarea className="technical" value={form.urls} onChange={(event) => updateForm("urls", event.target.value)} />
-          </label>
-          {(["start", "build", "test", "typecheck", "custom"] as const).map((key) => (
-            <label key={key}>
-              {key} command
-              <input className="technical" value={form[key]} onChange={(event) => updateForm(key, event.target.value)} />
-            </label>
-          ))}
-          <label>
-            Notes
-            <textarea value={form.notes} onChange={(event) => updateForm("notes", event.target.value)} />
-          </label>
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_DEV}40`, background: `${ACCENT_DEV}14`, color: ACCENT_DEV }}><Code2 className="h-5 w-5" /></div>
+          <div><h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Dev</h1><p className="text-sm text-[#A3A3A3]">Developer cockpit · local projects &amp; commands</p></div>
         </div>
-        <div className="button-row">
-          <button type="button" onClick={() => void saveProject()}>
-            {form.id ? "Save Project" : "Add Project"}
-          </button>
-          {form.id && (
-            <button type="button" onClick={() => { setForm(emptyProjectForm); setActiveProjectId(null); }}>
-              Cancel Edit
-            </button>
-          )}
-        </div>
-        {saveStatus && <p className={`form-status form-status--${saveStatus.tone}`}>{saveStatus.message}</p>}
-      </Panel>
+        <StatusChip tone="info">{projects.length} project{projects.length === 1 ? "" : "s"}</StatusChip>
+      </div>
 
-      <div className="project-grid">
-        {projects.length === 0 ? (
-          <EmptyState>No Dev projects yet. Add a local project path to generate Dev and Deck actions.</EmptyState>
-        ) : (
-          projects.map((project) => {
+      {projects.length === 0 ? (
+        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-[#262626] py-16 text-center"><Code2 className="h-8 w-8 text-[#525252]" /><p className="mt-2 text-sm text-[#A3A3A3]">No Dev projects yet</p><p className="text-xs text-[#525252]">Add a local project path in Advanced to generate Dev &amp; Deck actions.</p></div>
+      ) : (
+        <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+          <div className="space-y-4 lg:col-span-5">
+            <SectionTitle>Projects</SectionTitle>
+            {projects.map((p) => {
+              const active = selProject?.id === p.id;
+              const dirty = false;
+              return (
+                <button key={p.id} type="button" onClick={() => setSelectedDevId(p.id)} className={`glass-card lift w-full p-4 text-left ${active ? "border-[#3B82F6]/40" : ""}`}>
+                  <div className="flex items-start justify-between">
+                    <div className="min-w-0"><p className="truncate text-sm font-semibold text-[#F5F5F5]">{p.name}</p><p className="truncate font-mono text-[10px] text-[#525252]">{p.path}</p></div>
+                    <Circle className="h-2.5 w-2.5 shrink-0 fill-[#525252] text-[#525252]" />
+                  </div>
+                  <div className="mt-2 flex items-center gap-3 font-mono text-[11px] text-[#A3A3A3]">
+                    <span className="truncate">{p.description || "No description"}</span>
+                    {p.urls.length > 0 && <span className="ml-auto shrink-0 text-[#3B82F6]">{p.urls.length} url{p.urls.length === 1 ? "" : "s"}</span>}
+                  </div>
+                </button>
+              );
+            })}
+            {selProject && (
+              <div className="grid grid-cols-3 gap-2">
+                <ActionButton accent={ACCENT_DEV} variant="ghost" icon={Code2} className="text-xs" onClick={() => void runProjectAction(selProject, `dev.project.${selProject.id}.open_vscode`)}>VS Code</ActionButton>
+                <ActionButton accent={ACCENT_DEV} variant="ghost" icon={FolderOpen} className="text-xs" onClick={() => void runProjectAction(selProject, `dev.project.${selProject.id}.open_folder`)}>Folder</ActionButton>
+                <ActionButton accent={ACCENT_DEV} variant="ghost" icon={TerminalSquare} className="text-xs" onClick={() => void runProjectAction(selProject, `dev.project.${selProject.id}.open_terminal`)}>Terminal</ActionButton>
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-4 lg:col-span-7">
+            {selProject && (
+              <>
+                <GlassCard accent={ACCENT_DEV} hover={false}>
+                  <SectionTitle action={<span className="font-mono text-[10px] text-[#525252]">{selProject.name}</span>}>Commands</SectionTitle>
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    {devCmds.map((c) => {
+                      const Icon = c.icon;
+                      const command = selProject.commands[c.key];
+                      const actionId = `dev.project.${selProject.id}.run_${c.key}`;
+                      const running = commandRunResults[actionId]?.status === "running";
+                      return (
+                        <button key={c.key} type="button" disabled={!command?.trim() || running} onClick={() => void runProjectAction(selProject, actionId, command)} className="glass-card lift flex flex-col items-center gap-2 p-3 disabled:opacity-40">
+                          <Icon className="h-5 w-5" style={{ color: c.c }} />
+                          <span className="font-mono text-xs text-[#F5F5F5]">{running ? "…" : c.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </GlassCard>
+
+                <GlassCard hover={false}>
+                  <SectionTitle action={(selProject.ports ?? []).length > 0 ? <span className="font-mono text-[10px] text-[#525252]">ports {(selProject.ports ?? []).join(", ")}</span> : undefined}>Lifecycle</SectionTitle>
+                  <div className="flex flex-wrap gap-2">
+                    <ActionButton accent="#EF4444" variant="ghost" icon={Power} className="text-xs" onClick={() => void runProjectAction(selProject, `dev.project.${selProject.id}.stop`, undefined, true)}>Stop</ActionButton>
+                    <ActionButton accent={ACCENT_DEV} variant="ghost" icon={RotateCcw} className="text-xs" onClick={() => void runProjectAction(selProject, `dev.project.${selProject.id}.restart`, undefined, true)}>Restart</ActionButton>
+                    <ActionButton accent="#22C55E" variant="ghost" icon={Activity} className="text-xs" onClick={() => void runProjectAction(selProject, `dev.project.${selProject.id}.check_health`)}>Health</ActionButton>
+                    {(selProject.ports ?? []).length > 0 && (
+                      <>
+                        <ActionButton accent="#EF4444" variant="ghost" icon={Plug} className="text-xs" onClick={() => void runProjectAction(selProject, `dev.project.${selProject.id}.kill_ports`, undefined, true)}>Kill ports</ActionButton>
+                        <ActionButton accent={ACCENT_DEV} variant="ghost" icon={Cpu} className="text-xs" onClick={() => void runProjectAction(selProject, `dev.project.${selProject.id}.show_processes`)}>Processes</ActionButton>
+                      </>
+                    )}
+                    {selProject.dockerComposeEnabled && (
+                      <ActionButton accent="#EF4444" variant="ghost" icon={Box} className="text-xs" onClick={() => void runProjectAction(selProject, `dev.project.${selProject.id}.docker_down`, undefined, true)}>Docker down</ActionButton>
+                    )}
+                    {((selProject.logPath && selProject.logPath.trim()) || (selProject.logCommand && selProject.logCommand.trim())) && (
+                      <ActionButton accent={ACCENT_DEV} variant="ghost" icon={FileText} className="text-xs" onClick={() => void runProjectAction(selProject, `dev.project.${selProject.id}.open_logs`)}>Logs</ActionButton>
+                    )}
+                    {selProject.urls.length > 0 && (
+                      <ActionButton accent={ACCENT_DEV} variant="ghost" icon={ExternalLink} className="text-xs" onClick={() => void runProjectAction(selProject, `dev.project.${selProject.id}.open_urls`)}>Open URLs</ActionButton>
+                    )}
+                  </div>
+                </GlassCard>
+
+                <GlassCard hover={false}>
+                  <SectionTitle action={latestRun ? <StatusChip tone={latestRun.status === "success" ? "ok" : latestRun.status === "running" ? "running" : "error"}>{latestRun.status === "success" ? `✓ ${latestRun.durationMs ?? "?"}ms` : latestRun.status}</StatusChip> : undefined}>Output{latestRun ? ` · ${latestRun.commandKey}` : ""}</SectionTitle>
+                  {latestRun ? (
+                    <pre className="max-h-64 overflow-auto rounded-lg border border-[#1f1f1f] bg-[#060606] p-3 font-mono text-[11px] leading-relaxed text-[#A3A3A3] whitespace-pre-wrap">{[latestRun.summary, latestRun.errorMessage, latestRun.stdout ? stripAnsiForDisplay(latestRun.stdout) : "", latestRun.stderr ? stripAnsiForDisplay(latestRun.stderr) : ""].filter(Boolean).join("\n\n") || "No output."}</pre>
+                  ) : <p className="text-xs text-[#525252]">Run a command to see output here.</p>}
+                </GlassCard>
+
+                {selProject.urls.length > 0 && (
+                  <GlassCard hover={false} className="flex items-center justify-between">
+                    <div className="min-w-0 font-mono text-xs"><p className="text-[#525252]">local urls</p><p className="truncate text-[#F5F5F5]">{selProject.urls.join(" · ")}</p></div>
+                    <ActionButton accent={ACCENT_DEV} variant="ghost" icon={ExternalLink} onClick={() => void runProjectAction(selProject, `dev.project.${selProject.id}.open_url`)}>Open app</ActionButton>
+                  </GlassCard>
+                )}
+              </>
+            )}
+
+            <GlassCard hover={false}>
+              <SectionTitle action={<span className="font-mono text-[10px] text-[#525252]">recent</span>}>Recent commands</SectionTitle>
+              {runsList.length === 0 ? <p className="text-xs text-[#525252]">No commands run yet.</p> : (
+                <div className="space-y-1.5">
+                  {runsList.slice(0, 6).map((r) => (
+                    <div key={r.actionId + (r.finishedAt || "")} className="flex items-center gap-3 rounded-lg px-2 py-1.5 transition-colors hover:bg-[#0d0d0d]">
+                      <Circle className={`h-2 w-2 shrink-0 ${r.status === "success" ? "fill-[#22C55E] text-[#22C55E]" : "fill-[#EF4444] text-[#EF4444]"}`} />
+                      <span className="font-mono text-xs text-[#F5F5F5]">{r.commandKey}</span>
+                      <span className="rounded border border-[#1f1f1f] px-1.5 py-0.5 font-mono text-[9px] text-[#A3A3A3]">{r.projectName}</span>
+                      <span className="ml-auto font-mono text-[10px] text-[#525252]">{r.durationMs ?? "?"}ms{r.finishedAt ? ` · ${formatLocalDateTime(r.finishedAt)}` : ""}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </GlassCard>
+          </div>
+        </div>
+      )}
+
+      {/* Advanced: add/edit project, per-project full command logs */}
+      <details className="rounded-lg border border-[#1a1a1a] bg-[#080808]">
+        <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] text-[#525252] hover:text-[#A3A3A3]">advanced · add/edit project, custom commands, logs</summary>
+        <div className="space-y-4 border-t border-[#1a1a1a] p-3">
+          <Panel title={form.id ? "Edit Project" : "Add Project"}>
+            <div className="project-form">
+              <label>Name<input value={form.name} onChange={(event) => updateForm("name", event.target.value)} /></label>
+              <label>Path<input className="technical" value={form.path} onChange={(event) => updateForm("path", event.target.value)} /></label>
+              <label>Description<input value={form.description} onChange={(event) => updateForm("description", event.target.value)} /></label>
+              <label>Local URLs<textarea className="technical" value={form.urls} onChange={(event) => updateForm("urls", event.target.value)} /></label>
+              {(["start", "build", "test", "typecheck", "custom"] as const).map((key) => (
+                <label key={key}>{key} command<input className="technical" value={form[key]} onChange={(event) => updateForm(key, event.target.value)} /></label>
+              ))}
+              <label>Ports (lifecycle)<input className="technical" value={form.ports} onChange={(event) => updateForm("ports", event.target.value)} placeholder="5173, 8080" /></label>
+              <label>Stop command<input className="technical" value={form.stopCommand} onChange={(event) => updateForm("stopCommand", event.target.value)} placeholder="optional explicit stop" /></label>
+              <label>Health URL<input className="technical" value={form.healthUrl} onChange={(event) => updateForm("healthUrl", event.target.value)} placeholder="http://localhost:5173/health" /></label>
+              <label>Log path<input className="technical" value={form.logPath} onChange={(event) => updateForm("logPath", event.target.value)} placeholder="file/folder to open" /></label>
+              <label>Log command<input className="technical" value={form.logCommand} onChange={(event) => updateForm("logCommand", event.target.value)} placeholder="e.g. docker compose logs --tail 200" /></label>
+              <label className="checkbox-row"><input type="checkbox" checked={form.dockerComposeEnabled} onChange={(event) => setForm((current) => ({ ...current, dockerComposeEnabled: event.target.checked }))} /><span>Docker Compose in project (enables Docker down)</span></label>
+              <label>Notes<textarea value={form.notes} onChange={(event) => updateForm("notes", event.target.value)} /></label>
+            </div>
+            <div className="button-row">
+              <button type="button" onClick={() => void saveProject()}>{form.id ? "Save Project" : "Add Project"}</button>
+              {form.id && <button type="button" onClick={() => { setForm(emptyProjectForm); setActiveProjectId(null); }}>Cancel Edit</button>}
+            </div>
+            {saveStatus && <p className={`form-status form-status--${saveStatus.tone}`}>{saveStatus.message}</p>}
+          </Panel>
+
+          {projects.map((project) => {
             const base = `dev.project.${project.id}`;
             const commandEntries = Object.entries(project.commands).filter(([, command]) => command.trim());
-            const isExpanded = Boolean(expandedProjectIds[project.id]);
-
             return (
-              <article className={`project-card accent-dev ${isExpanded ? "project-card--expanded" : ""}`} key={project.id}>
-                <div className="project-card__header">
-                  <button
-                    type="button"
-                    className="project-toggle"
-                    aria-expanded={isExpanded}
-                    aria-controls={`project-details-${project.id}`}
-                    onClick={() => toggleProject(project.id)}
-                  >
-                    <span className="project-toggle__arrow" aria-hidden="true">
-                      {isExpanded ? "v" : ">"}
-                    </span>
-                    <span>
-                      <strong>{project.name}</strong>
-                      <span>{project.description || "No description yet."}</span>
-                      <span className="technical">{project.path}</span>
-                    </span>
-                  </button>
-                  <div className="button-row project-card__tools">
-                    <button type="button" onClick={() => { setForm(projectToForm(project)); setActiveProjectId(project.id); }}>
-                      Edit
-                    </button>
-                    <button type="button" onClick={() => void deleteProject(project)}>
-                      Delete
-                    </button>
-                  </div>
+              <Panel title={project.name} key={project.id}>
+                <p className="technical">{project.path}</p>
+                <div className="button-row">
+                  <button type="button" onClick={() => { setForm(projectToForm(project)); setActiveProjectId(project.id); }}>Edit</button>
+                  <button type="button" onClick={() => void runProjectAction(project, `${base}.open_folder`)}>Folder</button>
+                  <button type="button" onClick={() => void runProjectAction(project, `${base}.open_vscode`)}>VS Code</button>
+                  <button type="button" onClick={() => void runProjectAction(project, `${base}.open_terminal`)}>Terminal</button>
+                  {project.urls.length > 0 && <button type="button" onClick={() => void runProjectAction(project, `${base}.open_url`)}>Open URL</button>}
+                  <button className="danger-button" type="button" onClick={() => void deleteProject(project)}>Delete</button>
                 </div>
-
-                {isExpanded && (
-                  <div className="project-card__details" id={`project-details-${project.id}`}>
-                    <div className="button-row">
-                      <button type="button" onClick={() => void runProjectAction(project, `${base}.open_folder`)}>
-                        Open Folder
-                      </button>
-                      <button type="button" onClick={() => void runProjectAction(project, `${base}.open_vscode`)}>
-                        VS Code
-                      </button>
-                      <button type="button" onClick={() => void runProjectAction(project, `${base}.open_terminal`)}>
-                        Terminal
-                      </button>
-                      {project.urls.length > 0 && (
-                        <button type="button" onClick={() => void runProjectAction(project, `${base}.open_url`)}>
-                          Open URL
-                        </button>
-                      )}
-                    </div>
-
-                    {commandEntries.length > 0 && (
-                      <div className="command-list">
-                        {commandEntries.map(([key, command]) => {
-                          const actionId = `${base}.run_${key}`;
-                          const result = commandRunResults[actionId];
-                          const status = result?.status ?? "idle";
-                          const hasOutput = Boolean(result?.stdout || result?.stderr || result?.summary || result?.errorMessage);
-                          const isLogExpanded = Boolean(expandedLogIds[actionId]);
-                          return (
-                            <div className="command-row" key={key}>
-                              <div className="command-row__main">
-                                <div className="command-row__summary">
-                                  <div>
-                                    <strong>{key}</strong>
-                                    <p className="technical">{command}</p>
-                                  </div>
-                                  <span className={`command-status command-status--${status}`}>{status}</span>
-                                </div>
-                                {result?.durationMs !== null && result?.durationMs !== undefined && (
-                                  <p className="command-meta">Last run: {result.durationMs}ms</p>
-                                )}
-                              </div>
-                              <div className="command-row__actions">
-                                {hasOutput && (
-                                  <button type="button" onClick={() => toggleCommandLog(actionId)}>
-                                    {isLogExpanded ? "Hide Log" : "Show Log"}
-                                  </button>
-                                )}
-                                <button
-                                  type="button"
-                                  disabled={status === "running"}
-                                  onClick={() => void runProjectAction(project, actionId, command)}
-                                >
-                                  {status === "running" ? "Running" : "Run"}
-                                </button>
-                              </div>
-                              {hasOutput && isLogExpanded && (
-                                <div className="command-log">
-                                  <div className="button-row">
-                                    <button type="button" onClick={() => void copyCommandOutput(actionId)}>
-                                      Copy output
-                                    </button>
-                                    <button type="button" onClick={() => void clearCommandOutput(actionId)}>
-                                      Clear output
-                                    </button>
-                                  </div>
-                                  <pre className="technical">{[
-                                    result?.summary,
-                                    result?.errorMessage,
-                                    result?.stdout ? `stdout:\n${stripAnsiForDisplay(result.stdout)}` : "",
-                                    result?.stderr ? `stderr:\n${stripAnsiForDisplay(result.stderr)}` : ""
-                                  ].filter(Boolean).join("\n\n")}</pre>
-                                </div>
-                              )}
+                {commandEntries.length > 0 && (
+                  <div className="command-list">
+                    {commandEntries.map(([key, command]) => {
+                      const actionId = `${base}.run_${key}`;
+                      const result = commandRunResults[actionId];
+                      const hasOutput = Boolean(result?.stdout || result?.stderr || result?.summary || result?.errorMessage);
+                      const isLogExpanded = Boolean(expandedLogIds[actionId]);
+                      return (
+                        <div className="command-row" key={key}>
+                          <div className="command-row__main"><div className="command-row__summary"><div><strong>{key}</strong><p className="technical">{command}</p></div><span className={`command-status command-status--${result?.status ?? "idle"}`}>{result?.status ?? "idle"}</span></div></div>
+                          <div className="command-row__actions">
+                            {hasOutput && <button type="button" onClick={() => toggleCommandLog(actionId)}>{isLogExpanded ? "Hide Log" : "Show Log"}</button>}
+                            <button type="button" disabled={result?.status === "running"} onClick={() => void runProjectAction(project, actionId, command)}>{result?.status === "running" ? "Running" : "Run"}</button>
+                          </div>
+                          {hasOutput && isLogExpanded && (
+                            <div className="command-log">
+                              <div className="button-row"><button type="button" onClick={() => void copyCommandOutput(actionId)}>Copy output</button><button type="button" onClick={() => void clearCommandOutput(actionId)}>Clear output</button></div>
+                              <pre className="technical">{[result?.summary, result?.errorMessage, result?.stdout ? `stdout:\n${stripAnsiForDisplay(result.stdout)}` : "", result?.stderr ? `stderr:\n${stripAnsiForDisplay(result.stderr)}` : ""].filter(Boolean).join("\n\n")}</pre>
                             </div>
-                          );
-                        })}
-                      </div>
-                    )}
-
-                    <div className="notes-box">
-                      <strong>Notes</strong>
-                      <p>{project.notes || "No notes saved."}</p>
-                    </div>
-                    {activeProjectId === project.id && <p className="technical">Editing {project.id}</p>}
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
-              </article>
+                {project.notes && <div className="notes-box"><strong>Notes</strong><p>{project.notes}</p></div>}
+              </Panel>
             );
-          })
-        )}
-      </div>
-    </section>
+          })}
+        </div>
+      </details>
+    </div>
   );
+
 }
 
 const emptySnippetForm = {
@@ -7633,6 +8113,7 @@ function ClipboardView({
   const [customSeparator, setCustomSeparator] = useState("");
   const [autoClearMinutes, setAutoClearMinutes] = useState(String(clipboardState.settings.multiCopyAutoClearMinutes));
   const [status, setStatus] = useState<{ tone: "success" | "error"; message: string } | null>(null);
+  const [selectedHistoryId, setSelectedHistoryId] = useState("");
 
   useEffect(() => {
     if (!clipboardState.settings.listenerEnabled) {
@@ -7814,6 +8295,12 @@ function ClipboardView({
     await onRefresh();
   }
 
+  async function deleteHistoryItem(itemId: string): Promise<void> {
+    const result = await onAction("clipboard.delete_history_item", "module_ui", { id: itemId }) as { ok?: boolean; error?: string };
+    showStatus(result.ok ? "History item removed." : result.error ?? "Could not remove item.", result.ok ? "success" : "error");
+    await onRefresh();
+  }
+
   async function cleanupHistoryNow(): Promise<void> {
     const result = await onAction("clipboard.cleanup_history", "module_ui", { force: true }) as { ok?: boolean; error?: string; removedCount?: number };
     showStatus(result.ok ? `Clipboard cleanup removed ${result.removedCount ?? 0} item${result.removedCount === 1 ? "" : "s"}.` : result.error ?? "Clipboard cleanup failed.", result.ok ? "success" : "error");
@@ -7855,457 +8342,245 @@ function ClipboardView({
   const extendedSlots = clipboardState.slots.filter((slot) => slot.slot > 3);
   const quickSlotShortcutText = (slot: number) => `Save: Ctrl+Shift+${slot} / Paste: Ctrl+Alt+${slot}`;
 
+  const ACCENT_CLIP = "#8B5CF6";
+  const clipAgo = (iso: string): string => {
+    const diff = Date.now() - new Date(iso).getTime();
+    const day = Math.floor(diff / 86400000);
+    if (day > 0) return `${day}d`;
+    const hr = Math.floor(diff / 3600000);
+    if (hr > 0) return `${hr}h`;
+    return `${Math.max(1, Math.floor(diff / 60000))}m`;
+  };
+  const clipType = (item: ClipboardHistoryItem): { c: string; label: string } => {
+    if (/^https?:\/\//i.test(item.text)) return { c: "#38BDF8", label: "link" };
+    if (/[{}();=]|\s-\s|\.\w+$|\//.test(item.text) && item.text.length < 80) return { c: "#22D3EE", label: "code" };
+    return { c: "#A3A3A3", label: "text" };
+  };
+  const selectedClip = filteredHistory.find((item) => item.id === selectedHistoryId) ?? filteredHistory[0] ?? null;
+  const multiActive = Boolean(activeSession);
+  async function insertSnippet(text: string, name: string): Promise<void> {
+    try { await navigator.clipboard.writeText(text); showStatus(`Inserted "${name}"`); } catch { showStatus("Copy failed", "error"); }
+  }
+
   return (
-    <section className="view-stack accent-clipboard" aria-labelledby="clipboard-title">
-      {status && <ToastStack toasts={[{ id: status.message, message: status.message, tone: status.tone }]} />}
-      <PageHeader eyebrow="Local clipboard history" title="Clipboard" titleId="clipboard-title" />
-
-      <Panel title="Clipboard Listener and Multi-Copy">
-        <div className="stats-grid">
-          <article><span>Listener</span><strong>{clipboardState.settings.listenerEnabled ? "ON" : "OFF"}</strong><p>Default off. Runs only when enabled.</p></article>
-          <article><span>Interval</span><strong>{clipboardState.settings.listenerIntervalMs}ms</strong><p>Light text checks.</p></article>
-          <article><span>Hotkey</span><strong>{clipboardState.settings.multiCopyHotkeyStatus}</strong><p className="technical">{clipboardState.settings.multiCopyHotkey}</p></article>
-          <article><span>Secret protection</span><strong>{clipboardState.settings.secretProtectionEnabled ? "ON" : "ON"}</strong><p>Secure Vault values skipped.</p></article>
-          <article><span>Multi-copy</span><strong>{activeArmedForPaste ? "armed" : activeSession?.items.length ? "active" : "idle"}</strong><p>{activeArmedForPaste ? `${activeSession?.items.length ?? 0} items armed for paste` : activeSession?.items.length ? `${activeSession.items.length} captured` : "Select text, then press Ctrl+Shift+C."}</p></article>
-          <article><span>Last capture</span><strong>{clipboardState.settings.lastCaptureAt ? formatLocalDateTime(clipboardState.settings.lastCaptureAt) : "none"}</strong><p>{clipboardState.settings.lastCapturedPreview || "No captured preview."}</p></article>
-          <article><span>Last read</span><strong>{clipboardState.settings.lastReadAt ? formatLocalDateTime(clipboardState.settings.lastReadAt) : "none"}</strong><p>{clipboardState.settings.lastReadError || clipboardState.settings.lastReadPreview || "No read preview."}</p></article>
-        </div>
-        <div className="data-item data-item--stacked accent-clipboard">
-          <div className="section-heading">
-            <div>
-              <strong>{"Ctrl+Shift+C adds. Ctrl+V pastes and clears."}</strong>
-              <p>Normal Ctrl+C stays unchanged. The first Ctrl+Shift+C creates the current group automatically.</p>
-            </div>
-            <StatusBadge tone={activeArmedForPaste ? "success" : "neutral"}>{activeArmedForPaste ? `${activeSession?.items.length ?? 0} items armed for paste` : "No active multi-copy group"}</StatusBadge>
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_CLIP}40`, background: `${ACCENT_CLIP}14`, color: ACCENT_CLIP }}>
+            <ClipboardList className="h-5 w-5" />
           </div>
-          {activeSession?.items.length ? (
-            <>
-              <p className="clipboard-combined-preview">{activeCombinedPreview || "Combined text ready on the Windows clipboard."}</p>
-              <p className="technical">
-                {activeSession.id} / updated {formatLocalDateTime(activeSession.updatedAt)}
-                {activeSession.armedForPasteAt ? ` / armed ${formatLocalDateTime(activeSession.armedForPasteAt)}` : ""}
-                {activeTimeoutAt ? ` / clears after ${formatLocalDateTime(activeTimeoutAt)}` : ""}
-              </p>
-            </>
-          ) : (
-            <p className="technical">{clipboardState.activeMultiCopyPath}</p>
-          )}
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Clipboard</h1>
+            <p className="text-sm text-[#A3A3A3]">Persistent history, quick slots &amp; snippets — sensitive entries auto-protected</p>
+          </div>
         </div>
-        <div className="button-row">
-          <button
-            className={clipboardState.settings.multiCopyHotkeyEnabled ? "button-danger" : "button-primary"}
-            type="button"
-            onClick={() => void updateClipboardSettings({ multiCopyHotkeyEnabled: !clipboardState.settings.multiCopyHotkeyEnabled }, clipboardState.settings.multiCopyHotkeyEnabled ? "Multi-copy hotkey disabled." : "Multi-copy hotkey enabled.")}
-          >
-            {clipboardState.settings.multiCopyHotkeyEnabled ? "Disable multi-copy hotkey" : "Enable multi-copy hotkey"}
-          </button>
-          <button className={clipboardState.settings.listenerEnabled ? "button-danger" : "button-primary"} type="button" onClick={() => void toggleListener()}>
-            {clipboardState.settings.listenerEnabled ? "Disable listener" : "Enable listener"}
-          </button>
-          <button type="button" onClick={() => void saveCurrentClipboard()}>
-            Save current clipboard
-          </button>
-          <button type="button" onClick={() => void pasteAsPlainText()}>
-            Paste as plain text
-          </button>
-          <button type="button" onClick={() => void testReadClipboard()}>
-            Test read clipboard
-          </button>
-          <button className="danger-button" type="button" onClick={() => void clearHistory()}>
-            Clear history
-          </button>
-        </div>
-        <div className="registry-controls">
-          <label>
-            Separator
-            <select
-              value={separatorMode}
-              onChange={(event) => {
-                const nextMode = event.target.value as typeof separatorMode;
-                setSeparatorMode(nextMode);
-                void updateClipboardSettings({ combinedSeparator: separatorFromMode(nextMode) }, "Multi-copy separator updated.");
-              }}
-            >
-              <option value="blank">Blank line</option>
-              <option value="newline">Single newline</option>
-              <option value="comma">Comma</option>
-              <option value="custom">Custom</option>
-            </select>
-          </label>
-          {separatorMode === "custom" && (
-            <label>
-              Custom separator
-              <input
-                value={customSeparator}
-                onChange={(event) => setCustomSeparator(event.target.value)}
-                onBlur={() => void updateClipboardSettings({ combinedSeparator: customSeparator }, "Custom separator saved.")}
-                placeholder="Separator text"
-              />
-            </label>
-          )}
-          <label>
-            Auto-clear minutes
-            <input
-              type="number"
-              min="1"
-              max="240"
-              value={autoClearMinutes}
-              onChange={(event) => setAutoClearMinutes(event.target.value)}
-              onBlur={() => void updateClipboardSettings({ multiCopyAutoClearMinutes: Number(autoClearMinutes) }, "Multi-copy auto-clear updated.")}
-            />
-          </label>
-        </div>
-        <p>Automatic history captures text only and excludes current Secure Vault copied secrets. Audit records metadata only.</p>
-        {clipboardState.settings.multiCopyLastHotkeyMessage && (
-          <p className="technical">
-            Last hotkey: {clipboardState.settings.multiCopyLastHotkeyStatus} / {clipboardState.settings.multiCopyLastHotkeyMessage}
-            {clipboardState.settings.multiCopyLastHotkeyAt ? ` / ${formatLocalDateTime(clipboardState.settings.multiCopyLastHotkeyAt)}` : ""}
-          </p>
-        )}
-        <p className="technical">{clipboardState.settingsPath}</p>
-      </Panel>
-
-      <div className="tabs" role="tablist" aria-label="Clipboard sections">
-        <button type="button" data-active={activeTab === "history"} onClick={() => setActiveTab("history")}>
-          Normal History
-        </button>
-        <button type="button" data-active={activeTab === "multi"} onClick={() => setActiveTab("multi")}>
-          Active Multi-Copy Group
-        </button>
-        <button type="button" data-active={activeTab === "slots"} onClick={() => setActiveTab("slots")}>
-          Slots
-        </button>
-        <button type="button" data-active={activeTab === "snippets"} onClick={() => setActiveTab("snippets")}>
-          Snippets
-        </button>
-        <button type="button" data-active={activeTab === "settings"} onClick={() => setActiveTab("settings")}>
-          Settings
-        </button>
+        <StatusChip tone={multiActive ? "running" : "info"} pulse={multiActive}>{multiActive ? "Multi-copy active" : "Single copy"}</StatusChip>
       </div>
 
-      {activeTab === "history" && (
-        <Panel title="Normal Clipboard History">
-          <div className="registry-controls">
-            <label>
-              Search timeline
-              <input value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} placeholder="Preview or history ID" />
-            </label>
-            <label>
-              Source
-              <select value={historySource} onChange={(event) => setHistorySource(event.target.value)}>
-                <option value="all">All sources</option>
-                <option value="manual">Manual</option>
-                <option value="listener">Listener</option>
-              </select>
-            </label>
+      {/* Quick slots */}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        {quickSlots.map((slot) => {
+          const filled = Boolean(slot.value || slot.text);
+          return (
+            <GlassCard key={slot.slot} accent={ACCENT_CLIP} hover={false} className="flex flex-col">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="font-mono text-xs font-semibold tracking-wider" style={{ color: ACCENT_CLIP }}>SLOT {slot.slot}</span>
+                <span className="text-[10px]" style={{ color: filled ? "#22C55E" : "#525252" }}>{filled ? "filled" : "empty"}</span>
+              </div>
+              <p className="mb-3 line-clamp-2 min-h-[32px] font-mono text-xs text-[#A3A3A3]">{slot.preview || "empty memory pad"}</p>
+              <div className="mt-auto space-y-2">
+                <div className="flex gap-2">
+                  <ActionButton accent={ACCENT_CLIP} icon={Save} className="flex-1 justify-center text-xs" onClick={() => void assignSlot(slot.slot)}>Save</ActionButton>
+                  <ActionButton accent={ACCENT_CLIP} variant="ghost" icon={ClipIcon} className="flex-1 justify-center text-xs" onClick={() => void copySlot(slot.slot)}>Paste</ActionButton>
+                </div>
+                <div className="flex items-center justify-between font-mono text-[9px] text-[#525252]"><span>Ctrl+Shift+{slot.slot}</span><span>Ctrl+Alt+{slot.slot}</span></div>
+              </div>
+            </GlassCard>
+          );
+        })}
+      </div>
+
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+        {/* History */}
+        <div className="lg:col-span-7">
+          <SectionTitle action={<span className="font-mono text-[10px] text-[#525252]">retention {clipboardState.settings.historyRetentionDays === "never" ? "∞" : `${clipboardState.settings.historyRetentionDays}d`} · {filteredHistory.length} items</span>}>History</SectionTitle>
+          <div className="mb-2 flex items-center gap-2 rounded-lg border border-[#262626] bg-[#0d0d0d] px-3 py-1.5 focus-within:border-[#8B5CF6]/40">
+            <Search className="h-3.5 w-3.5 text-[#525252]" />
+            <input value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} placeholder="Filter history…" className="flex-1 bg-transparent text-xs text-[#F5F5F5] placeholder:text-[#525252] focus:outline-none" />
           </div>
-          <p>{filteredHistory.length} matching item{filteredHistory.length === 1 ? "" : "s"}. Normal history is independent from active and saved multi-copy groups.</p>
-          <p className="technical">{clipboardState.historyPath}</p>
-          <div className="clipboard-history-list">
+          <div className="space-y-1.5">
             {filteredHistory.length === 0 ? (
-              <EmptyState>No Clipboard history matches this filter.</EmptyState>
+              <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-[#262626] py-12 text-center"><ClipboardList className="h-7 w-7 text-[#525252]" /><p className="mt-2 text-sm text-[#A3A3A3]">No clipboard history matches.</p></div>
             ) : (
               <LimitedList items={filteredHistory} step={50}>
-                {(item) => (
-                  <article
-                    className="clipboard-history-row accent-clipboard"
-                    key={item.id}
-                    title={`${item.source ?? "manual"} / ${formatBytes(item.byteLength)} / ${formatLocalDateTime(item.createdAt)}`}
-                  >
-                    <strong className="clipboard-history-text">{item.preview || "Saved clipboard text"}</strong>
-                    <button
-                      type="button"
-                      className="icon-button"
-                      aria-label="Copy clipboard item"
-                      title="Copy"
-                      onClick={() => void copyHistoryItem(item.id)}
-                    >
-                      <span className="copy-icon" aria-hidden="true" />
-                      <span className="sr-only">Copy</span>
+                {(item) => {
+                  const tm = clipType(item);
+                  const active = selectedClip?.id === item.id;
+                  return (
+                    <button key={item.id} type="button" onClick={() => setSelectedHistoryId(item.id)} className={`glass-card flex w-full items-center gap-3 p-3 text-left transition-colors ${active ? "border-[#8B5CF6]/40 bg-[#8B5CF6]/[0.06]" : ""}`}>
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ background: `${tm.c}14`, color: tm.c }}><FileCode className="h-4 w-4" /></div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm text-[#F5F5F5]">{item.preview || "Clipboard item"}</p>
+                        <p className="font-mono text-[10px] text-[#525252]">{clipAgo(item.createdAt)} ago · {formatBytes(item.byteLength)}</p>
+                      </div>
+                      <span className="shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium" style={{ color: tm.c, borderColor: `${tm.c}33`, background: `${tm.c}10` }}>{tm.label}</span>
                     </button>
-                  </article>
-                )}
+                  );
+                }}
               </LimitedList>
             )}
           </div>
-        </Panel>
-      )}
+        </div>
 
-      {activeTab === "multi" && (
-        <Panel title="Active Temporary Multi-Copy Group">
-          <div className="button-row">
-            <button type="button" disabled={Boolean(activeSession)} onClick={() => void startMultiCopy()}>
-              Start empty group
-            </button>
-            <input value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="Saved group name" />
-            <button type="button" disabled={!activeSession?.items.length} onClick={() => void copyCombinedGroup()}>
-              Copy combined
-            </button>
-            <button type="button" disabled={!activeSession?.items.length} onClick={() => void saveMultiCopyGroup()}>
-              Save group
-            </button>
-            <button className="danger-button" type="button" disabled={!activeSession?.items.length} onClick={() => void clearMultiCopySession()}>
-              Clear current group
-            </button>
-            <button type="button" disabled={!activeSession} onClick={() => void stopMultiCopy()}>
-              Stop/Reset group
-            </button>
-          </div>
-          <p>Select text anywhere and press Ctrl+Shift+C. DexNest appends the text here and keeps the combined group on the Windows clipboard for normal Ctrl+V.</p>
-          <p className="technical">Separator: {JSON.stringify(clipboardState.settings.combinedSeparator)}</p>
-          {activeSession && (
-            <div className="action-list action-list--compact">
-              <p className="technical">{activeSession.id} / started {formatLocalDateTime(activeSession.startedAt)} / updated {formatLocalDateTime(activeSession.updatedAt)}</p>
-              {activeSession.items.length === 0 ? (
-                <EmptyState>Press Ctrl+Shift+C after selecting text anywhere in Windows.</EmptyState>
-              ) : (
-                activeSession.items.map((item) => (
-                  <article className="data-item data-item--compact accent-clipboard" key={item.id}>
-                    <strong>{item.preview || "Clipboard item"}</strong>
-                    <span>{formatBytes(item.byteLength)} / {formatLocalDateTime(item.createdAt)}</span>
-                    <button type="button" onClick={() => void copyHistoryItem(item.id)}>Copy</button>
-                  </article>
-                ))
-              )}
+        {/* Preview + protection + snippets */}
+        <div className="space-y-5 lg:col-span-5">
+          <GlassCard accent={ACCENT_CLIP} hover={false}>
+            <SectionTitle action={<StatusChip tone="ready">Plain</StatusChip>}>Preview</SectionTitle>
+            {selectedClip ? (
+              <>
+                <pre className="max-h-40 overflow-auto rounded-lg border border-[#1f1f1f] bg-[#0a0a0a] p-3 font-mono text-xs text-[#F5F5F5] whitespace-pre-wrap">{selectedClip.preview || selectedClip.text}</pre>
+                <p className="mt-2 font-mono text-[10px] text-[#525252]">{clipType(selectedClip).label} · captured {clipAgo(selectedClip.createdAt)} ago · {selectedClip.source ?? "clipboard"}</p>
+                <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  <ActionButton accent={ACCENT_CLIP} icon={ClipIcon} className="justify-center text-xs" onClick={() => void copyHistoryItem(selectedClip.id)}>Copy</ActionButton>
+                  <ActionButton accent="#38BDF8" icon={Share2} className="justify-center text-xs" onClick={() => { void copyHistoryItem(selectedClip.id).then(() => onAction("drop.send_clipboard_to_drop")); }}>To Drop</ActionButton>
+                  <ActionButton accent="#EF4444" variant="ghost" icon={Trash2} className="justify-center text-xs" onClick={() => void deleteHistoryItem(selectedClip.id)}>Delete</ActionButton>
+                  <ActionButton accent="#EF4444" variant="ghost" icon={Trash2} className="justify-center text-xs" onClick={() => void clearHistory()}>Clear all</ActionButton>
+                </div>
+              </>
+            ) : <p className="text-xs text-[#525252]">Select a history item to preview it.</p>}
+          </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle>Protection</SectionTitle>
+            <div className="divide-y divide-[#141414]">
+              <div className="flex items-center justify-between py-3 first:pt-0">
+                <div className="pr-4"><p className="text-sm text-[#F5F5F5]">Multi-copy session</p><p className="text-xs text-[#525252]">Stack several copies into one buffer</p></div>
+                <button type="button" role="switch" aria-checked={multiActive} onClick={() => void (multiActive ? stopMultiCopy() : startMultiCopy())} className="relative h-5 w-9 rounded-full transition-colors" style={{ background: multiActive ? ACCENT_CLIP : "#262626" }}>
+                  <span className="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" style={{ left: multiActive ? "1.125rem" : "0.125rem" }} />
+                </button>
+              </div>
+              <div className="flex items-center justify-between py-3 last:pb-0">
+                <div className="pr-4"><p className="text-sm text-[#F5F5F5]">Sensitive protection</p><p className="text-xs text-[#525252]">Auto-mask tokens, keys &amp; ID numbers</p></div>
+                <button type="button" role="switch" aria-checked={clipboardState.settings.secretProtectionEnabled} onClick={() => void updateClipboardSettings({ secretProtectionEnabled: !clipboardState.settings.secretProtectionEnabled }, "Sensitive protection updated.")} className="relative h-5 w-9 rounded-full transition-colors" style={{ background: clipboardState.settings.secretProtectionEnabled ? ACCENT_CLIP : "#262626" }}>
+                  <span className="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" style={{ left: clipboardState.settings.secretProtectionEnabled ? "1.125rem" : "0.125rem" }} />
+                </button>
+              </div>
+              <div className="flex items-center justify-between py-3">
+                <div className="pr-4"><p className="text-sm text-[#F5F5F5]">Clipboard listener</p><p className="text-xs text-[#525252]">Auto-capture new copies to history</p></div>
+                <button type="button" role="switch" aria-checked={clipboardState.settings.listenerEnabled} onClick={() => void toggleListener()} className="relative h-5 w-9 rounded-full transition-colors" style={{ background: clipboardState.settings.listenerEnabled ? ACCENT_CLIP : "#262626" }}>
+                  <span className="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" style={{ left: clipboardState.settings.listenerEnabled ? "1.125rem" : "0.125rem" }} />
+                </button>
+              </div>
+              <div className="flex items-center justify-between py-3 last:pb-0">
+                <div className="pr-4">
+                  <p className="text-sm text-[#F5F5F5]">Slot shortcut sequences</p>
+                  <p className="text-xs text-[#525252]">Hold Ctrl, tap 1/2/3, then C to save or V to paste that slot. Normal Ctrl+C/V and browser tabs keep working.{clipboardState.settings.slotSequenceStatus === "failed" && clipboardState.settings.slotSequenceLastError ? ` · ${clipboardState.settings.slotSequenceLastError}` : clipboardState.settings.slotSequenceEnabled ? ` · ${clipboardState.settings.slotSequenceStatus}` : ""}</p>
+                </div>
+                <button type="button" role="switch" aria-checked={clipboardState.settings.slotSequenceEnabled} onClick={() => void updateClipboardSettings({ slotSequenceEnabled: !clipboardState.settings.slotSequenceEnabled }, clipboardState.settings.slotSequenceEnabled ? "Slot sequences disabled." : "Slot sequences enabled.")} className="relative h-5 w-9 rounded-full transition-colors" style={{ background: clipboardState.settings.slotSequenceEnabled ? ACCENT_CLIP : "#262626" }}>
+                  <span className="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" style={{ left: clipboardState.settings.slotSequenceEnabled ? "1.125rem" : "0.125rem" }} />
+                </button>
+              </div>
             </div>
-          )}
-          <h3>Saved Multi-Copy Groups</h3>
-          <div className="action-list action-list--compact">
-            {clipboardState.multiGroups.length === 0 ? (
-              <EmptyState>No saved multi-copy groups yet.</EmptyState>
-            ) : (
-              clipboardState.multiGroups.map((group) => (
-                <CollapsibleListItem
-                  accentClass="accent-clipboard"
-                  key={group.id}
-                  title={group.name}
-                  meta={`${group.items.length} items / ${formatLocalDateTime(group.updatedAt)}`}
-                  actions={(
-                    <>
-                    <button type="button" onClick={() => void copyCombinedGroup(group.id)}>Copy combined group</button>
-                    <button className="danger-button" type="button" onClick={() => void deleteMultiCopyGroup(group.id)}>Delete group</button>
-                    </>
-                  )}
-                >
-                  <div className="action-list action-list--compact">
-                    {group.items.map((item) => (
-                      <article className="data-item data-item--compact accent-clipboard" key={item.id}>
-                        <strong>{item.preview || "Clipboard item"}</strong>
-                        <span>{formatBytes(item.byteLength)}</span>
-                        <button type="button" onClick={() => void copyHistoryItem(item.id)}>Copy</button>
-                      </article>
-                    ))}
-                  </div>
-                </CollapsibleListItem>
-              ))
-            )}
-          </div>
-          <p className="technical">{clipboardState.multiGroupsPath}</p>
-        </Panel>
-      )}
+          </GlassCard>
 
-      {activeTab === "slots" && (
-        <Panel title="Quick Slots">
-          <p>Persistent text slots stay available until you overwrite or clear them. Copy text normally, then press the save shortcut. Paste uses the slot shortcut and falls back to copying the slot so normal Ctrl+V works.</p>
-          <div className="clipboard-slot-grid">
-            {quickSlots.map((slot) => (
-              <article className="clipboard-slot accent-clipboard" key={slot.slot}>
-                <div>
-                  <strong>Slot {slot.slot}</strong>
-                  <p className="clipboard-slot-preview" title={slot.preview || "Empty slot"}>{slot.preview || "Empty slot"}</p>
-                  <p className="technical">{quickSlotShortcutText(slot.slot)}</p>
-                  {slot.updatedAt && <p className="technical">{formatLocalDateTime(slot.updatedAt)} / {formatBytes(slot.byteLength)} / {slot.source ?? "clipboard_ui"}</p>}
+          <GlassCard hover={false}>
+            <SectionTitle action={<details className="relative"><summary className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-[#8B5CF6]/30 bg-[#8B5CF6]/10 px-2 py-1 text-[10px] font-medium text-[#8B5CF6]"><Plus className="h-3 w-3" />New</summary><div className="absolute right-0 z-10 mt-1 w-56 space-y-1.5 rounded-lg border border-[#262626] bg-[#0a0a0a] p-2"><input value={snippetForm.title} onChange={(event) => setSnippetForm({ ...snippetForm, title: event.target.value })} placeholder="Snippet title" /><textarea value={snippetForm.text} onChange={(event) => setSnippetForm({ ...snippetForm, text: event.target.value })} placeholder="Snippet text" /><button type="button" onClick={() => void saveSnippet()}>Save snippet</button></div></details>}>Snippets</SectionTitle>
+            <div className="space-y-1.5">
+              {clipboardState.snippets.length === 0 ? <p className="text-xs text-[#525252]">No snippets yet.</p> : clipboardState.snippets.map((s) => (
+                <div key={s.id} className="glass-card flex w-full items-center gap-2 p-2.5">
+                  <button type="button" onClick={() => void insertSnippet(s.text, s.title)} className="min-w-0 flex-1 truncate text-left text-sm text-[#F5F5F5]" title={s.text}>{s.title}</button>
+                  <button type="button" onClick={() => void insertSnippet(s.text, s.title)} title="Copy" className="text-[#525252] hover:text-[#8B5CF6]"><ClipIcon className="h-3.5 w-3.5" /></button>
+                  <button type="button" onClick={() => void deleteSnippet(s.id)} title="Delete" className="text-[#525252] hover:text-[#EF4444]"><Trash2 className="h-3.5 w-3.5" /></button>
                 </div>
-                <div className="button-row">
-                  <button type="button" onClick={() => void assignSlot(slot.slot)}>Save current clipboard</button>
-                  <button type="button" disabled={!(slot.value || slot.text)} onClick={() => void copySlot(slot.slot)}>Copy/Paste slot</button>
-                  <button className="danger-button" type="button" disabled={!(slot.value || slot.text)} onClick={() => void clearSlot(slot.slot)}>Clear</button>
-                </div>
-              </article>
-            ))}
-          </div>
-          {extendedSlots.length > 0 && (
-            <>
-              <h3>Extended Slots</h3>
-              <div className="clipboard-slot-grid">
-                {extendedSlots.map((slot) => (
-                  <article className="clipboard-slot accent-clipboard" key={slot.slot}>
-                    <div>
-                      <strong>Slot {slot.slot}</strong>
-                      <p className="clipboard-slot-preview" title={slot.preview || "Empty slot"}>{slot.preview || "Empty slot"}</p>
-                      {slot.updatedAt && <p className="technical">{formatLocalDateTime(slot.updatedAt)} / {formatBytes(slot.byteLength)}</p>}
+              ))}
+            </div>
+          </GlassCard>
+        </div>
+      </div>
+
+      {/* Advanced (multi-copy groups, settings, slots 4+) */}
+      <details className="rounded-lg border border-[#1a1a1a] bg-[#080808]">
+        <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] text-[#525252] hover:text-[#A3A3A3]">advanced · multi-copy groups, settings, extra slots</summary>
+        <div className="space-y-4 border-t border-[#1a1a1a] p-3">
+          <Panel title="Multi-copy group">
+            <div className="button-row">
+              <button type="button" disabled={Boolean(activeSession)} onClick={() => void startMultiCopy()}>Start group</button>
+              <input value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="Group name" />
+              <button type="button" disabled={!activeSession?.items.length} onClick={() => void copyCombinedGroup()}>Copy combined</button>
+              <button type="button" disabled={!activeSession?.items.length} onClick={() => void saveMultiCopyGroup()}>Save group</button>
+              <button className="danger-button" type="button" disabled={!activeSession?.items.length} onClick={() => void clearMultiCopySession()}>Clear</button>
+              <button type="button" disabled={!activeSession} onClick={() => void stopMultiCopy()}>Stop</button>
+            </div>
+            <p className="technical">Select text anywhere and press {shortcutLabel(clipboardState.settings.multiCopyHotkey)}.</p>
+            {activeSession?.items.length ? (
+              <div className="action-list action-list--compact">
+                {activeSession.items.map((item) => (
+                  <article className="data-item data-item--compact accent-clipboard" key={item.id}><strong>{item.preview || "Item"}</strong><span>{formatBytes(item.byteLength)}</span></article>
+                ))}
+              </div>
+            ) : null}
+          </Panel>
+          {clipboardState.multiGroups.length > 0 && (
+            <Panel title="Saved multi-copy groups">
+              <div className="action-list action-list--compact">
+                {clipboardState.multiGroups.map((group) => (
+                  <article className="data-item data-item--stacked accent-clipboard" key={group.id}>
+                    <div className="section-heading section-heading--row">
+                      <strong>{group.name}</strong>
+                      <div className="button-row">
+                        <button type="button" onClick={() => void copyCombinedGroup(group.id)}>Copy combined</button>
+                        <button className="danger-button" type="button" onClick={() => void deleteMultiCopyGroup(group.id)}>Delete</button>
+                      </div>
                     </div>
+                    <span>{group.items.length} items</span>
+                  </article>
+                ))}
+              </div>
+            </Panel>
+          )}
+          {extendedSlots.length > 0 && (
+            <Panel title="Extra slots">
+              <div className="action-list action-list--compact">
+                {extendedSlots.map((slot) => (
+                  <article className="data-item data-item--stacked accent-clipboard" key={slot.slot}>
+                    <strong>Slot {slot.slot}</strong>
+                    <span className="clipboard-slot-preview">{slot.preview || "Empty slot"}</span>
                     <div className="button-row">
-                      <button type="button" onClick={() => void assignSlot(slot.slot)}>Save current clipboard</button>
-                      <button type="button" disabled={!(slot.value || slot.text)} onClick={() => void copySlot(slot.slot)}>Copy slot</button>
+                      <button type="button" onClick={() => void assignSlot(slot.slot)}>Save current</button>
+                      <button type="button" disabled={!(slot.value || slot.text)} onClick={() => void copySlot(slot.slot)}>Copy</button>
                       <button className="danger-button" type="button" disabled={!(slot.value || slot.text)} onClick={() => void clearSlot(slot.slot)}>Clear</button>
                     </div>
                   </article>
                 ))}
               </div>
-            </>
+            </Panel>
           )}
-          <p className="technical">{clipboardState.slotsPath}</p>
-        </Panel>
-      )}
-
-      {activeTab === "snippets" && (
-        <Panel title="Snippets and Templates">
-          <p className="technical">{clipboardState.snippetsPath}</p>
-          <div className="project-form">
-            <label>
-              Title
-              <input value={snippetForm.title} onChange={(event) => setSnippetForm((current) => ({ ...current, title: event.target.value }))} />
-            </label>
-            <label>
-              Snippet text
-              <textarea className="technical" value={snippetForm.text} onChange={(event) => setSnippetForm((current) => ({ ...current, text: event.target.value }))} />
-            </label>
-          </div>
-          <div className="button-row">
-            <button type="button" onClick={() => void saveSnippet()}>
-              {snippetForm.id ? "Save snippet" : "Create snippet"}
-            </button>
-            {snippetForm.id && (
-              <button type="button" onClick={() => setSnippetForm(emptySnippetForm)}>
-                Cancel edit
-              </button>
-            )}
-          </div>
-          <div className="item-list">
-            {clipboardState.snippets.length === 0 ? (
-              <p>No snippets yet.</p>
-            ) : (
-              clipboardState.snippets.map((snippet) => (
-                <CollapsibleListItem
-                  accentClass="accent-clipboard"
-                  key={snippet.id}
-                  title={snippet.title}
-                  meta={previewForUi(snippet.text)}
-                  actions={(
-                    <>
-                    <button type="button" onClick={() => setSnippetForm({ id: snippet.id, title: snippet.title, text: snippet.text })}>
-                      Edit
-                    </button>
-                    <button type="button" onClick={() => void deleteSnippet(snippet.id)}>
-                      Delete
-                    </button>
-                    </>
-                  )}
-                >
-                  <p className="technical">{snippet.id}</p>
-                </CollapsibleListItem>
-              ))
-            )}
-          </div>
-        </Panel>
-      )}
-
-      {activeTab === "settings" && (
-        <div className="dashboard-grid">
-          <Panel title="Clipboard Settings">
-            <div className="stats-grid">
-              <article><span>Listener</span><strong>{clipboardState.settings.listenerEnabled ? "ON" : "OFF"}</strong><p>Normal Ctrl+C history capture when enabled.</p></article>
-              <article><span>Multi-copy hotkey</span><strong>{clipboardState.settings.multiCopyHotkeyEnabled ? "ON" : "OFF"}</strong><p className="technical">{clipboardState.settings.multiCopyHotkey}</p></article>
-              <article><span>Registration</span><strong>{clipboardState.settings.multiCopyHotkeyStatus}</strong><p>{clipboardState.settings.multiCopyHotkeyLastError || "Ready for multi-copy capture."}</p></article>
-              <article><span>Retention</span><strong>{clipboardState.settings.historyRetentionDays === "never" ? "never" : `${clipboardState.settings.historyRetentionDays} day${clipboardState.settings.historyRetentionDays === 1 ? "" : "s"}`}</strong><p>Normal history only.</p></article>
-              <article><span>Last cleanup</span><strong>{clipboardState.settings.lastHistoryCleanupAt ? formatLocalDateTime(clipboardState.settings.lastHistoryCleanupAt) : "never"}</strong><p>Runs once per app start and at most once per day.</p></article>
+          <Panel title="History &amp; settings">
+            <div className="button-row">
+              <button type="button" onClick={() => void saveCurrentClipboard()}>Save current</button>
+              <button type="button" onClick={() => void pasteAsPlainText()}>Copy as plain text</button>
+              <button type="button" onClick={() => void testReadClipboard()}>Test read</button>
+              <button type="button" onClick={() => void cleanupHistoryNow()}>Cleanup now</button>
+              <button className="danger-button" type="button" onClick={() => void clearHistory()}>Clear history</button>
             </div>
             <div className="registry-controls">
-              <label>
-                Multi-copy hotkey
-                <select
-                  value={clipboardState.settings.multiCopyHotkey}
-                  onChange={(event) => void updateClipboardSettings({ multiCopyHotkey: event.target.value }, "Multi-copy hotkey updated.")}
-                >
-                  <option value="CommandOrControl+Shift+C">Ctrl+Shift+C</option>
-                  <option value="CommandOrControl+Alt+C">Ctrl+Alt+C</option>
-                  <option value="CommandOrControl+Shift+X">Ctrl+Shift+X</option>
+              <label>Separator
+                <select value={separatorMode} onChange={(event) => { const m = event.target.value as typeof separatorMode; setSeparatorMode(m); void updateClipboardSettings({ combinedSeparator: separatorFromMode(m) }, "Separator updated."); }}>
+                  <option value="blank">Blank line</option><option value="newline">Single newline</option><option value="comma">Comma</option><option value="custom">Custom</option>
                 </select>
               </label>
-              <label>
-                History retention
-                <select
-                  value={String(clipboardState.settings.historyRetentionDays)}
-                  onChange={(event) => void updateClipboardSettings({ historyRetentionDays: event.target.value === "never" ? "never" : Number(event.target.value) }, "Clipboard history retention updated.")}
-                >
-                  <option value="1">1 day</option>
-                  <option value="3">3 days</option>
-                  <option value="7">7 days</option>
-                  <option value="30">30 days</option>
-                  <option value="never">Never</option>
-                </select>
-              </label>
-              <label>
-                Separator
-                <select
-                  value={separatorMode}
-                  onChange={(event) => {
-                    const nextMode = event.target.value as typeof separatorMode;
-                    setSeparatorMode(nextMode);
-                    void updateClipboardSettings({ combinedSeparator: separatorFromMode(nextMode) }, "Multi-copy separator updated.");
-                  }}
-                >
-                  <option value="blank">Blank line</option>
-                  <option value="newline">Single newline</option>
-                  <option value="comma">Comma</option>
-                  <option value="custom">Custom</option>
-                </select>
-              </label>
-              {separatorMode === "custom" && (
-                <label>
-                  Custom separator
-                  <input
-                    value={customSeparator}
-                    onChange={(event) => setCustomSeparator(event.target.value)}
-                    onBlur={() => void updateClipboardSettings({ combinedSeparator: customSeparator }, "Custom separator saved.")}
-                    placeholder="Separator text"
-                  />
-                </label>
-              )}
-              <label>
-                Active group auto-clear minutes
-                <input
-                  type="number"
-                  min="1"
-                  max="240"
-                  value={autoClearMinutes}
-                  onChange={(event) => setAutoClearMinutes(event.target.value)}
-                  onBlur={() => void updateClipboardSettings({ multiCopyAutoClearMinutes: Number(autoClearMinutes) }, "Multi-copy auto-clear updated.")}
-                />
-              </label>
+              {separatorMode === "custom" && <label>Custom<input value={customSeparator} onChange={(event) => setCustomSeparator(event.target.value)} onBlur={() => void updateClipboardSettings({ combinedSeparator: customSeparator }, "Custom separator saved.")} /></label>}
+              <label>Auto-clear minutes<input type="number" min="1" max="240" value={autoClearMinutes} onChange={(event) => setAutoClearMinutes(event.target.value)} onBlur={() => void updateClipboardSettings({ multiCopyAutoClearMinutes: Number(autoClearMinutes) || 5 }, "Auto-clear updated.")} /></label>
             </div>
-            <div className="button-row">
-              <button className={clipboardState.settings.listenerEnabled ? "button-danger" : "button-primary"} type="button" onClick={() => void toggleListener()}>
-                {clipboardState.settings.listenerEnabled ? "Disable listener" : "Enable listener"}
-              </button>
-              <button
-                className={clipboardState.settings.multiCopyHotkeyEnabled ? "button-danger" : "button-primary"}
-                type="button"
-                onClick={() => void updateClipboardSettings({ multiCopyHotkeyEnabled: !clipboardState.settings.multiCopyHotkeyEnabled }, clipboardState.settings.multiCopyHotkeyEnabled ? "Multi-copy hotkey disabled." : "Multi-copy hotkey enabled.")}
-              >
-                {clipboardState.settings.multiCopyHotkeyEnabled ? "Disable multi-copy hotkey" : "Enable multi-copy hotkey"}
-              </button>
-              <button type="button" onClick={() => void cleanupHistoryNow()}>
-                Cleanup history now
-              </button>
-            </div>
-            <p>Some apps may reserve shortcuts. Use Ctrl+Alt+C or Ctrl+Shift+X if Ctrl+Shift+C is intercepted.</p>
-            <p className="technical">Manual custom shortcut string placeholder: future DexNest setting.</p>
-            <p className="technical">{clipboardState.settingsPath}</p>
-          </Panel>
-          <Panel title="Per-App Rules">
-            <p>Placeholder. DexNest does not yet attach active-app detection to Clipboard, so per-app exclusions are not enforced.</p>
-            <p className="technical">{clipboardState.settings.appExclusionRules.length} configured rules</p>
-          </Panel>
-          <Panel title="Secret Protection">
-            <p>Secure Vault copy actions mark copied secrets as protected. The listener, manual history save, multi-copy, and slots skip that protected value.</p>
-            <p>Audit stores byte counts and IDs only, never full clipboard text.</p>
+            <p className="technical">{clipboardState.historyPath}</p>
           </Panel>
         </div>
-      )}
-    </section>
+      </details>
+
+      {status && <ToastStack toasts={[{ id: status.message, message: status.message, tone: status.tone }]} />}
+    </div>
   );
+
 }
 
 function ToolsView({
@@ -8352,6 +8627,7 @@ function ToolsView({
   const [status, setStatus] = useState<{ tone: "success" | "error"; message: string } | null>(null);
   const [runningActionId, setRunningActionId] = useState<string | null>(null);
   const [draggedFileIndex, setDraggedFileIndex] = useState<number | null>(null);
+  const [selectedToolId, setSelectedToolId] = useState("tools.ocr_image");
 
   const selectedPaths = selectedFiles.map((file) => file.path);
 
@@ -8492,390 +8768,242 @@ function ToolsView({
     await onRefresh();
   }
 
+  const ACCENT_TOOLS = "#F97316";
+  const TOOL_CATS: Array<{ label: string; tools: Array<{ id: string; name: string; icon: LucideIcon; desc: string; fmt: string; out: string; kind: "pdf" | "image" | "any" }> }> = [
+    { label: "PDF tools", tools: [
+      { id: "tools.merge_pdfs", name: "Merge PDF", icon: FileStack, desc: "Combine multiple PDFs", fmt: "PDF", out: "PDF", kind: "pdf" },
+      { id: "tools.split_pdf", name: "Split PDF", icon: Scissors, desc: "Extract selected pages", fmt: "PDF", out: "PDF", kind: "pdf" }
+    ] },
+    { label: "OCR / Scan", tools: [
+      { id: "tools.ocr_image", name: "OCR Image", icon: ScanText, desc: "Extract text locally", fmt: "PNG · JPG", out: "TXT", kind: "image" },
+      { id: "tools.ocr_pdf", name: "OCR PDF", icon: ScanText, desc: "Make scans searchable", fmt: "PDF", out: "PDF", kind: "pdf" },
+      { id: "tools.clean_scan", name: "Clean Scan", icon: Sparkles, desc: "Enhance scanned docs", fmt: "PNG · JPG", out: "IMG", kind: "image" }
+    ] },
+    { label: "Media", tools: [
+      { id: "tools.images_to_pdf", name: "Images → PDF", icon: FileImage, desc: "Bundle images to PDF", fmt: "PNG · JPG", out: "PDF", kind: "image" },
+      { id: "tools.pdf_to_images", name: "PDF → Images", icon: Images, desc: "Export pages as images", fmt: "PDF", out: "PNG", kind: "pdf" },
+      { id: "tools.mp4_to_mp3", name: "MP4 → MP3", icon: FileAudio, desc: "Extract audio track", fmt: "MP4 · MOV", out: "MP3", kind: "any" }
+    ] },
+    { label: "Office", tools: [
+      { id: "tools.docx_to_pdf", name: "DOCX → PDF", icon: FileType2, desc: "Convert office docs", fmt: "DOCX", out: "PDF", kind: "any" },
+      { id: "tools.pptx_to_pdf", name: "PPTX → PDF", icon: FileType2, desc: "Convert slides", fmt: "PPTX", out: "PDF", kind: "any" }
+    ] }
+  ];
+  const allTools = TOOL_CATS.flatMap((c) => c.tools);
+  const selectedTool = allTools.find((t) => t.id === selectedToolId) ?? allTools[0];
+  const toolParams = (id: string): Record<string, unknown> => {
+    if (id === "tools.split_pdf") return { range: pageRange };
+    if (id === "tools.ocr_image" || id === "tools.ocr_pdf") return { engine: ocrEngine, device: ocrDevice, language: ocrLanguage, upscale: ocrUpscale, grayscale: scanGrayscale, contrastBoost: true, sharpen: scanSharpen, threshold: ocrThreshold, rotateDegrees: scanRotate };
+    if (id === "tools.clean_scan") return { grayscale: scanGrayscale, sharpen: scanSharpen, contrast: scanContrast, rotateDegrees: scanRotate };
+    if (id === "tools.mp4_to_mp3") return { format: "mp3" };
+    return {};
+  };
+  const latestOutput = toolsState.outputs[0];
+
   return (
-    <section className="view-stack accent-tools" aria-labelledby="tools-title">
-      {status && (
-        <ToastStack toasts={[{ id: status.message, message: status.message, tone: status.tone }]} />
-      )}
-      <PageHeader eyebrow="Local PDF and media utilities" title="Tools" titleId="tools-title" />
-
-      <section
-        className="drop-zone"
-        onDragOver={(event) => event.preventDefault()}
-        onDrop={onDrop}
-        aria-label="DexNest Tools file drop zone"
-      >
-        <div>
-          <h3>Select Files</h3>
-          <p>Drag files here or use the local file picker. Reorder files before merging PDFs or creating a PDF from images.</p>
+    <div className="space-y-6">
+      {status && (<ToastStack toasts={[{ id: status.message, message: status.message, tone: status.tone }]} />)}
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_TOOLS}40`, background: `${ACCENT_TOOLS}14`, color: ACCENT_TOOLS }}>
+            <Wrench className="h-5 w-5" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Tools</h1>
+            <p className="text-sm text-[#A3A3A3]">Offline PDF, OCR &amp; media workstation — runs entirely on-device</p>
+          </div>
         </div>
-        <div className="button-row">
-          <button type="button" className="button-primary" onClick={() => void selectFiles("pdf")}>Select PDFs</button>
-          <button type="button" className="button-secondary" onClick={() => void selectFiles("image")}>Select Images</button>
-          <button type="button" className="button-secondary" onClick={() => void selectFiles("any")}>Select Any</button>
+        <div className="flex items-center gap-2">
+          <StatusChip tone="ok" dot={false} style={{ color: ACCENT_TOOLS, borderColor: `${ACCENT_TOOLS}33`, background: `${ACCENT_TOOLS}12` }}>PaddleOCR {toolsState.ocrEngine === "paddleocr" ? "ready" : "available"}</StatusChip>
+          <StatusChip tone="info">Tesseract fallback</StatusChip>
         </div>
-        <div className="file-list">
-          {selectedFiles.length === 0 ? (
-            <p className="empty-inline">No files selected.</p>
-          ) : (
-            selectedFiles.map((file, index) => (
-              <div
-                className="file-row"
-                data-dragging={draggedFileIndex === index}
-                draggable
-                key={file.path}
-                onDragStart={(event) => {
-                  event.stopPropagation();
-                  setDraggedFileIndex(index);
-                  event.dataTransfer.effectAllowed = "move";
-                  event.dataTransfer.setData("application/x-dexnest-tools-reorder", String(index));
-                  event.dataTransfer.setData("text/plain", file.path);
-                }}
-                onDragOver={(event) => {
-                  event.stopPropagation();
-                  event.preventDefault();
-                  event.dataTransfer.dropEffect = "move";
-                }}
-                onDrop={(event) => {
-                  event.stopPropagation();
-                  event.preventDefault();
-                  reorderSelectedFile(index);
-                }}
-                onDragEnd={(event) => {
-                  event.stopPropagation();
-                  setDraggedFileIndex(null);
-                }}
-              >
-                <button className="drag-handle" type="button" aria-label={`Drag ${file.name} to reorder`} title="Drag to reorder">
-                  <span className="drag-handle__chevron drag-handle__chevron--up" aria-hidden="true" />
-                  <span className="drag-handle__bar" aria-hidden="true" />
-                  <span className="drag-handle__bar" aria-hidden="true" />
-                  <span className="drag-handle__chevron drag-handle__chevron--down" aria-hidden="true" />
-                </button>
-                <span>{index + 1}. {file.name}</span>
-                <strong className="technical">{formatBytes(file.byteLength)}</strong>
-              </div>
-            ))
-          )}
-        </div>
-      </section>
-
-      <div className="tab-row" role="tablist" aria-label="DexNest Tools sections">
-        {[
-          ["pdf", "PDF"],
-          ["images", "Images"],
-          ["ocr", "OCR / Scan Cleanup"],
-          ["media", "Media"],
-          ["office", "Office"],
-          ["outputs", "Recent Outputs"],
-          ["settings", "Settings"]
-        ].map(([id, label]) => (
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeTab === id}
-            className={activeTab === id ? "button-primary" : "button-secondary"}
-            key={id}
-            onClick={() => setActiveTab(id as typeof activeTab)}
-          >
-            {label}
-          </button>
-        ))}
       </div>
 
-      {activeTab === "pdf" && (
-        <div className="tools-grid">
-          <Panel title="PDF Tools">
-            <div className="button-row">
-              <button type="button" disabled={runningActionId === "tools.merge_pdfs"} onClick={() => void runTool("tools.merge_pdfs")}>Merge PDFs</button>
-              <button type="button" disabled={runningActionId === "tools.images_to_pdf"} onClick={() => void runTool("tools.images_to_pdf")}>Images to PDF</button>
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+        {/* Tool grid */}
+        <div className="space-y-4 lg:col-span-7">
+          {TOOL_CATS.map((cat) => (
+            <div key={cat.label}>
+              <SectionTitle>{cat.label}</SectionTitle>
+              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                {cat.tools.map((t) => {
+                  const Icon = t.icon;
+                  const active = selectedTool.id === t.id;
+                  return (
+                    <button key={t.id} type="button" onClick={() => setSelectedToolId(t.id)} className={`glass-card flex items-start gap-3 p-3 text-left transition-colors ${active ? "border-[#F97316]/40 bg-[#F97316]/[0.06]" : ""}`}>
+                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg" style={{ background: `${ACCENT_TOOLS}16`, color: ACCENT_TOOLS }}><Icon className="h-[18px] w-[18px]" /></div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-[#F5F5F5]">{t.name}</p>
+                        <p className="truncate text-xs text-[#A3A3A3]">{t.desc}</p>
+                        <p className="mt-0.5 font-mono text-[9px] text-[#525252]">{t.fmt} → {t.out}</p>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-            <label>
-              Split page range
-              <input className="technical" value={pageRange} onChange={(event) => setPageRange(event.target.value)} placeholder="1-3 or 1,3,5" />
-            </label>
-            <button type="button" disabled={runningActionId === "tools.split_pdf"} onClick={() => void runTool("tools.split_pdf", { range: pageRange })}>Split PDF</button>
-            <div className="file-list">
-              {pdfInfo.length === 0 ? (
-                <p className="empty-inline">Select PDFs to view basic info.</p>
+          ))}
+        </div>
+
+        {/* Work area + queue */}
+        <div className="space-y-5 lg:col-span-5">
+          <GlassCard accent={ACCENT_TOOLS} hover={false}>
+            <div className="mb-3 flex items-center justify-between">
+              <div className="flex items-center gap-2"><selectedTool.icon className="h-4 w-4" style={{ color: ACCENT_TOOLS }} /><span className="text-sm font-medium text-[#F5F5F5]">{selectedTool.name}</span></div>
+              <span className="inline-flex items-center gap-1 font-mono text-[10px] text-[#A3A3A3]">{selectedTool.fmt} <ArrowRight className="h-3 w-3 text-[#525252]" /> {selectedTool.out}</span>
+            </div>
+            <section className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-[#262626] bg-[#0a0a0a] px-4 py-6 text-center transition-colors hover:border-[#F97316]/50" onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
+              <UploadCloud className="h-7 w-7 text-[#F97316]" />
+              <p className="mt-2 text-sm text-[#F5F5F5]">Drop files for <span className="font-medium">{selectedTool.name}</span></p>
+              <p className="text-[11px] text-[#525252]">accepts {selectedTool.fmt}</p>
+              <button type="button" onClick={() => void selectFiles(selectedTool.kind)} className="mt-2 rounded-lg border border-[#F97316]/30 bg-[#F97316]/10 px-3 py-1 text-xs font-medium text-[#F97316]">Choose files</button>
+              {selectedFiles.length > 0 && <p className="mt-2 font-mono text-[10px] text-[#A3A3A3]">{selectedFiles.length} file{selectedFiles.length === 1 ? "" : "s"} selected</p>}
+            </section>
+
+            {/* tool-specific options */}
+            {selectedTool.id === "tools.split_pdf" && (
+              <label className="mt-3 block text-xs text-[#A3A3A3]">Page range<input className="technical mt-1" value={pageRange} onChange={(event) => setPageRange(event.target.value)} placeholder="1-3,5" /></label>
+            )}
+            {(selectedTool.id === "tools.ocr_image" || selectedTool.id === "tools.ocr_pdf") && (
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <label className="text-xs text-[#A3A3A3]">Engine<select className="mt-1" value={ocrEngine} onChange={(event) => setOcrEngine(event.target.value as typeof ocrEngine)}><option value="paddleocr">paddleocr</option><option value="tesseract">tesseract</option></select></label>
+                <label className="text-xs text-[#A3A3A3]">Device<select className="mt-1" value={ocrDevice} onChange={(event) => setOcrDevice(event.target.value as typeof ocrDevice)}><option value="gpu">gpu</option><option value="cpu">cpu</option></select></label>
+              </div>
+            )}
+            {selectedTool.id === "tools.clean_scan" && (
+              <div className="mt-3 flex flex-wrap gap-3 text-xs text-[#A3A3A3]">
+                <label className="flex items-center gap-1.5"><input type="checkbox" checked={scanGrayscale} onChange={(event) => setScanGrayscale(event.target.checked)} />Grayscale</label>
+                <label className="flex items-center gap-1.5"><input type="checkbox" checked={scanSharpen} onChange={(event) => setScanSharpen(event.target.checked)} />Sharpen</label>
+              </div>
+            )}
+
+            <button type="button" disabled={runningActionId === selectedTool.id || selectedFiles.length === 0} onClick={() => void runTool(selectedTool.id, toolParams(selectedTool.id))} className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-[#F97316] px-4 py-2 text-sm font-bold text-[#1a0d00] transition-all hover:brightness-110 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40">
+              {runningActionId === selectedTool.id ? <><Spinner size="sm" /> Running…</> : <>Run {selectedTool.name}</>}
+            </button>
+          </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle action={<StatusChip tone={runningActionId ? "running" : "ok"}>{runningActionId ? "running" : `${toolsState.outputs.length} outputs`}</StatusChip>}>Job Queue</SectionTitle>
+            <div className="space-y-2">
+              {runningActionId && (
+                <div className="glass-card flex items-center gap-3 p-2.5">
+                  <ProgressRing value={60} size={36} stroke={3} color={ACCENT_TOOLS} label="…" />
+                  <div className="min-w-0 flex-1"><p className="truncate font-mono text-xs text-[#F5F5F5]">{runningActionId.replace("tools.", "")}</p><p className="font-mono text-[10px] text-[#525252]">running…</p></div>
+                  <StatusChip tone="running" />
+                </div>
+              )}
+              {toolsState.outputs.length === 0 && !runningActionId ? (
+                <p className="text-xs text-[#525252]">No outputs yet. Run a tool to see results here.</p>
               ) : (
-                pdfInfo.map((item) => (
-                  <div className="file-row" key={item.fileName}>
-                    <span>{item.fileName}</span>
-                    <strong className="technical">{formatBytes(item.byteLength)} / {item.pageCount ?? "?"} pages</strong>
-                  </div>
-                ))
+                <LimitedList items={toolsState.outputs} step={20}>
+                  {(output) => (
+                    <div key={output.id} className="glass-card flex items-center gap-3 p-2.5">
+                      <ProgressRing value={100} size={36} stroke={3} color="#22C55E" label="✓" />
+                      <div className="min-w-0 flex-1"><p className="truncate font-mono text-xs text-[#F5F5F5]">{output.operation} · {output.fileName}</p><p className="font-mono text-[10px] text-[#525252]">{formatBytes(output.byteLength)} · {formatDate(output.createdAt)}</p></div>
+                      <button type="button" onClick={() => void getBridge().openToolsFile(output.path)} title="Open" className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#1a1a1a] hover:text-[#F97316]"><FolderOpen className="h-3.5 w-3.5" /></button>
+                      <button type="button" title="Remove from DexNest list (keeps the file)" onClick={() => void (async () => { const r = await onAction("tools.delete_output", "module_ui", { id: output.id }) as { ok?: boolean }; if (r.ok) { await onRefresh(); } })()} className="rounded-md px-1.5 py-0.5 font-mono text-[10px] text-[#525252] hover:text-[#A3A3A3]">remove</button>
+                      <button type="button" title="Delete output file from disk" onClick={() => void (async () => { if (!window.confirm(`Delete ${output.fileName} from disk? This cannot be undone.`)) { return; } const r = await onAction("tools.delete_output_file", "module_ui", { id: output.id, confirmedDangerous: true }) as { ok?: boolean }; if (r.ok) { await onRefresh(); } })()} className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#EF4444]/10 hover:text-[#EF4444]"><Trash2 className="h-3.5 w-3.5" /></button>
+                    </div>
+                  )}
+                </LimitedList>
               )}
             </div>
-          </Panel>
-          <Panel title="PDF Export">
-            <div className="button-row">
-              <button type="button" disabled={runningActionId === "tools.pdf_to_images"} onClick={() => void runTool("tools.pdf_to_images")}>PDF to images</button>
-              <button type="button" disabled={runningActionId === "tools.pdf_to_text"} onClick={() => void runTool("tools.pdf_to_text")}>PDF to text</button>
-              <button type="button" disabled={runningActionId === "tools.pdf_to_docx_experimental"} onClick={() => void runTool("tools.pdf_to_docx_experimental")}>PDF to DOCX</button>
-            </div>
-            <p>PDF to DOCX is experimental and quality may vary. PDF image/text export requires local Poppler tools on PATH.</p>
-          </Panel>
+          </GlassCard>
+
+          <div className="grid grid-cols-3 gap-2">
+            <ActionButton accent={ACCENT_TOOLS} variant="ghost" icon={FolderOpen} className="justify-center text-xs" onClick={() => void onAction("tools.open_output_folder")}>Output</ActionButton>
+            <button type="button" disabled={!latestOutput} onClick={() => latestOutput && void saveOutputToVault(latestOutput)} className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-[#10B981]/30 bg-[#10B981]/10 px-3 py-2 text-xs font-medium text-[#10B981] transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"><Vault className="h-4 w-4" />To Vault</button>
+            <button type="button" disabled={!latestOutput} onClick={() => latestOutput && void sendOutputToDrop(latestOutput)} className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-[#38BDF8]/30 bg-[#38BDF8]/10 px-3 py-2 text-xs font-medium text-[#38BDF8] transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"><Share2 className="h-4 w-4" />To Drop</button>
+          </div>
+
+          {ocrPreview && (
+            <GlassCard hover={false}>
+              <SectionTitle action={ocrMetadata ? <span className="font-mono text-[10px] text-[#525252]">{ocrMetadata.engine}{ocrMetadata.averageConfidence != null ? ` · ${Math.round(ocrMetadata.averageConfidence * 100)}%` : ""}</span> : undefined}>OCR preview</SectionTitle>
+              <pre className="max-h-40 overflow-auto rounded-lg border border-[#1f1f1f] bg-[#0a0a0a] p-3 font-mono text-xs text-[#F5F5F5] whitespace-pre-wrap">{ocrPreview}</pre>
+            </GlassCard>
+          )}
         </div>
-      )}
+      </div>
 
-      {activeTab === "images" && (
-        <Panel title="Image Tools">
-          <div className="tools-form-grid">
-            <label>
-              Format
-              <select value={imageFormat} onChange={(event) => setImageFormat(event.target.value)}>
-                <option value="jpg">JPG</option>
-                <option value="png">PNG</option>
-              </select>
-            </label>
-            <label>
-              Quality
-              <input className="technical" value={imageQuality} onChange={(event) => setImageQuality(event.target.value)} />
-            </label>
-            <label>
-              Width
-              <input className="technical" value={resizeWidth} onChange={(event) => setResizeWidth(event.target.value)} placeholder="optional" />
-            </label>
-            <label>
-              Height
-              <input className="technical" value={resizeHeight} onChange={(event) => setResizeHeight(event.target.value)} placeholder="optional" />
-            </label>
-          </div>
-          <div className="button-row">
-            <button type="button" disabled={runningActionId === "tools.convert_image"} onClick={() => void runTool("tools.convert_image", { format: imageFormat, quality: imageQuality })}>Convert</button>
-            <button type="button" disabled={runningActionId === "tools.compress_image"} onClick={() => void runTool("tools.compress_image", { format: "jpg", quality: imageQuality })}>Compress</button>
-            <button type="button" disabled={runningActionId === "tools.resize_image"} onClick={() => void runTool("tools.resize_image", { format: imageFormat, quality: imageQuality, width: resizeWidth, height: resizeHeight })}>Resize</button>
-          </div>
-          <p>WebP input can be selected if Electron can decode it locally. Outputs are PNG or JPG in this MVP.</p>
-        </Panel>
-      )}
-
-      {activeTab === "ocr" && (
-        <div className="tools-grid">
-          <Panel title="OCR">
-            <p>PaddleOCR is the advanced local engine. Tesseract remains available as a fallback. EasyOCR is a placeholder for later.</p>
-            <div className="tools-form-grid">
-              <label>
-                OCR engine
-                <select value={ocrEngine} onChange={(event) => setOcrEngine(event.target.value as typeof ocrEngine)}>
-                  <option value="paddleocr">PaddleOCR</option>
-                  <option value="tesseract">Tesseract</option>
-                  <option value="easyocr_placeholder">EasyOCR placeholder</option>
-                </select>
-              </label>
-              <label>
-                PaddleOCR device
-                <select value={ocrDevice} onChange={(event) => setOcrDevice(event.target.value as typeof ocrDevice)} disabled={ocrEngine !== "paddleocr"}>
-                  <option value="gpu">GPU</option>
-                  <option value="cpu">CPU</option>
-                </select>
-              </label>
-              <label>
-                OCR language
-                <input className="technical" value={ocrLanguage} onChange={(event) => setOcrLanguage(event.target.value)} placeholder="eng" />
-              </label>
-              <label className="checkbox-row">
-                <input type="checkbox" checked={ocrUpscale} onChange={(event) => setOcrUpscale(event.target.checked)} />
-                <span>Upscale 2x before OCR</span>
-              </label>
-              <label className="checkbox-row">
-                <input type="checkbox" checked={scanGrayscale} onChange={(event) => setScanGrayscale(event.target.checked)} />
-                <span>Grayscale before OCR</span>
-              </label>
-              <label className="checkbox-row">
-                <input type="checkbox" checked={scanSharpen} onChange={(event) => setScanSharpen(event.target.checked)} />
-                <span>Sharpen before OCR</span>
-              </label>
-              <label className="checkbox-row">
-                <input type="checkbox" checked={ocrThreshold} onChange={(event) => setOcrThreshold(event.target.checked)} />
-                <span>Threshold/binarize before OCR</span>
-              </label>
-            </div>
+      {/* Advanced: more tools, dependency + output settings, reorderable files */}
+      <details className="rounded-lg border border-[#1a1a1a] bg-[#080808]">
+        <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] text-[#525252] hover:text-[#A3A3A3]">advanced · more converters, dependencies, output folder, file order</summary>
+        <div className="space-y-4 border-t border-[#1a1a1a] p-3">
+          <Panel title="Selected files (reorder for merge / images→PDF)">
             <div className="button-row">
-              <button type="button" className={runningActionId === "tools.ocr_image" ? "is-busy" : undefined} disabled={runningActionId === "tools.ocr_image"} onClick={() => void runTool("tools.ocr_image", { engine: ocrEngine, device: ocrDevice, language: ocrLanguage, upscale: ocrUpscale, grayscale: scanGrayscale, contrastBoost: true, sharpen: scanSharpen, threshold: ocrThreshold, rotateDegrees: scanRotate })}>{runningActionId === "tools.ocr_image" && <Spinner size="sm" />}{runningActionId === "tools.ocr_image" ? "Running OCR…" : "OCR images"}</button>
-              <button type="button" className={runningActionId === "tools.ocr_pdf" ? "is-busy" : undefined} disabled={runningActionId === "tools.ocr_pdf"} onClick={() => void runTool("tools.ocr_pdf", { engine: ocrEngine, device: ocrDevice, language: ocrLanguage, upscale: ocrUpscale, grayscale: scanGrayscale, contrastBoost: true, sharpen: scanSharpen, threshold: ocrThreshold, rotateDegrees: scanRotate })}>{runningActionId === "tools.ocr_pdf" && <Spinner size="sm" />}{runningActionId === "tools.ocr_pdf" ? "Running OCR…" : "OCR PDFs"}</button>
-              <button type="button" onClick={() => setActiveTab("settings")}>OCR settings</button>
+              <button type="button" onClick={() => void selectFiles("pdf")}>Select PDFs</button>
+              <button type="button" onClick={() => void selectFiles("image")}>Select Images</button>
+              <button type="button" onClick={() => void selectFiles("any")}>Select Any</button>
             </div>
-            {ocrEngine === "paddleocr" && <p>GPU is the DexNest default for PaddleOCR, but it requires a GPU-enabled PaddlePaddle install. A CPU-only PaddlePaddle package cannot use GPU OCR.</p>}
-            {ocrEngine === "tesseract" && <p>Tesseract OCR is required. Install it and set <span className="technical">tesseract.exe</span> in Tools Settings if auto-detect fails.</p>}
-            {ocrMetadata && <p className="technical">Engine: {ocrMetadata.engine} / confidence: {ocrMetadata.averageConfidence === null ? "not available" : `${Math.round(ocrMetadata.averageConfidence * 100)}%`}</p>}
-            <label>
-              OCR preview
-              <textarea readOnly value={ocrPreview} placeholder="Extracted text preview appears here after OCR runs." />
-            </label>
+            <div className="file-list">
+              {selectedFiles.length === 0 ? <p className="empty-inline">No files selected.</p> : selectedFiles.map((file, index) => (
+                <div className="file-row" data-dragging={draggedFileIndex === index} draggable key={file.path}
+                  onDragStart={(event) => { event.stopPropagation(); setDraggedFileIndex(index); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-dexnest-tools-reorder", String(index)); }}
+                  onDragOver={(event) => { event.preventDefault(); reorderSelectedFile(index); }}
+                  onDragEnd={() => setDraggedFileIndex(null)}>
+                  <span>{file.name}</span><strong className="technical">{formatBytes(file.byteLength)}</strong>
+                </div>
+              ))}
+            </div>
           </Panel>
 
-          <Panel title="Scan Cleanup">
+          <Panel title="More converters">
+            <div className="button-row">
+              <button type="button" onClick={() => void runTool("tools.images_to_pdf")}>Images → PDF</button>
+              <button type="button" onClick={() => void runTool("tools.pdf_to_text")}>PDF → text</button>
+              <button type="button" onClick={() => void runTool("tools.pdf_to_docx_experimental")}>PDF → DOCX</button>
+              <button type="button" onClick={() => void runTool("tools.convert_image", { format: imageFormat, quality: imageQuality })}>Convert image</button>
+              <button type="button" onClick={() => void runTool("tools.compress_image", { format: "jpg", quality: imageQuality })}>Compress image</button>
+              <button type="button" onClick={() => void runTool("tools.resize_image", { format: imageFormat, quality: imageQuality, width: resizeWidth, height: resizeHeight })}>Resize image</button>
+              <button type="button" onClick={() => void runTool("tools.extract_audio", { format: audioFormat })}>Extract audio</button>
+              <button type="button" onClick={() => void runTool("tools.convert_audio", { format: audioFormat })}>Convert audio</button>
+              <button type="button" onClick={() => void runTool("tools.pptx_to_images")}>PPTX → images</button>
+            </div>
             <div className="tools-form-grid">
-              <label className="checkbox-row">
-                <input type="checkbox" checked={scanGrayscale} onChange={(event) => setScanGrayscale(event.target.checked)} />
-                <span>Grayscale</span>
-              </label>
-              <label className="checkbox-row">
-                <input type="checkbox" checked={scanSharpen} onChange={(event) => setScanSharpen(event.target.checked)} />
-                <span>Sharpen text</span>
-              </label>
-              <label>
-                Contrast
-                <input className="technical" value={scanContrast} onChange={(event) => setScanContrast(event.target.value)} placeholder="0.28" />
-              </label>
-              <label>
-                Rotate
-                <select value={scanRotate} onChange={(event) => setScanRotate(event.target.value)}>
-                  <option value="0">No rotation</option>
-                  <option value="90">Rotate right</option>
-                  <option value="-90">Rotate left</option>
-                  <option value="180">Rotate 180</option>
-                </select>
-              </label>
+              <label>Image format<select value={imageFormat} onChange={(event) => setImageFormat(event.target.value)}><option value="jpg">jpg</option><option value="png">png</option><option value="webp">webp</option></select></label>
+              <label>Quality<input className="technical" value={imageQuality} onChange={(event) => setImageQuality(event.target.value)} /></label>
+              <label>Resize W<input className="technical" value={resizeWidth} onChange={(event) => setResizeWidth(event.target.value)} /></label>
+              <label>Resize H<input className="technical" value={resizeHeight} onChange={(event) => setResizeHeight(event.target.value)} /></label>
+              <label>Audio format<select value={audioFormat} onChange={(event) => setAudioFormat(event.target.value)}><option value="mp3">mp3</option><option value="wav">wav</option><option value="aac">aac</option></select></label>
+            </div>
+          </Panel>
+
+          <Panel title="Local dependency settings">
+            <div className="tools-form-grid">
+              <label>ffmpeg path<input className="technical" value={ffmpegPath} onChange={(event) => setFfmpegPath(event.target.value)} /></label>
+              <label>LibreOffice path<input className="technical" value={libreOfficePath} onChange={(event) => setLibreOfficePath(event.target.value)} /></label>
+              <label>Tesseract path<input className="technical" value={tesseractPath} onChange={(event) => setTesseractPath(event.target.value)} /></label>
+              <label>Python path<input className="technical" value={pythonPath} onChange={(event) => setPythonPath(event.target.value)} /></label>
+              <label>OCR engine<select value={ocrEngine} onChange={(event) => setOcrEngine(event.target.value as typeof ocrEngine)}><option value="paddleocr">paddleocr</option><option value="tesseract">tesseract</option><option value="easyocr_placeholder">easyocr (placeholder)</option></select></label>
+              <label>OCR device<select value={ocrDevice} onChange={(event) => setOcrDevice(event.target.value as typeof ocrDevice)}><option value="gpu">gpu</option><option value="cpu">cpu</option></select></label>
+              <label>OCR language<input className="technical" value={ocrLanguage} onChange={(event) => setOcrLanguage(event.target.value)} /></label>
             </div>
             <div className="button-row">
-              <button
-                type="button"
-                disabled={runningActionId === "tools.clean_scan"}
-                onClick={() => void runTool("tools.clean_scan", { grayscale: scanGrayscale, sharpen: scanSharpen, contrast: scanContrast, rotateDegrees: scanRotate })}
-              >
-                Clean scan images
-              </button>
-              <button
-                type="button"
-                disabled={runningActionId === "tools.cleaned_image_to_pdf"}
-                onClick={() => void runTool("tools.cleaned_image_to_pdf", { grayscale: scanGrayscale, sharpen: scanSharpen, contrast: scanContrast, rotateDegrees: scanRotate })}
-              >
-                Cleaned images to PDF
-              </button>
+              <button type="button" className="button-primary" onClick={() => void saveDependencySettings()}>Save dependency settings</button>
+              <button type="button" onClick={() => void chooseOutputFolder()}>Change output folder</button>
+              <button type="button" onClick={() => void resetOutputFolder()}>Reset output folder</button>
             </div>
-            <p>Crop is a placeholder for a later visual crop tool. This MVP applies non-destructive copied outputs only.</p>
-          </Panel>
-        </div>
-      )}
-
-      {activeTab === "media" && (
-        <Panel title="Media Converters">
-          <div className="tools-form-grid">
-            <label>
-              Audio output
-              <select value={audioFormat} onChange={(event) => setAudioFormat(event.target.value)}>
-                <option value="mp3">MP3</option>
-                <option value="wav">WAV</option>
-                <option value="m4a">M4A</option>
-              </select>
-            </label>
-          </div>
-          <div className="button-row">
-            <button type="button" disabled={runningActionId === "tools.mp4_to_mp3"} onClick={() => void runTool("tools.mp4_to_mp3", { format: "mp3" })}>MP4 to MP3</button>
-            <button type="button" disabled={runningActionId === "tools.extract_audio"} onClick={() => void runTool("tools.extract_audio", { format: audioFormat })}>Extract audio</button>
-            <button type="button" disabled={runningActionId === "tools.convert_audio"} onClick={() => void runTool("tools.convert_audio", { format: audioFormat })}>Convert audio</button>
-          </div>
-          <p>Media conversion requires local ffmpeg. DexNest does not bundle large binaries yet.</p>
-        </Panel>
-      )}
-
-      {activeTab === "office" && (
-        <Panel title="Office Converters">
-          <div className="button-row">
-            <button type="button" disabled={runningActionId === "tools.docx_to_pdf"} onClick={() => void runTool("tools.docx_to_pdf")}>DOCX to PDF</button>
-            <button type="button" disabled={runningActionId === "tools.pptx_to_pdf"} onClick={() => void runTool("tools.pptx_to_pdf")}>PPTX to PDF</button>
-            <button type="button" disabled={runningActionId === "tools.pptx_to_images"} onClick={() => void runTool("tools.pptx_to_images")}>PPTX to images</button>
-          </div>
-          <p>Office conversions require local LibreOffice. PPTX to images also requires Poppler on PATH.</p>
-        </Panel>
-      )}
-
-      {activeTab === "settings" && (
-        <div className="tools-grid">
-          <Panel title="Output Settings">
-            <p>Current output folder:</p>
             <p className="technical">{toolsState.outputFolderPath}</p>
-            <p>Default:</p>
-            <p className="technical">{toolsState.defaultOutputFolderPath}</p>
-            <div className="button-row">
-              <button type="button" onClick={() => void chooseOutputFolder()}>Choose output folder</button>
-              <button type="button" onClick={() => void resetOutputFolder()}>Reset default</button>
-              <button type="button" onClick={() => void onAction("tools.open_output_folder")}>Open output folder</button>
-            </div>
-            <p className="technical">{toolsState.tempFolderPath}</p>
           </Panel>
-          <Panel title="Local Dependency Settings">
-            <label>
-              ffmpeg path
-              <input className="technical" value={ffmpegPath} onChange={(event) => setFfmpegPath(event.target.value)} placeholder={toolsState.detectedFfmpegPath ?? "ffmpeg from PATH"} />
-            </label>
-            <p>Detected: <span className="technical">{toolsState.detectedFfmpegPath ?? "not found"}</span></p>
-            <label>
-              LibreOffice soffice.exe path
-              <input className="technical" value={libreOfficePath} onChange={(event) => setLibreOfficePath(event.target.value)} placeholder={toolsState.detectedLibreOfficePath ?? "LibreOffice soffice.exe"} />
-            </label>
-            <p>Detected: <span className="technical">{toolsState.detectedLibreOfficePath ?? "not found"}</span></p>
-            <label>
-              Tesseract OCR path
-              <input className="technical" value={tesseractPath} onChange={(event) => setTesseractPath(event.target.value)} placeholder={toolsState.detectedTesseractPath ?? "Tesseract tesseract.exe"} />
-            </label>
-            <p>Detected: <span className="technical">{toolsState.detectedTesseractPath ?? "not found"}</span></p>
-            <label>
-              Python path for PaddleOCR
-              <input className="technical" value={pythonPath} onChange={(event) => setPythonPath(event.target.value)} placeholder={toolsState.detectedPythonPath ?? "python from PATH"} />
-            </label>
-            <p>Detected: <span className="technical">{toolsState.detectedPythonPath ?? "not found"}</span></p>
-            <label>
-              Default OCR engine
-              <select value={ocrEngine} onChange={(event) => setOcrEngine(event.target.value as typeof ocrEngine)}>
-                <option value="paddleocr">PaddleOCR</option>
-                <option value="tesseract">Tesseract</option>
-                <option value="easyocr_placeholder">EasyOCR placeholder</option>
-              </select>
-            </label>
-            <label>
-              Default PaddleOCR device
-              <select value={ocrDevice} onChange={(event) => setOcrDevice(event.target.value as typeof ocrDevice)}>
-                <option value="gpu">GPU</option>
-                <option value="cpu">CPU</option>
-              </select>
-            </label>
-            <label>
-              OCR language
-              <input className="technical" value={ocrLanguage} onChange={(event) => setOcrLanguage(event.target.value)} placeholder="eng" />
-            </label>
-            <div className="button-row">
-              <button type="button" onClick={() => void saveDependencySettings()}>Save paths</button>
-              <button type="button" onClick={() => { setFfmpegPath(""); setLibreOfficePath(""); setTesseractPath(""); setPythonPath(""); setOcrEngine("paddleocr"); setOcrDevice("gpu"); setOcrLanguage("eng"); }}>Clear fields</button>
-            </div>
-            <p>PaddleOCR setup: GPU mode requires a GPU-enabled local PaddlePaddle install for Python 3.12. CPU-only PaddlePaddle will be blocked before OCR starts.</p>
-            <p className="technical">local-data/settings/tools-settings.json</p>
-          </Panel>
-        </div>
-      )}
 
-      {(activeTab === "outputs" || activeTab !== "settings") && (
-        <Panel title="Recent Outputs">
-          <div className="item-list">
-            {toolsState.outputs.length === 0 ? (
-              <p className="empty-inline">No Tools outputs yet.</p>
-            ) : (
-              toolsState.outputs.map((output) => (
-                <CollapsibleListItem
-                  accentClass="accent-tools"
-                  key={output.id}
-                  title={output.fileName}
-                  meta={`${output.operation} / ${formatBytes(output.byteLength)} / ${formatDate(output.createdAt)}`}
-                  actions={(
-                    <>
+          <Panel title="Recent Outputs">
+            <div className="item-list">
+              {toolsState.outputs.length === 0 ? <p className="empty-inline">No Tools outputs yet.</p> : toolsState.outputs.map((output) => (
+                <CollapsibleListItem accentClass="accent-tools" key={output.id} title={output.fileName} meta={`${output.operation} / ${formatBytes(output.byteLength)} / ${formatDate(output.createdAt)}`}
+                  actions={(<>
                     <button type="button" onClick={() => void getBridge().openToolsFile(output.path)}>Open file</button>
                     <button type="button" onClick={() => void onAction("tools.open_output_folder")}>Open folder</button>
                     <button type="button" onClick={() => void sendOutputToDrop(output)}>Send to phone</button>
                     <button type="button" onClick={() => void saveOutputToVault(output)}>Save to Vault</button>
-                    </>
-                  )}
-                >
+                  </>)}>
                   <p className="technical">{output.path}</p>
                 </CollapsibleListItem>
-              ))
-            )}
-          </div>
-        </Panel>
-      )}
-    </section>
+              ))}
+            </div>
+          </Panel>
+        </div>
+      </details>
+    </div>
   );
 }
 
@@ -8904,6 +9032,7 @@ function VaultView({
   const [editExpiryDate, setEditExpiryDate] = useState("");
   const [expandedDocumentIds, setExpandedDocumentIds] = useState<string[]>([]);
   const [activeVaultTab, setActiveVaultTab] = useState<"documents" | "secure">("documents");
+  const [vaultCategory, setVaultCategory] = useState("All");
   const [autoOcrOnImport, setAutoOcrOnImport] = useState(vaultState.ocrSettings.autoOcrOnImport);
   const [vaultOcrPythonPath, setVaultOcrPythonPath] = useState(vaultState.ocrSettings.pythonPath ?? "");
   const [status, setStatus] = useState<{ tone: "success" | "error"; message: string } | null>(null);
@@ -9060,247 +9189,203 @@ function VaultView({
     return document.ocrStatus ?? ([".png", ".jpg", ".jpeg", ".webp", ".pdf"].includes(document.fileType) ? "not_ocred" : "unsupported");
   }
 
+  const ACCENT_VAULT = "#10B981";
+  const vaultCats = ["All", ...vaultState.categories];
+  const visibleDocs = vaultCategory === "All" ? vaultState.documents : vaultState.documents.filter((d) => d.category === vaultCategory);
+  const expiryItems = vaultState.documents
+    .filter((d) => d.expiryDate)
+    .map((d) => ({ doc: d, days: Math.round((parseLocalDateInput(String(d.expiryDate)).getTime() - parseLocalDateInput(getLocalTodayDateString()).getTime()) / 86400000) }))
+    .sort((a, b) => a.days - b.days)
+    .slice(0, 5);
+  const expirySoon = expiryItems.filter((e) => e.days <= 30).length;
+
   return (
-    <section className="view-stack accent-vault" aria-labelledby="vault-title">
-      {status && (
-        <ToastStack toasts={[{ id: status.message, message: status.message, tone: status.tone }]} />
-      )}
-      <PageHeader eyebrow="Local document vault" title="Vault" titleId="vault-title" />
-
-      <div className="tab-row" role="tablist" aria-label="DexNest Vault sections">
-        <button type="button" role="tab" aria-selected={activeVaultTab === "documents"} className={activeVaultTab === "documents" ? "button-primary" : "button-secondary"} onClick={() => setActiveVaultTab("documents")}>Documents</button>
-        <button type="button" role="tab" aria-selected={activeVaultTab === "secure"} className={activeVaultTab === "secure" ? "button-primary" : "button-secondary"} onClick={() => setActiveVaultTab("secure")}>Secure Vault</button>
+    <div className="space-y-6">
+      {status && (<ToastStack toasts={[{ id: status.message, message: status.message, tone: status.tone }]} />)}
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_VAULT}40`, background: `${ACCENT_VAULT}14`, color: ACCENT_VAULT }}>
+            <Vault className="h-5 w-5" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Vault</h1>
+            <p className="text-sm text-[#A3A3A3]">Documents &amp; Secure Vault · {vaultState.documentCount} documents · encrypted at rest</p>
+          </div>
+        </div>
+        <StatusChip tone="unlocked">Local · encrypted</StatusChip>
       </div>
 
-      {activeVaultTab === "documents" && (
-        <>
-      <div className="tools-grid">
-        <Panel title="Import Document">
-          <section className="drop-zone" onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
-            <div>
-              <h3>Copy files into Vault</h3>
-              <p>Original files are never moved or deleted.</p>
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+        {/* Documents */}
+        <div className="space-y-4 lg:col-span-8">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex flex-wrap gap-2">
+              {vaultCats.map((c) => (
+                <button key={c} type="button" onClick={() => setVaultCategory(c)} className="rounded-full border px-3 py-1 text-xs font-medium transition-all" style={vaultCategory === c ? { borderColor: `${ACCENT_VAULT}55`, background: `${ACCENT_VAULT}1a`, color: ACCENT_VAULT } : { borderColor: "#1f1f1f", color: "#A3A3A3" }}>{c}</button>
+              ))}
             </div>
-            <button type="button" className="button-primary" onClick={() => void chooseFiles()}>Select documents</button>
-            <div className="file-list">
-              {selectedFiles.length === 0 ? (
-                <p className="empty-inline">No documents selected.</p>
-              ) : (
-                selectedFiles.map((file) => (
-                  <div className="file-row" key={file.path}>
-                    <span>{file.name}</span>
-                    <strong className="technical">{formatBytes(file.byteLength)}</strong>
-                  </div>
-                ))
-              )}
-            </div>
-          </section>
-          <div className="tools-form-grid">
-            <label>
-              Category
-              <select value={category} onChange={(event) => setCategory(event.target.value)}>
-                {vaultState.categories.map((item) => <option key={item} value={item}>{item}</option>)}
-              </select>
-            </label>
-            <label>
-              Expiry date
-              <input className="technical" type="date" value={expiryDate} onChange={(event) => setExpiryDate(event.target.value)} />
-            </label>
+            <ActionButton accent={ACCENT_VAULT} icon={Upload} onClick={() => void chooseFiles()}>Import</ActionButton>
           </div>
-          <label>
-            Tags
-            <input className="technical" value={tags} onChange={(event) => setTags(event.target.value)} placeholder="resume, contract, receipt" />
-          </label>
-          <label>
-            Notes
-            <textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Private notes stay local. Audit stores metadata only." />
-          </label>
-          <button type="button" className="button-primary" onClick={() => void importDocuments()}>Import to Vault</button>
-        </Panel>
 
-        <Panel title="Vault Settings">
-          <p>Documents path</p>
-          <p className="technical">{vaultState.documentsPath}</p>
-          <p>Imports path</p>
-          <p className="technical">{vaultState.importsPath}</p>
-          <p>Versions path</p>
-          <p className="technical">{vaultState.versionsPath}</p>
-          <p>OCR output path</p>
-          <p className="technical">{vaultState.ocrOutputPath}</p>
-          <p>OCR jobs</p>
-          <p className="technical">{vaultState.ocrJobsPath}</p>
-          <p>Metadata path</p>
-          <p className="technical">{vaultState.metadataPath}</p>
-          <p>{vaultState.documentCount} documents / {formatBytes(vaultState.totalSizeBytes)}</p>
-          <p>Secure Vault is encrypted separately. Document Vault OCR is local PaddleOCR GPU only.</p>
-        </Panel>
-      </div>
-
-      <Panel title="GPU OCR Queue">
-        <div className="settings-grid">
-          <article>
-            <span>Queue</span>
-            <strong>{vaultState.ocrQueueRunning ? "Running" : vaultState.ocrQueuePaused ? "Paused" : "Idle"}</strong>
-            <p>{vaultState.ocrJobs.filter((job) => job.status === "queued").length} queued / {vaultState.ocrJobs.filter((job) => job.status === "failed").length} failed</p>
-          </article>
-          <article>
-            <span>PaddleOCR GPU</span>
-            <strong>{vaultState.paddleGpuStatus.ok ? "Ready" : "Needs setup"}</strong>
-            <p>{vaultState.paddleGpuStatus.message}</p>
-          </article>
-          <article>
-            <span>Runtime</span>
-            <strong>{vaultState.paddleGpuStatus.paddleVersion ?? "unknown"}</strong>
-            <p className="technical">{vaultState.paddleGpuStatus.pythonPath ?? "No Python path"}</p>
-          </article>
-        </div>
-        <div className="registry-controls">
-          <label className="checkbox-row">
-            <input type="checkbox" checked={autoOcrOnImport} onChange={(event) => setAutoOcrOnImport(event.target.checked)} />
-            <span>Auto OCR supported Vault imports</span>
-          </label>
-          <label>
-            Python path
-            <input className="technical" value={vaultOcrPythonPath} onChange={(event) => setVaultOcrPythonPath(event.target.value)} placeholder="Use detected Tools Python if empty" />
-          </label>
-        </div>
-        <div className="button-row">
-          <button type="button" onClick={() => void runVaultOcrAction("vault.ocr.run_queue")}>Run OCR queue now</button>
-          <button type="button" onClick={() => void runVaultOcrAction("vault.ocr.pause_queue")}>Pause OCR queue</button>
-          <button type="button" onClick={() => void runVaultOcrAction("vault.ocr.retry_failed")}>Retry failed OCR</button>
-          <button type="button" onClick={() => void saveVaultOcrSettings()}>Save OCR settings</button>
-        </div>
-        <div className="action-list action-list--compact">
-          {vaultState.ocrJobs.slice(0, 8).map((job) => (
-            <article className="data-item data-item--stacked accent-vault" key={job.id}>
-              <strong>{job.status} / {job.fileType} / {job.engine} {job.device}</strong>
-              <span className="technical">{job.documentId}</span>
-              {job.error && <span>{job.error}</span>}
-            </article>
-          ))}
-        </div>
-      </Panel>
-
-      <div className="tools-grid">
-        <Panel title="Categories">
-          <div className="pill-grid">
-            {categoryCounts.map((item) => (
-              <span className="status-pill" key={item.category}>{item.category}: {item.count}</span>
-            ))}
-          </div>
-        </Panel>
-        <Panel title="Expiring Soon">
-          <p>Expired: {expiring.expired.length}</p>
-          <p>Next 30 days: {expiring.next30.length}</p>
-          <p>Next 90 days: {expiring.next90.length}</p>
-          {[...expiring.expired, ...expiring.next30, ...expiring.next90].slice(0, 6).map((document) => (
-            <p className="technical" key={document.id}>{document.title} / {document.expiryDate ? formatLocalDate(document.expiryDate) : ""}</p>
-          ))}
-        </Panel>
-      </div>
-
-      {editingDocumentId && (
-        <Panel title="Edit Metadata">
-          <div className="tools-form-grid">
-            <label>
-              Title
-              <input value={editTitle} onChange={(event) => setEditTitle(event.target.value)} />
-            </label>
-            <label>
-              Category
-              <select value={editCategory} onChange={(event) => setEditCategory(event.target.value)}>
-                {vaultState.categories.map((item) => <option key={item} value={item}>{item}</option>)}
-              </select>
-            </label>
-            <label>
-              Tags
-              <input className="technical" value={editTags} onChange={(event) => setEditTags(event.target.value)} />
-            </label>
-            <label>
-              Expiry date
-              <input className="technical" type="date" value={editExpiryDate} onChange={(event) => setEditExpiryDate(event.target.value)} />
-            </label>
-          </div>
-          <label>
-            Notes
-            <textarea value={editNotes} onChange={(event) => setEditNotes(event.target.value)} />
-          </label>
-          <div className="button-row">
-            <button type="button" className="button-primary" onClick={() => void saveMetadata()}>Save metadata</button>
-            <button type="button" onClick={() => setEditingDocumentId(null)}>Cancel</button>
-          </div>
-        </Panel>
-      )}
-
-      <Panel title="Document Library">
-        <div className="item-list">
-          {vaultState.documents.length === 0 ? (
-            <p className="empty-inline">No Vault documents yet.</p>
+          {visibleDocs.length === 0 ? (
+            <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-[#262626] py-16 text-center"><Vault className="h-8 w-8 text-[#525252]" /><p className="mt-2 text-sm text-[#A3A3A3]">No Vault documents{vaultCategory === "All" ? " yet" : ` in ${vaultCategory}`}</p><p className="text-xs text-[#525252]">Import documents to get started</p></div>
           ) : (
-            <LimitedList items={vaultState.documents} step={50}>{(document) => {
-              const expanded = expandedDocumentIds.includes(document.id);
-              return (
-                <article className="vault-document accent-vault" data-expanded={expanded} key={document.id}>
-                  <button
-                    type="button"
-                    className="vault-document__summary"
-                    aria-expanded={expanded}
-                    onClick={() => toggleDocument(document.id)}
-                  >
-                      <span className="vault-document__chevron" aria-hidden="true" />
-                      <span>
-                        <strong>{document.title}</strong>
-                        <small>{document.category} / {document.fileType} / {formatBytes(document.sizeBytes)} / Version {document.versionNumber ?? 1}</small>
-                      </span>
-                    <span className="status-pill">{documentOcrStatus(document)}</span>
-                  </button>
-                  {expanded && (
-                    <div className="vault-document__details">
-                      <div>
-                        <p>{document.tags.length ? document.tags.join(", ") : "No tags"}{document.expiryDate ? ` / expires ${formatLocalDate(document.expiryDate)}` : ""}</p>
-                        <p>OCR: {documentOcrStatus(document)}{document.ocrUpdatedAt ? ` / ${formatLocalDateTime(document.ocrUpdatedAt)}` : ""}</p>
-                        {document.ocrError && <p>{document.ocrError}</p>}
-                        <p>{formatDate(document.createdAt)}</p>
-                        <p className="technical">{document.id}</p>
-                        <p className="technical">{document.filePath}</p>
-                        {document.ocrTextPath && <p className="technical">{document.ocrTextPath}</p>}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              <LimitedList items={visibleDocs} step={30}>
+                {(document) => {
+                  const ocr = documentOcrStatus(document);
+                  const ocrOk = /complete|index|done/i.test(ocr);
+                  return (
+                    <button key={document.id} type="button" onClick={() => void runDocumentAction("vault.open_document", document)} className="glass-card lift flex flex-col gap-1.5 p-3 text-left">
+                      <div className="flex items-center gap-2">
+                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#10B981]/12 text-[#10B981]"><FileText className="h-3.5 w-3.5" /></div>
+                        <p className="min-w-0 flex-1 truncate text-sm font-medium text-[#F5F5F5]">{document.title}</p>
+                        <StatusChip tone={ocrOk ? "ok" : "running"}>{ocrOk ? "OCR ✓" : "OCR…"}</StatusChip>
                       </div>
-                      <div className="button-row">
-                        <button type="button" onClick={() => void runDocumentAction("vault.open_document", document)}>Open file</button>
-                        <button type="button" onClick={() => void runDocumentAction("vault.open_document_folder", document)}>Open folder</button>
-                        <button type="button" onClick={() => startEdit(document)}>Edit metadata</button>
-                        <button type="button" onClick={() => void addVersion(document)}>New version</button>
-                        <button type="button" onClick={() => void runVaultOcrAction("vault.ocr.rerun_document", { documentId: document.id })}>{document.ocrStatus === "completed" ? "Re-run OCR" : "Run OCR"}</button>
-                        <button type="button" disabled={!document.ocrTextPath} onClick={() => void runDocumentAction("vault.ocr.open_text", document)}>Open OCR text</button>
-                        <button type="button" disabled={!document.ocrTextPath} onClick={() => void runDocumentAction("vault.ocr.copy_text", document)}>Copy OCR text</button>
-                        <button type="button" onClick={() => void runDocumentAction("vault.send_document_to_drop", document)}>Send to Drop</button>
-                        <button type="button" className="button-danger" onClick={() => void deleteDocument(document)}>Delete</button>
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[#A3A3A3]">
+                        <span className="flex items-center gap-1"><Tag className="h-3 w-3" />{document.category}</span>
+                        <span className="flex items-center gap-1"><HistoryIcon className="h-3 w-3" />v{document.versionNumber ?? 1}</span>
+                        {document.expiryDate && <span className="flex items-center gap-1 font-mono text-[10px] text-[#F59E0B]"><CalendarClock className="h-3 w-3" />exp {formatLocalDate(document.expiryDate)}</span>}
                       </div>
-                    </div>
-                  )}
-                </article>
-              );
-            }}</LimitedList>
+                    </button>
+                  );
+                }}
+              </LimitedList>
+            </div>
           )}
         </div>
-      </Panel>
 
-      <Panel title="Recent Imports">
-        {recentImports.length === 0 ? (
-          <p className="empty-inline">No recent imports.</p>
-        ) : (
-          recentImports.map((document) => (
-            <p className="technical" key={document.id}>{document.title} / {formatDate(document.createdAt)}</p>
-          ))
-        )}
-      </Panel>
-        </>
-      )}
+        {/* Secure vault + expiry */}
+        <div className="space-y-5 lg:col-span-4">
+          <GlassCard accent={ACCENT_VAULT} hover={false}>
+            <SectionTitle action={<KeyRound className="h-3.5 w-3.5 text-[#10B981]" />}>Secure Vault</SectionTitle>
+            <SecureVaultView secure={vaultState.secure} onAction={onAction} onRefresh={onRefresh} showStatus={showStatus} />
+          </GlassCard>
 
-      {activeVaultTab === "secure" && (
-        <SecureVaultView secure={vaultState.secure} onAction={onAction} onRefresh={onRefresh} showStatus={showStatus} />
-      )}
-    </section>
+          <GlassCard hover={false}>
+            <SectionTitle action={<StatusChip tone={expirySoon > 0 ? "warn" : "ok"}>{expirySoon > 0 ? `${expirySoon} soon` : "clear"}</StatusChip>}>Expiry Dashboard</SectionTitle>
+            {expiryItems.length === 0 ? <p className="text-xs text-[#525252]">No documents with expiry dates.</p> : (
+              <div className="space-y-2.5">
+                {expiryItems.map((e) => {
+                  const c = e.days <= 30 ? "#EF4444" : e.days <= 90 ? "#F59E0B" : "#22C55E";
+                  return (
+                    <div key={e.doc.id}>
+                      <div className="mb-1 flex items-center justify-between text-xs"><span className="truncate text-[#F5F5F5]">{e.doc.title}</span><span className="font-mono" style={{ color: c }}>{e.days}d</span></div>
+                      <div className="h-1.5 overflow-hidden rounded-full bg-[#1f1f1f]"><div className="h-full rounded-full" style={{ width: `${Math.max(8, Math.min(100, 100 - e.days))}%`, background: c }} /></div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </GlassCard>
+        </div>
+      </div>
+
+      {/* Advanced: import form, OCR queue, document library (full actions), edit, settings */}
+      <details className="rounded-lg border border-[#1a1a1a] bg-[#080808]">
+        <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] text-[#525252] hover:text-[#A3A3A3]">advanced · import, OCR queue, full library, edit, settings</summary>
+        <div className="space-y-4 border-t border-[#1a1a1a] p-3">
+          <div className="tools-grid">
+            <Panel title="Import Document">
+              <section className="drop-zone" onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
+                <div><h3>Copy files into Vault</h3><p>Original files are never moved or deleted.</p></div>
+                <button type="button" className="button-primary" onClick={() => void chooseFiles()}>Select documents</button>
+                <div className="file-list">
+                  {selectedFiles.length === 0 ? <p className="empty-inline">No documents selected.</p> : selectedFiles.map((file) => (<div className="file-row" key={file.path}><span>{file.name}</span><strong className="technical">{formatBytes(file.byteLength)}</strong></div>))}
+                </div>
+              </section>
+              <div className="tools-form-grid">
+                <label>Category<select value={category} onChange={(event) => setCategory(event.target.value)}>{vaultState.categories.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+                <label>Expiry date<input className="technical" type="date" value={expiryDate} onChange={(event) => setExpiryDate(event.target.value)} /></label>
+              </div>
+              <label>Tags<input className="technical" value={tags} onChange={(event) => setTags(event.target.value)} placeholder="resume, contract, receipt" /></label>
+              <label>Notes<textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Private notes stay local." /></label>
+              <button type="button" className="button-primary" onClick={() => void importDocuments()}>Import to Vault</button>
+            </Panel>
+            <Panel title="Vault Settings">
+              <p className="technical">{vaultState.documentsPath}</p>
+              <p className="technical">{vaultState.ocrOutputPath}</p>
+              <p>{vaultState.documentCount} documents / {formatBytes(vaultState.totalSizeBytes)}</p>
+              <p>Secure Vault is encrypted separately. Document OCR is local PaddleOCR GPU only.</p>
+            </Panel>
+          </div>
+
+          <Panel title="GPU OCR Queue">
+            <div className="settings-grid">
+              <article><span>Queue</span><strong>{vaultState.ocrQueueRunning ? "Running" : vaultState.ocrQueuePaused ? "Paused" : "Idle"}</strong><p>{vaultState.ocrJobs.filter((job) => job.status === "queued").length} queued / {vaultState.ocrJobs.filter((job) => job.status === "failed").length} failed</p></article>
+              <article><span>PaddleOCR GPU</span><strong>{vaultState.paddleGpuStatus.ok ? "Ready" : "Needs setup"}</strong><p>{vaultState.paddleGpuStatus.message}</p></article>
+              <article><span>Runtime</span><strong>{vaultState.paddleGpuStatus.paddleVersion ?? "unknown"}</strong><p className="technical">{vaultState.paddleGpuStatus.pythonPath ?? "No Python path"}</p></article>
+            </div>
+            <div className="registry-controls">
+              <label className="checkbox-row"><input type="checkbox" checked={autoOcrOnImport} onChange={(event) => setAutoOcrOnImport(event.target.checked)} /><span>Auto OCR supported Vault imports</span></label>
+              <label>Python path<input className="technical" value={vaultOcrPythonPath} onChange={(event) => setVaultOcrPythonPath(event.target.value)} placeholder="Use detected Tools Python if empty" /></label>
+            </div>
+            <div className="button-row">
+              <button type="button" onClick={() => void runVaultOcrAction("vault.ocr.run_queue")}>Run OCR queue now</button>
+              <button type="button" onClick={() => void runVaultOcrAction("vault.ocr.pause_queue")}>Pause OCR queue</button>
+              <button type="button" onClick={() => void runVaultOcrAction("vault.ocr.retry_failed")}>Retry failed OCR</button>
+              <button type="button" onClick={() => void saveVaultOcrSettings()}>Save OCR settings</button>
+            </div>
+          </Panel>
+
+          {editingDocumentId && (
+            <Panel title="Edit Metadata">
+              <div className="tools-form-grid">
+                <label>Title<input value={editTitle} onChange={(event) => setEditTitle(event.target.value)} /></label>
+                <label>Category<select value={editCategory} onChange={(event) => setEditCategory(event.target.value)}>{vaultState.categories.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+                <label>Tags<input className="technical" value={editTags} onChange={(event) => setEditTags(event.target.value)} /></label>
+                <label>Expiry date<input className="technical" type="date" value={editExpiryDate} onChange={(event) => setEditExpiryDate(event.target.value)} /></label>
+              </div>
+              <label>Notes<textarea value={editNotes} onChange={(event) => setEditNotes(event.target.value)} /></label>
+              <div className="button-row">
+                <button type="button" className="button-primary" onClick={() => void saveMetadata()}>Save metadata</button>
+                <button type="button" onClick={() => setEditingDocumentId(null)}>Cancel</button>
+              </div>
+            </Panel>
+          )}
+
+          <Panel title="Document Library">
+            <div className="item-list">
+              {vaultState.documents.length === 0 ? <p className="empty-inline">No Vault documents yet.</p> : (
+                <LimitedList items={vaultState.documents} step={50}>{(document) => {
+                  const expanded = expandedDocumentIds.includes(document.id);
+                  return (
+                    <article className="vault-document accent-vault" data-expanded={expanded} key={document.id}>
+                      <button type="button" className="vault-document__summary" aria-expanded={expanded} onClick={() => toggleDocument(document.id)}>
+                        <span className="vault-document__chevron" aria-hidden="true" />
+                        <span><strong>{document.title}</strong><small>{document.category} / {document.fileType} / {formatBytes(document.sizeBytes)} / Version {document.versionNumber ?? 1}</small></span>
+                        <span className="status-pill">{documentOcrStatus(document)}</span>
+                      </button>
+                      {expanded && (
+                        <div className="vault-document__details">
+                          <div>
+                            <p>{document.tags.length ? document.tags.join(", ") : "No tags"}{document.expiryDate ? ` / expires ${formatLocalDate(document.expiryDate)}` : ""}</p>
+                            <p>OCR: {documentOcrStatus(document)}{document.ocrUpdatedAt ? ` / ${formatLocalDateTime(document.ocrUpdatedAt)}` : ""}</p>
+                            {document.ocrError && <p>{document.ocrError}</p>}
+                            <p className="technical">{document.filePath}</p>
+                          </div>
+                          <div className="button-row">
+                            <button type="button" onClick={() => void runDocumentAction("vault.open_document", document)}>Open file</button>
+                            <button type="button" onClick={() => void runDocumentAction("vault.open_document_folder", document)}>Open folder</button>
+                            <button type="button" onClick={() => startEdit(document)}>Edit metadata</button>
+                            <button type="button" onClick={() => void addVersion(document)}>New version</button>
+                            <button type="button" onClick={() => void runVaultOcrAction("vault.ocr.rerun_document", { documentId: document.id })}>{document.ocrStatus === "completed" ? "Re-run OCR" : "Run OCR"}</button>
+                            <button type="button" disabled={!document.ocrTextPath} onClick={() => void runDocumentAction("vault.ocr.open_text", document)}>Open OCR text</button>
+                            <button type="button" disabled={!document.ocrTextPath} onClick={() => void runDocumentAction("vault.ocr.copy_text", document)}>Copy OCR text</button>
+                            <button type="button" onClick={() => void runDocumentAction("vault.send_document_to_drop", document)}>Send to Drop</button>
+                            <button type="button" className="button-danger" onClick={() => void deleteDocument(document)}>Delete</button>
+                          </div>
+                        </div>
+                      )}
+                    </article>
+                  );
+                }}</LimitedList>
+              )}
+            </div>
+          </Panel>
+        </div>
+      </details>
+    </div>
   );
 }
 
@@ -9383,6 +9468,12 @@ function SecureVaultView({
     const result = await onAction("vault.secure.lock", "module_ui", {});
     showStatus(result.ok ? "Secure Vault locked." : result.error ?? "Lock failed.", result.ok ? "success" : "error");
     resetForm();
+    await onRefresh();
+  }
+
+  async function setLockMode(mode: "on_app_exit" | "timer"): Promise<void> {
+    const result = await onAction("vault.secure.set_lock_mode", "module_ui", { lockMode: mode }) as { ok?: boolean; error?: string };
+    showStatus(result.ok ? (mode === "timer" ? `Auto-lock timer enabled (${secure.autoLockMinutes} min).` : "Secure Vault will stay unlocked until you lock it or quit DexNest.") : result.error ?? "Could not update lock mode.", result.ok ? "success" : "error");
     await onRefresh();
   }
 
@@ -9477,10 +9568,18 @@ function SecureVaultView({
       <Panel title="Secure Vault Status">
         <div className="button-row">
           <span className="status-pill">Unlocked</span>
-          <span className="status-pill">Auto-lock: {secure.autoLockMinutes} min</span>
+          <span className="status-pill">{(secure.lockMode ?? "on_app_exit") === "timer" ? `Auto-lock: ${secure.autoLockMinutes} min` : "Stays unlocked until app exit"}</span>
           <span className="status-pill">Local encrypted file</span>
         </div>
         <p className="technical">{secure.filePath}</p>
+        <label>
+          Lock mode
+          <select value={secure.lockMode ?? "on_app_exit"} onChange={(event) => void setLockMode(event.target.value as "on_app_exit" | "timer")}>
+            <option value="on_app_exit">Stay unlocked until I lock it or quit DexNest (recommended)</option>
+            <option value="timer">Auto-lock after inactivity ({secure.autoLockMinutes} min)</option>
+          </select>
+        </label>
+        <p className="technical">Close-to-tray keeps the Secure Vault unlocked. Fully quitting DexNest always locks it; the master password is never stored and the key stays in memory only.</p>
         <div className="button-row">
           <button type="button" onClick={() => void lockSecureVault()}>Lock now</button>
           <button type="button" onClick={() => void exportEncrypted()}>Export encrypted file</button>
@@ -9760,223 +9859,145 @@ function DropView({
   const incomingText = dropState.incoming.filter((item) => item.type === "text");
   const incomingFiles = dropState.incoming.filter((item) => item.type === "file");
 
+  const dropConnected = Boolean(dropState.phoneUrl);
+  const ACCENT_DROP = "#38BDF8";
   return (
-    <section className="view-stack drop-view accent-drop" aria-labelledby="drop-title">
+    <div className="space-y-6">
       <ToastStack toasts={toasts} />
-
-      <section className="drop-hero" aria-labelledby="drop-title">
-        <div className="drop-hero__main">
-          <div className="section-heading">
-            <p>Two-way local Wi-Fi transfer</p>
-            <h2 id="drop-title">DexNest Drop</h2>
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_DROP}40`, background: `${ACCENT_DROP}14`, color: ACCENT_DROP }}>
+            <Share2 className="h-5 w-5" />
           </div>
-          <div className="status-pills" aria-label="Drop status">
-            <span>Local only</span>
-            <span>Same Wi-Fi required</span>
-            <span>Server running</span>
-            <span>Auto-refresh {autoRefresh ? "on" : "off"}</span>
-          </div>
-          <div className="drop-connection">
-            <div>
-              <span>LAN IP</span>
-              <strong className="technical">{dropState.lanIp ?? "not detected"}</strong>
-            </div>
-            <div>
-              <span>Phone URL</span>
-              <strong className="technical">{dropState.phoneUrl || "Loading"}</strong>
-            </div>
-            <div>
-              <span>Local URL</span>
-              <strong className="technical">{dropState.localUrl || endpoint || "Loading"}</strong>
-            </div>
-          </div>
-          <div className="button-row">
-            <button className="button-secondary" type="button" onClick={() => void onRefresh().then(() => showToast("Drop refreshed"))}>
-              Refresh
-            </button>
-            <button className="button-secondary" type="button" onClick={() => void toggleAutoRefresh(!autoRefresh)}>
-              Auto-refresh {autoRefresh ? "On" : "Off"}
-            </button>
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Drop</h1>
+            <p className="text-sm text-[#A3A3A3]">Private local bridge between this PC and your phone — like AirDrop, on your LAN</p>
           </div>
         </div>
-        <div className="drop-hero__qr">
-          {qrDataUrl ? <img className="qr-code" src={qrDataUrl} alt="DexNest Drop phone URL QR code" /> : <div className="qr-code qr-code--empty" />}
+        <StatusChip tone={dropConnected ? "ready" : "offline"} pulse={dropConnected}>{dropConnected ? "Connected · LAN" : "Offline"}</StatusChip>
+      </div>
+
+      <div className="flex items-center gap-2 rounded-lg border border-[#10B981]/25 bg-[#10B981]/[0.07] px-3.5 py-2 text-xs text-[#34D399]">
+        <ShieldCheck className="h-3.5 w-3.5 shrink-0" /> Local-only · transfers stay on your network, no relay servers
+      </div>
+
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+        {/* Pair device */}
+        <GlassCard accent={ACCENT_DROP} hover={false} className="lg:col-span-4">
+          <SectionTitle action={<StatusChip tone={dropConnected ? "ready" : "offline"}>{dropConnected ? "Connected" : "Waiting"}</StatusChip>}>Pair device</SectionTitle>
+          <div className="flex flex-col items-center text-center">
+            <div className="relative my-1 flex h-40 w-40 items-center justify-center rounded-2xl border border-[#262626] bg-[#0a0a0a]">
+              {qrDataUrl ? <img src={qrDataUrl} alt="Drop phone URL QR code" className="h-36 w-36 rounded-lg" /> : <QrCode className="h-28 w-28 text-[#525252]" strokeWidth={1} />}
+              <span className="pointer-events-none absolute inset-0 rounded-2xl" style={{ boxShadow: `inset 0 0 26px ${ACCENT_DROP}1f` }} />
+            </div>
+            <p className="mt-2 text-xs text-[#A3A3A3]">{dropConnected ? "Scan with your phone to connect" : "Scan with phone to connect"}</p>
+          </div>
+          <div className="mt-4 space-y-2">
+            <div className="glass-card flex items-center gap-2.5 p-2.5">
+              <Smartphone className="h-4 w-4 shrink-0 text-[#38BDF8]" />
+              <div className="min-w-0 flex-1"><p className="text-[10px] uppercase tracking-wider text-[#525252]">Phone URL</p><p className="truncate font-mono text-xs text-[#F5F5F5]">{dropState.phoneUrl || "Loading"}</p></div>
+              <button type="button" onClick={() => void copyTextToClipboard(dropState.phoneUrl || "", "Phone URL copied")} title="Copy" className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#1a1a1a] hover:text-[#38BDF8]"><Copy className="h-3.5 w-3.5" /></button>
+            </div>
+            <div className="glass-card flex items-center gap-2.5 p-2.5">
+              <Monitor className="h-4 w-4 shrink-0 text-[#38BDF8]" />
+              <div className="min-w-0 flex-1"><p className="text-[10px] uppercase tracking-wider text-[#525252]">PC URL</p><p className="truncate font-mono text-xs text-[#F5F5F5]">{dropState.localUrl || endpoint || "Loading"}</p></div>
+              <button type="button" onClick={() => void copyTextToClipboard(dropState.localUrl || endpoint || "", "PC URL copied")} title="Copy" className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#1a1a1a] hover:text-[#38BDF8]"><Copy className="h-3.5 w-3.5" /></button>
+            </div>
+            <p className="font-mono text-[10px] text-[#525252]">LAN IP · {dropState.lanIp ?? "not detected"}</p>
+          </div>
+        </GlassCard>
+
+        {/* Transfer */}
+        <div className="space-y-5 lg:col-span-8">
+          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+            <ActionButton accent={ACCENT_DROP} variant="solid" icon={ClipboardCopy} className="h-10 justify-center" onClick={() => void sendClipboardToDrop()}>Send clipboard</ActionButton>
+            <ActionButton accent={ACCENT_DROP} variant="soft" icon={Upload} className="h-10 justify-center" onClick={() => void addOutgoingFile()}>Add files</ActionButton>
+            <ActionButton accent={ACCENT_DROP} variant="ghost" icon={FolderOpen} className="h-10 justify-center" onClick={() => void chooseReceiveFolder()}>Receive folder</ActionButton>
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <GlassCard hover={false}>
+              <SectionTitle action={<button type="button" onClick={() => void clearIncoming()} className="text-[10px] text-[#525252] hover:text-[#A3A3A3]">clear</button>}>Incoming</SectionTitle>
+              <div className="space-y-1.5">
+                {dropState.incoming.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-[#1f1f1f] py-8 text-center"><Inbox className="h-5 w-5 text-[#525252]" /><p className="text-xs text-[#525252]">No incoming files</p></div>
+                ) : dropState.incoming.slice(0, 30).map((item) => {
+                  const Icon = item.type === "text" ? ClipboardCopy : (item.originalName ?? item.fileName ?? "").match(/\.(png|jpe?g|gif|webp|bmp)$/i) ? ImageIcon : FileText;
+                  return (
+                    <div key={item.id} className="glass-card flex items-center gap-3 p-2.5">
+                      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#38BDF8]/12 text-[#38BDF8]"><Icon className="h-4 w-4" /></div>
+                      <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{item.type === "text" ? (item.preview || "Text") : (item.originalName ?? item.fileName ?? "File")}</p><p className="font-mono text-[10px] text-[#525252]">{formatBytes(item.byteLength)} · from phone · {formatDate(item.createdAt)}</p></div>
+                      <div className="flex shrink-0 items-center gap-1">
+                        {item.type === "text"
+                          ? <button type="button" onClick={() => void copyIncomingText(item.id)} title="Copy" className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#1a1a1a] hover:text-[#38BDF8]"><Copy className="h-4 w-4" /></button>
+                          : <button type="button" onClick={() => void onAction("drop.open_incoming_folder")} title="Open folder" className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#1a1a1a] hover:text-[#38BDF8]"><Download className="h-4 w-4" /></button>}
+                        <button type="button" title="Remove from DexNest list (keeps the file)" onClick={() => void (async () => { const r = await onAction("drop.remove_incoming_item", "module_ui", { id: item.id }) as { ok?: boolean }; if (r.ok) { await onRefresh(); } })()} className="rounded-md px-1.5 py-0.5 font-mono text-[10px] text-[#525252] hover:text-[#A3A3A3]">remove</button>
+                        {item.type === "file" && <button type="button" title="Delete received file from disk" onClick={() => void (async () => { if (!window.confirm("Delete this received file from disk? This cannot be undone.")) { return; } const r = await onAction("drop.delete_incoming_file", "module_ui", { id: item.id, confirmedDangerous: true }) as { ok?: boolean }; if (r.ok) { await onRefresh(); } })()} className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#EF4444]/10 hover:text-[#EF4444]"><Trash2 className="h-3.5 w-3.5" /></button>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </GlassCard>
+
+            <GlassCard hover={false}>
+              <SectionTitle action={<button type="button" onClick={() => void clearOutgoing()} className="text-[10px] text-[#525252] hover:text-[#A3A3A3]">clear</button>}>Outgoing shelf</SectionTitle>
+              <div className="space-y-1.5">
+                {outgoingCount === 0 ? (
+                  <div className="flex flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-[#1f1f1f] py-8 text-center"><Inbox className="h-5 w-5 text-[#525252]" /><p className="text-xs text-[#525252]">Shelf is empty</p></div>
+                ) : (
+                  <>
+                    {dropState.outgoingText.map((item) => (
+                      <div key={item.id} className="glass-card flex items-center gap-3 p-2.5">
+                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#38BDF8]/12 text-[#38BDF8]"><ClipboardCopy className="h-4 w-4" /></div>
+                        <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{item.preview || "Text drop"}</p><p className="font-mono text-[10px] text-[#525252]">{formatBytes(item.byteLength)} · to phone</p></div>
+                        <button type="button" onClick={() => void copyTextToClipboard(item.id, "Drop ID copied")} title="Copy ID" className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#1a1a1a] hover:text-[#38BDF8]"><Copy className="h-4 w-4" /></button>
+                      </div>
+                    ))}
+                    {dropState.outgoingFiles.map((item) => (
+                      <div key={item.id} className="glass-card flex items-center gap-3 p-2.5">
+                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#38BDF8]/12 text-[#38BDF8]"><FileText className="h-4 w-4" /></div>
+                        <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{item.originalName ?? item.fileName ?? "Outgoing file"}</p><p className="font-mono text-[10px] text-[#525252]">{formatBytes(item.byteLength)} · to phone</p></div>
+                        <button type="button" onClick={() => void removeOutgoingFile(item.id)} title="Remove" className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#1a1a1a] hover:text-[#EF4444]"><Upload className="h-4 w-4" /></button>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            </GlassCard>
+          </div>
+
+          <GlassCard hover={false}>
+            <SectionTitle action={<StatusChip tone={autoRefresh ? "ready" : "offline"}>auto-receive {autoRefresh ? "on" : "off"}</StatusChip>}>Receive folder</SectionTitle>
+            <div className="flex items-center gap-3">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#38BDF8]/12 text-[#38BDF8]"><FolderOpen className="h-4 w-4" /></div>
+              <p className="min-w-0 flex-1 truncate font-mono text-xs text-[#A3A3A3]">{dropState.receiveFolderPath}</p>
+              <ActionButton accent={ACCENT_DROP} variant="ghost" icon={RefreshCw} className="text-xs" onClick={() => void chooseReceiveFolder()}>Change</ActionButton>
+              <ActionButton accent={ACCENT_DROP} variant="ghost" icon={FolderOpen} className="text-xs" onClick={() => void onAction("drop.open_incoming_folder")}>Open</ActionButton>
+            </div>
+          </GlassCard>
+
+          {/* Advanced (text drop, reset, auto-refresh) */}
+          <details className="rounded-lg border border-[#1a1a1a] bg-[#080808]">
+            <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] text-[#525252] hover:text-[#A3A3A3]">advanced · send text, reset folder, auto-refresh</summary>
+            <div className="space-y-3 border-t border-[#1a1a1a] p-3">
+              <textarea className="technical" placeholder="Write text to make available on your phone" value={dropText} onChange={(event) => setDropText(event.target.value)} />
+              <div className="button-row">
+                <button type="button" onClick={() => void createTextDrop()}>Send text</button>
+                <button type="button" onClick={() => void resetReceiveFolder()}>Reset receive folder</button>
+                <button type="button" onClick={() => void toggleAutoRefresh(!autoRefresh)}>Auto-refresh {autoRefresh ? "On" : "Off"}</button>
+                <button type="button" onClick={() => void onRefresh().then(() => showToast("Drop refreshed"))}>Refresh</button>
+              </div>
+              <p className="technical">Outgoing: {dropState.outgoingFolderPath}</p>
+              <p className="technical">Default: {dropState.defaultReceiveFolderPath}</p>
+              {dropState.customReceiveFolderPath && <p className="technical">Custom: {dropState.customReceiveFolderPath}</p>}
+            </div>
+          </details>
         </div>
-      </section>
-
-      <section className="drop-transfer-grid" aria-label="Drop transfer directions">
-        <article className="drop-panel">
-          <div className="drop-panel__header">
-            <div>
-              <p>PC to Phone</p>
-              <h3>Send to phone</h3>
-            </div>
-            <span>{outgoingCount} ready</span>
-          </div>
-          <textarea
-            className="technical"
-            placeholder="Write text to make available on your phone"
-            value={dropText}
-            onChange={(event) => setDropText(event.target.value)}
-          />
-          <div className="button-row">
-            <button className="button-primary" type="button" onClick={() => void createTextDrop()}>
-              Send text
-            </button>
-            <button className="button-secondary" type="button" onClick={() => void sendClipboardToDrop()}>
-              Send clipboard
-            </button>
-            <button className="button-secondary" type="button" onClick={() => void addOutgoingFile()}>
-              Add file
-            </button>
-            <button className="button-danger" type="button" onClick={() => void clearOutgoing()}>
-              Clear outgoing
-            </button>
-          </div>
-          <p>Text drops include expiry metadata. Files are copied into the outgoing shelf.</p>
-          <p className="technical">{dropState.outgoingFolderPath}</p>
-        </article>
-
-        <article className="drop-panel">
-          <div className="drop-panel__header">
-            <div>
-              <p>Phone to PC</p>
-              <h3>Receive from phone</h3>
-            </div>
-            <span>{dropState.incoming.length} incoming</span>
-          </div>
-          <div className="drop-folder-card">
-            <span>Current receive folder</span>
-            <strong className="technical">{dropState.receiveFolderPath}</strong>
-          </div>
-          <div className="button-row">
-            <button className="button-primary" type="button" onClick={() => void chooseReceiveFolder()}>
-              Choose receive folder
-            </button>
-            <button className="button-secondary" type="button" onClick={() => void onAction("drop.open_incoming_folder")}>
-              Open folder
-            </button>
-            <button className="button-secondary" type="button" onClick={() => void resetReceiveFolder()}>
-              Reset default
-            </button>
-            <button className="button-danger" type="button" onClick={() => void clearIncoming()}>
-              Clear incoming list
-            </button>
-          </div>
-          <p>Default folder:</p>
-          <p className="technical">{dropState.defaultReceiveFolderPath}</p>
-          {dropState.customReceiveFolderPath && (
-            <>
-              <p>Custom folder:</p>
-              <p className="technical">{dropState.customReceiveFolderPath}</p>
-            </>
-          )}
-          <p>PIN placeholder: not enforced in this MVP.</p>
-        </article>
-      </section>
-
-      <section className="drop-shelf-grid" aria-label="Drop shelves">
-        <article className="drop-shelf">
-          <div className="drop-shelf__header">
-            <h3>Outgoing text</h3>
-            <span>{dropState.outgoingText.length}</span>
-          </div>
-          {dropState.outgoingText.length === 0 ? (
-            <p className="empty-inline">No outgoing text drops yet.</p>
-          ) : (
-            dropState.outgoingText.map((item) => (
-              <div className="drop-card" key={item.id}>
-                <div>
-                  <p className="drop-card__eyebrow">Send to phone</p>
-                  <h4>{item.preview || "Text drop"}</h4>
-                  <p>{formatBytes(item.byteLength)} from {item.source}</p>
-                  <p>Expires: {item.expiresAt ? formatDate(item.expiresAt) : "not set"}</p>
-                  <p className="technical">{item.id}</p>
-                </div>
-                <button className="button-secondary" type="button" onClick={() => void copyTextToClipboard(item.id, "Drop ID copied")}>
-                  Copy ID
-                </button>
-              </div>
-            ))
-          )}
-        </article>
-
-        <article className="drop-shelf">
-          <div className="drop-shelf__header">
-            <h3>Outgoing files</h3>
-            <span>{dropState.outgoingFiles.length}</span>
-          </div>
-          {dropState.outgoingFiles.length === 0 ? (
-            <p className="empty-inline">No outgoing files yet.</p>
-          ) : (
-            dropState.outgoingFiles.map((item) => (
-              <div className="drop-card" key={item.id}>
-                <div>
-                  <p className="drop-card__eyebrow">Send to phone</p>
-                  <h4>{item.originalName ?? item.fileName ?? "Outgoing file"}</h4>
-                  <p>{formatBytes(item.byteLength)}. Phone can download this file.</p>
-                  <p className="technical">{item.id}</p>
-                </div>
-                <button className="button-danger" type="button" onClick={() => void removeOutgoingFile(item.id)}>
-                  Remove
-                </button>
-              </div>
-            ))
-          )}
-        </article>
-
-        <article className="drop-shelf">
-          <div className="drop-shelf__header">
-            <h3>Incoming text</h3>
-            <span>{incomingText.length}</span>
-          </div>
-          {incomingText.length === 0 ? (
-            <p className="empty-inline">No incoming phone text yet.</p>
-          ) : (
-            incomingText.map((item) => (
-              <div className="drop-card" key={item.id}>
-                <div>
-                  <p className="drop-card__eyebrow">Receive from phone</p>
-                  <h4>{item.preview ?? "Incoming text"}</h4>
-                  <p>{formatBytes(item.byteLength)} from phone</p>
-                  <p>{formatDate(item.createdAt)}</p>
-                  <p className="technical">{item.path ?? item.id}</p>
-                </div>
-                <button className="button-secondary" type="button" onClick={() => void copyIncomingText(item.id)}>
-                  Copy
-                </button>
-              </div>
-            ))
-          )}
-        </article>
-
-        <article className="drop-shelf">
-          <div className="drop-shelf__header">
-            <h3>Incoming files</h3>
-            <span>{incomingFiles.length}</span>
-          </div>
-          {incomingFiles.length === 0 ? (
-            <p className="empty-inline">No incoming phone files yet.</p>
-          ) : (
-            incomingFiles.map((item) => (
-              <div className="drop-card" key={item.id}>
-                <div>
-                  <p className="drop-card__eyebrow">Receive from phone</p>
-                  <h4>{item.originalName ?? item.fileName ?? "Incoming file"}</h4>
-                  <p>{formatBytes(item.byteLength)} from phone</p>
-                  <p>{formatDate(item.createdAt)}</p>
-                  <p className="technical">{item.path ?? item.id}</p>
-                </div>
-                <button className="button-secondary" type="button" onClick={() => void onAction("drop.open_incoming_folder")}>
-                  Open folder
-                </button>
-              </div>
-            ))
-          )}
-        </article>
-      </section>
-    </section>
+      </div>
+    </div>
   );
+
 }
 
 function previewForUi(value: string): string {
@@ -10168,6 +10189,12 @@ async function recordSpeechAudio(settings: SpeechSettings): Promise<{ audioBytes
   const maxPostSpeechMs = settings.maxPostSpeechListenMs ?? 2500;
   const requireSpeechStart = settings.requireSpeechStart !== false;
   const margin = settings.speechThresholdMargin ?? 0.018;
+  // Mic sensitivity (0 = least sensitive / higher threshold, 1 = most sensitive /
+  // lower threshold). Lowers the speech-detection threshold so quieter / further
+  // speech is still captured instead of returning "no_speech".
+  const sensitivity = Math.min(1, Math.max(0, settings.micSensitivity ?? 0.6));
+  const sensScale = 1.55 - sensitivity * 1.4;
+  const minThresholdFloor = Math.max(0.004, 0.012 * sensScale);
 
   let stopTimer: number | null = null;
   let vadTimer: number | null = null;
@@ -10241,7 +10268,7 @@ async function recordSpeechAudio(settings: SpeechSettings): Promise<{ audioBytes
           autoFrames += 1;
         }
         measuredNoiseFloor = autoFloor / Math.max(1, autoFrames);
-        const threshold = configuredThreshold ?? Math.max(0.012, measuredNoiseFloor + margin);
+        const threshold = configuredThreshold ?? Math.max(minThresholdFloor, measuredNoiseFloor + margin * sensScale);
         // "Strong"/close speech threshold (relative to the floor) — your speaking
         // voice resets the post-speech window each frame, so it only counts down
         // once you actually stop; quiet background voices stay under it.
@@ -10602,148 +10629,151 @@ function JournalView({
   }
 
   const journalVoiceActive = journalVoice.mode === "journal_dictation";
+  const ACCENT_JOURNAL = "#F59E0B";
+  const journalMoods = ["Focused", "Calm", "Tired", "Energised", "Stressed"];
+  const journalWords = (text: string): number => (text || "").trim() ? (text || "").trim().split(/\s+/).length : 0;
+
   return (
-    <section className="view-stack accent-journal" aria-labelledby="journal-title">
-      <PageHeader eyebrow="Private local capture" title="Journal" titleId="journal-title" />
-
-      <Panel title="Journal Voice Mode">
-        <div className="journal-voice" data-active={journalVoiceActive} data-status={journalVoice.status}>
-          <div className="section-heading section-heading--row">
-            <div>
-              <p>
-                {speechState.performancePaused
-                  ? "Speech is paused by Performance Mode."
-                  : journalVoiceActive
-                    ? (journalVoice.status === "paused" ? "Journal mode paused." : "Journal mode listening. Say “save journal” to finish.")
-                    : "Dictate your journal continuously. DexNest appends each chunk and auto-saves."}
-              </p>
-              <p className="technical">
-                status: {journalVoice.status} · chunks: {journalVoice.chunksCount}
-                {journalVoice.lastSavedAt ? ` · saved ${formatLocalDateTime(new Date(journalVoice.lastSavedAt).toISOString())}` : ""}
-                {journalVoice.error ? ` · ${journalVoice.error}` : ""}
-              </p>
-            </div>
-          </div>
-          <div className="button-row">
-            {!journalVoiceActive ? (
-              <button type="button" disabled={speechState.performancePaused} onClick={() => void onStartJournalVoice("module_ui")}>Start Journal Mode</button>
-            ) : (
-              <>
-                {journalVoice.status === "paused"
-                  ? <button type="button" disabled={speechState.performancePaused} onClick={() => onResumeJournalVoice()}>Resume</button>
-                  : <button type="button" onClick={() => onPauseJournalVoice()}>Pause</button>}
-                <button type="button" onClick={() => void onSaveStopJournalVoice()}>Save &amp; Stop</button>
-                <button type="button" onClick={() => void onCancelJournalVoice()}>Cancel</button>
-              </>
-            )}
-          </div>
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_JOURNAL}40`, background: `${ACCENT_JOURNAL}14`, color: ACCENT_JOURNAL }}><NotebookPen className="h-5 w-5" /></div>
+          <div><h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Journal</h1><p className="text-sm text-[#A3A3A3]">{formatLocalDate(journalState.today)} · continuous voice journaling</p></div>
         </div>
-      </Panel>
-
-      <div className="dashboard-grid">
-        <Panel title="Today's Entry">
-          <div className="registry-controls">
-            <label>Date<input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
-            <label>Title<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Optional title" /></label>
-            <label>Mode<select value={mode} onChange={(event) => setMode(event.target.value as "one-line" | "full")}><option value="full">Full entry</option><option value="one-line">One-line mode</option></select></label>
-          </div>
-          <VoiceInput
-            targetLabel="Journal entry"
-            speechState={speechState}
-            onSpeechStateChanged={onSpeechStateChange}
-            onAction={onAction}
-            onBeforeDictation={() => journalTextRef.current?.focus()}
-            onTranscript={(text) => setRawText((current) => `${current}${current ? " " : ""}${text}`)}
-          />
-          <textarea
-            ref={journalTextRef}
-            value={rawText}
-            onChange={(event) => setRawText(event.target.value)}
-            placeholder={mode === "one-line" ? "One line about today" : "Brain dump, shutdown notes, reminders, meetings, birthdays"}
-            rows={mode === "one-line" ? 3 : 9}
-          />
-          <div className="registry-controls">
-            <label>Mood<input value={mood} onChange={(event) => setMood(event.target.value)} placeholder="calm, stressed, focused" /></label>
-            <label>Productivity<input value={productivity} onChange={(event) => setProductivity(event.target.value)} placeholder="low, medium, high" /></label>
-            <label>Tags<input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="work, school" /></label>
-            <label>People tags<input value={peopleTags} onChange={(event) => setPeopleTags(event.target.value)} placeholder="Arjun, Maya" /></label>
-          </div>
-          <div className="button-row">
-            <button type="button" onClick={() => void saveEntry()}>Save entry</button>
-            <button type="button" onClick={() => void extractEvents()}>Extract events</button>
-          </div>
-          {status && <p>{status}</p>}
-        </Panel>
-
-        <Panel title="Daily Shutdown Assistant">
-          <p>Rule-based prompts only for v1.</p>
-          <div className="data-list">
-            <article className="data-item data-item--stacked"><strong>Close loops</strong><span>Write what changed, what is pending, and what needs a Calendar reminder.</span></article>
-            <article className="data-item data-item--stacked"><strong>Tomorrow</strong><span>Use phrases like tomorrow, in 3 days, next Friday, on July 8.</span></article>
-            <article className="data-item data-item--stacked"><strong>Calendar today</strong><span>{calendarState.todayEvents.length} local event{calendarState.todayEvents.length === 1 ? "" : "s"} today.</span></article>
-          </div>
-        </Panel>
+        <StatusChip tone={journalVoiceActive && journalVoice.status !== "paused" ? "running" : journalVoice.status === "paused" ? "paused" : "info"} pulse={journalVoiceActive && journalVoice.status !== "paused"}>{journalVoiceActive ? (journalVoice.status === "paused" ? "Paused" : "Dictating") : "Idle"}</StatusChip>
       </div>
 
-      <Panel title="Extracted Calendar Candidates">
-        <div className="action-list">
-          {candidates.length === 0 ? (
-            <p>No candidates yet. Save or extract from text with meeting, appointment, call, birthday, or remind me.</p>
-          ) : (
-            candidates.map((candidate) => (
-              <article className="action-row accent-calendar" key={candidate.id}>
-                <div>
-                  <h3>{candidate.title}</h3>
-                  <p>{formatLocalDate(candidate.date)} / {candidate.type} / {candidate.allDay ? "all-day" : "timed later"}</p>
-                  <p>{candidate.sourceSentence}</p>
-                </div>
-                <div>
-                  <button
-                    type="button"
-                    disabled={candidateAlreadyAdded(candidate)}
-                    onClick={() => void addCandidate(candidate)}
-                  >
-                    {candidateAlreadyAdded(candidate) ? "Added" : "Add"}
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+        {/* Today entry + voice */}
+        <div className="space-y-5 lg:col-span-7">
+          <GlassCard accent={ACCENT_JOURNAL} hover={false}>
+            <SectionTitle action={<span className="font-mono text-[10px] text-[#525252]">{journalVoice.chunksCount > 0 ? `${journalVoice.chunksCount} chunks · ` : ""}{status ? "" : "auto-saved"}</span>}>Today's Entry</SectionTitle>
+            <textarea ref={journalTextRef} value={rawText} onChange={(event) => setRawText(event.target.value)} onBlur={() => void saveEntry()} placeholder="Brain dump, shutdown notes, reminders, meetings, birthdays" rows={8} className="w-full resize-none rounded-lg border border-[#1f1f1f] bg-[#0A0A0A] p-3 text-sm leading-relaxed text-[#F5F5F5] placeholder:text-[#525252] focus:outline-none" />
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Smile className="h-4 w-4 text-[#A3A3A3]" />
+              {journalMoods.map((m) => {
+                const on = mood.trim().toLowerCase() === m.toLowerCase();
+                return <button key={m} type="button" onClick={() => { setMood(m.toLowerCase()); }} className="rounded-full border px-2.5 py-1 text-xs transition-all" style={on ? { borderColor: `${ACCENT_JOURNAL}55`, background: `${ACCENT_JOURNAL}1a`, color: ACCENT_JOURNAL } : { borderColor: "#1f1f1f", color: "#A3A3A3" }}>{m}</button>;
+              })}
+              <button type="button" onClick={() => void saveEntry()} className="ml-auto rounded-md border border-[#262626] px-3 py-1 text-xs text-[#A3A3A3] hover:text-[#F5F5F5]">Save</button>
+              <button type="button" onClick={() => void extractEvents()} className="rounded-md border border-[#262626] px-3 py-1 text-xs text-[#A3A3A3] hover:text-[#F5F5F5]">Extract events</button>
+            </div>
+            {status && <p className="mt-2 text-xs text-[#A3A3A3]">{status}</p>}
+          </GlassCard>
+
+          <GlassCard accent={ACCENT_JOURNAL} hover={false}>
+            <div className="flex items-center gap-4">
+              <div className={`flex h-14 w-14 items-center justify-center rounded-2xl ${journalVoiceActive ? "bg-[#F59E0B]/15" : "bg-[#1a1a1a]"}`}><Mic className={`h-6 w-6 ${journalVoiceActive ? "text-[#F59E0B]" : "text-[#A3A3A3]"}`} /></div>
+              <div className="flex-1">
+                <p className="text-sm font-medium text-[#F5F5F5]">Voice Journal Mode</p>
+                {journalVoiceActive && journalVoice.status !== "paused"
+                  ? <VoiceWaveform className="mt-1" color={ACCENT_JOURNAL} bars={20} height={18} />
+                  : <p className="text-xs text-[#A3A3A3]">{speechState.performancePaused ? "Speech is paused by Performance Mode." : journalVoice.status === "paused" ? "Paused — resume to continue" : "Dictate hands-free, auto-chunked & transcribed locally"}</p>}
+              </div>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {!journalVoiceActive && <ActionButton accent={ACCENT_JOURNAL} variant="solid" icon={Play} disabled={speechState.performancePaused} onClick={() => void onStartJournalVoice("module_ui")}>Start Journal Mode</ActionButton>}
+              {journalVoiceActive && journalVoice.status !== "paused" && <ActionButton accent={ACCENT_JOURNAL} icon={Pause} onClick={() => onPauseJournalVoice()}>Pause</ActionButton>}
+              {journalVoiceActive && journalVoice.status === "paused" && <ActionButton accent={ACCENT_JOURNAL} variant="solid" icon={Play} disabled={speechState.performancePaused} onClick={() => onResumeJournalVoice()}>Resume</ActionButton>}
+              {journalVoiceActive && <ActionButton accent="#22C55E" icon={Square} onClick={() => void onSaveStopJournalVoice()}>Save &amp; Stop</ActionButton>}
+              {journalVoiceActive && <button type="button" onClick={() => void onCancelJournalVoice()} className="rounded-lg border border-[#262626] px-3 py-2 text-sm text-[#A3A3A3] hover:text-[#F5F5F5]">Cancel</button>}
+            </div>
+          </GlassCard>
+        </div>
+
+        {/* Right rail */}
+        <div className="space-y-5 lg:col-span-5">
+          <GlassCard accent="#22D3EE" hover={false}>
+            <SectionTitle action={<Sparkles className="h-3.5 w-3.5 text-[#22D3EE]" />}>Event Extraction</SectionTitle>
+            {candidates.length === 0 ? <p className="text-xs text-[#525252]">No candidates yet. Write or extract from text with meeting, appointment, call, birthday, or remind me.</p> : (
+              <div className="space-y-2">
+                {candidates.map((candidate) => (
+                  <div key={candidate.id} className="glass-card flex items-center gap-2.5 p-2.5">
+                    <CalendarPlus className="h-4 w-4 shrink-0 text-[#22D3EE]" />
+                    <span className="min-w-0 flex-1 truncate text-xs text-[#F5F5F5]" title={candidate.sourceSentence}>{candidate.title} → {formatLocalDate(candidate.date)}</span>
+                    <button type="button" disabled={candidateAlreadyAdded(candidate)} onClick={() => void addCandidate(candidate)} className="shrink-0 text-[10px] font-medium text-[#22D3EE] disabled:text-[#525252]">{candidateAlreadyAdded(candidate) ? "added" : "add"}</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle>Entry History</SectionTitle>
+            {journalState.entries.length === 0 ? <p className="text-xs text-[#525252]">No entries yet.</p> : (
+              <div className="space-y-1.5">
+                {journalState.entries.slice(0, 8).map((entry) => (
+                  <button key={entry.id} type="button" onClick={() => loadEntry(entry)} className="glass-card flex w-full items-center gap-3 p-2.5 text-left">
+                    <span className="font-mono text-xs text-[#A3A3A3]">{formatLocalDate(entry.date)}</span>
+                    {entry.mood && <StatusChip tone="info" dot={false} style={{ color: ACCENT_JOURNAL, borderColor: `${ACCENT_JOURNAL}33`, background: `${ACCENT_JOURNAL}12` }}>{entry.mood}</StatusChip>}
+                    <span className="ml-auto font-mono text-[10px] text-[#525252]">{entry.productivity ? `prod ${entry.productivity} · ` : ""}{journalWords(entry.cleanedText || entry.rawText)}w</span>
                   </button>
-                  <button type="button" onClick={() => setCandidates((current) => current.filter((item) => item.id !== candidate.id))}>Skip</button>
-                </div>
-              </article>
-            ))
-          )}
-        </div>
-      </Panel>
+                ))}
+              </div>
+            )}
+          </GlassCard>
 
-      <Panel title="Entry List">
-        <div className="action-list">
-          {journalState.entries.length === 0 ? (
-            <p>No Journal entries yet.</p>
-          ) : (
-            journalState.entries.map((entry) => (
-              <CollapsibleListItem
-                accentClass="accent-journal"
-                key={entry.id}
-                title={entry.title || formatLocalDate(entry.date)}
-                meta={`${formatLocalDate(entry.date)} / mood: ${entry.mood || "unset"} / productivity: ${entry.productivity || "unset"}`}
-                actions={(
-                  <>
-                  <button type="button" onClick={() => loadEntry(entry)}>Edit</button>
-                  <button className="danger-button" type="button" onClick={() => void deleteEntry(entry)}>Delete</button>
-                  </>
-                )}
-              >
-                <p>{entry.cleanedText?.slice(0, 280) || "No text"}</p>
-                <p className="technical">{entry.id}</p>
-              </CollapsibleListItem>
-            ))
-          )}
+          <GlassCard accent="#A855F7" hover={false}>
+            <SectionTitle>Weekly Reflection</SectionTitle>
+            <p className="text-sm text-[#A3A3A3]">Your week-in-review will generate here every Sunday from your entries.</p>
+          </GlassCard>
         </div>
-      </Panel>
+      </div>
 
-      <Panel title="On this day">
-        <p>Placeholder for future local memory recall. No background indexing or AI is running.</p>
-      </Panel>
-    </section>
+      {/* Advanced: full metadata, shutdown assistant, full entry list */}
+      <details className="rounded-lg border border-[#1a1a1a] bg-[#080808]">
+        <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] text-[#525252] hover:text-[#A3A3A3]">advanced · entry metadata, shutdown assistant, all entries</summary>
+        <div className="space-y-4 border-t border-[#1a1a1a] p-3">
+          <Panel title="Entry metadata">
+            <div className="registry-controls">
+              <label>Date<input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
+              <label>Title<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Optional title" /></label>
+              <label>Mode<select value={mode} onChange={(event) => setMode(event.target.value as "one-line" | "full")}><option value="full">Full entry</option><option value="one-line">One-line mode</option></select></label>
+            </div>
+            <div className="registry-controls">
+              <label>Mood<input value={mood} onChange={(event) => setMood(event.target.value)} placeholder="calm, stressed, focused" /></label>
+              <label>Productivity<input value={productivity} onChange={(event) => setProductivity(event.target.value)} placeholder="low, medium, high" /></label>
+              <label>Tags<input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="work, school" /></label>
+              <label>People tags<input value={peopleTags} onChange={(event) => setPeopleTags(event.target.value)} placeholder="Arjun, Maya" /></label>
+            </div>
+            <div className="button-row">
+              <button type="button" onClick={() => void saveEntry()}>Save entry</button>
+              <VoiceInput targetLabel="Journal entry" speechState={speechState} onSpeechStateChanged={onSpeechStateChange} onAction={onAction} onBeforeDictation={() => journalTextRef.current?.focus()} onTranscript={(text) => setRawText((current) => `${current}${current ? " " : ""}${text}`)} />
+            </div>
+          </Panel>
+
+          <Panel title="Extracted Calendar Candidates">
+            <div className="action-list">
+              {candidates.length === 0 ? <p>No candidates yet.</p> : candidates.map((candidate) => (
+                <article className="action-row accent-calendar" key={candidate.id}>
+                  <div><h3>{candidate.title}</h3><p>{formatLocalDate(candidate.date)} / {candidate.type} / {candidate.allDay ? "all-day" : "timed later"}</p><p>{candidate.sourceSentence}</p></div>
+                  <div>
+                    <button type="button" disabled={candidateAlreadyAdded(candidate)} onClick={() => void addCandidate(candidate)}>{candidateAlreadyAdded(candidate) ? "Added" : "Add"}</button>
+                    <button type="button" onClick={() => setCandidates((current) => current.filter((item) => item.id !== candidate.id))}>Skip</button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </Panel>
+
+          <Panel title="All entries">
+            <div className="action-list">
+              {journalState.entries.length === 0 ? <p>No Journal entries yet.</p> : journalState.entries.map((entry) => (
+                <CollapsibleListItem accentClass="accent-journal" key={entry.id} title={entry.title || formatLocalDate(entry.date)} meta={`${formatLocalDate(entry.date)} / mood: ${entry.mood || "unset"} / productivity: ${entry.productivity || "unset"}`}
+                  actions={(<>
+                    <button type="button" onClick={() => loadEntry(entry)}>Edit</button>
+                    <button className="danger-button" type="button" onClick={() => void deleteEntry(entry)}>Delete</button>
+                  </>)}>
+                  <p>{entry.cleanedText?.slice(0, 280) || "No text"}</p>
+                </CollapsibleListItem>
+              ))}
+            </div>
+          </Panel>
+        </div>
+      </details>
+    </div>
   );
+
 }
 
 function CalendarView({
@@ -10950,7 +10980,7 @@ function CalendarView({
         accentClass="accent-calendar"
         key={nudge.id}
         title={nudge.title}
-        meta={`${formatLocalDate(nudge.date)}${nudge.time ? ` / ${nudge.time}` : ""} / ${nudge.priority} / ${nudge.sourceModule}`}
+        meta={`${formatLocalDate(nudge.date)}${nudge.time ? ` / ${nudge.time}` : ""} / ${nudge.priority} / ${nudge.sourceModule}${nudge.sourceModule === "finance" && nudge.sourceProfileName ? ` (${nudge.sourceProfileName})` : ""}`}
         actions={(
           <>
           <button type="button" onClick={() => void runNudgeAction("calendar.nudge.open_source", nudge)}>Open source</button>
@@ -10987,215 +11017,170 @@ function CalendarView({
     );
   }
 
+  const ACCENT_CAL = "#14B8A6";
+  const calHeaderDate = parseLocalDateInput(calendarState.today).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
+  const calReminders = [...calendarState.todayNudges, ...calendarState.upcomingNudges].slice(0, 4);
+  const nudgeColor = (p: string): string => p === "urgent" ? "#EF4444" : p === "normal" ? "#F59E0B" : "#14B8A6";
+
   return (
-    <section className="view-stack accent-calendar" aria-labelledby="calendar-title">
-      <PageHeader
-        eyebrow="Local schedule"
-        title="Calendar"
-        titleId="calendar-title"
-        actions={(
-          <>
-          <button type="button" onClick={() => shiftMonth(-1)}>Previous</button>
-          <button type="button" onClick={goToToday}>Today</button>
-          <button type="button" onClick={() => shiftMonth(1)}>Next</button>
-          <button type="button" onClick={() => void refreshNudgeList()}>Refresh nudges</button>
-          </>
-        )}
-      />
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_CAL}40`, background: `${ACCENT_CAL}14`, color: ACCENT_CAL }}><CalendarDays className="h-5 w-5" /></div>
+          <div><h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Calendar</h1><p className="text-sm text-[#A3A3A3]">{calHeaderDate} · agenda &amp; reminders</p></div>
+        </div>
+        <ActionButton accent={ACCENT_CAL} icon={Plus} onClick={resetForm}>Add event</ActionButton>
+      </div>
 
-      {calendarVoiceCandidate && (
-        <Panel title="Voice Calendar Candidate">
-          <div className="status-grid">
-            <article>
-              <span>Status</span>
-              <strong>{voiceWorkflow.status === "saving" ? "Saving" : voiceWorkflow.status === "saved" ? "Saved" : "Review"}</strong>
-              <p>{voiceWorkflow.error || "Ctrl/typed/push-to-talk calendar command routed locally."}</p>
-            </article>
-            <article>
-              <span>Confidence</span>
-              <strong>{calendarVoiceCandidate.confidence}</strong>
-              <p>{calendarVoiceCandidate.missingFields.length ? `Missing ${calendarVoiceCandidate.missingFields.join(", ")}` : "Ready to add."}</p>
-            </article>
-            <article>
-              <span>Type</span>
-              <strong>{calendarVoiceCandidate.eventType}</strong>
-              <p>{calendarVoiceCandidate.sensitivity === "sensitive" ? "Source phrase hidden for privacy." : calendarVoiceCandidate.sourcePhrasePreview || "No source preview."}</p>
-            </article>
-          </div>
-          <div className="registry-controls">
-            <label>Title<input value={calendarVoiceCandidate.title} onChange={(event) => onCalendarCandidateChange({ title: event.target.value })} /></label>
-            <label>Date<input type="date" value={calendarVoiceCandidate.date} onChange={(event) => onCalendarCandidateChange({ date: event.target.value })} /></label>
-            <label>Start<input type="time" value={calendarVoiceCandidate.startTime ?? ""} disabled={calendarVoiceCandidate.allDay} onChange={(event) => onCalendarCandidateChange({ startTime: event.target.value || null, endTime: event.target.value ? addMinutesToTime(event.target.value, voiceWorkflowSettings.defaultMeetingDurationMinutes || 30) : null })} /></label>
-            <label>End<input type="time" value={calendarVoiceCandidate.endTime ?? ""} disabled={calendarVoiceCandidate.allDay} onChange={(event) => onCalendarCandidateChange({ endTime: event.target.value || null })} /></label>
-            <label>Reminder<select value={calendarVoiceCandidate.reminderLevel} onChange={(event) => onCalendarCandidateChange({ reminderLevel: event.target.value as "soft" | "normal" | "urgent" })}><option value="soft">soft</option><option value="normal">normal</option><option value="urgent">urgent</option></select></label>
-            <label>Recurrence<input value={calendarVoiceCandidate.recurrence ?? ""} onChange={(event) => onCalendarCandidateChange({ recurrence: event.target.value || null })} placeholder="yearly-placeholder" /></label>
-          </div>
-          <label className="checkbox-row">
-            <input type="checkbox" checked={calendarVoiceCandidate.allDay} onChange={(event) => onCalendarCandidateChange({ allDay: event.target.checked })} />
-            <span>All-day event or birthday</span>
-          </label>
-          <textarea value={calendarVoiceCandidate.notes} onChange={(event) => onCalendarCandidateChange({ notes: event.target.value })} placeholder="Calendar notes" />
-          <div className="button-row">
-            <button type="button" className="button-primary" disabled={voiceWorkflow.status === "saving"} onClick={() => void onConfirmCalendarCandidate()}>{voiceWorkflow.status === "saving" ? "Saving..." : "Add event"}</button>
-            <button type="button" onClick={() => loadVoiceCandidateForEdit(calendarVoiceCandidate)}>Edit in form</button>
-            <button type="button" className="danger-button" onClick={onCancelCalendarCandidate}>Cancel</button>
-          </div>
-        </Panel>
-      )}
-
-      <div className="calendar-shell">
-        <Panel title={monthLabel}>
-          <div className="calendar-grid" aria-label={`${monthLabel} calendar`}>
-            {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => (
-              <div className="calendar-weekday" key={day}>{day}</div>
-            ))}
-            {calendarDays.map((day) => (
-              <button
-                className="calendar-day"
-                data-current-month={day.inMonth}
-                data-selected={day.value === selectedDate}
-                data-today={day.isToday}
-                key={day.value}
-                type="button"
-                onClick={() => selectCalendarDate(day.value)}
-              >
-                <span>{day.label}</span>
-                <div>
-                  {day.events.slice(0, 3).map((event) => (
-                    <small key={event.id}>{event.allDay ? "" : event.startTime ? `${event.startTime} ` : ""}{event.title}</small>
-                  ))}
-                  {day.events.length > 3 && <small>+{day.events.length - 3} more</small>}
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+        {/* Voice candidate + month + reminders */}
+        <div className="space-y-5 lg:col-span-8">
+          {calendarVoiceCandidate && (
+            <GlassCard accent="#06B6D4" hover={false}>
+              <div className="flex items-start gap-3">
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#06B6D4]/15 text-[#06B6D4]"><Mic className="h-4 w-4" /></div>
+                <div className="flex-1">
+                  <div className="flex items-center gap-2"><span className="text-sm font-medium text-[#F5F5F5]">Voice event candidate</span>{calendarVoiceCandidate.missingFields.length > 0 && <StatusChip tone="warn">missing {calendarVoiceCandidate.missingFields.join(", ")}</StatusChip>}</div>
+                  <p className="mt-0.5 text-sm text-[#A3A3A3]">{calendarVoiceCandidate.title} → {formatLocalDate(calendarVoiceCandidate.date)}{calendarVoiceCandidate.startTime ? ` · ${calendarVoiceCandidate.startTime}` : " · no time detected"}</p>
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    {!calendarVoiceCandidate.allDay && <input type="time" value={calendarVoiceCandidate.startTime ?? ""} onChange={(event) => onCalendarCandidateChange({ startTime: event.target.value || null, endTime: event.target.value ? addMinutesToTime(event.target.value, voiceWorkflowSettings.defaultMeetingDurationMinutes || 30) : null })} className="h-8 w-32 rounded-lg border border-[#1f1f1f] bg-[#0A0A0A] px-2 text-xs text-[#F5F5F5]" />}
+                    <ActionButton accent={ACCENT_CAL} icon={Check} className="text-xs" onClick={() => void onConfirmCalendarCandidate()}>Add</ActionButton>
+                    <button type="button" onClick={onCancelCalendarCandidate} className="rounded-lg border border-[#262626] px-3 py-1.5 text-xs text-[#A3A3A3] hover:text-[#F5F5F5]">Dismiss</button>
+                  </div>
                 </div>
-              </button>
-            ))}
-          </div>
-        </Panel>
+              </div>
+            </GlassCard>
+          )}
 
-        <Panel title="Create Event">
-          <VoiceInput
-            targetLabel="Calendar event"
-            speechState={speechState}
-            onSpeechStateChanged={onSpeechStateChange}
-            onAction={onAction}
-            onBeforeDictation={() => calendarTitleRef.current?.focus()}
-            onTranscript={(text) => setTitle((current) => `${current}${current ? " " : ""}${text}`)}
-          />
-          <div className="registry-controls">
-            <label>Title<input ref={calendarTitleRef} value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Birthday, meeting, call" /></label>
-            <label>Date<input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
-            <label>Start<input type="time" value={startTime} onChange={(event) => setStartTime(event.target.value)} disabled={allDay} /></label>
-            <label>End<input type="time" value={endTime} onChange={(event) => setEndTime(event.target.value)} disabled={allDay} /></label>
-            <label>Reminder<select value={reminderLevel} onChange={(event) => setReminderLevel(event.target.value as "soft" | "normal" | "urgent")}><option value="soft">soft</option><option value="normal">normal</option><option value="urgent">urgent</option></select></label>
-            <label>Recurrence<input value={recurrence} onChange={(event) => setRecurrence(event.target.value)} placeholder="yearly placeholder" /></label>
-          </div>
-          <label className="checkbox-row"><input type="checkbox" checked={allDay} onChange={(event) => setAllDay(event.target.checked)} /> All-day event or birthday</label>
-          <textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Notes" />
-          <div className="button-row">
-            <button type="button" onClick={() => void saveEvent()}>{editingId ? "Update event" : "Create event"}</button>
-            <button type="button" onClick={resetForm}>Reset</button>
-          </div>
-          {status && <p>{status}</p>}
-        </Panel>
+          <GlassCard hover={false}>
+            <SectionTitle action={<div className="flex items-center gap-2"><button type="button" onClick={() => shiftMonth(-1)} className="font-mono text-xs text-[#525252] hover:text-[#A3A3A3]">‹</button><span className="font-mono text-[10px] text-[#525252]">{monthLabel}</span><button type="button" onClick={() => shiftMonth(1)} className="font-mono text-xs text-[#525252] hover:text-[#A3A3A3]">›</button></div>}>Month</SectionTitle>
+            <div className="grid grid-cols-7 gap-1 text-center">
+              {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => <div key={d} className="py-1 text-[10px] font-medium uppercase tracking-wider text-[#525252]">{d}</div>)}
+              {calendarDays.map((day) => {
+                const selected = day.value === selectedDate;
+                return (
+                  <button key={day.value} type="button" onClick={() => selectCalendarDate(day.value)} className={`flex aspect-square flex-col items-center justify-center rounded-md text-sm transition-colors ${!day.inMonth ? "opacity-30" : ""} ${day.isToday ? "bg-[#14B8A6]/15 font-semibold text-[#14B8A6]" : selected ? "bg-[#0d0d0d] text-[#F5F5F5]" : "text-[#A3A3A3] hover:bg-[#0d0d0d]"}`} style={selected && !day.isToday ? { boxShadow: "inset 0 0 0 1px #14B8A655" } : undefined}>
+                    {day.label}
+                    {day.events.length > 0 && <span className="mt-0.5 h-1 w-1 rounded-full bg-[#14B8A6]" />}
+                  </button>
+                );
+              })}
+            </div>
+          </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle action={<Bell className="h-3.5 w-3.5 text-[#14B8A6]" />}>Reminders &amp; nudges</SectionTitle>
+            {calReminders.length === 0 ? <p className="text-xs text-[#525252]">No nudges scheduled.</p> : (
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {calReminders.map((r) => (
+                  <div key={r.id} className="glass-card flex items-center gap-2.5 p-2.5">
+                    <span className="h-7 w-px shrink-0 rounded-full" style={{ background: nudgeColor(r.priority) }} />
+                    <div className="min-w-0 flex-1"><p className="truncate text-xs text-[#F5F5F5]" title={r.message}>{r.title}</p><p className="font-mono text-[10px] text-[#525252]">{formatLocalDate(r.date)} · {r.sourceModule}{r.sourceModule === "finance" && r.sourceProfileName ? ` · ${r.sourceProfileName}` : ""}</p></div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </GlassCard>
+        </div>
+
+        {/* Right rail */}
+        <div className="space-y-5 lg:col-span-4">
+          <GlassCard accent={ACCENT_CAL} hover={false}>
+            <SectionTitle action={<Clock className="h-3.5 w-3.5 text-[#14B8A6]" />}>Today</SectionTitle>
+            {calendarState.todayEvents.length === 0 ? <p className="text-xs text-[#525252]">No events today.</p> : (
+              <div className="space-y-2">
+                {calendarState.todayEvents.map((e) => (
+                  <div key={e.id} className="glass-card flex items-center gap-3 p-2.5">
+                    <div className="font-mono text-xs text-[#A3A3A3]"><div>{e.allDay ? "all-day" : e.startTime || "—"}</div>{e.endTime && <div className="text-[#525252]">{e.endTime}</div>}</div>
+                    <div className="h-8 w-[2px] rounded-full" style={{ background: ACCENT_CAL }} />
+                    <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{e.title}</p><span className="font-mono text-[10px] text-[#14B8A6]">{e.sourceModule}</span></div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle action={<Bell className="h-3.5 w-3.5 text-[#14B8A6]" />}>Upcoming</SectionTitle>
+            {calendarState.upcomingEvents.length === 0 ? <p className="text-xs text-[#525252]">No upcoming events.</p> : (
+              <div className="space-y-2">
+                {calendarState.upcomingEvents.slice(0, 6).map((e) => {
+                  const bday = /birthday/i.test(e.title);
+                  return (
+                    <div key={e.id} className="glass-card flex items-center gap-3 p-2.5">
+                      <div className="flex h-8 w-8 items-center justify-center rounded-lg" style={{ background: `${ACCENT_CAL}14`, color: ACCENT_CAL }}>{bday ? <Cake className="h-4 w-4" /> : <CalendarDays className="h-4 w-4" />}</div>
+                      <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{e.title}</p><p className="font-mono text-[10px] text-[#525252]">{formatLocalDate(e.date)} · {e.allDay ? "all-day" : e.startTime || "—"}</p></div>
+                      <span className="font-mono text-[10px] text-[#14B8A6]">{e.sourceModule}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </GlassCard>
+
+          {calReminders.length > 0 && (
+            <div className="flex items-center gap-2 rounded-xl border border-[#F59E0B]/25 bg-[#F59E0B]/[0.08] px-3.5 py-2.5 text-xs text-[#F59E0B]">
+              <AlertCircle className="h-4 w-4" /> {calReminders.length} nudge{calReminders.length === 1 ? "" : "s"} scheduled
+            </div>
+          )}
+        </div>
       </div>
 
-      <Panel title="Voice Calendar Settings">
-        <div className="registry-controls">
-          <label className="checkbox-row">
-            <input type="checkbox" checked={voiceWorkflowSettings.autoCreateHighConfidenceCalendarVoiceEvents} onChange={(event) => void onVoiceWorkflowSettingsChange({ autoCreateHighConfidenceCalendarVoiceEvents: event.target.checked })} />
-            <span>Auto-create high-confidence voice calendar events</span>
-          </label>
-          <label>
-            Default duration
-            <input type="number" min="5" step="5" value={voiceWorkflowSettings.defaultMeetingDurationMinutes} onChange={(event) => void onVoiceWorkflowSettingsChange({ defaultMeetingDurationMinutes: Number(event.target.value) || 30 })} />
-          </label>
-          <label>
-            Default reminder time
-            <input type="time" value={voiceWorkflowSettings.defaultReminderTime} onChange={(event) => void onVoiceWorkflowSettingsChange({ defaultReminderTime: event.target.value || "09:00" })} />
-          </label>
-          <label className="checkbox-row">
-            <input type="checkbox" checked={voiceWorkflowSettings.askBeforeRecurringEvents} onChange={(event) => void onVoiceWorkflowSettingsChange({ askBeforeRecurringEvents: event.target.checked })} />
-            <span>Ask before recurring events like birthdays</span>
-          </label>
-        </div>
-      </Panel>
+      {/* Advanced: create/edit event, selected day, full nudges + settings */}
+      <details className="rounded-lg border border-[#1a1a1a] bg-[#080808]">
+        <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] text-[#525252] hover:text-[#A3A3A3]">advanced · create event, selected day, nudges &amp; settings</summary>
+        <div className="space-y-4 border-t border-[#1a1a1a] p-3">
+          <Panel title={editingId ? "Edit Event" : "Create Event"}>
+            <VoiceInput targetLabel="Calendar event" speechState={speechState} onSpeechStateChanged={onSpeechStateChange} onAction={onAction} onBeforeDictation={() => calendarTitleRef.current?.focus()} onTranscript={(text) => setTitle((current) => `${current}${current ? " " : ""}${text}`)} />
+            <div className="registry-controls">
+              <label>Title<input ref={calendarTitleRef} value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Birthday, meeting, call" /></label>
+              <label>Date<input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
+              <label>Start<input type="time" value={startTime} onChange={(event) => setStartTime(event.target.value)} disabled={allDay} /></label>
+              <label>End<input type="time" value={endTime} onChange={(event) => setEndTime(event.target.value)} disabled={allDay} /></label>
+              <label>Reminder<select value={reminderLevel} onChange={(event) => setReminderLevel(event.target.value as "soft" | "normal" | "urgent")}><option value="soft">soft</option><option value="normal">normal</option><option value="urgent">urgent</option></select></label>
+              <label>Recurrence<input value={recurrence} onChange={(event) => setRecurrence(event.target.value)} placeholder="yearly placeholder" /></label>
+            </div>
+            <label className="checkbox-row"><input type="checkbox" checked={allDay} onChange={(event) => setAllDay(event.target.checked)} /> All-day event or birthday</label>
+            <textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Notes" />
+            <div className="button-row">
+              <button type="button" onClick={() => void saveEvent()}>{editingId ? "Update event" : "Create event"}</button>
+              <button type="button" onClick={resetForm}>Reset</button>
+            </div>
+            {status && <p>{status}</p>}
+          </Panel>
 
-      <div className="dashboard-grid">
-        <Panel title={`Selected Day: ${formatLocalDate(selectedDate)}`}>
-            <div className="action-list action-list--compact">
-              {selectedDateEvents.length === 0 ? <p>No events on this day.</p> : selectedDateEvents.map(renderEvent)}
+          <div className="dashboard-grid">
+            <Panel title={`Selected Day: ${formatLocalDate(selectedDate)}`}>
+              <div className="action-list action-list--compact">{selectedDateEvents.length === 0 ? <p>No events on this day.</p> : selectedDateEvents.map(renderEvent)}</div>
+            </Panel>
+            <Panel title="Upcoming events">
+              <div className="action-list action-list--compact">{calendarState.upcomingEvents.length === 0 ? <p>No upcoming events.</p> : calendarState.upcomingEvents.map(renderEvent)}</div>
+            </Panel>
+          </div>
+
+          <div className="dashboard-grid">
+            <Panel title="Today Nudges"><div className="action-list action-list--compact">{calendarState.todayNudges.length === 0 ? <EmptyState>No nudges due today.</EmptyState> : calendarState.todayNudges.map(renderNudge)}</div></Panel>
+            <Panel title="Upcoming Nudges"><div className="action-list action-list--compact">{calendarState.upcomingNudges.length === 0 ? <EmptyState>No upcoming nudges.</EmptyState> : calendarState.upcomingNudges.map(renderNudge)}</div></Panel>
+          </div>
+
+          <Panel title="Nudge Settings">
+            <div className="registry-controls">
+              <label className="checkbox-row"><input type="checkbox" checked={nudgeSettingsForm.enabled} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, enabled: event.target.checked }))} /><span>Enable nudges</span></label>
+              <label>Vault expiry days<input value={nudgeSettingsForm.vaultExpiryReminderDays} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, vaultExpiryReminderDays: event.target.value }))} placeholder="90, 30, 7" /></label>
+              <label>Return reminder days<input value={nudgeSettingsForm.returnReminderDays} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, returnReminderDays: event.target.value }))} placeholder="7, 3, 1" /></label>
+              <label>Backup reminder after days<input type="number" min="1" value={nudgeSettingsForm.backupReminderAfterDays} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, backupReminderAfterDays: event.target.value }))} /></label>
+            </div>
+            <label className="checkbox-row"><input type="checkbox" checked={nudgeSettingsForm.dailyJournalReminderEnabled} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, dailyJournalReminderEnabled: event.target.checked }))} /><span>Daily Journal reminder</span></label>
+            <div className="button-row">
+              <button type="button" onClick={() => void saveNudgeSettings()}>Save nudge settings</button>
+              <button type="button" onClick={() => void refreshNudgeList()}>Refresh nudges</button>
             </div>
           </Panel>
-          <Panel title="Today">
-            <div className="action-list action-list--compact">
-              {calendarState.todayEvents.length === 0 ? <p>No local events today.</p> : calendarState.todayEvents.map(renderEvent)}
-            </div>
-          </Panel>
         </div>
-
-      <div className="dashboard-grid">
-        <Panel title="Today Nudges">
-          <div className="action-list action-list--compact">
-            {calendarState.todayNudges.length === 0 ? <EmptyState>No nudges due today.</EmptyState> : calendarState.todayNudges.map(renderNudge)}
-          </div>
-        </Panel>
-        <Panel title="Urgent Nudges">
-          <div className="action-list action-list--compact">
-            {calendarState.urgentNudges.length === 0 ? <EmptyState>No urgent nudges.</EmptyState> : calendarState.urgentNudges.map(renderNudge)}
-          </div>
-        </Panel>
-      </div>
-
-      <Panel title="Upcoming Nudges">
-        <div className="action-list">
-          {calendarState.upcomingNudges.length === 0 ? <EmptyState>No upcoming nudges.</EmptyState> : calendarState.upcomingNudges.map(renderNudge)}
-        </div>
-      </Panel>
-
-      <Panel title="Upcoming">
-        <div className="action-list">
-          {calendarState.upcomingEvents.length === 0 ? <p>No upcoming local events.</p> : calendarState.upcomingEvents.map(renderEvent)}
-        </div>
-      </Panel>
-
-      <div className="dashboard-grid">
-        <Panel title="Free Time Finder">
-          <p>Placeholder for a future local-only availability helper.</p>
-        </Panel>
-        <Panel title="Travel Buffer">
-          <p>Placeholder. No external maps or cloud calls.</p>
-        </Panel>
-        <Panel title="Nudge Settings">
-          <div className="registry-controls">
-            <label className="checkbox-row">
-              <input type="checkbox" checked={nudgeSettingsForm.enabled} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, enabled: event.target.checked }))} />
-              <span>Enable nudges</span>
-            </label>
-            <label>
-              Vault expiry days
-              <input value={nudgeSettingsForm.vaultExpiryReminderDays} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, vaultExpiryReminderDays: event.target.value }))} placeholder="90, 30, 7" />
-            </label>
-            <label>
-              Return reminder days
-              <input value={nudgeSettingsForm.returnReminderDays} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, returnReminderDays: event.target.value }))} placeholder="7, 3, 1" />
-            </label>
-            <label>
-              Backup reminder after days
-              <input type="number" min="1" value={nudgeSettingsForm.backupReminderAfterDays} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, backupReminderAfterDays: event.target.value }))} />
-            </label>
-          </div>
-          <label className="checkbox-row">
-            <input type="checkbox" checked={nudgeSettingsForm.dailyJournalReminderEnabled} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, dailyJournalReminderEnabled: event.target.checked }))} />
-            <span>Daily Journal reminder</span>
-          </label>
-          <div className="button-row">
-            <button type="button" onClick={() => void saveNudgeSettings()}>Save nudge settings</button>
-            <button type="button" onClick={() => void refreshNudgeList()}>Refresh nudges</button>
-          </div>
-          <p className="technical">{calendarState.nudgesPath}</p>
-        </Panel>
-      </div>
-    </section>
+      </details>
+    </div>
   );
+
 }
 
 const emptyFinderForm = {
@@ -11411,123 +11396,192 @@ function FinderView({
     );
   }
 
+  const finderAgo = (iso: string): string => {
+    const diff = Date.now() - new Date(iso).getTime();
+    const day = Math.floor(diff / 86400000);
+    if (day > 0) return `${day}d`;
+    const hr = Math.floor(diff / 3600000);
+    if (hr > 0) return `${hr}h`;
+    return `${Math.max(1, Math.floor(diff / 60000))}m`;
+  };
+  const finderRooms = Array.from(new Set(finderState.items.map((item) => item.room).filter((r): r is string => Boolean(r))));
+  const recentlyLocated = [...finderState.items].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)).slice(0, 3);
+  const ACCENT_FINDER = "#84CC16";
+
   return (
-    <section className="view-stack accent-finder" aria-labelledby="finder-title">
-      <PageHeader eyebrow="Local item-location memory" title="Finder" titleId="finder-title" />
-
-      <Panel title="Voice Add">
-        <div className="status-grid">
-          <article><span>Mode</span><strong>{voiceWorkflow.mode === "finder_add" ? "Finder add" : "Ready"}</strong><p>Say "passport is in black drawer" or "where is my passport" in Ask DexNest.</p></article>
-          <article><span>Status</span><strong>{voiceWorkflow.mode === "finder_add" ? voiceWorkflow.status : "idle"}</strong><p>{voiceWorkflow.error || "High-confidence memories save automatically; uncertain ones appear here."}</p></article>
-          <article><span>Confidence</span><strong>{voiceWorkflow.candidate?.confidence ?? "none"}</strong><p>{voiceWorkflow.lastTranscriptPreview || "No active Finder candidate."}</p></article>
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_FINDER}40`, background: `${ACCENT_FINDER}14`, color: ACCENT_FINDER }}>
+            <PackageSearch className="h-5 w-5" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Finder</h1>
+            <p className="text-sm text-[#A3A3A3]">Physical item memory — where did you put that?</p>
+          </div>
         </div>
-        {voiceWorkflow.candidate ? (
-          <div className="data-item data-item--stacked accent-finder">
-            <strong>Save {voiceWorkflow.candidate.itemName} in {voiceWorkflow.candidate.location}?</strong>
-            <span>{voiceWorkflow.candidate.room || "no room"} / {voiceWorkflow.candidate.container || "no container"}</span>
-            <div className="button-row">
-              <button type="button" className="button-primary" onClick={() => void onSaveVoiceCandidate()}>Save</button>
-              <button type="button" onClick={editVoiceCandidate}>Edit</button>
-              <button type="button" className="danger-button" onClick={onCancelVoiceCandidate}>Cancel</button>
+        <StatusChip tone="ok">{finderState.items.length} items tracked</StatusChip>
+      </div>
+
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+        <div className="space-y-4 lg:col-span-8">
+          <div className="flex items-center gap-2 rounded-xl border border-[#262626] bg-[#0d0d0d] px-3.5 py-2.5 transition-colors focus-within:border-[#84CC16]/40">
+            <Search className="h-4 w-4 text-[#525252]" />
+            <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Where is my…" className="flex-1 bg-transparent text-sm text-[#F5F5F5] placeholder:text-[#525252] focus:outline-none" />
+          </div>
+
+          {finderRooms.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {["All", ...finderRooms].map((r) => {
+                const on = r === "All" ? searchQuery.trim() === "" : searchQuery.trim().toLowerCase() === r.toLowerCase();
+                return (
+                  <button key={r} type="button" onClick={() => setSearchQuery(r === "All" ? "" : r)} className="rounded-full border px-3 py-1 text-xs font-medium transition-all" style={on ? { borderColor: `${ACCENT_FINDER}55`, background: `${ACCENT_FINDER}1a`, color: ACCENT_FINDER } : { borderColor: "#262626", color: "#A3A3A3" }}>{r}</button>
+                );
+              })}
             </div>
-          </div>
-        ) : (
-          <p>No Finder voice candidate waiting.</p>
-        )}
-      </Panel>
+          )}
 
-      <div className="dashboard-grid">
-        <Panel title="Quick Add">
-          <div className="project-form">
-            <label>Item name<input value={form.itemName} onChange={(event) => setForm({ ...form, itemName: event.target.value })} placeholder="Passport" /></label>
-            <label>Location<input value={form.location} onChange={(event) => setForm({ ...form, location: event.target.value })} placeholder="black drawer" /></label>
-            <label>Room<input value={form.room} onChange={(event) => setForm({ ...form, room: event.target.value })} placeholder="office" /></label>
-            <label>Container<input value={form.container} onChange={(event) => setForm({ ...form, container: event.target.value })} placeholder="blue box" /></label>
-            <label>Status<select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value as FinderItemStatus })}><option value="at_home">at_home</option><option value="lent_out">lent_out</option><option value="missing">missing</option><option value="archived">archived</option></select></label>
-            <label>Confidence<select value={form.confidence} onChange={(event) => setForm({ ...form, confidence: event.target.value as FinderItemConfidence })}><option value="sure">sure</option><option value="maybe">maybe</option><option value="old">old</option></select></label>
-            <label>Lent to<input value={form.lentTo} onChange={(event) => setForm({ ...form, lentTo: event.target.value })} placeholder="Raj" /></label>
-            <label>Tags<input value={form.tags} onChange={(event) => setForm({ ...form, tags: event.target.value })} placeholder="travel, documents" /></label>
-            <label>Notes<textarea value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} placeholder="Optional private note" /></label>
-          </div>
-          <VoiceInput
-            targetLabel="Finder"
-            speechState={speechState}
-            onSpeechStateChanged={onSpeechStateChange}
-            onTranscript={(text) => setForm((current) => ({ ...current, notes: current.notes ? `${current.notes}\n${text}` : text }))}
-            onAction={onAction}
-          />
-          <div className="button-row">
-            <button type="button" onClick={() => void saveItem()}>{form.id ? "Update item" : "Save item"}</button>
-            <button type="button" onClick={() => setForm(emptyFinderForm)}>Reset</button>
-          </div>
-        </Panel>
-
-        <Panel title="I moved it">
-          <div className="project-form">
-            <label>Item<select value={moveItemId} onChange={(event) => setMoveItemId(event.target.value)}><option value="">Choose item</option>{finderState.items.map((item) => <option value={item.id} key={item.id}>{item.itemName}</option>)}</select></label>
-            <label>New location<input value={moveLocation} onChange={(event) => setMoveLocation(event.target.value)} placeholder="suitcase" /></label>
-            <label>Room<input value={moveRoom} onChange={(event) => setMoveRoom(event.target.value)} /></label>
-            <label>Container<input value={moveContainer} onChange={(event) => setMoveContainer(event.target.value)} /></label>
-          </div>
-          <button type="button" onClick={() => void markMoved()}>Save move</button>
-        </Panel>
-      </div>
-
-      <div className="dashboard-grid">
-        <Panel title="Search Items">
-          <div className="registry-controls">
-            <label>Search<input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="passport, black drawer, blue box" /></label>
-            <label>Status<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value as FinderItemStatus | "all")}><option value="all">all</option><option value="at_home">at_home</option><option value="lent_out">lent_out</option><option value="missing">missing</option><option value="archived">archived</option></select></label>
-          </div>
-          <button type="button" onClick={() => void runSearchAudit()}>Log search</button>
-          <p>{visibleItems.length} result{visibleItems.length === 1 ? "" : "s"}.</p>
-        </Panel>
-
-        <Panel title="Reverse Lookup">
-          <label>
-            Container or location
-            <input value={reverseQuery} onChange={(event) => setReverseQuery(event.target.value)} placeholder="black drawer" />
-          </label>
-          <button type="button" onClick={() => void runReverseLookupAudit()}>Log reverse lookup</button>
-          <div className="action-list action-list--compact">
-            {reverseItems.length === 0 ? <p>No matching items yet.</p> : reverseItems.map((item) => (
-              <article className="data-item data-item--stacked accent-finder" key={item.id}>
-                <strong>{item.itemName}</strong>
-                <span>{item.location}{item.container ? ` / ${item.container}` : ""}</span>
-              </article>
-            ))}
-          </div>
-        </Panel>
-      </div>
-
-      <Panel title="Item Library">
-        <div className="action-list">
-          {visibleItems.length === 0 ? <p>No Finder items match this search.</p> : visibleItems.map(renderItemCard)}
+          {visibleItems.length === 0 ? (
+            <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-[#262626] py-12 text-center">
+              <PackageSearch className="h-8 w-8 text-[#525252]" />
+              <p className="mt-2 text-sm text-[#A3A3A3]">No items match</p>
+              <p className="text-xs text-[#525252]">Try another room or add it on the right</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {visibleItems.map((item) => (
+                <GlassCard key={item.id} className="flex flex-col gap-1.5 p-3">
+                  <div className="flex items-center gap-2">
+                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#84CC16]/12 text-[#84CC16]"><Box className="h-3.5 w-3.5" /></div>
+                    <p className="min-w-0 flex-1 truncate text-sm font-medium text-[#F5F5F5]">{item.itemName}</p>
+                    <span className="font-mono text-[10px] text-[#84CC16]">{item.confidence}</span>
+                  </div>
+                  <p className="flex items-center gap-1 truncate text-xs text-[#A3A3A3]"><MapPin className="h-3 w-3 shrink-0 text-[#84CC16]" />{item.location}{item.container ? ` · ${item.container}` : ""}</p>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="flex items-center gap-1 font-mono text-[10px] text-[#525252]"><Clock className="h-3 w-3" />{finderAgo(item.updatedAt)} ago</span>
+                    {item.status === "lent_out" && <StatusChip tone="warn" dot={false}><ArrowRightLeft className="mr-1 h-2.5 w-2.5" />lent{item.lentTo ? ` · ${item.lentTo}` : ""}</StatusChip>}
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 border-t border-[#1a1a1a] pt-1.5">
+                    <button type="button" onClick={() => loadItem(item)} className="rounded-md border border-[#262626] px-2 py-0.5 text-[10px] text-[#A3A3A3] hover:text-[#F5F5F5]">Edit</button>
+                    {item.status === "lent_out"
+                      ? <button type="button" onClick={() => void simpleItemAction("finder.mark_returned", item)} className="rounded-md border border-[#262626] px-2 py-0.5 text-[10px] text-[#A3A3A3] hover:text-[#F5F5F5]">Returned</button>
+                      : <button type="button" onClick={() => void markLentOut(item)} className="rounded-md border border-[#262626] px-2 py-0.5 text-[10px] text-[#A3A3A3] hover:text-[#F5F5F5]">Lend</button>}
+                    <button type="button" onClick={() => void deleteItem(item)} className="rounded-md border border-[#262626] px-2 py-0.5 text-[10px] text-[#A3A3A3] hover:text-[#EF4444]">Delete</button>
+                  </div>
+                </GlassCard>
+              ))}
+            </div>
+          )}
         </div>
-      </Panel>
 
-      <div className="dashboard-grid">
-        <Panel title="Lent Out">
-          <div className="action-list action-list--compact">
-            {lentOutItems.length === 0 ? <p>No lent-out items.</p> : lentOutItems.map((item) => (
-              <article className="data-item data-item--stacked accent-finder" key={item.id}>
-                <strong>{item.itemName}</strong>
-                <span>{item.lentTo ? `Lent to ${item.lentTo}` : "Lent out"}</span>
-                <button type="button" onClick={() => void simpleItemAction("finder.mark_returned", item)}>Mark returned</button>
-              </article>
-            ))}
-          </div>
-        </Panel>
-        <Panel title="Settings">
-          <p className="technical">{finderState.itemsPath}</p>
-          <p>{finderState.statusCounts.at_home} at home / {finderState.statusCounts.lent_out} lent out / {finderState.statusCounts.missing} missing / {finderState.statusCounts.archived} archived</p>
-          <p>Photo path is a placeholder for a later local capture flow.</p>
-        </Panel>
+        <div className="space-y-5 lg:col-span-4">
+          <GlassCard accent={ACCENT_FINDER} hover={false}>
+            <SectionTitle>Quick add</SectionTitle>
+            <div className="space-y-2">
+              <input value={form.itemName} onChange={(event) => setForm({ ...form, itemName: event.target.value })} placeholder="Item name" />
+              <input value={form.location} onChange={(event) => setForm({ ...form, location: event.target.value })} placeholder="Location" />
+              <input value={form.room} onChange={(event) => setForm({ ...form, room: event.target.value })} placeholder="Room (optional)" />
+              <details>
+                <summary className="cursor-pointer text-[11px] text-[#525252] hover:text-[#A3A3A3]">more fields</summary>
+                <div className="mt-2 space-y-2">
+                  <input value={form.container} onChange={(event) => setForm({ ...form, container: event.target.value })} placeholder="Container" />
+                  <input value={form.tags} onChange={(event) => setForm({ ...form, tags: event.target.value })} placeholder="Tags (comma separated)" />
+                  <textarea value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} placeholder="Notes" />
+                  <div className="flex gap-2">
+                    <select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value as FinderItemStatus })}><option value="at_home">at home</option><option value="lent_out">lent out</option><option value="missing">missing</option><option value="archived">archived</option></select>
+                    <select value={form.confidence} onChange={(event) => setForm({ ...form, confidence: event.target.value as FinderItemConfidence })}><option value="sure">sure</option><option value="maybe">maybe</option><option value="old">old</option></select>
+                  </div>
+                  {form.status === "lent_out" && <input value={form.lentTo} onChange={(event) => setForm({ ...form, lentTo: event.target.value })} placeholder="Lent to" />}
+                </div>
+              </details>
+              <ActionButton accent={ACCENT_FINDER} icon={Plus} className="w-full justify-center" onClick={() => void saveItem()}>{form.id ? "Update item" : "Add item"}</ActionButton>
+              {form.id && <button type="button" onClick={() => setForm(emptyFinderForm)} className="w-full rounded-md border border-[#262626] py-1.5 text-xs text-[#A3A3A3] hover:text-[#F5F5F5]">Cancel edit</button>}
+            </div>
+          </GlassCard>
+
+          {voiceWorkflow.candidate && (
+            <GlassCard accent="#06B6D4" hover={false}>
+              <SectionTitle action={<Mic className="h-3.5 w-3.5 text-[#06B6D4]" />}>Voice add candidate</SectionTitle>
+              <div className="glass-card flex items-center gap-2.5 p-2.5">
+                <span className="flex-1 text-xs text-[#F5F5F5]">Save {voiceWorkflow.candidate.itemName} in {voiceWorkflow.candidate.location}?</span>
+                <button type="button" onClick={() => void onSaveVoiceCandidate()} className="rounded-md bg-[#06B6D4]/15 p-1.5 text-[#06B6D4]"><Check className="h-3.5 w-3.5" /></button>
+                <button type="button" onClick={onCancelVoiceCandidate} className="rounded-md border border-[#262626] px-2 py-1 text-[10px] text-[#A3A3A3]">Dismiss</button>
+              </div>
+            </GlassCard>
+          )}
+
+          {finderRooms.length > 0 && (
+            <GlassCard hover={false}>
+              <SectionTitle action={<DoorOpen className="h-3.5 w-3.5 text-[#84CC16]" />}>Rooms &amp; containers</SectionTitle>
+              <div className="flex flex-wrap gap-2">
+                {finderRooms.map((r) => {
+                  const count = finderState.items.filter((i) => i.room === r).length;
+                  const on = searchQuery.trim().toLowerCase() === r.toLowerCase();
+                  return (
+                    <button key={r} type="button" onClick={() => setSearchQuery(on ? "" : r)} className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-all" style={on ? { borderColor: `${ACCENT_FINDER}55`, background: `${ACCENT_FINDER}1a`, color: ACCENT_FINDER } : { borderColor: "#1f1f1f", color: "#A3A3A3" }}>
+                      {r}<span className="font-mono text-[10px] text-[#525252]">{count}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </GlassCard>
+          )}
+
+          <GlassCard hover={false}>
+            <SectionTitle action={<Clock className="h-3.5 w-3.5 text-[#84CC16]" />}>Recently located</SectionTitle>
+            <div className="space-y-1.5">
+              {recentlyLocated.length === 0 ? <p className="text-xs text-[#525252]">Nothing tracked yet.</p> : recentlyLocated.map((item) => (
+                <div key={item.id} className="flex items-center gap-2.5 rounded-lg px-1.5 py-1">
+                  <Box className="h-3.5 w-3.5 text-[#84CC16]" />
+                  <span className="flex-1 truncate text-xs text-[#F5F5F5]">{item.itemName}</span>
+                  <span className="font-mono text-[10px] text-[#525252]">{finderAgo(item.updatedAt)} ago</span>
+                </div>
+              ))}
+            </div>
+          </GlassCard>
+        </div>
       </div>
+
+      {/* Advanced (full item library + move + reverse lookup + lent + settings) */}
+      <details className="rounded-lg border border-[#1a1a1a] bg-[#080808]">
+        <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] text-[#525252] hover:text-[#A3A3A3]">advanced · full library, move, reverse lookup, lent out</summary>
+        <div className="space-y-4 border-t border-[#1a1a1a] p-3">
+          <div className="dashboard-grid">
+            <Panel title="I moved it">
+              <div className="project-form">
+                <label>Item<select value={moveItemId} onChange={(event) => setMoveItemId(event.target.value)}><option value="">Choose item</option>{finderState.items.map((item) => <option value={item.id} key={item.id}>{item.itemName}</option>)}</select></label>
+                <label>New location<input value={moveLocation} onChange={(event) => setMoveLocation(event.target.value)} placeholder="suitcase" /></label>
+                <label>Room<input value={moveRoom} onChange={(event) => setMoveRoom(event.target.value)} /></label>
+                <label>Container<input value={moveContainer} onChange={(event) => setMoveContainer(event.target.value)} /></label>
+              </div>
+              <button type="button" onClick={() => void markMoved()}>Save move</button>
+            </Panel>
+            <Panel title="Reverse Lookup">
+              <label>Container or location<input value={reverseQuery} onChange={(event) => setReverseQuery(event.target.value)} placeholder="black drawer" /></label>
+              <button type="button" onClick={() => void runReverseLookupAudit()}>Log reverse lookup</button>
+              <div className="action-list action-list--compact">
+                {reverseItems.length === 0 ? <p>No matching items yet.</p> : reverseItems.map((item) => (
+                  <article className="data-item data-item--stacked accent-finder" key={item.id}><strong>{item.itemName}</strong><span>{item.location}{item.container ? ` / ${item.container}` : ""}</span></article>
+                ))}
+              </div>
+            </Panel>
+          </div>
+          <Panel title="Item Library">
+            <div className="action-list">
+              {finderState.items.length === 0 ? <p>No Finder items yet.</p> : finderState.items.map(renderItemCard)}
+            </div>
+          </Panel>
+          <Panel title="Settings">
+            <p className="technical">{finderState.itemsPath}</p>
+            <p>{finderState.statusCounts.at_home} at home / {finderState.statusCounts.lent_out} lent out / {finderState.statusCounts.missing} missing / {finderState.statusCounts.archived} archived</p>
+          </Panel>
+        </div>
+      </details>
 
       {toast && <ToastStack toasts={[{ id: toast.message, message: toast.message, tone: toast.tone }]} />}
-    </section>
+    </div>
   );
+
 }
 
 const emptyFinanceTransactionForm = {
@@ -11575,10 +11629,17 @@ function FinanceView({
   const [transactionForm, setTransactionForm] = useState(emptyFinanceTransactionForm);
   const [recurringForm, setRecurringForm] = useState(emptyFinanceRecurringForm);
   const [toast, setToast] = useState<{ message: string; tone: "success" | "error" } | null>(null);
+  const [showArchivedProfiles, setShowArchivedProfiles] = useState(false);
 
   function showToast(message: string, tone: "success" | "error" = "success"): void {
     setToast({ message, tone });
     window.setTimeout(() => setToast(null), 3000);
+  }
+
+  async function profileAction(actionId: string, params: Record<string, unknown>, successMessage: string): Promise<void> {
+    const result = await onAction(actionId, "module_ui", params);
+    if (result.ok) { showToast(successMessage); await onRefresh(); }
+    else { showToast(result.error ?? "Profile action failed.", "error"); }
   }
 
   function money(amount: number, currency = "CAD"): string {
@@ -11680,161 +11741,228 @@ function FinanceView({
 
   const receiptTransactions = financeState.transactions.filter((transaction) => Boolean(transaction.receiptFilePath));
 
+  const ACCENT_FIN = "#22C55E";
+  const finSummary = financeState.summary;
+  const finCurrency = financeState.settings.defaultCurrency || "CAD";
+  const recurringTotal = financeState.recurring.filter((r) => r.active).reduce((sum, r) => sum + r.amount, 0);
+  const monthTx = financeState.transactions.filter((t) => t.date.slice(0, 7) === finSummary.currentMonth);
+  const weekBuckets = [0, 0, 0, 0];
+  monthTx.forEach((t) => { const day = Number(t.date.slice(8, 10)) || 1; weekBuckets[Math.min(3, Math.floor((day - 1) / 7))] += Math.abs(t.amount); });
+  const spendData = weekBuckets.map((v, i) => ({ d: `W${i + 1}`, v }));
+  const spendMax = Math.max(1, ...spendData.map((s) => s.v));
+  const spendPoints = spendData.map((s, i) => `${(i / (spendData.length - 1)) * 100},${40 - (s.v / spendMax) * 34}`);
+  const spendPath = `0,40 ${spendPoints.join(" ")} 100,40`;
+  const CAT_PALETTE = ["#22C55E", "#84CC16", "#3B82F6", "#F59E0B", "#A855F7", "#EC4899", "#06B6D4"];
+  const catEntries = Object.entries(finSummary.categoryTotals).sort((a, b) => b[1] - a[1]).slice(0, 7).map(([name, value], i) => ({ name, value, c: CAT_PALETTE[i % CAT_PALETTE.length] }));
+  const catTotal = catEntries.reduce((s, c) => s + c.value, 0) || 1;
+  const donutStops = (() => { let acc = 0; return catEntries.map((c) => { const start = (acc / catTotal) * 100; acc += c.value; return `${c.c} ${start}% ${(acc / catTotal) * 100}%`; }).join(", "); })();
+  const warrantyItems = [...financeState.deadlines.returns30, ...financeState.deadlines.warranties90].slice(0, 5);
+
   return (
-    <section className="view-stack accent-finance" aria-labelledby="finance-title">
-      <PageHeader eyebrow="Manual local expenses and receipts" title="Finance" titleId="finance-title" />
-
-      <div className="dashboard-grid">
-        <Panel title="Add Expense">
-          <div className="project-form">
-            <label>Date<input type="date" value={transactionForm.date} onChange={(event) => setTransactionForm({ ...transactionForm, date: event.target.value })} /></label>
-            <label>Store<input value={transactionForm.store} onChange={(event) => setTransactionForm({ ...transactionForm, store: event.target.value })} placeholder="Store or merchant" /></label>
-            <label>Amount<input type="number" min="0" step="0.01" value={transactionForm.amount} onChange={(event) => setTransactionForm({ ...transactionForm, amount: event.target.value })} /></label>
-            <label>Currency<input value={transactionForm.currency} onChange={(event) => setTransactionForm({ ...transactionForm, currency: event.target.value })} /></label>
-            <label>Category<input value={transactionForm.category} onChange={(event) => setTransactionForm({ ...transactionForm, category: event.target.value })} placeholder="Groceries, tech, rent" /></label>
-            <label>Payment type<select value={transactionForm.paymentType} onChange={(event) => setTransactionForm({ ...transactionForm, paymentType: event.target.value as FinancePaymentType })}><option value="cash">cash</option><option value="debit">debit</option><option value="credit">credit</option><option value="e_transfer">e_transfer</option><option value="other">other</option></select></label>
-            <label>Card name<input value={transactionForm.cardName} onChange={(event) => setTransactionForm({ ...transactionForm, cardName: event.target.value })} placeholder="Optional" /></label>
-            <label>Tags<input value={transactionForm.tags} onChange={(event) => setTransactionForm({ ...transactionForm, tags: event.target.value })} placeholder="returnable, warranty" /></label>
-            <label>Return deadline<input type="date" value={transactionForm.returnDeadline} onChange={(event) => setTransactionForm({ ...transactionForm, returnDeadline: event.target.value })} /></label>
-            <label>Warranty until<input type="date" value={transactionForm.warrantyUntil} onChange={(event) => setTransactionForm({ ...transactionForm, warrantyUntil: event.target.value })} /></label>
-            <label>Notes<textarea value={transactionForm.notes} onChange={(event) => setTransactionForm({ ...transactionForm, notes: event.target.value })} placeholder="Private notes stay out of Audit." /></label>
-          </div>
-          <div className="button-row">
-            <button type="button" onClick={() => void chooseReceipt()}>{transactionForm.receiptPath ? "Receipt selected" : "Attach receipt"}</button>
-            <button type="button" onClick={() => void saveTransaction()}>{transactionForm.id ? "Update expense" : "Save expense"}</button>
-            <button type="button" onClick={() => setTransactionForm(emptyFinanceTransactionForm)}>Reset</button>
-          </div>
-          {transactionForm.receiptPath && <p className="technical">{transactionForm.receiptPath}</p>}
-        </Panel>
-
-        <Panel title="Monthly Summary">
-          <div className="stats-grid">
-            <article><span>{financeState.summary.currentMonth}</span><strong>{money(financeState.summary.currentMonthTotal)}</strong><p>Current month</p></article>
-            <article><span>{financeState.summary.previousMonth}</span><strong>{money(financeState.summary.previousMonthTotal)}</strong><p>Previous month</p></article>
-            <article><span>Cash</span><strong>{money(financeState.summary.cashTotal)}</strong><p>Cash total</p></article>
-            <article><span>Card</span><strong>{money(financeState.summary.cardTotal)}</strong><p>Debit and credit</p></article>
-          </div>
-          <p>{financeState.summary.transactionCount} current-month transaction{financeState.summary.transactionCount === 1 ? "" : "s"}.</p>
-          <div className="data-list">
-            {Object.entries(financeState.summary.categoryTotals).map(([category, total]) => <article className="data-item data-item--compact accent-finance" key={category}><strong>{category}</strong><span>{money(total)}</span></article>)}
-            {Object.entries(financeState.summary.paymentTypeTotals).map(([paymentType, total]) => <article className="data-item data-item--compact accent-finance" key={paymentType}><strong>{paymentType}</strong><span>{money(total)}</span></article>)}
-          </div>
-        </Panel>
-      </div>
-
-      <Panel title="Transactions">
-        <div className="action-list">
-          {financeState.transactions.length === 0 ? <p>No Finance transactions yet.</p> : <LimitedList items={financeState.transactions} step={50}>{(transaction) => (
-            <CollapsibleListItem
-              accentClass="accent-finance"
-              key={transaction.id}
-              title={`${transaction.store} / ${money(transaction.amount, transaction.currency)}`}
-              meta={`${formatLocalDate(transaction.date)} / ${transaction.category} / ${transaction.paymentType}${transaction.receiptFilePath ? " / receipt" : ""}`}
-              actions={(
-                <>
-                  <button type="button" onClick={() => loadTransaction(transaction)}>Edit</button>
-                  {transaction.receiptFilePath && <button type="button" onClick={() => void openReceipt(transaction)}>Open receipt</button>}
-                  {transaction.receiptFilePath && <button type="button" onClick={() => void transactionAction("finance.send_receipt_to_drop", transaction, "Receipt sent to phone.")}>Send receipt to phone</button>}
-                  {transaction.receiptFilePath && <button type="button" onClick={() => void transactionAction("finance.save_receipt_to_vault", transaction, "Receipt saved to Vault.")}>Save receipt to Vault</button>}
-                  <button className="danger-button" type="button" onClick={() => void deleteTransaction(transaction)}>Delete</button>
-                </>
-              )}
-            >
-              <p>{transaction.cardName ? `${transaction.cardName} / ` : ""}{transaction.tags.length ? transaction.tags.join(", ") : "No tags"}</p>
-              {transaction.notes && <p>{transaction.notes}</p>}
-              {transaction.returnDeadline && <p>Return by {formatLocalDate(transaction.returnDeadline)}</p>}
-              {transaction.warrantyUntil && <p>Warranty until {formatLocalDate(transaction.warrantyUntil)}</p>}
-              {transaction.receiptFilePath && <p className="technical">{transaction.receiptFilePath}</p>}
-              <p className="technical">{transaction.id}</p>
-            </CollapsibleListItem>
-          )}</LimitedList>}
-        </div>
-      </Panel>
-
-      <div className="finance-secondary-grid">
-        <Panel title="Receipts">
-          <div className="action-list action-list--compact">
-            {receiptTransactions.length === 0 ? <p>No receipts attached yet.</p> : receiptTransactions.map((transaction) => (
-              <CollapsibleListItem
-                accentClass="accent-finance"
-                key={transaction.id}
-                title={transaction.receiptOriginalName ?? `${transaction.store} receipt`}
-                meta={`${transaction.store} / ${money(transaction.amount, transaction.currency)}`}
-                actions={(
-                  <>
-                    <button type="button" onClick={() => void openReceipt(transaction)}>Open</button>
-                    <button type="button" onClick={() => void transactionAction("finance.send_receipt_to_drop", transaction, "Receipt sent to phone.")}>Send to phone</button>
-                    <button type="button" onClick={() => void transactionAction("finance.save_receipt_to_vault", transaction, "Receipt saved to Vault.")}>Save to Vault</button>
-                  </>
-                )}
-              >
-                <p className="technical">{transaction.receiptFilePath}</p>
-              </CollapsibleListItem>
-            ))}
-          </div>
-        </Panel>
-
-        <Panel title="Recurring Expenses">
-          <div className="project-form">
-            <label>Name<input value={recurringForm.name} onChange={(event) => setRecurringForm({ ...recurringForm, name: event.target.value })} placeholder="Rent, phone plan" /></label>
-            <label>Amount<input type="number" min="0" step="0.01" value={recurringForm.amount} onChange={(event) => setRecurringForm({ ...recurringForm, amount: event.target.value })} /></label>
-            <label>Currency<input value={recurringForm.currency} onChange={(event) => setRecurringForm({ ...recurringForm, currency: event.target.value })} /></label>
-            <label>Frequency<select value={recurringForm.frequency} onChange={(event) => setRecurringForm({ ...recurringForm, frequency: event.target.value as FinanceRecurringFrequency })}><option value="monthly">monthly</option><option value="yearly">yearly</option><option value="weekly">weekly</option><option value="custom">custom</option></select></label>
-            <label>Next due<input type="date" value={recurringForm.nextDueDate} onChange={(event) => setRecurringForm({ ...recurringForm, nextDueDate: event.target.value })} /></label>
-            <label>Category<input value={recurringForm.category} onChange={(event) => setRecurringForm({ ...recurringForm, category: event.target.value })} /></label>
-            <label>Payment type<select value={recurringForm.paymentType} onChange={(event) => setRecurringForm({ ...recurringForm, paymentType: event.target.value as FinancePaymentType })}><option value="cash">cash</option><option value="debit">debit</option><option value="credit">credit</option><option value="e_transfer">e_transfer</option><option value="other">other</option></select></label>
-            <label>Notes<textarea value={recurringForm.notes} onChange={(event) => setRecurringForm({ ...recurringForm, notes: event.target.value })} /></label>
-          </div>
-          <label className="checkbox-row"><input type="checkbox" checked={recurringForm.active} onChange={(event) => setRecurringForm({ ...recurringForm, active: event.target.checked })} /> Active</label>
-          <div className="button-row">
-            <button type="button" onClick={() => void saveRecurring()}>{recurringForm.id ? "Update recurring" : "Add recurring"}</button>
-            <button type="button" onClick={() => setRecurringForm(emptyFinanceRecurringForm)}>Reset</button>
-          </div>
-          <div className="action-list action-list--compact">
-            {financeState.recurring.length === 0 ? <p>No recurring expenses yet.</p> : financeState.recurring.map((recurring) => (
-              <CollapsibleListItem
-                accentClass="accent-finance"
-                key={recurring.id}
-                title={`${recurring.name} / ${money(recurring.amount, recurring.currency)}`}
-                meta={`${recurring.frequency} / due ${formatLocalDate(recurring.nextDueDate)} / ${recurring.active ? "active" : "inactive"}`}
-                actions={(
-                  <>
-                    <button type="button" onClick={() => loadRecurring(recurring)}>Edit</button>
-                    <button type="button" onClick={() => void onAction("finance.toggle_recurring", "module_ui", { recurringId: recurring.id }).then(() => onRefresh())}>{recurring.active ? "Mark inactive" : "Mark active"}</button>
-                    <button className="danger-button" type="button" onClick={() => void deleteRecurring(recurring)}>Delete</button>
-                  </>
-                )}
-              >
-                <p>{recurring.category} / {recurring.paymentType}</p>
-                {recurring.notes && <p>{recurring.notes}</p>}
-                <p className="technical">{recurring.id}</p>
-              </CollapsibleListItem>
-            ))}
-          </div>
-        </Panel>
-      </div>
-
-      <Panel title="Returns and Warranty">
-        <div className="dashboard-grid">
-          <DeadlineList title="Returns within 7 days" items={financeState.deadlines.returns7} onReminder={(transaction) => transactionAction("finance.create_return_reminder", transaction, "Return reminder added to Calendar.")} />
-          <DeadlineList title="Returns within 30 days" items={financeState.deadlines.returns30} onReminder={(transaction) => transactionAction("finance.create_return_reminder", transaction, "Return reminder added to Calendar.")} />
-          <DeadlineList title="Warranty within 90 days" items={financeState.deadlines.warranties90} onReminder={(transaction) => transactionAction("finance.create_warranty_reminder", transaction, "Warranty reminder added to Calendar.")} />
-          <DeadlineList title="Expired returns" items={financeState.deadlines.expiredReturns} onReminder={(transaction) => transactionAction("finance.create_return_reminder", transaction, "Return reminder added to Calendar.")} />
-        </div>
-      </Panel>
-
-      <Panel title="Settings">
-        <div className="settings-list">
-          <div className="settings-row"><span>Transactions</span><strong>{financeState.transactionsPath}</strong></div>
-          <div className="settings-row"><span>Recurring</span><strong>{financeState.recurringPath}</strong></div>
-          <div className="settings-row"><span>Settings</span><strong>{financeState.settingsPath}</strong></div>
-          <div className="settings-row"><span>Receipts</span><strong>{financeState.receiptsPath}</strong></div>
-        </div>
-      </Panel>
-
+    <div className="space-y-6">
       {toast && <ToastStack toasts={[{ id: toast.message, message: toast.message, tone: toast.tone }]} />}
-    </section>
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_FIN}40`, background: `${ACCENT_FIN}14`, color: ACCENT_FIN }}><Wallet className="h-5 w-5" /></div>
+          <div><h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Finance</h1><p className="text-sm text-[#A3A3A3]">{finSummary.currentMonth} · spending, receipts &amp; warranties</p></div>
+        </div>
+        <ActionButton accent={ACCENT_FIN} icon={Plus} onClick={() => setTransactionForm(emptyFinanceTransactionForm)}>Add</ActionButton>
+      </div>
+
+      {(() => {
+        const activeProfiles = financeState.profiles.filter((p) => p.status === "active");
+        const archivedProfiles = financeState.profiles.filter((p) => p.status === "archived");
+        const activeProfile = financeState.profiles.find((p) => p.id === financeState.activeProfileId);
+        const chip = "rounded-md border border-[#262626] px-2 py-1 text-xs text-[#A3A3A3] hover:text-[#F5F5F5]";
+        return (
+          <div className="flex flex-wrap items-center gap-2 rounded-xl border border-[#1f1f1f] bg-[#0A0A0A] px-3 py-2">
+            <span className="text-[10px] uppercase tracking-wider text-[#525252]">Profile</span>
+            <select
+              value={financeState.activeProfileId}
+              onChange={(event) => void profileAction("finance.profile.switch", { profileId: event.target.value }, "Switched profile.")}
+              className="rounded-md border border-[#262626] bg-[#0d0d0d] px-2 py-1 text-sm font-medium text-[#F5F5F5]"
+            >
+              {activeProfiles.map((p) => <option key={p.id} value={p.id}>{p.name}{p.isDefault ? " (default)" : ""}</option>)}
+            </select>
+            <button type="button" className={chip} onClick={() => { const name = window.prompt("New finance profile name"); if (name && name.trim()) { void profileAction("finance.profile.create", { name: name.trim() }, "Profile created."); } }}>+ New</button>
+            <button type="button" className={chip} onClick={() => { const name = window.prompt("Rename profile", activeProfile?.name ?? ""); if (name && name.trim()) { void profileAction("finance.profile.rename", { profileId: financeState.activeProfileId, name: name.trim() }, "Profile renamed."); } }}>Rename</button>
+            {activeProfile && !activeProfile.isDefault && (
+              <button type="button" className={chip} onClick={() => void profileAction("finance.profile.set_default", { profileId: financeState.activeProfileId }, "Default profile set.")}>Set default</button>
+            )}
+            {activeProfiles.length > 1 && (
+              <button type="button" className={chip} onClick={() => { if (window.confirm("Archive this profile? Its data is kept and can be restored.")) { void profileAction("finance.profile.archive", { profileId: financeState.activeProfileId }, "Profile archived."); } }}>Archive</button>
+            )}
+            {archivedProfiles.length > 0 && (
+              <button type="button" className={`${chip} ml-auto`} onClick={() => setShowArchivedProfiles((v) => !v)}>{showArchivedProfiles ? "Hide" : `${archivedProfiles.length} archived`}</button>
+            )}
+            {showArchivedProfiles && archivedProfiles.map((p) => (
+              <span key={p.id} className="inline-flex items-center gap-1.5 rounded-full border border-[#262626] px-2 py-0.5 text-[11px] text-[#525252]">
+                {p.name}
+                <button type="button" className="text-[#22C55E] hover:brightness-125" onClick={() => void profileAction("finance.profile.restore", { profileId: p.id }, "Profile restored.")}>restore</button>
+              </span>
+            ))}
+          </div>
+        );
+      })()}
+
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        {[
+          { label: "Spent", value: money(finSummary.currentMonthTotal, finCurrency), icon: TrendingDown, c: "#EF4444" },
+          { label: "Recurring", value: money(recurringTotal, finCurrency), icon: Repeat, c: "#3B82F6" },
+          { label: "Card", value: money(finSummary.cardTotal, finCurrency), icon: CreditCard, c: "#22D3EE" },
+          { label: "Cash", value: money(finSummary.cashTotal, finCurrency), icon: Banknote, c: "#22C55E" }
+        ].map((s) => {
+          const SIcon = s.icon;
+          return (
+            <GlassCard key={s.label} accent={s.c} className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-lg" style={{ background: `${s.c}14`, color: s.c }}><SIcon className="h-5 w-5" /></div>
+              <div><p className="text-[10px] uppercase tracking-wider text-[#525252]">{s.label}</p><p className="font-mono text-lg font-semibold text-[#F5F5F5]">{s.value}</p></div>
+            </GlassCard>
+          );
+        })}
+      </div>
+
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+        <div className="space-y-5 lg:col-span-8">
+          <GlassCard hover={false}>
+            <SectionTitle action={<span className="font-mono text-[10px] text-[#525252]">weekly</span>}>Spending trend</SectionTitle>
+            <svg viewBox="0 0 100 40" preserveAspectRatio="none" className="h-44 w-full">
+              <defs><linearGradient id="finGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={ACCENT_FIN} stopOpacity="0.35" /><stop offset="100%" stopColor={ACCENT_FIN} stopOpacity="0" /></linearGradient></defs>
+              <polygon points={spendPath} fill="url(#finGrad)" />
+              <polyline points={spendPoints.join(" ")} fill="none" stroke={ACCENT_FIN} strokeWidth="0.7" vectorEffect="non-scaling-stroke" />
+            </svg>
+            <div className="mt-1 flex justify-between font-mono text-[10px] text-[#525252]">{spendData.map((s) => <span key={s.d}>{s.d}</span>)}</div>
+          </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle action={<Receipt className="h-3.5 w-3.5 text-[#22C55E]" />}>Transactions</SectionTitle>
+            {financeState.transactions.length === 0 ? <p className="text-xs text-[#525252]">No transactions yet.</p> : (
+              <LimitedList items={financeState.transactions} step={25}>
+                {(t) => (
+                  <button key={t.id} type="button" onClick={() => loadTransaction(t)} className="glass-card flex w-full items-center gap-3 p-2.5 text-left">
+                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#1a1a1a] text-[#A3A3A3]">{t.paymentType === "cash" ? <Banknote className="h-4 w-4" /> : <CreditCard className="h-4 w-4" />}</div>
+                    <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{t.store}</p><p className="font-mono text-[10px] text-[#525252]">{t.category} · {t.paymentType} · {formatLocalDate(t.date)}</p></div>
+                    <span className="font-mono text-sm font-semibold text-[#F5F5F5]">-{money(t.amount, t.currency)}</span>
+                  </button>
+                )}
+              </LimitedList>
+            )}
+          </GlassCard>
+        </div>
+
+        <div className="space-y-5 lg:col-span-4">
+          <GlassCard hover={false}>
+            <SectionTitle>Category breakdown</SectionTitle>
+            {catEntries.length === 0 ? <p className="text-xs text-[#525252]">No spending categories yet.</p> : (
+              <>
+                <div className="relative mx-auto my-1 h-[140px] w-[140px]">
+                  <div className="h-full w-full rounded-full" style={{ background: `conic-gradient(${donutStops})` }} />
+                  <div className="absolute inset-[24%] flex flex-col items-center justify-center rounded-full bg-[#0A0A0A]"><p className="font-mono text-sm font-semibold text-[#F5F5F5]">{money(finSummary.currentMonthTotal, finCurrency)}</p><p className="text-[9px] uppercase tracking-wider text-[#525252]">total</p></div>
+                </div>
+                <div className="mt-2 space-y-1">
+                  {catEntries.map((c) => <div key={c.name} className="flex items-center gap-2 text-xs"><span className="h-2 w-2 rounded-full" style={{ background: c.c }} /><span className="flex-1 truncate text-[#A3A3A3]">{c.name}</span><span className="font-mono text-[#F5F5F5]">{money(c.value, finCurrency)}</span></div>)}
+                </div>
+              </>
+            )}
+          </GlassCard>
+
+          <GlassCard accent="#3B82F6" hover={false}>
+            <SectionTitle action={<Repeat className="h-3.5 w-3.5 text-[#3B82F6]" />}>Recurring</SectionTitle>
+            {financeState.recurring.length === 0 ? <p className="text-xs text-[#525252]">No recurring expenses.</p> : (
+              <div className="space-y-1.5">
+                {financeState.recurring.slice(0, 6).map((r) => <div key={r.id} className="flex items-center justify-between text-sm"><span className="truncate text-[#F5F5F5]">{r.name}</span><span className="font-mono text-[#A3A3A3]">{money(r.amount, r.currency)} · {r.frequency}</span></div>)}
+              </div>
+            )}
+          </GlassCard>
+
+          <GlassCard accent="#F59E0B" hover={false}>
+            <SectionTitle action={<ShieldCheck className="h-3.5 w-3.5 text-[#F59E0B]" />}>Returns &amp; warranty</SectionTitle>
+            {warrantyItems.length === 0 ? <p className="text-xs text-[#525252]">No upcoming returns or warranties.</p> : (
+              <div className="space-y-2">
+                {warrantyItems.map((t) => <div key={t.id} className="glass-card flex items-center justify-between p-2.5"><span className="truncate text-sm text-[#F5F5F5]">{t.store}</span><span className="font-mono text-[10px] text-[#F59E0B]">{t.returnDeadline ? `Return by ${formatLocalDate(t.returnDeadline)}` : t.warrantyUntil ? `Warranty ${formatLocalDate(t.warrantyUntil)}` : ""}</span></div>)}
+              </div>
+            )}
+          </GlassCard>
+        </div>
+      </div>
+
+      {/* Advanced: add/edit expense, recurring, full lists, settings */}
+      <details className="rounded-lg border border-[#1a1a1a] bg-[#080808]">
+        <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] text-[#525252] hover:text-[#A3A3A3]">advanced · add expense, recurring, all transactions, settings</summary>
+        <div className="space-y-4 border-t border-[#1a1a1a] p-3">
+          <div className="dashboard-grid">
+            <Panel title={transactionForm.id ? "Edit expense" : "Add expense"}>
+              <div className="project-form">
+                <label>Date<input type="date" value={transactionForm.date} onChange={(event) => setTransactionForm({ ...transactionForm, date: event.target.value })} /></label>
+                <label>Store<input value={transactionForm.store} onChange={(event) => setTransactionForm({ ...transactionForm, store: event.target.value })} placeholder="Store / payee" /></label>
+                <label>Amount<input value={transactionForm.amount} onChange={(event) => setTransactionForm({ ...transactionForm, amount: event.target.value })} placeholder="0.00" /></label>
+                <label>Category<input value={transactionForm.category} onChange={(event) => setTransactionForm({ ...transactionForm, category: event.target.value })} placeholder="Food, Rent…" /></label>
+                <label>Payment<select value={transactionForm.paymentType} onChange={(event) => setTransactionForm({ ...transactionForm, paymentType: event.target.value as FinancePaymentType })}><option value="credit">credit</option><option value="debit">debit</option><option value="cash">cash</option><option value="bank">bank</option></select></label>
+                <label>Card name<input value={transactionForm.cardName} onChange={(event) => setTransactionForm({ ...transactionForm, cardName: event.target.value })} /></label>
+                <label>Tags<input value={transactionForm.tags} onChange={(event) => setTransactionForm({ ...transactionForm, tags: event.target.value })} /></label>
+                <label>Return deadline<input type="date" value={transactionForm.returnDeadline} onChange={(event) => setTransactionForm({ ...transactionForm, returnDeadline: event.target.value })} /></label>
+                <label>Warranty until<input type="date" value={transactionForm.warrantyUntil} onChange={(event) => setTransactionForm({ ...transactionForm, warrantyUntil: event.target.value })} /></label>
+                <label>Notes<textarea value={transactionForm.notes} onChange={(event) => setTransactionForm({ ...transactionForm, notes: event.target.value })} /></label>
+              </div>
+              <div className="button-row">
+                <button type="button" onClick={() => void chooseReceipt()}>{transactionForm.receiptPath ? "Receipt ✓" : "Attach receipt"}</button>
+                <button type="button" className="button-primary" onClick={() => void saveTransaction()}>{transactionForm.id ? "Update" : "Save"}</button>
+                <button type="button" onClick={() => setTransactionForm(emptyFinanceTransactionForm)}>Reset</button>
+              </div>
+            </Panel>
+            <Panel title={recurringForm.id ? "Edit recurring" : "Add recurring"}>
+              <div className="project-form">
+                <label>Name<input value={recurringForm.name} onChange={(event) => setRecurringForm({ ...recurringForm, name: event.target.value })} placeholder="Rent, Spotify…" /></label>
+                <label>Amount<input value={recurringForm.amount} onChange={(event) => setRecurringForm({ ...recurringForm, amount: event.target.value })} /></label>
+                <label>Frequency<select value={recurringForm.frequency} onChange={(event) => setRecurringForm({ ...recurringForm, frequency: event.target.value as FinanceRecurringFrequency })}><option value="monthly">monthly</option><option value="weekly">weekly</option><option value="yearly">yearly</option></select></label>
+                <label>Next due<input type="date" value={recurringForm.nextDueDate} onChange={(event) => setRecurringForm({ ...recurringForm, nextDueDate: event.target.value })} /></label>
+                <label>Category<input value={recurringForm.category} onChange={(event) => setRecurringForm({ ...recurringForm, category: event.target.value })} /></label>
+              </div>
+              <div className="button-row">
+                <button type="button" className="button-primary" onClick={() => void saveRecurring()}>{recurringForm.id ? "Update" : "Save"}</button>
+                <button type="button" onClick={() => setRecurringForm(emptyFinanceRecurringForm)}>Reset</button>
+              </div>
+            </Panel>
+          </div>
+
+          <Panel title="All transactions">
+            <div className="action-list">
+              {financeState.transactions.length === 0 ? <p>No Finance transactions yet.</p> : <LimitedList items={financeState.transactions} step={50}>{(transaction) => (
+                <CollapsibleListItem accentClass="accent-finance" key={transaction.id} title={`${transaction.store} / ${money(transaction.amount, transaction.currency)}`} meta={`${formatLocalDate(transaction.date)} / ${transaction.category} / ${transaction.paymentType}${transaction.receiptFilePath ? " / receipt" : ""}`}
+                  actions={(<>
+                    <button type="button" onClick={() => loadTransaction(transaction)}>Edit</button>
+                    {transaction.receiptFilePath && <button type="button" onClick={() => void openReceipt(transaction)}>Open receipt</button>}
+                    {transaction.receiptFilePath && <button type="button" onClick={() => void transactionAction("finance.send_receipt_to_drop", transaction, "Receipt sent to phone.")}>Send receipt</button>}
+                    {transaction.receiptFilePath && <button type="button" onClick={() => void transactionAction("finance.save_receipt_to_vault", transaction, "Receipt saved to Vault.")}>To Vault</button>}
+                    <button className="danger-button" type="button" onClick={() => void deleteTransaction(transaction)}>Delete</button>
+                  </>)}>
+                  <p>{transaction.cardName ? `${transaction.cardName} / ` : ""}{transaction.tags.length ? transaction.tags.join(", ") : "No tags"}</p>
+                  {transaction.notes && <p>{transaction.notes}</p>}
+                </CollapsibleListItem>
+              )}</LimitedList>}
+            </div>
+          </Panel>
+
+          <Panel title="Recurring expenses">
+            <div className="action-list action-list--compact">
+              {financeState.recurring.length === 0 ? <p>No recurring expenses.</p> : financeState.recurring.map((r) => (
+                <article className="data-item data-item--stacked accent-finance" key={r.id}>
+                  <div className="section-heading section-heading--row"><strong>{r.name}</strong><div className="button-row"><button type="button" onClick={() => loadRecurring(r)}>Edit</button><button className="danger-button" type="button" onClick={() => void deleteRecurring(r)}>Delete</button></div></div>
+                  <span>{money(r.amount, r.currency)} · {r.frequency} · next {formatLocalDate(r.nextDueDate)}{r.active ? "" : " · inactive"}</span>
+                </article>
+              ))}
+            </div>
+          </Panel>
+
+          <Panel title="Settings">
+            <div className="settings-row"><span>Transactions</span><strong className="technical">{financeState.transactionsPath}</strong></div>
+            <div className="settings-row"><span>Receipts</span><strong className="technical">{financeState.receiptsPath}</strong></div>
+          </Panel>
+        </div>
+      </details>
+    </div>
   );
+
 }
 
 function DeadlineList({
@@ -11961,139 +12089,168 @@ function HeatmapView({
     await heatmapAction("heatmap.delete_goal", { goalId: goal.id, confirmedDangerous: true }, "Heatmap goal deleted.");
   }
 
+  const ACCENT_HEAT = "#EF4444";
+  const hourSeconds = Array.from({ length: 24 }, (_, h) => heatmapState.summary.activeHours.find((a) => a.hour === h)?.seconds ?? 0);
+  const hourMax = Math.max(1, ...hourSeconds);
+  const topApps = heatmapState.summary.todayByApp.slice(0, 5);
+  const topMax = Math.max(1, ...topApps.map((a) => a.seconds));
+  const appColors = ["#3B82F6", "#22C55E", "#A855F7", "#EC4899", "#F59E0B"];
+  const tracking = heatmapState.settings.enabled && /running|active/i.test(heatmapState.trackingStatus);
+  const heatPaused = /performance/i.test(heatmapState.trackingStatus);
+
   return (
-    <section className="view-stack accent-heatmap" aria-labelledby="heatmap-title">
-      <PageHeader
-        eyebrow="Local app usage without content capture"
-        title="Heatmap"
-        titleId="heatmap-title"
-        actions={<StatusBadge tone="info">{heatmapState.trackingStatus}</StatusBadge>}
-      />
-
-      <Panel title="Controls">
-        <div className="stats-grid">
-          <article><span>Active today</span><strong>{formatDuration(heatmapState.summary.activeSecondsToday)}</strong><p>Sample estimate</p></article>
-          <article><span>Idle today</span><strong>{formatDuration(heatmapState.summary.idleSecondsToday)}</strong><p>Input inactivity estimate</p></article>
-          <article><span>Top app</span><strong>{heatmapState.summary.topAppToday}</strong><p>Today</p></article>
-          <article><span>Samples</span><strong>{heatmapState.events.length}</strong><p>Recent retained view</p></article>
-        </div>
-        <div className="button-row">
-          <button type="button" onClick={() => void startTracking()}>Start tracking</button>
-          <button type="button" onClick={() => void heatmapAction("heatmap.pause", {}, "Heatmap tracking paused.")}>Pause tracking</button>
-          <button type="button" onClick={() => void logCurrentApp()}>Log current app once</button>
-          <button type="button" onClick={() => void heatmapAction("heatmap.aggregate_now", {}, "Heatmap aggregated.")}>Aggregate now</button>
-          <button className="danger-button" type="button" onClick={() => void clearData()}>Clear data</button>
-        </div>
-        <p>{heatmapState.detectionNote}</p>
-      </Panel>
-
-      <div className="dashboard-grid">
-        <Panel title="Settings">
-          <div className="project-form">
-            <label>Tracking enabled<select value={trackingEnabled ? "true" : "false"} onChange={(event) => setTrackingEnabled(event.target.value === "true")}><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
-            <label>Sample interval seconds<input type="number" min="60" value={sampleIntervalSeconds} onChange={(event) => setSampleIntervalSeconds(event.target.value)} /></label>
-            <label>Aggregation interval hours<input type="number" min="3" value={aggregationIntervalHours} onChange={(event) => setAggregationIntervalHours(event.target.value)} /></label>
-            <label>Pause during fullscreen<select value={pauseDuringFullscreen ? "true" : "false"} onChange={(event) => setPauseDuringFullscreen(event.target.value === "true")}><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
-            <label>Private app exclusions<textarea value={privateApps} onChange={(event) => setPrivateApps(event.target.value)} placeholder="1Password&#10;bank&#10;Signal" /></label>
-            <label>Private title keyword exclusions<textarea value={privateTitleKeywords} onChange={(event) => setPrivateTitleKeywords(event.target.value)} placeholder="password&#10;account&#10;private" /></label>
-          </div>
-          <div className="button-row">
-            <button type="button" onClick={() => void saveSettings()}>Save settings</button>
-          </div>
-          <p className="technical">{heatmapState.settingsPath}</p>
-        </Panel>
-
-        <Panel title="Goals">
-          <div className="project-form">
-            <label>Name<input value={goalForm.name} onChange={(event) => setGoalForm({ ...goalForm, name: event.target.value })} placeholder="Deep work" /></label>
-            <label>Target hours/week<input type="number" min="0.25" step="0.25" value={goalForm.targetHoursPerWeek} onChange={(event) => setGoalForm({ ...goalForm, targetHoursPerWeek: event.target.value })} /></label>
-            <label>App/project keyword<input value={goalForm.keyword} onChange={(event) => setGoalForm({ ...goalForm, keyword: event.target.value })} placeholder="Code, VS Code, DexNest" /></label>
-            <label>Active<select value={goalForm.active ? "true" : "false"} onChange={(event) => setGoalForm({ ...goalForm, active: event.target.value === "true" })}><option value="true">Active</option><option value="false">Inactive</option></select></label>
-          </div>
-          <div className="button-row">
-            <button type="button" onClick={() => void saveGoal()}>{goalForm.id ? "Update goal" : "Create goal"}</button>
-            <button type="button" onClick={() => setGoalForm({ id: "", name: "", targetHoursPerWeek: "5", keyword: "", active: true })}>Reset</button>
-          </div>
-          <div className="action-list action-list--compact">
-            {heatmapState.goalProgress.length === 0 ? <p>No Heatmap goals yet.</p> : heatmapState.goalProgress.map((goal) => (
-              <article className="data-item data-item--stacked accent-heatmap" key={goal.id}>
-                <strong>{goal.name} / {goal.percent}%</strong>
-                <span>{formatDuration(goal.progressSeconds)} of {formatDuration(goal.targetSeconds)} / {goal.keyword || "all Heatmap samples"}</span>
-                <span className="technical">{goal.id}</span>
-                <div className="button-row">
-                  <button type="button" onClick={() => editGoal(goal)}>Edit</button>
-                  <button className="danger-button" type="button" onClick={() => void deleteGoal(goal)}>Delete</button>
-                </div>
-              </article>
-            ))}
-          </div>
-          <p className="technical">{heatmapState.goalsPath}</p>
-        </Panel>
-      </div>
-
-      <div className="dashboard-grid">
-        <Panel title="Today App Usage">
-          <div className="action-list action-list--compact">
-            {heatmapState.summary.todayByApp.length === 0 ? <p>No Heatmap samples today.</p> : heatmapState.summary.todayByApp.slice(0, 8).map((item) => (
-              <article className="data-item accent-heatmap" key={item.name}><strong>{item.name}</strong><span>{formatDuration(item.seconds)}</span></article>
-            ))}
-          </div>
-        </Panel>
-
-        <Panel title="This Week App Usage">
-          <div className="action-list action-list--compact">
-            {heatmapState.summary.weekByApp.length === 0 ? <p>No weekly Heatmap data yet.</p> : heatmapState.summary.weekByApp.slice(0, 8).map((item) => (
-              <article className="data-item accent-heatmap" key={item.name}><strong>{item.name}</strong><span>{formatDuration(item.seconds)}</span></article>
-            ))}
-          </div>
-        </Panel>
-      </div>
-
-      <div className="dashboard-grid">
-        <Panel title="Most Active Hours">
-          <div className="action-list action-list--compact">
-            {heatmapState.summary.activeHours.length === 0 ? <p>No hourly data yet.</p> : heatmapState.summary.activeHours.slice(0, 8).map((item) => (
-              <article className="data-item accent-heatmap" key={item.hour}><strong>{String(item.hour).padStart(2, "0")}:00</strong><span>{formatDuration(item.seconds)}</span></article>
-            ))}
-          </div>
-        </Panel>
-
-        <Panel title="Project Usage">
-          <div className="action-list action-list--compact">
-            {heatmapState.summary.projectUsage.length === 0 ? <p>No Dev project matches in Heatmap samples yet.</p> : heatmapState.summary.projectUsage.slice(0, 8).map((item) => (
-              <article className="data-item accent-heatmap" key={item.name}><strong className="technical">{item.name}</strong><span>{formatDuration(item.seconds)}</span></article>
-            ))}
-          </div>
-        </Panel>
-
-        <Panel title="Recent Samples">
-          <div className="action-list action-list--compact">
-            {heatmapState.events.length === 0 ? <p>No Heatmap samples logged yet.</p> : heatmapState.events.slice(0, 10).map((event) => (
-              <CollapsibleListItem
-                accentClass="accent-heatmap"
-                key={event.id}
-                title={event.appName}
-                meta={`${formatLocalDateTime(event.timestamp)} / ${event.active ? "active" : "idle"} / ${formatDuration(event.durationSeconds)}`}
-              >
-                <p>{event.windowTitle}</p>
-                <p>Idle: {event.idleSeconds === null || event.idleSeconds === undefined ? "unknown" : formatDuration(event.idleSeconds)}</p>
-                {event.projectId && <p className="technical">{event.projectId}</p>}
-                <p className="technical">{event.id}</p>
-              </CollapsibleListItem>
-            ))}
-          </div>
-          <p className="technical">{heatmapState.eventsPath}</p>
-        </Panel>
-      </div>
-
-      <Panel title="Privacy Rules">
-        <p>DexNest Heatmap stores app/window metadata only. It does not store keystrokes, screenshots, screen recording, or page/document contents.</p>
-        <p>When an app or title keyword matches an exclusion, the sample is stored as Private app / Private window.</p>
-      </Panel>
-
+    <div className="space-y-6">
       {toast && <ToastStack toasts={[{ id: toast.message, message: toast.message, tone: toast.tone }]} />}
-    </section>
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_HEAT}40`, background: `${ACCENT_HEAT}14`, color: ACCENT_HEAT }}><Activity className="h-5 w-5" /></div>
+          <div><h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Heatmap</h1><p className="text-sm text-[#A3A3A3]">App usage analytics · tracked locally</p></div>
+        </div>
+        {heatPaused ? <StatusChip tone="paused"><Cpu className="mr-1 h-2.5 w-2.5" />Paused by Performance</StatusChip> : <StatusChip tone={tracking ? "running" : "info"} pulse={tracking}>{tracking ? "Tracking active" : heatmapState.trackingStatus}</StatusChip>}
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        {[
+          { label: "Active today", value: formatDuration(heatmapState.summary.activeSecondsToday), c: "#EF4444" },
+          { label: "Idle today", value: formatDuration(heatmapState.summary.idleSecondsToday), c: "#22C55E" },
+          { label: "Top app", value: heatmapState.summary.topAppToday || "—", c: "#3B82F6" },
+          { label: "Samples", value: String(heatmapState.events.length), c: "#F59E0B" }
+        ].map((s) => (
+          <GlassCard key={s.label} accent={s.c} className="flex flex-col gap-1">
+            <p className="text-[10px] uppercase tracking-wider text-[#525252]">{s.label}</p>
+            <p className="font-mono text-xl font-semibold text-[#F5F5F5]">{s.value}</p>
+          </GlassCard>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+        <div className="space-y-5 lg:col-span-8">
+          <GlassCard hover={false}>
+            <SectionTitle action={<Clock className="h-3.5 w-3.5 text-[#EF4444]" />}>Hourly activity · today</SectionTitle>
+            <div className="flex h-[150px] items-end gap-[3px] pt-2">
+              {hourSeconds.map((sec, h) => (
+                <div key={h} className="flex-1 rounded-t-[3px] transition-all hover:brightness-125" style={{ height: `${Math.max(3, (sec / hourMax) * 100)}%`, background: ACCENT_HEAT, opacity: 0.3 + (sec / hourMax) * 0.7 }} title={`${h}:00 · ${formatDuration(sec)}`} />
+              ))}
+            </div>
+            <div className="mt-2 flex justify-between font-mono text-[10px] text-[#525252]">{["0", "3", "6", "9", "12", "15", "18", "21", "24"].map((h) => <span key={h}>{h}</span>)}</div>
+          </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle>This week · by app</SectionTitle>
+            {heatmapState.summary.weekByApp.length === 0 ? <p className="text-xs text-[#525252]">No weekly data yet.</p> : (
+              <div className="space-y-2.5">
+                {heatmapState.summary.weekByApp.slice(0, 6).map((a, i) => {
+                  const max = Math.max(1, heatmapState.summary.weekByApp[0]?.seconds ?? 1);
+                  return (
+                    <div key={a.name}>
+                      <div className="mb-1 flex items-center justify-between text-xs"><span className="truncate text-[#F5F5F5]">{a.name}</span><span className="font-mono text-[#A3A3A3]">{formatDuration(a.seconds)}</span></div>
+                      <div className="h-1.5 overflow-hidden rounded-full bg-[#1f1f1f]"><div className="h-full rounded-full" style={{ width: `${(a.seconds / max) * 100}%`, background: appColors[i % appColors.length] }} /></div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </GlassCard>
+        </div>
+
+        <div className="space-y-5 lg:col-span-4">
+          <GlassCard hover={false}>
+            <SectionTitle>Top apps · today</SectionTitle>
+            {topApps.length === 0 ? <p className="text-xs text-[#525252]">No samples today.</p> : (
+              <div className="space-y-2.5">
+                {topApps.map((a, i) => (
+                  <div key={a.name}>
+                    <div className="mb-1 flex items-center justify-between text-xs"><span className="truncate text-[#F5F5F5]">{a.name}</span><span className="font-mono text-[#A3A3A3]">{formatDuration(a.seconds)}</span></div>
+                    <div className="h-1.5 overflow-hidden rounded-full bg-[#1f1f1f]"><div className="h-full rounded-full" style={{ width: `${(a.seconds / topMax) * 100}%`, background: appColors[i % appColors.length] }} /></div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </GlassCard>
+
+          <GlassCard accent="#22C55E" hover={false}>
+            <SectionTitle action={<Target className="h-3.5 w-3.5 text-[#22C55E]" />}>Goals</SectionTitle>
+            {heatmapState.goalProgress.length === 0 ? <p className="text-xs text-[#525252]">No goals yet.</p> : (
+              <div className="space-y-2 text-sm">
+                {heatmapState.goalProgress.map((goal) => (
+                  <div key={goal.id} className="flex items-center justify-between gap-2"><span className="truncate text-[#F5F5F5]">{goal.name}</span><StatusChip tone={goal.percent >= 100 ? "ok" : goal.percent >= 60 ? "info" : "warn"}>{goal.percent}%</StatusChip></div>
+                ))}
+              </div>
+            )}
+          </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle action={<EyeOff className="h-3.5 w-3.5 text-[#A3A3A3]" />}>Privacy exclusions</SectionTitle>
+            {heatmapState.settings.privateApps.length === 0 ? <p className="text-xs text-[#525252]">No app exclusions set.</p> : (
+              <div className="flex flex-wrap gap-1.5">{heatmapState.settings.privateApps.map((e) => <span key={e} className="rounded-full border border-[#1f1f1f] px-2.5 py-1 text-[11px] text-[#A3A3A3]">{e}</span>)}</div>
+            )}
+            <p className="mt-2 text-[11px] text-[#525252]">Metadata only — no keystrokes, screenshots, or content.</p>
+          </GlassCard>
+        </div>
+      </div>
+
+      {/* Advanced: controls, settings, goals, raw lists */}
+      <details className="rounded-lg border border-[#1a1a1a] bg-[#080808]">
+        <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] text-[#525252] hover:text-[#A3A3A3]">advanced · controls, settings, goals, samples</summary>
+        <div className="space-y-4 border-t border-[#1a1a1a] p-3">
+          <Panel title="Controls">
+            <div className="button-row">
+              <button type="button" onClick={() => void startTracking()}>Start tracking</button>
+              <button type="button" onClick={() => void heatmapAction("heatmap.pause", {}, "Heatmap tracking paused.")}>Pause tracking</button>
+              <button type="button" onClick={() => void logCurrentApp()}>Log current app once</button>
+              <button type="button" onClick={() => void heatmapAction("heatmap.aggregate_now", {}, "Heatmap aggregated.")}>Aggregate now</button>
+              <button className="danger-button" type="button" onClick={() => void clearData()}>Clear data</button>
+            </div>
+            <p>{heatmapState.detectionNote}</p>
+          </Panel>
+          <div className="dashboard-grid">
+            <Panel title="Settings">
+              <div className="project-form">
+                <label>Tracking enabled<select value={trackingEnabled ? "true" : "false"} onChange={(event) => setTrackingEnabled(event.target.value === "true")}><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
+                <label>Sample interval seconds<input type="number" min="60" value={sampleIntervalSeconds} onChange={(event) => setSampleIntervalSeconds(event.target.value)} /></label>
+                <label>Aggregation interval hours<input type="number" min="3" value={aggregationIntervalHours} onChange={(event) => setAggregationIntervalHours(event.target.value)} /></label>
+                <label>Pause during fullscreen<select value={pauseDuringFullscreen ? "true" : "false"} onChange={(event) => setPauseDuringFullscreen(event.target.value === "true")}><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
+                <label>Private app exclusions<textarea value={privateApps} onChange={(event) => setPrivateApps(event.target.value)} /></label>
+                <label>Private title keyword exclusions<textarea value={privateTitleKeywords} onChange={(event) => setPrivateTitleKeywords(event.target.value)} /></label>
+              </div>
+              <div className="button-row"><button type="button" onClick={() => void saveSettings()}>Save settings</button></div>
+            </Panel>
+            <Panel title="Goals">
+              <div className="project-form">
+                <label>Name<input value={goalForm.name} onChange={(event) => setGoalForm({ ...goalForm, name: event.target.value })} placeholder="Deep work" /></label>
+                <label>Target hours/week<input type="number" min="0.25" step="0.25" value={goalForm.targetHoursPerWeek} onChange={(event) => setGoalForm({ ...goalForm, targetHoursPerWeek: event.target.value })} /></label>
+                <label>App/project keyword<input value={goalForm.keyword} onChange={(event) => setGoalForm({ ...goalForm, keyword: event.target.value })} placeholder="Code, VS Code" /></label>
+                <label>Active<select value={goalForm.active ? "true" : "false"} onChange={(event) => setGoalForm({ ...goalForm, active: event.target.value === "true" })}><option value="true">Active</option><option value="false">Inactive</option></select></label>
+              </div>
+              <div className="button-row">
+                <button type="button" onClick={() => void saveGoal()}>{goalForm.id ? "Update goal" : "Create goal"}</button>
+                <button type="button" onClick={() => setGoalForm({ id: "", name: "", targetHoursPerWeek: "5", keyword: "", active: true })}>Reset</button>
+              </div>
+              <div className="action-list action-list--compact">
+                {heatmapState.goalProgress.map((goal) => (
+                  <article className="data-item data-item--stacked accent-heatmap" key={goal.id}>
+                    <strong>{goal.name} / {goal.percent}%</strong>
+                    <span>{formatDuration(goal.progressSeconds)} of {formatDuration(goal.targetSeconds)} / {goal.keyword || "all samples"}</span>
+                    <div className="button-row"><button type="button" onClick={() => editGoal(goal)}>Edit</button><button className="danger-button" type="button" onClick={() => void deleteGoal(goal)}>Delete</button></div>
+                  </article>
+                ))}
+              </div>
+            </Panel>
+          </div>
+          <Panel title="Recent samples">
+            <div className="action-list action-list--compact">
+              {heatmapState.events.length === 0 ? <p>No samples yet.</p> : heatmapState.events.slice(0, 10).map((event) => (
+                <CollapsibleListItem accentClass="accent-heatmap" key={event.id} title={event.appName} meta={`${formatLocalDateTime(event.timestamp)} / ${event.active ? "active" : "idle"} / ${formatDuration(event.durationSeconds)}`}>
+                  <p>{event.windowTitle}</p>
+                </CollapsibleListItem>
+              ))}
+            </div>
+          </Panel>
+        </div>
+      </details>
+    </div>
   );
+
 }
 
 const emptyCaptureForm = {
@@ -12229,92 +12386,218 @@ function CaptureView({
     );
   }
 
+  const ACCENT_CAPTURE = "#EC4899";
+  const captureAgo = (iso: string): string => {
+    const diff = Date.now() - new Date(iso).getTime();
+    const day = Math.floor(diff / 86400000);
+    if (day > 0) return `${day}d`;
+    const hr = Math.floor(diff / 3600000);
+    if (hr > 0) return `${hr}h`;
+    return `${Math.max(1, Math.floor(diff / 60000))}m`;
+  };
+  const captureMeta = (item: CaptureItem): { icon: LucideIcon; c: string; label: string } => {
+    if (item.type === "image") return { icon: ImageIcon, c: "#EC4899", label: "image" };
+    if (item.type === "file" || item.type === "document") return { icon: FileType2, c: "#F97316", label: item.type };
+    return { icon: Type, c: "#A3A3A3", label: item.type };
+  };
+  const captureRoutes: Array<{ id: string; label: string; icon: LucideIcon; c: string; action: string; success: string }> = [
+    { id: "journal", label: "Journal", icon: NotebookPen, c: "#F59E0B", action: "capture.route_to_journal", success: "Sent to Journal." },
+    { id: "calendar", label: "Calendar", icon: CalendarPlus, c: "#14B8A6", action: "capture.route_to_calendar", success: "Calendar event created." },
+    { id: "vault", label: "Vault", icon: Vault, c: "#10B981", action: "capture.route_to_vault", success: "Saved to Vault." },
+    { id: "finance", label: "Finance", icon: Wallet, c: "#22C55E", action: "capture.route_to_finance", success: "Added to Finance." },
+    { id: "finder", label: "Finder", icon: PackageSearch, c: "#84CC16", action: "capture.route_to_finder", success: "Added to Finder." },
+    { id: "drop", label: "Drop", icon: Share2, c: "#38BDF8", action: "capture.route_to_drop", success: "Sent to Drop." }
+  ];
+
   return (
-    <section className="view-stack accent-capture" aria-labelledby="capture-title">
-      <PageHeader eyebrow="Universal local inbox" title="Capture" titleId="capture-title" />
-
-      <Panel title="Voice Capture">
-        <div className="status-grid">
-          <article><span>Mode</span><strong>{voiceWorkflow.mode === "capture_note" ? "Capture voice" : "Ready"}</strong><p>{speechState.performancePaused ? "Speech is paused by Performance Mode." : "Select Ask DexNest or start here."}</p></article>
-          <article><span>Status</span><strong>{voiceWorkflow.mode === "capture_note" ? voiceWorkflow.status : "idle"}</strong><p>{voiceWorkflow.error || "Select text mentally, speak the note, then DexNest saves locally."}</p></article>
-          <article><span>Latest</span><strong>{voiceWorkflow.mode === "capture_note" ? `${voiceWorkflow.chunksCount} chunk${voiceWorkflow.chunksCount === 1 ? "" : "s"}` : "0 chunks"}</strong><p>{voiceWorkflow.lastTranscriptPreview || "No preview stored for sensitive text."}</p></article>
+    <div className="space-y-6">
+      <div className="flex items-center gap-3">
+        <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_CAPTURE}40`, background: `${ACCENT_CAPTURE}14`, color: ACCENT_CAPTURE }}>
+          <Inbox className="h-5 w-5" />
         </div>
-        <p>Select Ask DexNest: "capture this" → speak your note. Or start a local Capture voice note here.</p>
-        <div className="button-row">
-          <button type="button" className="button-primary" disabled={speechState.performancePaused || voiceWorkflow.mode === "capture_note" && voiceWorkflow.status === "listening"} onClick={() => void onStartVoiceCapture("module_ui")}>Start Voice Capture</button>
-          <button type="button" disabled={voiceWorkflow.mode !== "capture_note"} onClick={() => void onSaveVoiceCapture()}>Save</button>
-          <button type="button" disabled={voiceWorkflow.mode !== "capture_note"} onClick={onStopVoiceCapture}>Stop</button>
-          <button type="button" className="danger-button" disabled={voiceWorkflow.mode !== "capture_note"} onClick={onCancelVoiceCapture}>Cancel</button>
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Capture</h1>
+          <p className="text-sm text-[#A3A3A3]">Shared inbox — dump anything now, route it later</p>
         </div>
-        <div className="settings-list">
-          <label className="assistant__check">
-            <input type="checkbox" checked={voiceWorkflowSettings.autoSaveCaptureVoiceNotes} onChange={(event) => void onVoiceWorkflowSettingsChange({ autoSaveCaptureVoiceNotes: event.target.checked })} />
-            <span>Auto-save Capture voice notes</span>
-          </label>
-          <label className="assistant__check">
-            <input type="checkbox" checked={voiceWorkflowSettings.continueCaptureMode} onChange={(event) => void onVoiceWorkflowSettingsChange({ continueCaptureMode: event.target.checked })} />
-            <span>Continue listening after saving</span>
-          </label>
-          <label className="assistant__check">
-            <input type="checkbox" checked={voiceWorkflowSettings.confirmSensitiveCapture} onChange={(event) => void onVoiceWorkflowSettingsChange({ confirmSensitiveCapture: event.target.checked })} />
-            <span>Require review for sensitive capture text</span>
-          </label>
-        </div>
-      </Panel>
-
-      <Panel title="Quick Capture">
-        <div className="project-form">
-          <label>Type<select value={form.type} onChange={(event) => setForm({ ...form, type: event.target.value as CaptureItemType })}><option value="note">note</option><option value="link">link</option><option value="task">task</option><option value="expense">expense</option><option value="file">file</option><option value="image">image</option><option value="document">document</option><option value="other">other</option></select></label>
-          <label>Title<input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} placeholder="Quick title" /></label>
-          <label>URL<input value={form.url} onChange={(event) => setForm({ ...form, url: event.target.value })} placeholder="Optional link" /></label>
-          <label>Tags<input value={form.tags} onChange={(event) => setForm({ ...form, tags: event.target.value })} placeholder="inbox, later" /></label>
-          <label>Text<textarea value={form.text} onChange={(event) => setForm({ ...form, text: event.target.value })} placeholder="Note, task, thought, expense, or routing context" /></label>
-        </div>
-        <VoiceInput
-          targetLabel="Capture"
-          speechState={speechState}
-          onSpeechStateChanged={onSpeechStateChange}
-          onTranscript={(text) => setForm((current) => ({ ...current, text: current.text ? `${current.text}\n${text}` : text }))}
-          onAction={onAction}
-        />
-        <div className="button-row">
-          <button type="button" onClick={() => void chooseFile()}>{form.filePath ? "File selected" : "Attach file"}</button>
-          <button type="button" onClick={() => void saveCapture()}>Save to inbox</button>
-          <button type="button" onClick={() => void createFromClipboard()}>Capture clipboard</button>
-          <button type="button" onClick={() => setForm(emptyCaptureForm)}>Reset</button>
-        </div>
-        {form.filePath && <p className="technical">{form.filePath}</p>}
-      </Panel>
-
-      <Panel title={`Shared Inbox (${captureState.inbox.length})`}>
-        <div className="action-list">
-          {captureState.inbox.length === 0 ? <p>No Capture inbox items yet.</p> : <LimitedList items={captureState.inbox} step={50}>{renderCaptureItem}</LimitedList>}
-        </div>
-      </Panel>
-
-      <div className="dashboard-grid">
-        <Panel title={`Routed Items (${captureState.routed.length})`}>
-          <div className="action-list action-list--compact">
-            {captureState.routed.length === 0 ? <p>No routed items yet.</p> : <LimitedList items={captureState.routed} step={50}>{renderCaptureItem}</LimitedList>}
-          </div>
-        </Panel>
-        <Panel title={`Archived (${captureState.archived.length})`}>
-          <div className="action-list action-list--compact">
-            {captureState.archived.length === 0 ? <p>No archived captures.</p> : <LimitedList items={captureState.archived} step={50}>{renderCaptureItem}</LimitedList>}
-          </div>
-        </Panel>
       </div>
 
-      <Panel title="Settings">
-        <div className="settings-list">
-          <div className="settings-row"><span>Capture items</span><strong>{captureState.itemsPath}</strong></div>
-          <div className="settings-row"><span>Capture files</span><strong>{captureState.capturesPath}</strong></div>
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+        <div className="space-y-5 lg:col-span-8">
+          {/* Composer */}
+          <GlassCard accent={ACCENT_CAPTURE} hover={false}>
+            <div className="mb-3 flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-semibold text-[#F5F5F5]">Quick capture</h3>
+                <p className="text-xs text-[#525252]">Drop a note, thought, link, reminder, or file.</p>
+              </div>
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-[#06B6D4]/30 bg-[#06B6D4]/10 px-2.5 py-1 text-[11px] font-medium text-[#06B6D4]"><Mic className="h-3 w-3" /> voice ready</span>
+            </div>
+            <div className="rounded-xl border border-[#1f1f1f] bg-[#0A0A0A] transition-colors focus-within:border-[#EC4899]/50">
+              <textarea value={form.text} onChange={(event) => setForm({ ...form, text: event.target.value })} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") void saveCapture(); }} rows={3} placeholder="Type or dictate anything…" className="w-full resize-none border-none bg-transparent px-3.5 py-3 text-sm text-[#F5F5F5] placeholder:text-[#525252] focus:outline-none" />
+              <div className="flex items-center justify-between border-t border-[#161616] px-3 py-2">
+                <button type="button" onClick={() => void onStartVoiceCapture("module_ui")} disabled={speechState.performancePaused} className="flex h-8 w-8 items-center justify-center rounded-lg text-[#06B6D4] transition-colors hover:bg-[#06B6D4]/10 disabled:opacity-40" title="Dictate"><Mic className="h-4 w-4" /></button>
+                <div className="flex items-center gap-2">
+                  <button type="button" onClick={() => void chooseFile()} className="rounded-md border border-[#262626] px-2.5 py-1.5 text-xs text-[#A3A3A3] hover:text-[#F5F5F5]">{form.filePath ? "File ✓" : "Attach"}</button>
+                  <button type="button" onClick={() => void saveCapture()} disabled={!form.text.trim() && !form.filePath} className="inline-flex items-center gap-1.5 rounded-lg bg-[#EC4899] px-4 py-2 text-sm font-semibold text-white transition-all hover:brightness-110 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40">Capture <ArrowUpRight className="h-4 w-4" /></button>
+                </div>
+              </div>
+            </div>
+          </GlassCard>
+
+          {/* Inbox */}
+          <div className="flex items-center justify-between">
+            <SectionTitle className="mb-0">Inbox</SectionTitle>
+            <StatusChip tone="info" dot={false} style={{ color: ACCENT_CAPTURE, borderColor: `${ACCENT_CAPTURE}33`, background: `${ACCENT_CAPTURE}12` }}>{captureState.inbox.length} to triage</StatusChip>
+          </div>
+
+          <div className="space-y-2.5">
+            {captureState.inbox.length === 0 ? (
+              <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-[#262626] py-16 text-center">
+                <Inbox className="h-8 w-8 text-[#525252]" />
+                <p className="mt-2 text-sm text-[#A3A3A3]">Inbox zero — nicely done</p>
+                <p className="text-xs text-[#525252]">Captured items will appear here for triage</p>
+              </div>
+            ) : (
+              <LimitedList items={captureState.inbox} step={25}>
+                {(item) => {
+                  const m = captureMeta(item);
+                  const Icon = m.icon;
+                  return (
+                    <GlassCard key={item.id} accent={ACCENT_CAPTURE} hover={false} className="p-3.5">
+                      <div className="flex items-start gap-3">
+                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg" style={{ background: `${m.c}14`, color: m.c }}><Icon className="h-4 w-4" /></div>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium text-[#F5F5F5]">{item.title || previewForUi(item.text || item.url || "Capture")}</p>
+                          <div className="mt-1 flex items-center gap-2 text-[10px] text-[#525252]">
+                            <span className="rounded border border-[#1f1f1f] px-1.5 py-0.5 font-mono" style={{ color: m.c }}>{m.label}</span>
+                            <span className="flex items-center gap-1">{item.filePath ? <Paperclip className="h-2.5 w-2.5" /> : <Type className="h-2.5 w-2.5" />}{item.source}</span>
+                            <span className="font-mono">· {captureAgo(item.createdAt)} ago</span>
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1">
+                          {item.status !== "archived" && <button type="button" onClick={() => void archiveCapture(item)} title="Archive" className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#161616] hover:text-[#F5F5F5]"><Archive className="h-3.5 w-3.5" /></button>}
+                          <button type="button" onClick={() => void deleteCapture(item)} title="Delete" className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#EF4444]/10 hover:text-[#EF4444]"><Trash2 className="h-3.5 w-3.5" /></button>
+                        </div>
+                      </div>
+                      <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-[#161616] pt-3">
+                        <span className="mr-0.5 text-[10px] font-medium uppercase tracking-wider text-[#525252]">Route to</span>
+                        {captureRoutes.map((r) => {
+                          const RIcon = r.icon;
+                          const disabled = r.id === "vault" && !item.filePath;
+                          return (
+                            <button key={r.id} type="button" disabled={disabled} onClick={() => void routeCapture(r.action, item, r.success)} title={`Route to ${r.label}`} className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium transition-all hover:brightness-125 disabled:opacity-40" style={{ borderColor: `${r.c}26`, color: r.c, background: `${r.c}0d` }}>
+                              <RIcon className="h-3 w-3" />{r.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </GlassCard>
+                  );
+                }}
+              </LimitedList>
+            )}
+          </div>
         </div>
-      </Panel>
+
+        {/* Right column */}
+        <div className="space-y-5 lg:col-span-4">
+          <GlassCard accent={ACCENT_CAPTURE} hover={false}>
+            <SectionTitle action={<Sparkles className="h-3.5 w-3.5 text-[#EC4899]" />}>Routing guide</SectionTitle>
+            <p className="mb-3 text-xs leading-relaxed text-[#A3A3A3]">Send each item to the right module in one tap. Nothing is filed automatically — you stay in control.</p>
+            <div className="space-y-1.5">
+              {[{ from: "Receipts & amounts", to: "Finance", c: "#22C55E" }, { from: "Dates & events", to: "Calendar", c: "#14B8A6" }, { from: "Docs & IDs", to: "Vault", c: "#10B981" }].map((s) => (
+                <div key={s.to} className="flex items-center gap-2 rounded-lg border border-[#161616] bg-[#0A0A0A] px-2.5 py-1.5">
+                  <span className="flex-1 truncate text-xs text-[#F5F5F5]">{s.from}</span>
+                  <ArrowUpRight className="h-3 w-3 text-[#525252]" />
+                  <span className="rounded-full border px-2 py-0.5 text-[10px] font-medium" style={{ color: s.c, borderColor: `${s.c}33`, background: `${s.c}10` }}>{s.to}</span>
+                </div>
+              ))}
+            </div>
+          </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle>Attach</SectionTitle>
+            <p className="mb-2.5 text-xs text-[#525252]">Add supporting material to the inbox.</p>
+            <div className="grid grid-cols-2 gap-2">
+              <button type="button" onClick={() => void chooseFile()} className="flex flex-col items-center gap-1.5 rounded-xl border border-[#1f1f1f] bg-[#0A0A0A] py-4 text-xs text-[#A3A3A3] transition-all hover:border-[#EC4899]/40 hover:text-[#F5F5F5]"><ImageIcon className="h-5 w-5 text-[#EC4899]" /> Photo</button>
+              <button type="button" onClick={() => void chooseFile()} className="flex flex-col items-center gap-1.5 rounded-xl border border-[#1f1f1f] bg-[#0A0A0A] py-4 text-xs text-[#A3A3A3] transition-all hover:border-[#EC4899]/40 hover:text-[#F5F5F5]"><FileText className="h-5 w-5 text-[#EC4899]" /> File</button>
+            </div>
+            <button type="button" onClick={() => void createFromClipboard()} className="mt-2 w-full rounded-md border border-[#262626] py-1.5 text-xs text-[#A3A3A3] hover:text-[#F5F5F5]">Capture clipboard</button>
+          </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle>Capture types</SectionTitle>
+            <div className="space-y-1.5">
+              {[{ icon: Type, c: "#A3A3A3", label: "note", sub: "typed" }, { icon: Mic, c: "#06B6D4", label: "voice", sub: "dictated" }, { icon: ImageIcon, c: "#EC4899", label: "image", sub: "attached" }, { icon: FileType2, c: "#F97316", label: "file", sub: "attached" }].map((m) => {
+                const MIcon = m.icon;
+                return (
+                  <div key={m.label} className="flex items-center gap-2.5 rounded-lg px-1.5 py-1">
+                    <div className="flex h-7 w-7 items-center justify-center rounded-lg" style={{ background: `${m.c}14`, color: m.c }}><MIcon className="h-3.5 w-3.5" /></div>
+                    <span className="text-xs capitalize text-[#F5F5F5]">{m.label}</span>
+                    <span className="ml-auto font-mono text-[10px] text-[#525252]">{m.sub}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </GlassCard>
+        </div>
+      </div>
+
+      {/* Advanced (voice capture controls, full form, routed/archived, settings) */}
+      <details className="rounded-lg border border-[#1a1a1a] bg-[#080808]">
+        <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] text-[#525252] hover:text-[#A3A3A3]">advanced · voice capture, full form, routed &amp; archived, settings</summary>
+        <div className="space-y-4 border-t border-[#1a1a1a] p-3">
+          <Panel title="Voice Capture">
+            <div className="button-row">
+              <button type="button" className="button-primary" disabled={speechState.performancePaused || (voiceWorkflow.mode === "capture_note" && voiceWorkflow.status === "listening")} onClick={() => void onStartVoiceCapture("module_ui")}>Start Voice Capture</button>
+              <button type="button" disabled={voiceWorkflow.mode !== "capture_note"} onClick={() => void onSaveVoiceCapture()}>Save</button>
+              <button type="button" disabled={voiceWorkflow.mode !== "capture_note"} onClick={onStopVoiceCapture}>Stop</button>
+              <button type="button" className="danger-button" disabled={voiceWorkflow.mode !== "capture_note"} onClick={onCancelVoiceCapture}>Cancel</button>
+            </div>
+            <div className="settings-list">
+              <label className="assistant__check"><input type="checkbox" checked={voiceWorkflowSettings.autoSaveCaptureVoiceNotes} onChange={(event) => void onVoiceWorkflowSettingsChange({ autoSaveCaptureVoiceNotes: event.target.checked })} /><span>Auto-save Capture voice notes</span></label>
+              <label className="assistant__check"><input type="checkbox" checked={voiceWorkflowSettings.continueCaptureMode} onChange={(event) => void onVoiceWorkflowSettingsChange({ continueCaptureMode: event.target.checked })} /><span>Continue listening after saving</span></label>
+              <label className="assistant__check"><input type="checkbox" checked={voiceWorkflowSettings.confirmSensitiveCapture} onChange={(event) => void onVoiceWorkflowSettingsChange({ confirmSensitiveCapture: event.target.checked })} /><span>Require review for sensitive capture text</span></label>
+            </div>
+          </Panel>
+          <Panel title="Full form">
+            <div className="project-form">
+              <label>Type<select value={form.type} onChange={(event) => setForm({ ...form, type: event.target.value as CaptureItemType })}><option value="note">note</option><option value="link">link</option><option value="task">task</option><option value="expense">expense</option><option value="file">file</option><option value="image">image</option><option value="document">document</option><option value="other">other</option></select></label>
+              <label>Title<input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} placeholder="Quick title" /></label>
+              <label>URL<input value={form.url} onChange={(event) => setForm({ ...form, url: event.target.value })} placeholder="Optional link" /></label>
+              <label>Tags<input value={form.tags} onChange={(event) => setForm({ ...form, tags: event.target.value })} placeholder="inbox, later" /></label>
+            </div>
+            <div className="button-row">
+              <button type="button" onClick={() => void saveCapture()}>Save to inbox</button>
+              <button type="button" onClick={() => setForm(emptyCaptureForm)}>Reset</button>
+            </div>
+            {form.filePath && <p className="technical">{form.filePath}</p>}
+          </Panel>
+          <div className="dashboard-grid">
+            <Panel title={`Routed Items (${captureState.routed.length})`}>
+              <div className="action-list action-list--compact">
+                {captureState.routed.length === 0 ? <p>No routed items yet.</p> : <LimitedList items={captureState.routed} step={50}>{renderCaptureItem}</LimitedList>}
+              </div>
+            </Panel>
+            <Panel title={`Archived (${captureState.archived.length})`}>
+              <div className="action-list action-list--compact">
+                {captureState.archived.length === 0 ? <p>No archived captures.</p> : <LimitedList items={captureState.archived} step={50}>{renderCaptureItem}</LimitedList>}
+              </div>
+            </Panel>
+          </div>
+          <Panel title="Settings">
+            <div className="settings-list">
+              <div className="settings-row"><span>Capture items</span><strong>{captureState.itemsPath}</strong></div>
+              <div className="settings-row"><span>Capture files</span><strong>{captureState.capturesPath}</strong></div>
+            </div>
+          </Panel>
+        </div>
+      </details>
 
       {toast && <ToastStack toasts={[{ id: toast.message, message: toast.message, tone: toast.tone }]} />}
-    </section>
+    </div>
   );
+
 }
 
 function SearchView({
@@ -12567,21 +12850,26 @@ function SearchView({
     return actionMap[sourceModule] ?? null;
   }
 
+  const searchVoiceActive = ambientVoiceState.currentState !== "idle";
   return (
-    <section className="view-stack view-stack--search accent-search" aria-labelledby="search-title">
-      <PageHeader
-        eyebrow="Manual local index"
-        title="Search"
-        titleId="search-title"
-        actions={(
-          <>
-          <button type="button" onClick={() => void rebuildIndex()}>Rebuild DexNest index</button>
-          <button type="button" onClick={() => void runQuery()}>Refresh results</button>
-          </>
-        )}
-      />
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: "#6366F140", background: "#6366F114", color: "#6366F1" }}>
+            <Sparkles className="h-5 w-5" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Ask DexNest</h1>
+            <p className="text-sm text-[#A3A3A3]">Local memory &amp; private assistant · nothing leaves this machine</p>
+          </div>
+        </div>
+        <StatusChip tone={searchVoiceActive ? "running" : "info"} pulse={searchVoiceActive}>{searchVoiceActive ? "Voice active" : "Voice idle"}</StatusChip>
+      </div>
 
-      <Panel title="Ask DexNest">
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+        {/* Left: assistant chat */}
+        <div className="lg:col-span-5">
+          <GlassCard accent="#6366F1" hover={false}>
         <AskDexNest
           actions={actions}
           assistantSettings={assistantSettings}
@@ -12610,252 +12898,196 @@ function SearchView({
           onFinderLookupComplete={onFinderLookupComplete}
           onFinderMemorySaved={onFinderMemorySaved}
         />
-      </Panel>
+          </GlassCard>
+        </div>
 
-      <Panel title="Run Search">
-        <div className="search-controls">
-          <label className="search-controls__query">
-            Query
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filename, title, tag, category, metadata" />
-          </label>
-          <label>
-            Source
-            <select value={sourceModule} onChange={(event) => setSourceModule(event.target.value)}>
-              <option value="all">All sources</option>
-              {searchState.sources.map((source) => (
-                <option value={source} key={source}>{source}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            File type
-            <select value={fileType} onChange={(event) => setFileType(event.target.value)}>
-              <option value="all">All types</option>
-              {searchState.fileTypes.map((type) => (
-                <option value={type} key={type}>{type}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            From
-            <input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} />
-          </label>
-          <label>
-            To
-            <input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} />
-          </label>
-        </div>
-        <div className="button-row">
-          <button type="button" className={searching ? "is-busy" : undefined} disabled={searching} onClick={() => void runQuery()}>{searching && <Spinner size="sm" />}{searching ? "Searching…" : "Search"}</button>
-          <button type="button" onClick={() => void saveQuery()}>Save search</button>
-          {status && <span className="inline-status">{status}</span>}
-        </div>
-      </Panel>
+        {/* Right: search + smart lookup + results */}
+        <div className="space-y-4 lg:col-span-7">
+          <div className="flex items-center gap-2 rounded-xl border border-[#262626] bg-[#0d0d0d] px-3.5 py-2.5 transition-colors focus-within:border-[#6366F1]/40">
+            <Search className="h-4 w-4 text-[#525252]" />
+            <input value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void runQuery(); }} placeholder="Search documents, notes, receipts, items…" className="flex-1 bg-transparent text-sm text-[#F5F5F5] placeholder:text-[#525252] focus:outline-none" />
+            <StatusChip tone="info" dot={false}>{results.length} hits</StatusChip>
+          </div>
 
-      <Panel title="Smart Lookup / Answer Mode">
-        <p>Ask local questions against indexed Vault OCR and Tools OCR text. Sensitive answers are masked until you confirm reveal.</p>
-        <div className="search-controls">
-          <label className="search-controls__query">
-            Question
-            <input
-              value={smartQuestion}
-              onChange={(event) => setSmartQuestion(event.target.value)}
-              placeholder="What is my work permit number?"
-            />
-          </label>
-        </div>
-        <div className="button-row">
-          {[
-            "What is my work permit number?",
-            "When does my work permit expire?",
-            "What is my SIN number?",
-            "What is my passport number?",
-            "Show my health card number."
-          ].map((example) => (
-            <button type="button" key={example} onClick={() => { setSmartQuestion(example); void runSmartLookup(example); }}>{example}</button>
-          ))}
-        </div>
-        <div className="button-row">
-          <button type="button" onClick={() => void runSmartLookup()}>Run Smart Lookup</button>
-          <button type="button" onClick={() => { setSmartResults([]); setRevealedSmartIds([]); setSmartStatus(""); }}>Clear answers</button>
-          {smartStatus && <span className="inline-status">{smartStatus}</span>}
-        </div>
-        <div className="action-list">
-          {smartResults.length === 0 ? (
-            <EmptyState>No Smart Lookup answers yet. If this was just OCRed, rebuild the Search index first. Local LLM answer refinement can come later.</EmptyState>
-          ) : (
-            smartResults.map((result) => {
-              const revealed = revealedSmartIds.includes(result.id) || !result.sensitive;
+          <div className="flex flex-wrap items-center gap-1.5">
+            {searchState.sources.map((source) => {
+              const on = sourceModule === source;
+              const c = MODULE_META[source]?.accent ?? "#6366F1";
               return (
-                <CollapsibleListItem
-                  accentClass="accent-search"
-                  key={result.id}
-                  title={`${result.fieldType.replace(/_/g, " ")} / ${result.confidence}`}
-                  meta={`${result.sourceDocumentTitle} / ${result.sourceType ?? result.sourceModule}`}
-                  actions={(
-                    <>
-                      {result.sensitive && <button type="button" onClick={() => void revealSmartAnswer(result)}>Reveal</button>}
-                      <button type="button" onClick={() => void copySmartAnswer(result)}>Copy answer</button>
-                      <button type="button" onClick={() => void onAction("search.smart_lookup_open_source", "module_ui", { sourceId: result.sourceRecordId })}>Open source</button>
-                      {result.ocrTextPath && result.sourceModule === "vault" && <button type="button" onClick={() => void onAction("vault.ocr.open_text", "module_ui", { documentId: result.sourceRecordId.replace(/^vault-/, "") })}>Open OCR text</button>}
-                    </>
-                  )}
+                <button
+                  key={source}
+                  type="button"
+                  onClick={() => { setSourceModule(on ? "all" : source); void runQuery(); }}
+                  className="rounded-full border px-3 py-1 text-xs font-medium transition-all hover:brightness-125"
+                  style={on ? { borderColor: `${c}55`, background: `${c}1a`, color: c } : { borderColor: "#262626", color: "#A3A3A3" }}
                 >
-                  <div className="section-heading section-heading--row">
-                    <strong className="technical">{revealed ? result.answer : result.maskedAnswer}</strong>
-                    <StatusBadge tone={result.sensitive ? "warning" : "success"}>{result.sensitive ? "sensitive" : "safe"}</StatusBadge>
-                  </div>
-                  <p>{result.preview}</p>
-                  <p className="technical">{result.sourceRecordId}</p>
-                  {result.sourceFilePath && <PathText>{result.sourceFilePath}</PathText>}
-                </CollapsibleListItem>
+                  {source}
+                </button>
               );
-            })
-          )}
-        </div>
-      </Panel>
+            })}
+            <button type="button" onClick={() => void runQuery()} className="ml-auto rounded-full border border-[#262626] px-3 py-1 text-xs text-[#A3A3A3] hover:text-[#F5F5F5]">{searching ? "Searching…" : "Search"}</button>
+            <button type="button" onClick={() => void saveQuery()} className="rounded-full border border-[#262626] px-3 py-1 text-xs text-[#A3A3A3] hover:text-[#F5F5F5]">Save</button>
+          </div>
+          {status && <p className="text-xs text-[#A3A3A3]">{status}</p>}
 
-      <Panel title="Secure Vault Admin Search">
-        <p>Secure Search decrypts in memory for this request only. Results are masked and are never saved to the Search index.</p>
-        <div className="search-controls">
-          <label className="search-controls__query">
-            Secure query
-            <input value={secureQuery} onChange={(event) => setSecureQuery(event.target.value)} placeholder="Title, username, URL, notes" />
-          </label>
-          <label>
-            Master password
-            <input type="password" value={securePassword} onChange={(event) => setSecurePassword(event.target.value)} placeholder="Required" />
-          </label>
-          <label className="checkbox-row">
-            <input type="checkbox" checked={secureIncludeSecrets} onChange={(event) => setSecureIncludeSecrets(event.target.checked)} />
-            <span>Include secret values</span>
-          </label>
-        </div>
-        <div className="button-row">
-          <button type="button" onClick={() => void runSecureSearch()}>Secure Search</button>
-          <button type="button" onClick={() => { setSecureResults([]); setSecureStatus(""); setSecurePassword(""); }}>Clear secure results</button>
-          {secureStatus && <span className="inline-status">{secureStatus}</span>}
-        </div>
-        <div className="action-list action-list--compact">
-          {secureResults.length === 0 ? (
-            <EmptyState>No secure results in memory.</EmptyState>
-          ) : (
-            secureResults.map((result) => (
-              <article className="data-item data-item--stacked accent-vault" key={result.id}>
-                <div className="section-heading section-heading--row">
-                  <strong>{result.title}</strong>
-                  <StatusBadge tone="warning">Secure Vault</StatusBadge>
-                </div>
-                <span>{result.type}{result.username ? ` / ${result.username}` : ""}{result.url ? ` / ${result.url}` : ""}</span>
-                <span>Matched: {result.matchedFields.join(", ")}. Values are masked.</span>
-                <span className="technical">{result.itemId}</span>
-              </article>
-            ))
-          )}
-        </div>
-      </Panel>
-
-      <div className="search-meta-grid">
-        <Panel title="Index">
-          <div className="action-list action-list--compact">
-            <p>{searchState.index.length} indexed records. Manual rebuild only. Secure Vault contents are skipped.</p>
-            <p>{searchState.ocrTextFileCount} OCR-backed records indexed.</p>
-            {searchState.indexStatus.staleDueToPerformanceMode && (
-              <p>
-                <StatusBadge tone="warning">stale</StatusBadge>{" "}
-                Auto-index was skipped by Performance Mode{searchState.indexStatus.staleSince ? ` since ${formatLocalDateTime(searchState.indexStatus.staleSince)}` : ""}. Rebuild manually when ready.
-              </p>
-            )}
-            <p><PathText>{searchState.indexPath}</PathText></p>
-            <div className="button-row">
-              <button type="button" onClick={() => void openIndexFolder()}>Open index folder</button>
-              <button className="danger-button" type="button" onClick={() => void clearIndex()}>Clear index</button>
+          <GlassCard accent="#6366F1" hover={false}>
+            <div className="mb-3 flex items-center justify-between">
+              <span className="text-xs font-semibold uppercase tracking-wider text-[#A3A3A3]">Smart Lookup</span>
+              {securityState.sessionUnlocked
+                ? <StatusChip tone="unlocked">trusted</StatusChip>
+                : <span className="inline-flex items-center gap-1 rounded-full border border-[#EF4444]/30 bg-[#EF4444]/10 px-2 py-0.5 text-[10px] font-medium text-[#EF4444]"><ShieldAlert className="h-3 w-3" />sensitive</span>}
             </div>
-          </div>
-        </Panel>
-        <Panel title="Recently opened">
-          <div className="search-recovery-list">
-            {recentRecovery.length === 0 ? (
-              <EmptyState>No recent file metadata in the index yet.</EmptyState>
+            <div className="flex items-center gap-2 rounded-lg border border-[#262626] bg-[#0a0a0a] px-3 py-2 focus-within:border-[#6366F1]/40">
+              <input value={smartQuestion} onChange={(event) => setSmartQuestion(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void runSmartLookup(); }} placeholder="What is my work permit number?" className="flex-1 bg-transparent text-sm text-[#F5F5F5] placeholder:text-[#525252] focus:outline-none" />
+              <button type="button" onClick={() => void runSmartLookup()} className="rounded-md bg-[#6366F1] px-3 py-1 text-xs font-medium text-white">Ask</button>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {["What is my work permit number?", "When does my work permit expire?", "What is my passport number?"].map((ex) => (
+                <button key={ex} type="button" onClick={() => { setSmartQuestion(ex); void runSmartLookup(ex); }} className="rounded-full border border-[#262626] px-2.5 py-0.5 text-[10px] text-[#A3A3A3] hover:text-[#F5F5F5]">{ex}</button>
+              ))}
+            </div>
+            {smartStatus && <p className="mt-2 text-xs text-[#A3A3A3]">{smartStatus}</p>}
+            {smartResults.length > 0 && (
+              <div className="mt-3 space-y-2">
+                {smartResults.map((result) => {
+                  const revealed = revealedSmartIds.includes(result.id) || !result.sensitive;
+                  return (
+                    <div key={result.id} className="rounded-lg border border-[#1f1f1f] bg-[#0a0a0a] p-3">
+                      <p className="text-sm text-[#F5F5F5]"><span className="text-[#A3A3A3]">{result.fieldType.replace(/_/g, " ")}: </span><span className="font-mono">{revealed ? result.answer : result.maskedAnswer}</span></p>
+                      <p className="mt-0.5 font-mono text-[10px] text-[#525252]">{result.confidence} · {result.sourceType ?? result.sourceModule} · {result.sourceDocumentTitle}</p>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {result.sensitive && !revealed && <button type="button" onClick={() => void revealSmartAnswer(result)} className="inline-flex items-center gap-1 rounded-md border border-[#10B981]/30 bg-[#10B981]/10 px-2.5 py-1 text-xs font-medium text-[#10B981]"><Unlock className="h-3 w-3" />Reveal</button>}
+                        <button type="button" onClick={() => void copySmartAnswer(result)} className="rounded-md border border-[#262626] px-2.5 py-1 text-xs text-[#A3A3A3] hover:text-[#F5F5F5]">Copy</button>
+                        <button type="button" onClick={() => void onAction("search.smart_lookup_open_source", "module_ui", { sourceId: result.sourceRecordId })} className="rounded-md border border-[#262626] px-2.5 py-1 text-xs text-[#A3A3A3] hover:text-[#F5F5F5]">Open source</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </GlassCard>
+
+          <div className="space-y-2.5">
+            {results.length === 0 ? (
+              <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-[#262626] py-12 text-center">
+                <Search className="h-8 w-8 text-[#525252]" />
+                <p className="mt-2 text-sm text-[#A3A3A3]">No results yet</p>
+                <p className="text-xs text-[#525252]">Run a search, or rebuild the index in Advanced.</p>
+              </div>
             ) : (
-              recentRecovery.slice(0, 4).map((item) => (
-                <article className={`data-item data-item--compact accent-${item.sourceModule}`} key={item.id}>
-                  <strong>{item.title}</strong>
-                  <span>{item.sourceModule} / {item.entityType}</span>
-                  {item.filePath && <PathText>{item.filePath}</PathText>}
-                </article>
-              ))
+              <LimitedList items={results} step={25}>
+                {(result) => {
+                  const c = MODULE_META[result.sourceModule]?.accent ?? "#6366F1";
+                  return (
+                    <GlassCard key={result.id} accent={c} className="flex items-start gap-3">
+                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg" style={{ background: `${c}16`, color: c }}><FileText className="h-4 w-4" /></div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium text-[#F5F5F5]">{result.title}</p>
+                        <p className="truncate text-xs text-[#A3A3A3]">{result.textPreview || result.matchReason}</p>
+                        <p className="mt-1 font-mono text-[10px] text-[#525252]">{result.sourceModule} · {result.entityType}{result.fileType ? ` · ${result.fileType}` : ""}{result.sourceModule === "finance" && result.profileName ? ` · profile: ${result.profileName}` : ""}</p>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1">
+                        {result.filePath && <button type="button" title="Open file" onClick={() => void resultAction("search.open_result", result.id)} className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#1a1a1a] hover:text-[#F5F5F5]"><ExternalLink className="h-3.5 w-3.5" /></button>}
+                        {result.filePath && <button type="button" title="Send to phone" onClick={() => void resultAction("search.send_result_to_drop", result.id)} className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#1a1a1a] hover:text-[#F5F5F5]"><Copy className="h-3.5 w-3.5" /></button>}
+                      </div>
+                    </GlassCard>
+                  );
+                }}
+              </LimitedList>
             )}
           </div>
-        </Panel>
+
+          <details className="rounded-lg border border-[#1a1a1a] bg-[#080808]">
+            <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] text-[#525252] hover:text-[#A3A3A3]">advanced · filters, secure search, index, saved</summary>
+            <div className="space-y-4 border-t border-[#1a1a1a] p-3">
+              <div className="search-controls">
+                <label>
+                  Source
+                  <select value={sourceModule} onChange={(event) => setSourceModule(event.target.value)}>
+                    <option value="all">All sources</option>
+                    {searchState.sources.map((source) => (<option value={source} key={source}>{source}</option>))}
+                  </select>
+                </label>
+                <label>
+                  File type
+                  <select value={fileType} onChange={(event) => setFileType(event.target.value)}>
+                    <option value="all">All types</option>
+                    {searchState.fileTypes.map((type) => (<option value={type} key={type}>{type}</option>))}
+                  </select>
+                </label>
+                <label>From<input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} /></label>
+                <label>To<input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} /></label>
+              </div>
+              <div className="button-row">
+                <button type="button" onClick={() => void rebuildIndex()}>Rebuild index</button>
+                <button type="button" onClick={() => void openIndexFolder()}>Open index folder</button>
+                <button className="danger-button" type="button" onClick={() => void clearIndex()}>Clear index</button>
+                <span className="inline-status">{searchState.index.length} records · {searchState.ocrTextFileCount} OCR</span>
+              </div>
+
+              <div className="section-heading"><p>Secure Vault Admin Search</p></div>
+              <div className="search-controls">
+                <label className="search-controls__query">Secure query<input value={secureQuery} onChange={(event) => setSecureQuery(event.target.value)} placeholder="Title, username, URL, notes" /></label>
+                <label>Master password<input type="password" value={securePassword} onChange={(event) => setSecurePassword(event.target.value)} placeholder="Required" /></label>
+                <label className="checkbox-row"><input type="checkbox" checked={secureIncludeSecrets} onChange={(event) => setSecureIncludeSecrets(event.target.checked)} /><span>Include secret values</span></label>
+              </div>
+              <div className="button-row">
+                <button type="button" onClick={() => void runSecureSearch()}>Secure Search</button>
+                <button type="button" onClick={() => { setSecureResults([]); setSecureStatus(""); setSecurePassword(""); }}>Clear</button>
+                {secureStatus && <span className="inline-status">{secureStatus}</span>}
+              </div>
+              {secureResults.length > 0 && (
+                <div className="action-list action-list--compact">
+                  {secureResults.map((result) => (
+                    <article className="data-item data-item--stacked accent-vault" key={result.id}>
+                      <strong>{result.title}</strong>
+                      <span>{result.type}{result.username ? ` / ${result.username}` : ""}</span>
+                      <span>Matched: {result.matchedFields.join(", ")}. Values masked.</span>
+                    </article>
+                  ))}
+                </div>
+              )}
+
+              <div className="section-heading"><p>Saved searches</p></div>
+              <div className="action-list action-list--compact">
+                {searchState.savedSearches.length === 0 ? (
+                  <EmptyState>No saved searches yet.</EmptyState>
+                ) : (
+                  searchState.savedSearches.map((savedSearch) => (
+                    <article className="data-item data-item--stacked accent-search" key={savedSearch.id}>
+                      <div className="section-heading section-heading--row">
+                        <strong>{savedSearch.title}</strong>
+                        <div className="button-row">
+                          <button type="button" onClick={() => void rerunSavedSearch(savedSearch)}>Run</button>
+                          <button className="danger-button" type="button" onClick={() => void deleteSavedSearch(savedSearch.id)}>Delete</button>
+                        </div>
+                      </div>
+                      <span className="technical">{savedSearch.query || "empty query"} · {savedSearch.sourceModule}</span>
+                    </article>
+                  ))
+                )}
+              </div>
+
+              {recentRecovery.length > 0 && (
+                <>
+                  <div className="section-heading"><p>Recently opened</p></div>
+                  <div className="action-list action-list--compact">
+                    {recentRecovery.slice(0, 4).map((item) => (
+                      <article className={`data-item data-item--compact accent-${item.sourceModule}`} key={item.id}>
+                        <strong>{item.title}</strong>
+                        <span>{item.sourceModule} / {item.entityType}</span>
+                      </article>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          </details>
+        </div>
       </div>
-
-      <Panel title="Saved Searches">
-        <div className="action-list action-list--compact">
-          {searchState.savedSearches.length === 0 ? (
-            <EmptyState>No saved searches yet.</EmptyState>
-          ) : (
-            searchState.savedSearches.map((savedSearch) => (
-              <CollapsibleListItem
-                accentClass="accent-search"
-                key={savedSearch.id}
-                title={savedSearch.title}
-                meta={`${savedSearch.sourceModule} / ${savedSearch.fileType}`}
-                actions={(
-                  <>
-                  <button type="button" onClick={() => void rerunSavedSearch(savedSearch)}>Run</button>
-                  <button className="danger-button" type="button" onClick={() => void deleteSavedSearch(savedSearch.id)}>Delete</button>
-                  </>
-                )}
-              >
-                <p className="technical">{savedSearch.query || "empty query"}</p>
-              </CollapsibleListItem>
-            ))
-          )}
-        </div>
-      </Panel>
-
-      <Panel title={`Results (${results.length})`}>
-        <div className="action-list">
-          {results.length === 0 ? (
-            <EmptyState>No results yet. If this was just OCRed, rebuild the Search index, then run the search again.</EmptyState>
-          ) : (
-            results.map((result) => (
-              <CollapsibleListItem
-                accentClass={`accent-${result.sourceModule}`}
-                key={result.id}
-                title={result.title}
-                meta={`${result.sourceModule} / ${result.entityType} / ${result.matchReason}`}
-                actions={(
-                  <>
-                  {result.filePath && (
-                    <>
-                      <button type="button" onClick={() => void resultAction("search.open_result", result.id)}>Open file</button>
-                      <button type="button" onClick={() => void resultAction("search.open_result_folder", result.id)}>Open folder</button>
-                      <button type="button" onClick={() => void resultAction("search.send_result_to_drop", result.id)}>Send to phone</button>
-                      {result.entityType === "vault_document_ocr" && <button type="button" onClick={() => void onAction("vault.ocr.open_text", "module_ui", { documentId: result.entityId })}>Open OCR text</button>}
-                    </>
-                  )}
-                  {sourceOpenAction(result.sourceModule) && (
-                    <button type="button" onClick={() => void onAction(sourceOpenAction(result.sourceModule) ?? "search.open")}>
-                      Open source
-                    </button>
-                  )}
-                  </>
-                )}
-              >
-                <p>{result.category ?? "uncategorized"} {result.fileType ? `/ ${result.fileType}` : ""} {result.sizeBytes ? `/ ${formatBytes(result.sizeBytes)}` : ""}</p>
-                {result.tags && result.tags.length > 0 && <p>{result.tags.slice(0, 6).join(", ")}</p>}
-                {result.textPreview && <p>{result.textPreview}</p>}
-                {result.filePath && <p><PathText>{result.filePath}</PathText></p>}
-                <p className="technical">{result.id}</p>
-              </CollapsibleListItem>
-            ))
-          )}
-        </div>
-      </Panel>
-    </section>
+    </div>
   );
+
 }
 
 function DeckView({
@@ -12888,6 +13120,8 @@ function DeckView({
   const [visibleEndpoints, setVisibleEndpoints] = useState<Record<string, boolean>>({});
   const [lastResponse, setLastResponse] = useState("");
   const [deckToasts, setDeckToasts] = useState<ToastMessage[]>([]);
+  const [exportInfo, setExportInfo] = useState<{ folder: string; scripts: number; shortcuts: number; placeholders: number; categories: number; at: string } | null>(null);
+  const [exporting, setExporting] = useState(false);
   const [actionSearch, setActionSearch] = useState("");
   const [moduleFilter, setModuleFilter] = useState("all");
   const [dangerFilter, setDangerFilter] = useState("all");
@@ -12895,6 +13129,7 @@ function DeckView({
   const [pinnedOnly, setPinnedOnly] = useState(false);
   const [routineOnly, setRoutineOnly] = useState(false);
   const [routineStatus, setRoutineStatus] = useState("");
+  const [deckFilter, setDeckFilter] = useState<"all" | "pinned">("all");
   const [routineForm, setRoutineForm] = useState<{
     id?: string;
     name: string;
@@ -12939,6 +13174,26 @@ function DeckView({
     window.setTimeout(() => {
       setDeckToasts((current) => current.filter((toast) => toast.id !== id));
     }, 3000);
+  }
+
+  async function exportStreamDeckPack(): Promise<void> {
+    setExporting(true);
+    try {
+      const result = await onAction("deck.export_button_pack", "module_ui", {}) as { ok?: boolean; folder?: string; scripts?: number; shortcuts?: number; placeholders?: number; categories?: number; error?: string };
+      if (result.ok) {
+        setExportInfo({ folder: result.folder ?? "", scripts: result.scripts ?? 0, shortcuts: result.shortcuts ?? 0, placeholders: result.placeholders ?? 0, categories: result.categories ?? 0, at: new Date().toISOString() });
+        showDeckToast(`Exported ${result.scripts} scripts + ${result.shortcuts} shortcuts`, "success");
+      } else {
+        showDeckToast(result.error ?? "Export failed.", "error");
+      }
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function openStreamDeckFolder(): Promise<void> {
+    const result = await onAction("deck.open_export_folder", "module_ui", {}) as { ok?: boolean; error?: string };
+    if (!result.ok) { showDeckToast(result.error ?? "Could not open export folder.", "error"); }
   }
 
   function dangerTone(action: ActionDefinition): "neutral" | "success" | "error" | "warning" | "info" {
@@ -13201,91 +13456,138 @@ function DeckView({
     );
   }
 
-  return (
-    <section className="view-stack view-stack--deck accent-deck" aria-labelledby="deck-title">
-      <ToastStack toasts={deckToasts} />
-      <PageHeader eyebrow="Local action surface" title="Deck" titleId="deck-title" />
+  const ACCENT_DECK = "#A855F7";
+  const pinnedResolved = pinnedActionIds.map((id) => actions.find((a) => a.id === id)).filter((a): a is ActionDefinition => Boolean(a));
+  const deckTiles = (deckFilter === "pinned" ? pinnedResolved : [...pinnedResolved, ...browserActions.filter((a) => !pinnedActionIds.includes(a.id))]).slice(0, 16);
+  const lanOn = Boolean(appInfo?.streamDeckSettings.lanEnabled);
+  const tokenOn = Boolean(appInfo?.streamDeckSettings.tokenEnabled);
 
-      <div className="deck-top-grid">
-        <Panel title="Deck endpoint">
-          <div className="settings-grid">
-            <article><span>Status</span><strong>{endpoint ? "running" : "loading"}</strong><p>Stream Deck control layer.</p></article>
-            <article><span>Security</span><strong>{appInfo?.streamDeckSettings.lanEnabled ? "LAN enabled" : "local only"}</strong><p>PIN/token {appInfo?.streamDeckSettings.tokenEnabled ? "enabled" : "disabled"}.</p></article>
-            <article><span>Base URL</span><strong className="technical">{endpoint ?? "Loading"}</strong><p>Use localhost by default.</p></article>
-          </div>
-          <div className="deck-endpoint-strip">
-            <PathText>{endpoint ? `${endpoint}/health` : "Loading endpoint"}</PathText>
-            <button type="button" onClick={() => void testControlEndpoint("/health")}>Test /health</button>
-            <button type="button" onClick={() => void copyText(controlEndpoint("/actions"), "Actions endpoint copied.")}>Copy /actions</button>
-            <button type="button" onClick={() => void copyText(controlEndpoint("/actions/pinned"), "Pinned endpoint copied.")}>Copy pinned</button>
-            <button type="button" onClick={() => void copyText(controlEndpoint("/routines"), "Routines endpoint copied.")}>Copy routines</button>
-            <button type="button" onClick={() => void runEndpointAction("deck.test_endpoint")}>Run test action</button>
-          </div>
-          {lastResponse && <p className="technical technical--truncate">Last response: {lastResponse}</p>}
-        </Panel>
-        <Panel title="Pinned Deck Buttons">
-          <div className="deck-mini-list">
-            {pinnedActionIds.length === 0 ? (
-              <EmptyState>No pinned actions yet.</EmptyState>
-            ) : (
-              pinnedActionIds.map((actionId) => {
-                const action = actions.find((item) => item.id === actionId);
-                if (!action) return null;
-                return (
-                  <article className={`deck-step-row accent-${action.moduleId}`} key={action.id}>
-                    <strong>{action.title}</strong>
-                    <PathText>{action.id}</PathText>
-                    <StatusBadge tone={dangerTone(action)}>{action.dangerLevel}</StatusBadge>
-                    <button type="button" onClick={() => void runEndpointAction(action.id)}>Run</button>
-                  </article>
-                );
-              })
-            )}
-          </div>
-        </Panel>
+  return (
+    <div className="space-y-6">
+      <ToastStack toasts={deckToasts} />
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_DECK}40`, background: `${ACCENT_DECK}14`, color: ACCENT_DECK }}><LayoutGrid className="h-5 w-5" /></div>
+          <div><h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Deck</h1><p className="text-sm text-[#A3A3A3]">Stream Deck &amp; routines · pressable local actions</p></div>
+        </div>
+        <StatusChip tone={endpoint ? "running" : "info"} pulse={Boolean(endpoint)}>{endpoint ? "Endpoint live" : "Loading"}</StatusChip>
       </div>
 
-      <Panel title="Routines">
-        <div className="deck-routine-layout">
-          <section className="deck-routine-builder">
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-[#1f1f1f] bg-[#0A0A0A] px-4 py-2.5 text-xs">
+        <span className="flex items-center gap-1.5 text-[#34D399]"><ShieldCheck className="h-3.5 w-3.5" /> {lanOn ? "LAN exposed" : "Local only"}</span>
+        <span className="text-[#525252]">·</span>
+        <span className="flex items-center gap-1.5 text-[#A3A3A3]"><KeyRound className="h-3.5 w-3.5" /> Token {tokenOn ? "auth" : "off"}</span>
+        <span className="text-[#525252]">·</span>
+        <span className="flex items-center gap-1.5 text-[#A3A3A3]">{lanOn ? <Wifi className="h-3.5 w-3.5" /> : <WifiOff className="h-3.5 w-3.5" />} LAN {lanOn ? "enabled" : "disabled"}</span>
+        <span className="ml-auto font-mono text-[#525252]">{endpoint ?? "loading"}</span>
+      </div>
+
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+        <div className="space-y-4 lg:col-span-8">
+          <div className="flex items-center gap-2">
+            {(["all", "pinned"] as const).map((f) => (
+              <button key={f} type="button" onClick={() => setDeckFilter(f)} className="rounded-full border px-3 py-1 text-xs font-medium capitalize transition-all" style={deckFilter === f ? { borderColor: `${ACCENT_DECK}55`, background: `${ACCENT_DECK}1a`, color: ACCENT_DECK } : { borderColor: "#1f1f1f", color: "#A3A3A3" }}>{f}</button>
+            ))}
+          </div>
+          {deckTiles.length === 0 ? (
+            <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-[#262626] py-12 text-center"><LayoutGrid className="h-8 w-8 text-[#525252]" /><p className="mt-2 text-sm text-[#A3A3A3]">No {deckFilter === "pinned" ? "pinned " : ""}actions</p></div>
+          ) : (
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+              {deckTiles.map((action) => {
+                const meta = MODULE_META[action.moduleId] ?? { icon: Command, accent: "#A855F7" };
+                const Icon = meta.icon;
+                const pinned = pinnedActionIds.includes(action.id);
+                return (
+                  <button key={action.id} type="button" onClick={() => void runEndpointAction(action.id)} className="glass-card lift group relative flex aspect-square flex-col items-center justify-center gap-2.5 p-3" style={{ boxShadow: `inset 0 0 24px ${meta.accent}10` }} title={action.id}>
+                    {pinned && <Pin className="absolute right-2 top-2 h-3 w-3 text-[#525252]" />}
+                    <div className="flex h-12 w-12 items-center justify-center rounded-xl transition-transform group-active:scale-90" style={{ background: `${meta.accent}18`, color: meta.accent, boxShadow: `0 0 16px ${meta.accent}33` }}><Icon className="h-6 w-6" /></div>
+                    <span className="text-center text-xs font-medium text-[#F5F5F5]">{action.title}</span>
+                    {endpointStatuses[action.id] && <span className="text-[9px] text-[#525252]">{endpointStatuses[action.id]}</span>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="space-y-5 lg:col-span-4">
+          <GlassCard accent={ACCENT_DECK} hover={false}>
+            <SectionTitle action={<Wifi className="h-3.5 w-3.5 text-[#22C55E]" />}>Endpoint health</SectionTitle>
+            <div className="space-y-1.5 font-mono text-xs">
+              <div className="flex items-center justify-between"><span className="text-[#525252]">status</span><span className="text-[#22C55E]">{endpoint ? "200 OK" : "loading"}</span></div>
+              <div className="flex items-center justify-between"><span className="text-[#525252]">actions</span><span className="text-[#A3A3A3]">{actions.length} registered</span></div>
+              <div className="flex items-center justify-between"><span className="text-[#525252]">pinned</span><span className="text-[#A3A3A3]">{pinnedActionIds.length}</span></div>
+              <div className="flex items-center justify-between"><span className="text-[#525252]">security</span><span className="text-[#A3A3A3]">{lanOn ? "LAN" : "local"} · token {tokenOn ? "on" : "off"}</span></div>
+            </div>
+            <div className="button-row mt-3">
+              <button type="button" onClick={() => void testControlEndpoint("/health")}>Test /health</button>
+              <button type="button" onClick={() => void copyText(controlEndpoint("/actions"), "Actions endpoint copied.")}>Copy /actions</button>
+            </div>
+            {lastResponse && <p className="mt-1 truncate font-mono text-[10px] text-[#525252]">{lastResponse}</p>}
+          </GlassCard>
+
+          <GlassCard accent={ACCENT_DECK} hover={false}>
+            <SectionTitle action={<HardDriveDownload className="h-3.5 w-3.5 text-[#A855F7]" />}>Stream Deck pack</SectionTitle>
+            <p className="text-xs text-[#A3A3A3]">Generate ready-to-use <span className="font-mono text-[#A855F7]">.ps1</span> scripts + <span className="font-mono text-[#A855F7]">.lnk</span> shortcuts for Stream Deck (System → Open → choose the .lnk).</p>
+            <div className="mt-2.5 flex flex-wrap gap-2">
+              <ActionButton accent={ACCENT_DECK} variant="solid" icon={HardDriveDownload} className="text-xs" disabled={exporting} onClick={() => void exportStreamDeckPack()}>{exporting ? "Exporting…" : "Export Final Stream Deck Pack"}</ActionButton>
+              <ActionButton accent={ACCENT_DECK} variant="ghost" icon={FolderOpen} className="text-xs" onClick={() => void openStreamDeckFolder()}>Open Export Folder</ActionButton>
+            </div>
+            {exportInfo ? (
+              <div className="mt-3 space-y-1 font-mono text-[10px] text-[#525252]">
+                <div className="flex items-center justify-between"><span>last export</span><span className="text-[#22C55E]">✓ {formatLocalDateTime(exportInfo.at)}</span></div>
+                <div className="flex items-center justify-between"><span>generated</span><span className="text-[#A3A3A3]">{exportInfo.scripts} scripts · {exportInfo.shortcuts} shortcuts · {exportInfo.categories} groups{exportInfo.placeholders ? ` · ${exportInfo.placeholders} placeholder${exportInfo.placeholders === 1 ? "" : "s"}` : ""}</span></div>
+                <p className="truncate text-[#525252]">{exportInfo.folder}</p>
+              </div>
+            ) : (
+              <p className="mt-2 font-mono text-[10px] text-[#525252]">No export yet · exports to streamdeck-actions/</p>
+            )}
+          </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle action={<button type="button" onClick={resetRoutineForm} className="text-[10px] text-[#A855F7]">+ new</button>}>Routines</SectionTitle>
+            {routinesState.routines.length === 0 ? <p className="text-xs text-[#525252]">No routines yet.</p> : (
+              <div className="space-y-2">
+                {routinesState.routines.map((routine) => (
+                  <div key={routine.id} className="glass-card flex items-center gap-3 p-2.5">
+                    <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{routine.name}</p><p className="font-mono text-[10px] text-[#525252]">{routine.steps.length} steps · {routine.lastRunAt ? formatLocalDateTime(routine.lastRunAt) : "never run"}</p></div>
+                    <ActionButton accent={ACCENT_DECK} icon={Play} className="text-xs" onClick={() => void runRoutine(routine)}>Run</ActionButton>
+                  </div>
+                ))}
+              </div>
+            )}
+            {routineStatus && <p className="mt-2 text-xs text-[#A3A3A3]">{routineStatus}</p>}
+          </GlassCard>
+        </div>
+      </div>
+
+      {/* Advanced: action browser, routine builder, dev project actions, endpoint */}
+      <details className="rounded-lg border border-[#1a1a1a] bg-[#080808]">
+        <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] text-[#525252] hover:text-[#A3A3A3]">advanced · action browser, routine builder, project actions, endpoint</summary>
+        <div className="space-y-4 border-t border-[#1a1a1a] p-3">
+          <Panel title="Deck endpoint">
+            <div className="settings-grid">
+              <article><span>Status</span><strong>{endpoint ? "running" : "loading"}</strong><p>Stream Deck control layer.</p></article>
+              <article><span>Security</span><strong>{lanOn ? "LAN enabled" : "local only"}</strong><p>PIN/token {tokenOn ? "enabled" : "disabled"}.</p></article>
+              <article><span>Base URL</span><strong className="technical">{endpoint ?? "Loading"}</strong><p>Use localhost by default.</p></article>
+            </div>
+            <div className="deck-endpoint-strip">
+              <PathText>{endpoint ? `${endpoint}/health` : "Loading endpoint"}</PathText>
+              <button type="button" onClick={() => void testControlEndpoint("/health")}>Test /health</button>
+              <button type="button" onClick={() => void copyText(controlEndpoint("/actions"), "Actions endpoint copied.")}>Copy /actions</button>
+              <button type="button" onClick={() => void copyText(controlEndpoint("/actions/pinned"), "Pinned endpoint copied.")}>Copy pinned</button>
+              <button type="button" onClick={() => void copyText(controlEndpoint("/routines"), "Routines endpoint copied.")}>Copy routines</button>
+              <button type="button" onClick={() => void runEndpointAction("deck.test_endpoint")}>Run test action</button>
+            </div>
+            {lastResponse && <p className="technical technical--truncate">Last response: {lastResponse}</p>}
+          </Panel>
+
+          <Panel title="Routine builder">
             <div className="deck-compact-form">
-              <label>
-                Name
-                <input
-                  value={routineForm.name}
-                  onChange={(event) => setRoutineForm((current) => ({ ...current, name: event.target.value }))}
-                  placeholder="Morning Review"
-                />
-              </label>
-              <label>
-                Enabled
-                <select
-                  value={routineForm.enabled ? "true" : "false"}
-                  onChange={(event) => setRoutineForm((current) => ({ ...current, enabled: event.target.value === "true" }))}
-                >
-                  <option value="true">Enabled</option>
-                  <option value="false">Disabled</option>
-                </select>
-              </label>
-              <label className="field-span-2">
-                Description
-                <input
-                  value={routineForm.description}
-                  onChange={(event) => setRoutineForm((current) => ({ ...current, description: event.target.value }))}
-                  placeholder="Open the local views I need first."
-                />
-              </label>
-              <label className="field-span-2">
-                Add step
-                <select
-                  value={routineForm.selectedActionId}
-                  onChange={(event) => setRoutineForm((current) => ({ ...current, selectedActionId: event.target.value }))}
-                >
-                  {routineSelectableActions.map((action) => (
-                    <option value={action.id} key={action.id}>{action.id}</option>
-                  ))}
-                </select>
-              </label>
+              <label>Name<input value={routineForm.name} onChange={(event) => setRoutineForm((current) => ({ ...current, name: event.target.value }))} placeholder="Morning Review" /></label>
+              <label>Enabled<select value={routineForm.enabled ? "true" : "false"} onChange={(event) => setRoutineForm((current) => ({ ...current, enabled: event.target.value === "true" }))}><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
+              <label className="field-span-2">Description<input value={routineForm.description} onChange={(event) => setRoutineForm((current) => ({ ...current, description: event.target.value }))} /></label>
+              <label className="field-span-2">Add step<select value={routineForm.selectedActionId} onChange={(event) => setRoutineForm((current) => ({ ...current, selectedActionId: event.target.value }))}>{routineSelectableActions.map((action) => <option value={action.id} key={action.id}>{action.id}</option>)}</select></label>
             </div>
             <div className="button-row">
               <button type="button" onClick={addRoutineStep}>Add step</button>
@@ -13293,133 +13595,47 @@ function DeckView({
               <button type="button" onClick={resetRoutineForm}>Reset</button>
             </div>
             <div className="deck-mini-list">
-              {routineForm.steps.length === 0 ? (
-                <EmptyState>No steps added yet.</EmptyState>
-              ) : (
-                routineForm.steps.map((step, index) => (
-                  <article className="deck-step-row" key={step.id}>
-                    <span>{index + 1}</span>
-                    <strong>{actionTitle(step.actionId)}</strong>
-                    <PathText>{step.actionId}</PathText>
-                    <div className="button-row">
-                      <button type="button" onClick={() => moveRoutineStep(index, -1)}>Up</button>
-                      <button type="button" onClick={() => moveRoutineStep(index, 1)}>Down</button>
-                      <button type="button" onClick={() => removeRoutineStep(index)}>Remove</button>
-                    </div>
-                  </article>
-                ))
-              )}
+              {routineForm.steps.map((step, index) => (
+                <article className="deck-step-row" key={step.id}><span>{index + 1}</span><strong>{actionTitle(step.actionId)}</strong><div className="button-row"><button type="button" onClick={() => moveRoutineStep(index, -1)}>Up</button><button type="button" onClick={() => moveRoutineStep(index, 1)}>Down</button><button type="button" onClick={() => removeRoutineStep(index)}>Remove</button></div></article>
+              ))}
             </div>
-            {routineStatus && <p className="inline-status">{routineStatus}</p>}
-            <PathText>{routinesState.routinesPath}</PathText>
-          </section>
+            <div className="deck-mini-list">
+              {routinesState.routines.map((routine) => (
+                <article className="deck-step-row accent-deck" key={routine.id}>
+                  <strong>{routine.name}</strong><span>{routine.steps.length} steps</span>
+                  <div className="button-row"><button type="button" onClick={() => void runRoutine(routine)}>Run</button><button type="button" onClick={() => editRoutine(routine)}>Edit</button><button className="danger-button" type="button" onClick={() => void deleteRoutine(routine)}>Delete</button></div>
+                </article>
+              ))}
+            </div>
+          </Panel>
 
-          <section className="deck-routine-list">
-            {routinesState.routines.length === 0 ? (
-              <EmptyState>No routines yet.</EmptyState>
-            ) : (
-              routinesState.routines.map((routine) => (
-                <details className="deck-routine-row accent-deck" key={routine.id}>
-                  <summary>
-                    <span className="library-item__chevron" aria-hidden="true" />
-                    <strong>{routine.name}</strong>
-                    <StatusBadge tone={routine.enabled ? "success" : "neutral"}>{routine.enabled ? "enabled" : "disabled"}</StatusBadge>
-                    <span>{routine.steps.length} steps</span>
-                    <span>{routine.lastRunAt ? formatLocalDateTime(routine.lastRunAt) : "never run"}</span>
-                  </summary>
-                  <div className="deck-routine-row__body">
-                    <p>{routine.description || "No description."}</p>
-                    <PathText>{routine.id}</PathText>
-                    <div className="deck-mini-list">
-                      {routine.steps.map((step, index) => (
-                        <article className="deck-step-row" key={step.id}>
-                          <span>{index + 1}</span>
-                          <strong>{actionTitle(step.actionId)}</strong>
-                          <PathText>{step.actionId}</PathText>
-                        </article>
-                      ))}
-                    </div>
-                    <div className="button-row">
-                      <button type="button" onClick={() => void runRoutine(routine)}>Run</button>
-                      <button type="button" onClick={() => editRoutine(routine)}>Edit</button>
-                      <button type="button" onClick={() => void copyEndpoint("deck.routine.run")}>Copy endpoint</button>
-                      <button className="danger-button" type="button" onClick={() => void deleteRoutine(routine)}>Delete</button>
-                    </div>
-                  </div>
-                </details>
-              ))
-            )}
-          </section>
-        </div>
-      </Panel>
+          <Panel title="Action Browser">
+            <div className="deck-filter-grid">
+              <label>Search<input value={actionSearch} onChange={(event) => setActionSearch(event.target.value)} placeholder="Action title or ID" /></label>
+              <label>Module<select value={moduleFilter} onChange={(event) => setModuleFilter(event.target.value)}><option value="all">All modules</option>{moduleOptions.map((module) => <option value={module} key={module}>{module}</option>)}</select></label>
+              <label>Danger<select value={dangerFilter} onChange={(event) => setDangerFilter(event.target.value)}><option value="all">All levels</option>{dangerOptions.map((danger) => <option value={danger} key={danger}>{danger}</option>)}</select></label>
+              <label className="checkbox-row"><input type="checkbox" checked={pinnedOnly} onChange={(event) => setPinnedOnly(event.target.checked)} /><span>Pinned only</span></label>
+            </div>
+            <div className="deck-panel-scroll">
+              {browserActions.length === 0 ? <EmptyState>No matching actions.</EmptyState> : browserActions.map((action) => renderDeckActionRow(action))}
+            </div>
+          </Panel>
 
-      <Panel title="Action Browser">
-        <div className="deck-filter-grid">
-          <label>
-            Search
-            <input value={actionSearch} onChange={(event) => setActionSearch(event.target.value)} placeholder="Action title or ID" />
-          </label>
-          <label>
-            Module
-            <select value={moduleFilter} onChange={(event) => setModuleFilter(event.target.value)}>
-              <option value="all">All modules</option>
-              {moduleOptions.map((module) => <option value={module} key={module}>{module}</option>)}
-            </select>
-          </label>
-          <label>
-            Danger
-            <select value={dangerFilter} onChange={(event) => setDangerFilter(event.target.value)}>
-              <option value="all">All levels</option>
-              {dangerOptions.map((danger) => <option value={danger} key={danger}>{danger}</option>)}
-            </select>
-          </label>
-          <label>
-            Project
-            <select value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)}>
-              <option value="all">All projects</option>
-              {projects.map((project) => <option value={project.id} key={project.id}>{project.name}</option>)}
-            </select>
-          </label>
-          <label className="checkbox-row">
-            <input type="checkbox" checked={pinnedOnly} onChange={(event) => setPinnedOnly(event.target.checked)} />
-            <span>Pinned only</span>
-          </label>
-          <label className="checkbox-row">
-            <input type="checkbox" checked={routineOnly} onChange={(event) => setRoutineOnly(event.target.checked)} />
-            <span>Routine actions only</span>
-          </label>
+          <Panel title="Dev Project Actions">
+            <div className="deck-panel-scroll">
+              {projectActionGroups.length === 0 ? <EmptyState>No matching Dev project actions.</EmptyState> : projectActionGroups.map((group) => (
+                <section className="deck-project-group" key={group.project.id}>
+                  <div className="deck-project-group__header"><strong>{group.project.name}</strong><span>{group.actions.length} actions</span></div>
+                  <div className="deck-action-table">{group.actions.map((action) => renderDeckActionRow(action, "accent-dev"))}</div>
+                </section>
+              ))}
+            </div>
+          </Panel>
         </div>
-        <div className="deck-panel-scroll">
-          {browserActions.length === 0 ? (
-            <EmptyState>No matching actions.</EmptyState>
-          ) : (
-            browserActions.map((action) => renderDeckActionRow(action))
-          )}
-        </div>
-      </Panel>
-
-      <Panel title="Dev Project Actions">
-        <div className="deck-panel-scroll">
-          {projectActionGroups.length === 0 ? (
-            <EmptyState>No matching Dev project actions. Add a project in Dev or adjust filters.</EmptyState>
-          ) : (
-            projectActionGroups.map((group) => (
-              <section className="deck-project-group" key={group.project.id}>
-                <div className="deck-project-group__header">
-                  <strong>{group.project.name}</strong>
-                  <span>{group.actions.length} actions</span>
-                  <PathText>{group.project.path}</PathText>
-                </div>
-                <div className="deck-action-table">
-                  {group.actions.map((action) => renderDeckActionRow(action, "accent-dev"))}
-                </div>
-              </section>
-            ))
-          )}
-        </div>
-      </Panel>
-    </section>
+      </details>
+    </div>
   );
+
 }
 
 function PlaceholderView({
@@ -13443,6 +13659,411 @@ function PlaceholderView({
         </button>
       </Panel>
     </section>
+  );
+}
+
+function ExternalDevicesView({
+  externalState,
+  onStateChange,
+  onAction,
+  onRefresh
+}: {
+  externalState: ExternalDevicesState;
+  onStateChange: (state: ExternalDevicesState) => void;
+  onAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>;
+  onRefresh: () => Promise<void>;
+}) {
+  const ACCENT_DEV2 = "#FB923C";
+  const [keyInput, setKeyInput] = useState("");
+  const [showKey, setShowKey] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("");
+  const [brightOverride, setBrightOverride] = useState<Record<string, number>>({});
+  const connected = externalState.providerStatus === "ready";
+  const group = externalState.groups[0];
+  const aliasOf = (d: ExternalDeviceCacheItem): string => d.userAlias || d.roomAlias || d.deviceName;
+
+  async function runDevice(actionId: string, params: Record<string, unknown>, message?: string): Promise<void> {
+    setBusy(true);
+    try {
+      const result = await onAction(actionId, "module_ui", params) as { ok?: boolean; error?: string; externalDevicesState?: ExternalDevicesState };
+      if (result.externalDevicesState) { onStateChange(result.externalDevicesState); }
+      else { onStateChange(await getBridge().getExternalDevicesState()); }
+      setStatus(result.ok === false ? result.error ?? "Action failed." : message ?? "");
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function toggleDevice(d: ExternalDeviceCacheItem): Promise<void> {
+    const on = d.lastKnownPowerState === "on";
+    await runDevice(on ? "external.govee.turn_off" : "external.govee.turn_on", { alias: aliasOf(d) }, on ? "Turned off." : "Turned on.");
+  }
+  async function setDeviceBrightness(d: ExternalDeviceCacheItem, value: number): Promise<void> {
+    setBrightOverride((current) => ({ ...current, [d.deviceId]: value }));
+    await runDevice("external.govee.set_brightness", { alias: aliasOf(d), brightness: value });
+  }
+  async function saveKey(): Promise<void> {
+    if (!keyInput.trim()) { return; }
+    setBusy(true);
+    try {
+      const result = await onAction("external.govee.update_settings", "module_ui", { goveeEnabled: true, apiKey: keyInput }) as { ok?: boolean; error?: string; externalDevicesState?: ExternalDevicesState };
+      if (result.externalDevicesState) { onStateChange(result.externalDevicesState); }
+      setStatus(result.ok === false ? result.error ?? "Save failed." : "Govee API key saved to Integration Keychain.");
+      setKeyInput("");
+      await onRefresh();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const QUICK: Array<{ id: string; label: string; icon: LucideIcon; c: string; action: string; params: Record<string, unknown> }> = group ? [
+    { id: "on", label: "On", icon: Power, c: "#22C55E", action: "external.govee.turn_on", params: { alias: group.name } },
+    { id: "off", label: "Off", icon: Power, c: "#525252", action: "external.govee.turn_off", params: { alias: group.name } },
+    { id: "b40", label: "Bright 40", icon: Sun, c: "#F59E0B", action: "external.govee.set_brightness", params: { alias: group.name, brightness: 40 } },
+    { id: "blue", label: "Blue", icon: Snowflake, c: "#38BDF8", action: "external.govee.set_color", params: { alias: group.name, color: "blue" } },
+    { id: "warm", label: "Warm", icon: Flame, c: "#FB923C", action: "external.govee.set_color_temperature", params: { alias: group.name, kelvin: 2700 } }
+  ] : [];
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_DEV2}40`, background: `${ACCENT_DEV2}14`, color: ACCENT_DEV2 }}><Lightbulb className="h-5 w-5" /></div>
+          <div><h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">External Devices</h1><p className="text-sm text-[#A3A3A3]">Govee &amp; smart-home control · voice-mapped</p></div>
+        </div>
+        <StatusChip tone={connected ? "ready" : "error"} pulse={connected}>{connected ? "Govee connected" : "Govee " + externalState.providerStatus.replace(/_/g, " ")}</StatusChip>
+      </div>
+
+      {!connected && (
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-[#EF4444]/25 bg-[#EF4444]/[0.08] px-4 py-3">
+          <span className="text-sm text-[#EF4444]">{externalState.providerMessage || "Govee is not ready — check API key & network."}</span>
+          <ActionButton accent="#EF4444" variant="ghost" icon={RefreshCw} disabled={busy} onClick={() => void runDevice("external.govee.refresh_devices", {}, "Refreshed devices.")}>Refresh</ActionButton>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+        <div className="space-y-5 lg:col-span-8">
+          <SectionTitle action={
+            <div className="flex gap-2">
+              <ActionButton accent={ACCENT_DEV2} variant="ghost" icon={Wifi} className="text-xs" disabled={busy} onClick={() => void runDevice("external.govee.test_connection", {}, "Connection tested.")}>Test</ActionButton>
+              <ActionButton accent={ACCENT_DEV2} variant="ghost" icon={RefreshCw} className="text-xs" disabled={busy} onClick={() => void runDevice("external.govee.refresh_devices", {}, "Refreshed devices.")}>Refresh</ActionButton>
+            </div>
+          }>Devices</SectionTitle>
+
+          {externalState.devices.length === 0 ? (
+            <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-[#262626] py-12 text-center"><Lightbulb className="h-8 w-8 text-[#525252]" /><p className="mt-2 text-sm text-[#A3A3A3]">No devices cached</p><p className="text-xs text-[#525252]">Add your Govee API key on the right, then Refresh.</p></div>
+          ) : (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              {externalState.devices.map((d) => {
+                const on = d.lastKnownPowerState === "on";
+                const glow = on ? ACCENT_DEV2 : "#1f1f1f";
+                const brightVal = brightOverride[d.deviceId] ?? d.lastKnownBrightness ?? 100;
+                return (
+                  <GlassCard key={d.deviceId} hover={false} className="flex flex-col items-center gap-3 py-5" style={{ boxShadow: on ? `inset 0 0 50px ${glow}22, 0 0 30px ${glow}22` : "none" }}>
+                    <div className="relative flex h-24 w-24 items-center justify-center">
+                      {on && <span className="absolute h-24 w-24 rounded-full blur-2xl" style={{ background: glow, opacity: 0.5 }} />}
+                      <div className="relative flex h-16 w-16 items-center justify-center rounded-full" style={{ background: on ? `${glow}33` : "#0d0d0d", border: `1px solid ${on ? glow : "#262626"}` }}>
+                        <Lightbulb className="h-7 w-7" style={{ color: on ? glow : "#525252", filter: on ? `drop-shadow(0 0 8px ${glow})` : "none" }} />
+                      </div>
+                    </div>
+                    <div className="text-center"><p className="text-sm font-medium text-[#F5F5F5]">{aliasOf(d)}</p><StatusChip tone={on ? "ready" : "offline"}>{on ? `on · ${brightVal}%` : "off"}</StatusChip></div>
+                    <div className="flex w-full items-center gap-2 px-2">
+                      <input type="range" min={0} max={100} step={1} value={brightVal} disabled={busy || !d.controllable} onChange={(event) => setBrightOverride((c) => ({ ...c, [d.deviceId]: Number(event.target.value) }))} onMouseUp={(event) => void setDeviceBrightness(d, Number((event.target as HTMLInputElement).value))} onTouchEnd={(event) => void setDeviceBrightness(d, Number((event.target as HTMLInputElement).value))} className="flex-1" />
+                      <button type="button" disabled={busy} onClick={() => void toggleDevice(d)} className={`flex h-8 w-8 items-center justify-center rounded-lg ${on ? "bg-[#22C55E]/15 text-[#22C55E]" : "bg-[#1a1a1a] text-[#525252]"}`}><Power className="h-4 w-4" /></button>
+                    </div>
+                  </GlassCard>
+                );
+              })}
+            </div>
+          )}
+
+          {group && (
+            <GlassCard accent={ACCENT_DEV2} hover={false}>
+              <SectionTitle action={<StatusChip tone="ready">group</StatusChip>}>{group.name}</SectionTitle>
+              {group.aliases.length > 0 && <p className="mb-3 text-xs text-[#A3A3A3]">aliases: <span className="font-mono text-[#FB923C]">{group.aliases.join(" · ")}</span></p>}
+              <div className="flex flex-wrap gap-2">
+                {QUICK.map((q) => {
+                  const QIcon = q.icon;
+                  return <button key={q.id} type="button" disabled={busy} onClick={() => void runDevice(q.action, q.params, `${group.name} → ${q.label}`)} className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium transition-all hover:brightness-125 disabled:opacity-40" style={{ borderColor: `${q.c}33`, color: q.c, background: `${q.c}10` }}><QIcon className="h-4 w-4" />{q.label}</button>;
+                })}
+              </div>
+            </GlassCard>
+          )}
+          {status && <p className="text-xs text-[#A3A3A3]">{status}</p>}
+        </div>
+
+        <div className="space-y-5 lg:col-span-4">
+          <GlassCard hover={false}>
+            <SectionTitle action={<KeyRound className="h-3.5 w-3.5 text-[#FB923C]" />}>Integration Keychain</SectionTitle>
+            {externalState.apiKeyStored ? (
+              <div className="flex items-center gap-2 rounded-lg border border-[#1f1f1f] bg-[#0a0a0a] px-3 py-2">
+                <span className="flex-1 font-mono text-sm text-[#A3A3A3]">{showKey ? "stored — re-enter to change" : "••••••••••••••••"}</span>
+                <button type="button" onClick={() => setShowKey((v) => !v)} className="text-[#525252] hover:text-[#FB923C]">{showKey ? <EyeOff className="h-4 w-4" /> : <Search className="h-4 w-4" />}</button>
+              </div>
+            ) : (
+              <p className="text-xs text-[#525252]">No Govee API key stored yet.</p>
+            )}
+            <div className="mt-2 flex gap-2">
+              <input type="password" value={keyInput} onChange={(event) => setKeyInput(event.target.value)} placeholder={externalState.apiKeyInKeychain ? "Enter replacement key" : "Paste Govee API key"} className="flex-1 rounded-lg border border-[#262626] bg-[#0a0a0a] px-2 py-1.5 text-xs text-[#F5F5F5]" />
+              <button type="button" disabled={busy || !keyInput.trim()} onClick={() => void saveKey()} className="rounded-md bg-[#FB923C] px-3 py-1.5 text-xs font-medium text-[#04121a] disabled:opacity-40">Save</button>
+            </div>
+            <p className="mt-2 text-xs text-[#525252]">Stored encrypted in local keychain ({externalState.keychainStorageMethod ?? "encrypted"}) · never synced.</p>
+          </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle>Provider</SectionTitle>
+            <div className="glass-card flex items-center gap-3 p-3">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg" style={{ background: `${ACCENT_DEV2}16`, color: ACCENT_DEV2 }}><Lightbulb className="h-4 w-4" /></div>
+              <div className="flex-1"><p className="text-sm font-medium text-[#F5F5F5]">Govee</p><p className="font-mono text-[10px] text-[#525252]">{externalState.devices.length} devices · {externalState.groups.length} group{externalState.groups.length === 1 ? "" : "s"}</p></div>
+              <StatusChip tone={connected ? "ok" : "error"} />
+            </div>
+          </GlassCard>
+
+          <GlassCard accent="#06B6D4" hover={false}>
+            <SectionTitle>Voice mapping</SectionTitle>
+            <p className="text-sm text-[#A3A3A3]">Say <span className="font-mono text-[#06B6D4]">"turn on {group?.aliases?.[0] ?? "room lights"}"</span> or <span className="font-mono text-[#06B6D4]">"set brightness 40"</span> — DexNest maps to Govee actions.</p>
+          </GlassCard>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BackupView({
+  backupState,
+  onAction,
+  onRefresh
+}: {
+  backupState: BackupState;
+  onAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>;
+  onRefresh: () => Promise<void>;
+}) {
+  const ACCENT_BACKUP = "#0EA5E9";
+  const [options, setOptions] = useState<BackupOptions>(backupState.defaultOptions);
+  const [restorePath, setRestorePath] = useState("");
+  const [preview, setPreview] = useState<BackupPreview | null>(null);
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const latest = backupState.backups[0];
+
+  async function createBackup(): Promise<void> {
+    setBusy(true);
+    setMessage("Creating DexNest backup…");
+    const result = await onAction("backup.create", "module_ui", options) as { ok?: boolean; error?: string };
+    setMessage(result.ok ? "Backup created." : result.error ?? "Backup failed.");
+    setBusy(false);
+    await onRefresh();
+  }
+  async function chooseBackup(): Promise<void> {
+    const selected = await getBridge().selectBackupZip();
+    if (selected) { setRestorePath(selected); setPreview(null); void previewRestore(selected); }
+  }
+  async function deleteBackup(target: { path: string; fileName: string }): Promise<void> {
+    if (!window.confirm(`Delete backup "${target.fileName}" from disk? This cannot be undone.`)) { return; }
+    const result = await onAction("backup.delete_file", "module_ui", { path: target.path, fileName: target.fileName, confirmedDangerous: true }) as { ok?: boolean; error?: string };
+    if (result.ok) {
+      if (restorePath === target.path) { setRestorePath(""); setPreview(null); }
+      setMessage("Backup deleted.");
+      await onRefresh();
+    } else {
+      setMessage(result.error ?? "Could not delete backup.");
+    }
+  }
+  async function previewRestore(path = restorePath): Promise<void> {
+    if (!path) { return; }
+    const result = await onAction("backup.preview_restore", "module_ui", { path }) as { ok?: boolean; preview?: BackupPreview; error?: string };
+    if (result.ok && result.preview) { setPreview(result.preview); } else { setMessage(result.error ?? "Preview failed."); }
+  }
+  async function restoreBackup(): Promise<void> {
+    if (!restorePath) { setMessage("Choose a backup file first."); return; }
+    if (!window.confirm("Restore will replace current DexNest local data. A safety backup is made first. Continue?")) { return; }
+    const result = await onAction("backup.restore_confirmed", "module_ui", { path: restorePath, confirmedDangerous: true }) as { ok?: boolean; error?: string };
+    setMessage(result.ok ? "Restore completed." : result.error ?? "Restore failed.");
+    await onRefresh();
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_BACKUP}40`, background: `${ACCENT_BACKUP}14`, color: ACCENT_BACKUP }}><HardDriveDownload className="h-5 w-5" /></div>
+          <div><h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Backup &amp; Restore</h1><p className="text-sm text-[#A3A3A3]">Encrypted local snapshots · {backupState.backups.length} backups</p></div>
+        </div>
+        <StatusChip tone={latest ? "ok" : "info"}>{latest ? "Last backup ✓" : "No backups yet"}</StatusChip>
+      </div>
+
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+        <div className="space-y-5 lg:col-span-7">
+          <GlassCard accent={ACCENT_BACKUP} hover={false} className="flex items-center gap-4">
+            <ProgressRing value={100} size={64} color={ACCENT_BACKUP} label={busy ? "…" : "✓"} sub="ready" />
+            <div className="flex-1">
+              <SectionTitle>Create backup</SectionTitle>
+              <p className="mb-2.5 text-xs text-[#A3A3A3]">Snapshot Vault, Journal, Finance, Finder &amp; settings.</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <ActionButton accent={ACCENT_BACKUP} variant="solid" icon={Plus} disabled={busy} onClick={() => void createBackup()}>Backup now</ActionButton>
+                <label className="flex items-center gap-2 text-xs text-[#A3A3A3]">
+                  <button type="button" role="switch" aria-checked={options.includeSecureVault} onClick={() => setOptions({ ...options, includeSecureVault: !options.includeSecureVault })} className="relative h-5 w-9 rounded-full transition-colors" style={{ background: options.includeSecureVault ? ACCENT_BACKUP : "#262626" }}><span className="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" style={{ left: options.includeSecureVault ? "1.125rem" : "0.125rem" }} /></button>
+                  Include Secure Vault
+                </label>
+              </div>
+            </div>
+          </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle action={<button type="button" onClick={() => void onAction("backup.open_folder")} className="flex items-center gap-1 text-[10px] text-[#525252] hover:text-[#A3A3A3]"><FolderOpen className="h-3 w-3" />folder</button>}>Backups</SectionTitle>
+            {backupState.backups.length === 0 ? <p className="text-xs text-[#525252]">No backups yet. Create your first snapshot above.</p> : (
+              <div className="space-y-1.5">
+                {backupState.backups.map((b) => {
+                  const active = restorePath === b.path;
+                  return (
+                    <div key={b.path} className={`glass-card flex w-full items-center gap-3 p-3 transition-colors ${active ? "border-[#0EA5E9]/40 bg-[#0EA5E9]/[0.06]" : ""}`}>
+                      <button type="button" onClick={() => { setRestorePath(b.path); void previewRestore(b.path); }} className="flex min-w-0 flex-1 items-center gap-3 text-left">
+                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#0EA5E9]/12 text-[#0EA5E9]"><HardDriveDownload className="h-4 w-4" /></div>
+                        <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{formatLocalDateTime(b.createdAt)}</p><p className="font-mono text-[10px] text-[#525252]">{formatBytes(b.sizeBytes)} · {b.fileName}</p></div>
+                      </button>
+                      <StatusChip tone="ok">ready</StatusChip>
+                      <button type="button" title="Delete backup file from disk" onClick={() => void deleteBackup(b)} className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#EF4444]/10 hover:text-[#EF4444]"><Trash2 className="h-3.5 w-3.5" /></button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </GlassCard>
+        </div>
+
+        <div className="space-y-5 lg:col-span-5">
+          <GlassCard accent="#F59E0B" hover={false}>
+            <SectionTitle action={<button type="button" onClick={() => void chooseBackup()} className="flex items-center gap-1 text-[10px] text-[#525252] hover:text-[#A3A3A3]"><RotateCcw className="h-3 w-3" />choose file</button>}>Restore preview</SectionTitle>
+            {preview ? (
+              <div className="space-y-1.5 text-xs">
+                <div className="flex items-center justify-between"><span className="text-[#A3A3A3]">size</span><span className="font-mono text-[#F5F5F5]">{formatBytes(preview.sizeBytes)}</span></div>
+                <div className="flex items-center justify-between"><span className="text-[#A3A3A3]">entries</span><span className="font-mono text-[#F5F5F5]">{preview.entries.length}</span></div>
+                <div className="flex items-center justify-between"><span className="text-[#A3A3A3]">contents</span><span className="font-mono text-[#F5F5F5]">{preview.topLevel.slice(0, 4).join(", ") || "—"}</span></div>
+              </div>
+            ) : <p className="text-xs text-[#525252]">Select a backup to preview, or choose a file.</p>}
+            <div className="mt-3 flex items-center gap-2 rounded-lg border border-[#EF4444]/25 bg-[#EF4444]/[0.07] px-3 py-2 text-xs text-[#EF4444]"><AlertTriangle className="h-3.5 w-3.5 shrink-0" />Restoring overwrites current local data. This cannot be undone.</div>
+            <button type="button" disabled={!restorePath} onClick={() => void restoreBackup()} className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-[#F59E0B] px-4 py-2 text-sm font-semibold text-[#04121a] transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"><RotateCcw className="h-4 w-4" />Restore this backup</button>
+          </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle action={<ShieldCheck className="h-3.5 w-3.5 text-[#22C55E]" />}>Backup options</SectionTitle>
+            <div className="space-y-1">
+              {([
+                ["includeSettings", "Settings"], ["includeFiles", "Files"], ["includeVaultDocuments", "Vault documents"],
+                ["includeSecureVault", "Secure Vault"], ["includeReceipts", "Receipts"], ["includeDropFiles", "Drop files"], ["includeIndex", "Search index"]
+              ] as Array<[keyof BackupOptions, string]>).map(([key, label]) => (
+                <label key={key} className="flex items-center justify-between py-1 text-xs text-[#F5F5F5]">
+                  {label}
+                  <button type="button" role="switch" aria-checked={options[key]} onClick={() => setOptions({ ...options, [key]: !options[key] })} className="relative h-5 w-9 rounded-full transition-colors" style={{ background: options[key] ? ACCENT_BACKUP : "#262626" }}><span className="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" style={{ left: options[key] ? "1.125rem" : "0.125rem" }} /></button>
+                </label>
+              ))}
+            </div>
+            <p className="mt-2 font-mono text-[10px] text-[#525252]">{backupState.backupFolderPath}</p>
+          </GlassCard>
+        </div>
+      </div>
+      {message && <p className="text-xs text-[#A3A3A3]">{message}</p>}
+    </div>
+  );
+}
+
+function AppHealthView({
+  healthState,
+  onRunChecks,
+  onAction
+}: {
+  healthState: AppHealthState | null;
+  onRunChecks: () => Promise<void>;
+  onAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>;
+}) {
+  const ACCENT_HEALTH = "#34D399";
+  const perf = useSyncExternalStore(subscribePerf, getPerfStats, getPerfStats);
+  const [running, setRunning] = useState(false);
+  const hasRun = Boolean(healthState?.checkedAt);
+  const summary = healthState?.summary ?? { pass: 0, warn: 0, fail: 0 };
+  const total = summary.pass + summary.warn + summary.fail;
+  const score = total > 0 ? Math.round((summary.pass / total) * 100) : 100;
+  const allChecks = (healthState?.groups ?? []).flatMap((g) => g.checks);
+  const problems = allChecks.filter((c) => c.status !== "pass");
+  const statusIcon = (s: HealthStatus) => s === "pass" ? <CheckCircle2 className="h-4 w-4 text-[#22C55E]" /> : s === "warn" ? <AlertTriangle className="h-4 w-4 text-[#F59E0B]" /> : <AlertTriangle className="h-4 w-4 text-[#EF4444]" />;
+  async function handleRunChecks(): Promise<void> {
+    setRunning(true);
+    try { await onRunChecks(); } finally { setRunning(false); }
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_HEALTH}40`, background: `${ACCENT_HEALTH}14`, color: ACCENT_HEALTH }}><Stethoscope className="h-5 w-5" /></div>
+          <div><h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">App Health</h1><p className="text-sm text-[#A3A3A3]">System diagnostics &amp; worker status</p></div>
+        </div>
+        <div className="flex items-center gap-2">
+          {running && <InlineLoadingState accent={ACCENT_HEALTH} label="Running checks…" />}
+          {!running && hasRun && <StatusChip tone="info">checked {formatLocalDateTime(healthState!.checkedAt)}</StatusChip>}
+          {summary.warn + summary.fail > 0 && <StatusChip tone={summary.fail > 0 ? "error" : "warn"}>{summary.warn} warnings · {summary.fail} failures</StatusChip>}
+          <ActionButton accent={ACCENT_HEALTH} variant="ghost" icon={RotateCcw} disabled={running} onClick={() => void handleRunChecks()}>{running ? "Running…" : "Run checks"}</ActionButton>
+        </div>
+      </div>
+
+      {!hasRun && !running && (
+        <LoadingStatusCard accent={ACCENT_HEALTH} title="No health check has run yet" message="Checks are on-demand only — run them to see local-data safety, Git safety, registry, Secure Vault and integration status." />
+      )}
+
+      <GlassCard hover={false}>
+        <SectionTitle>Module load metrics</SectionTitle>
+        <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 font-mono text-xs sm:grid-cols-4">
+          <div className="flex items-center justify-between"><span className="text-[#525252]">last switch</span><span className="text-[#A3A3A3]">{perf.lastModule || "—"} {perf.lastModuleSwitchMs != null ? `· ${perf.lastModuleSwitchMs}ms` : ""}</span></div>
+          <div className="flex items-center justify-between"><span className="text-[#525252]">worst switch</span><span className="text-[#A3A3A3]">{perf.worstModuleSwitchMs != null ? `${perf.worstModuleSwitchMs}ms` : "—"}</span></div>
+          <div className="flex items-center justify-between"><span className="text-[#525252]">last data load</span><span className="text-[#A3A3A3]">{perf.lastDataLoadModule || "—"} {perf.lastDataLoadMs != null ? `· ${perf.lastDataLoadMs}ms` : ""}</span></div>
+          <div className="flex items-center justify-between"><span className="text-[#525252]">total ready</span><span className="text-[#A3A3A3]">{perf.lastTotalReadyMs != null ? `${perf.lastTotalReadyMs}ms` : "—"}</span></div>
+        </div>
+        {perf.slowModuleWarning && <p className="mt-2 flex items-center gap-1.5 text-[11px] text-[#F59E0B]"><AlertTriangle className="h-3 w-3" />{perf.slowModuleWarning}</p>}
+      </GlassCard>
+
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <GlassCard hover={false} accent={ACCENT_HEALTH} className="flex flex-col items-center justify-center py-5">
+          <ProgressRing value={score} size={84} color={ACCENT_HEALTH} label={`${score}`} sub="health" />
+          <p className="mt-2 text-xs text-[#A3A3A3]">Overall score</p>
+        </GlassCard>
+        <GlassCard hover={false}><p className="text-[10px] uppercase tracking-wider text-[#525252]">Passing</p><p className="mt-2 text-3xl font-semibold text-[#F5F5F5]">{summary.pass}</p></GlassCard>
+        <GlassCard hover={false}><p className="text-[10px] uppercase tracking-wider text-[#525252]">Warnings</p><p className="mt-2 text-3xl font-semibold" style={{ color: summary.warn ? "#F59E0B" : "#F5F5F5" }}>{summary.warn}</p></GlassCard>
+        <GlassCard hover={false}><p className="text-[10px] uppercase tracking-wider text-[#525252]">Failures</p><p className="mt-2 text-3xl font-semibold" style={{ color: summary.fail ? "#EF4444" : "#F5F5F5" }}>{summary.fail}</p></GlassCard>
+      </div>
+
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+        {(healthState?.groups ?? []).map((group) => (
+          <GlassCard key={group.id} hover={false}>
+            <SectionTitle>{group.title}</SectionTitle>
+            <div className="space-y-1.5">
+              {group.checks.map((check) => (
+                <div key={check.id} className="flex items-center gap-3 rounded-lg border border-[#161616] bg-[#0a0a0a] px-3 py-2">
+                  <div className="min-w-0 flex-1"><p className="text-sm text-[#F5F5F5]">{check.label}</p><p className="truncate font-mono text-[10px] text-[#525252]">{check.detail}</p></div>
+                  {statusIcon(check.status)}
+                </div>
+              ))}
+            </div>
+          </GlassCard>
+        ))}
+      </div>
+
+      {problems.length > 0 && (
+        <GlassCard accent="#EF4444" hover={false}>
+          <SectionTitle action={<StatusChip tone="error">action needed</StatusChip>}>Warnings &amp; failures</SectionTitle>
+          <div className="space-y-1.5">
+            {problems.map((check) => (
+              <div key={check.id} className="flex items-center gap-3 rounded-lg border border-[#161616] bg-[#0a0a0a] px-3 py-2">
+                {statusIcon(check.status)}
+                <span className="flex-1 text-sm text-[#F5F5F5]">{check.label}: {check.detail}</span>
+                {check.suggestion && <span className="text-[11px] text-[#A3A3A3]">{check.suggestion}</span>}
+              </div>
+            ))}
+          </div>
+        </GlassCard>
+      )}
+
+      {!healthState && <p className="text-xs text-[#525252]">Loading diagnostics… or click “Run checks”.</p>}
+    </div>
   );
 }
 
@@ -13496,6 +14117,8 @@ function AuditView({
 }
 
 function SettingsView({
+  userName,
+  onUserNameChange,
   appInfo,
   backupState,
   calendarState,
@@ -13517,6 +14140,8 @@ function SettingsView({
   onPerformanceChanged,
   onRefresh
 }: {
+  userName: string;
+  onUserNameChange: (name: string) => void;
   appInfo: AppInfo | null;
   backupState: BackupState;
   calendarState: CalendarState;
@@ -13539,6 +14164,31 @@ function SettingsView({
   onRefresh: () => Promise<void>;
 }) {
   const perf = useSyncExternalStore(subscribePerf, getPerfStats, getPerfStats);
+  const [settingsSection, setSettingsSection] = useState("profile");
+  const [reduceMotion, setReduceMotion] = useState(() => { try { return localStorage.getItem("dexnest:reduceMotion") === "1"; } catch { return false; } });
+  const [showGrain, setShowGrain] = useState(() => { try { return localStorage.getItem("dexnest:grain") !== "0"; } catch { return true; } });
+  useEffect(() => {
+    try { localStorage.setItem("dexnest:reduceMotion", reduceMotion ? "1" : "0"); } catch { /* ignore */ }
+    document.documentElement.setAttribute("data-reduce-motion", reduceMotion ? "true" : "false");
+  }, [reduceMotion]);
+  useEffect(() => {
+    try { localStorage.setItem("dexnest:grain", showGrain ? "1" : "0"); } catch { /* ignore */ }
+    document.documentElement.setAttribute("data-grain", showGrain ? "true" : "false");
+  }, [showGrain]);
+  const settingsSections: Array<{ id: string; label: string; icon: LucideIcon; accent: string }> = [
+    { id: "profile", label: "Profile", icon: User, accent: "#22D3EE" },
+    { id: "appearance", label: "Appearance", icon: Palette, accent: "#22D3EE" },
+    { id: "controls", label: "Controls & Shortcuts", icon: Keyboard, accent: "#6366F1" },
+    { id: "speech", label: "Speech / Voice Engine", icon: AudioLines, accent: "#06B6D4" },
+    { id: "wake", label: "Ambient Voice / Wake", icon: Mic, accent: "#22D3EE" },
+    { id: "voice", label: "Things you can say", icon: AudioLines, accent: "#22D3EE" },
+    { id: "devices", label: "External Devices", icon: Lightbulb, accent: "#FB923C" },
+    { id: "performance", label: "Performance Mode", icon: Cpu, accent: "#F59E0B" },
+    { id: "startup", label: "Startup & Tray", icon: Power, accent: "#A855F7" },
+    { id: "nudges", label: "Reminders & Nudges", icon: Bell, accent: "#14B8A6" },
+    { id: "data", label: "Data Management", icon: Trash2, accent: "#FB4D6A" },
+    { id: "diagnostics", label: "Diagnostics", icon: Wrench, accent: "#3B82F6" }
+  ];
   const [backupOptions, setBackupOptions] = useState<BackupOptions>(backupState.defaultOptions);
   const [restorePath, setRestorePath] = useState("");
   const [restorePreview, setRestorePreview] = useState<BackupPreview | null>(null);
@@ -13690,9 +14340,7 @@ function SettingsView({
     });
   }, [calendarState.nudgeSettings]);
 
-  useEffect(() => {
-    void runHealthCheck();
-  }, []);
+  // App Health checks are on-demand only — never auto-run on Settings open.
 
   const rows = [
     ["Data root", appInfo?.dataRoot ?? "Loading"],
@@ -13781,7 +14429,9 @@ function SettingsView({
   async function savePerformanceOptions(): Promise<void> {
     setPerformanceSaving(true);
     try {
-      await onPerformanceChanged(performanceForm);
+      // Saving worker toggles must never change the on/off state — keep it aligned
+      // with the live runtime so a stale form value can't flip Performance Mode.
+      await onPerformanceChanged({ ...performanceForm, performanceModeEnabled: performanceModeState.enabled });
       setHealthStatus("Performance Mode settings saved.");
     } finally {
       setPerformanceSaving(false);
@@ -13807,9 +14457,7 @@ function SettingsView({
     setAmbientSaving(true);
     try {
       await onAmbientVoiceChanged(ambientForm);
-      setAmbientStatus("Ambient Voice settings saved.");
-      await runHealthCheck();
-    } finally {
+      setAmbientStatus("Ambient Voice settings saved.");    } finally {
       setAmbientSaving(false);
     }
   }
@@ -14008,9 +14656,7 @@ function SettingsView({
     try {
       const result = await onAction("system.lifecycle.update_settings", "module_ui", lifecycleForm) as { ok?: boolean; error?: string };
       setHealthStatus(result.ok === false ? result.error ?? "Startup and tray settings saved with warnings." : "Startup and tray settings saved.");
-      await onRefresh();
-      await runHealthCheck();
-    } finally {
+      await onRefresh();    } finally {
       setLifecycleSaving(false);
     }
   }
@@ -14046,9 +14692,7 @@ function SettingsView({
       await onAction("system.keyboard_shortcuts.update_settings", "module_ui", keyboardForm);
       await onAction("system.stream_deck.update_settings", "module_ui", streamDeckForm);
       setHealthStatus("Controls and shortcuts saved.");
-      await onRefresh();
-      await runHealthCheck();
-    } finally {
+      await onRefresh();    } finally {
       setControlsSaving(false);
     }
   }
@@ -14288,9 +14932,72 @@ function SettingsView({
   }
 
   return (
-    <section className="view-stack" aria-labelledby="settings-title">
-      <PageHeader eyebrow="Local-only configuration" title="Settings" titleId="settings-title" />
-
+    <div className="space-y-6">
+      <div className="flex items-center gap-3">
+        <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: "#22D3EE40", background: "#22D3EE14", color: "#22D3EE" }}><SettingsIcon className="h-5 w-5" /></div>
+        <div><h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Settings</h1><p className="text-sm text-[#A3A3A3]">Configure DexNest · all local</p></div>
+      </div>
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+        <nav className="space-y-0.5 lg:col-span-3">
+          {settingsSections.map((s) => { const SIcon = s.icon; const active = settingsSection === s.id; return (
+            <button key={s.id} type="button" onClick={() => setSettingsSection(s.id)} className={`flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left text-sm transition-colors ${active ? "bg-[#111] text-[#F5F5F5]" : "text-[#A3A3A3] hover:bg-[#0d0d0d]"}`}>
+              <SIcon className="h-4 w-4" style={{ color: s.accent, opacity: active ? 1 : 0.68 }} />
+              <span className="truncate">{s.label}</span>
+            </button>
+          ); })}
+        </nav>
+        <div className="settings-modern space-y-5 lg:col-span-9">
+          {settingsSection === "profile" && (
+            <GlassCard hover={false}>
+              <SectionTitle>Profile</SectionTitle>
+              <div className="py-2">
+                <p className="text-sm text-[#F5F5F5]">Display name</p>
+                <p className="mb-2.5 text-xs text-[#525252]">Shown across DexNest — the greeting and your profile chip.</p>
+                <input
+                  value={userName}
+                  onChange={(event) => onUserNameChange(event.target.value.slice(0, 40))}
+                  maxLength={40}
+                  placeholder="Your name or nickname"
+                  className="h-9 w-full max-w-xs rounded-lg border border-[#262626] bg-[#0A0A0A] px-3 text-sm text-[#F5F5F5] placeholder:text-[#525252] transition-colors focus:border-[#22D3EE]/50 focus:outline-none"
+                />
+                <p className="mt-3 text-xs text-[#A3A3A3]">Preview: <span className="font-medium text-[#F5F5F5]">Good evening, {userName.trim() || "there"}.</span></p>
+              </div>
+            </GlassCard>
+          )}
+          {settingsSection === "appearance" && (
+            <GlassCard hover={false}>
+              <SectionTitle>Appearance</SectionTitle>
+              <div className="divide-y divide-[#141414]">
+                <div className="flex items-center justify-between py-3"><div><p className="text-sm text-[#F5F5F5]">Reduce motion</p><p className="text-xs text-[#525252]">Disable subtle animations across DexNest</p></div><button type="button" role="switch" aria-checked={reduceMotion} onClick={() => setReduceMotion((v) => !v)} className="relative h-5 w-9 rounded-full transition-colors" style={{ background: reduceMotion ? "#22D3EE" : "#262626" }}><span className="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" style={{ left: reduceMotion ? "1.125rem" : "0.125rem" }} /></button></div>
+                <div className="flex items-center justify-between py-3"><div><p className="text-sm text-[#F5F5F5]">Show grain texture</p><p className="text-xs text-[#525252]">Filmic noise overlay</p></div><button type="button" role="switch" aria-checked={showGrain} onClick={() => setShowGrain((v) => !v)} className="relative h-5 w-9 rounded-full transition-colors" style={{ background: showGrain ? "#22D3EE" : "#262626" }}><span className="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" style={{ left: showGrain ? "1.125rem" : "0.125rem" }} /></button></div>
+              </div>
+            </GlassCard>
+          )}
+          {settingsSection === "voice" && (
+            <GlassCard hover={false}>
+              <SectionTitle action={<span className="font-mono text-[10px] text-[#525252]">J=Hey Jarvis · P=push-to-talk · T=typed · D=Deck/shortcut</span>}>Things you can say</SectionTitle>
+              <p className="mb-3 text-xs text-[#A3A3A3]">Speak through Hey Jarvis, push-to-talk, the Ask DexNest mic, or type — all route through the same capability resolver (fast-path → rules → local LLM). Confirmation is only asked where the action already requires it.</p>
+              <div className="space-y-4">
+                {VOICE_CAPABILITY_GROUPS.map((group) => (
+                  <div key={group.module}>
+                    <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider" style={{ color: group.accent }}>{group.module}</p>
+                    <div className="space-y-1.5">
+                      {group.items.map((item) => (
+                        <div key={item.label} className="rounded-lg border border-[#1a1a1a] bg-[#0a0a0a] px-3 py-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-sm text-[#F5F5F5]">{item.label}</span>
+                            <span className="flex shrink-0 gap-1">{item.sources.map((s) => <span key={s} className="rounded border border-[#262626] px-1 font-mono text-[9px] text-[#A3A3A3]" title={s === "J" ? "Hey Jarvis" : s === "P" ? "Push-to-talk" : s === "T" ? "Typed Ask DexNest" : "Stream Deck / shortcut"}>{s}</span>)}</span>
+                          </div>
+                          <p className="mt-0.5 font-mono text-[11px] text-[#525252]">{item.examples.map((e) => `"${e}"`).join("  ·  ")}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </GlassCard>
+          )}
+          {settingsSection === "controls" && (
       <Panel title="Command Access">
         <div className="settings-grid">
           <article>
@@ -14336,7 +15043,9 @@ function SettingsView({
         </div>
         <p>Some apps may reserve shortcuts. Use a fallback if Ctrl+Space cannot register.</p>
       </Panel>
+          )}
 
+          {settingsSection === "speech" && (
       <Panel title="Speech / Voice Engine">
         <div className="settings-grid">
           <article>
@@ -14435,6 +15144,11 @@ function SettingsView({
           <label>
             Max background continuation (ms)
             <input type="number" min="800" max="8000" step="100" value={speechForm.maxPostSpeechListenMs ?? 2500} onChange={(event) => updateSpeechOption("maxPostSpeechListenMs", Number(event.target.value) || 2500)} />
+          </label>
+          <label>
+            Mic sensitivity ({Math.round((speechForm.micSensitivity ?? 0.6) * 100)}%)
+            <input type="range" min="0" max="1" step="0.05" value={speechForm.micSensitivity ?? 0.6} onChange={(event) => updateSpeechOption("micSensitivity", Number(event.target.value))} />
+            <span className="technical">Higher = picks up quieter / further speech (lowers the detection threshold). Raise this if voice commands often capture nothing.</span>
           </label>
           <label>
             Speech threshold margin
@@ -14544,7 +15258,9 @@ function SettingsView({
           <div className="settings-row"><span>Last latency</span><strong>{speechState.modelStatus.lastLatencyMs === null || speechState.modelStatus.lastLatencyMs === undefined ? "not measured" : `${speechState.modelStatus.lastLatencyMs} ms`}</strong></div>
         </div>
       </Panel>
+          )}
 
+          {settingsSection === "wake" && (
       <Panel title="Ambient Voice">
         <div className="settings-grid">
           <article>
@@ -14559,7 +15275,7 @@ function SettingsView({
           </article>
           <article>
             <span>Wake word state</span>
-            <strong>{speechState.performancePaused && (ambientForm.pauseWakeWordInPerformanceMode ?? true) ? "paused_by_performance_mode" : wakeWordState.status}</strong>
+            <strong>{wakeWordState.status}</strong>
             <p className="technical">engine: {ambientForm.wakeWordEngine ?? "placeholder"} · {wakeWordState.engineInstalled ? "installed" : "wake engine not installed"}</p>
           </article>
           <article>
@@ -14620,17 +15336,14 @@ function SettingsView({
             <input type="checkbox" checked={ambientForm.allowWakeWordSensitiveLookup ?? false} onChange={(event) => updateAmbientOption("allowWakeWordSensitiveLookup", event.target.checked)} />
             <span>Allow wake-word sensitive lookups (off by default)</span>
           </label>
-          <label className="checkbox-row">
-            <input type="checkbox" checked={ambientForm.pauseWakeWordInPerformanceMode ?? true} onChange={(event) => updateAmbientOption("pauseWakeWordInPerformanceMode", event.target.checked)} />
-            <span>Pause wake word in Performance Mode</span>
-          </label>
+          <p className="technical">Wake word stays active even in Performance Mode — it is the always-available voice entry point.</p>
           <label className="checkbox-row">
             <input type="checkbox" checked={ambientForm.playWakeSound ?? true} onChange={(event) => updateAmbientOption("playWakeSound", event.target.checked)} />
             <span>Play wake chime</span>
           </label>
           <div className="button-row">
             <button type="button" onClick={() => void onCheckWake()}>Check wake engine</button>
-            <button type="button" onClick={() => onTestWake()} disabled={speechState.performancePaused && (ambientForm.pauseWakeWordInPerformanceMode ?? true)}>Test wake trigger</button>
+            <button type="button" onClick={() => onTestWake()}>Test wake trigger</button>
             <button type="button" onClick={() => onStartWake()}>Start wake service</button>
             <button type="button" onClick={() => onStopWake()}>Stop wake service</button>
           </div>
@@ -14781,7 +15494,9 @@ function SettingsView({
         {ambientVoiceState.settings.pushToTalkShortcutLastError && <p className="status-text status-text--error">{ambientVoiceState.settings.pushToTalkShortcutLastError}</p>}
         {ambientStatus && <p className="status-text">{ambientStatus}</p>}
       </Panel>
+          )}
 
+          {settingsSection === "controls" && (
       <Panel title="Controls and Shortcuts">
         <div className="settings-grid">
           <article>
@@ -14866,7 +15581,9 @@ function SettingsView({
           <div className="settings-row"><span>Run routine</span><strong className="technical">{appInfo?.actionEndpoint ? `${appInfo.actionEndpoint}/routines/run` : "Loading"}</strong></div>
         </div>
       </Panel>
+          )}
 
+          {settingsSection === "devices" && (
       <Panel title="External Devices">
         <div className="settings-grid">
           <article>
@@ -15086,7 +15803,9 @@ function SettingsView({
           <div className="settings-row"><span>Action example</span><strong className="technical">external.govee.turn_on {"{ alias: \"room lights\" }"}</strong></div>
         </div>
       </Panel>
+          )}
 
+          {settingsSection === "startup" && (
       <Panel title="Startup and Tray">
         <div className="settings-grid">
           <article>
@@ -15166,7 +15885,9 @@ function SettingsView({
         </div>
         <p className="technical">{appInfo?.appLifecycleSettingsPath ?? "./local-data/settings/app-lifecycle-settings.json"}</p>
       </Panel>
+          )}
 
+          {settingsSection === "performance" && (
       <Panel title="Performance Mode">
         <div className="performance-card">
           <div>
@@ -15222,57 +15943,10 @@ function SettingsView({
         </div>
         <p className="technical">{appInfo?.performanceModeSettingsPath ?? "./local-data/settings/performance-mode-settings.json"}</p>
       </Panel>
-
-      <Panel title="App Health">
-        <div className="health-summary">
-          <div>
-            <span>Overall</span>
-            <StatusBadge tone={healthState ? healthTone(healthState.overallStatus) : "info"}>{healthState?.overallStatus ?? "not checked"}</StatusBadge>
-          </div>
-          <div>
-            <span>Pass</span>
-            <strong className="technical">{healthState?.summary.pass ?? 0}</strong>
-          </div>
-          <div>
-            <span>Warn</span>
-            <strong className="technical">{healthState?.summary.warn ?? 0}</strong>
-          </div>
-          <div>
-            <span>Fail</span>
-            <strong className="technical">{healthState?.summary.fail ?? 0}</strong>
-          </div>
-        </div>
-        <div className="button-row">
-          <button type="button" className="button-primary" onClick={() => void runHealthCheck()}>Run health check</button>
-          {healthStatus && <span className="inline-status">{healthStatus}</span>}
-        </div>
-        <div className="health-groups">
-          {healthState ? (
-            healthState.groups.map((group) => (
-              <section className="health-group" key={group.id}>
-                <h4>{group.title}</h4>
-                <div className="health-check-list">
-                  {group.checks.map((item) => (
-                    <article className="health-check" data-status={item.status} key={item.id}>
-                      <div>
-                        <StatusBadge tone={healthTone(item.status)}>{item.status}</StatusBadge>
-                      </div>
-                      <div>
-                        <strong>{item.label}</strong>
-                        <p className="technical technical--truncate">{item.detail}</p>
-                        {item.suggestion && <p>{item.suggestion}</p>}
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              </section>
-            ))
-          ) : (
-            <EmptyState>Run App Health to check DexNest configuration.</EmptyState>
           )}
-        </div>
-      </Panel>
 
+
+          {settingsSection === "nudges" && (
       <Panel title="Nudge Settings">
         <div className="settings-grid">
           <article>
@@ -15313,73 +15987,15 @@ function SettingsView({
           <button type="button" onClick={() => void onAction("calendar.nudge.refresh", "module_ui")}>Refresh nudges</button>
         </div>
       </Panel>
-
-      <Panel title="Backup and Restore">
-        <div className="backup-grid">
-          <div className="backup-card">
-            <h4>Create backup</h4>
-            <p>Creates a local zip under <span className="technical">{backupState.backupFolderPath}</span>.</p>
-            <div className="backup-options">
-              {([
-                ["includeSettings", "Settings"],
-                ["includeFiles", "Files"],
-                ["includeVaultDocuments", "Vault documents"],
-                ["includeSecureVault", "Secure Vault encrypted file"],
-                ["includeReceipts", "Receipts"],
-                ["includeDropFiles", "Drop files"],
-                ["includeIndex", "Search index"]
-              ] as Array<[keyof BackupOptions, string]>).map(([key, label]) => (
-                <label className="checkbox-row" key={key}>
-                  <input
-                    type="checkbox"
-                    checked={backupOptions[key]}
-                    onChange={(event) => updateBackupOption(key, event.target.checked)}
-                  />
-                  <span>{label}</span>
-                </label>
-              ))}
-            </div>
-            <div className="button-row">
-              <button type="button" onClick={() => void createBackupNow()}>Create backup now</button>
-              <button type="button" onClick={() => void onAction("backup.open_folder", "module_ui")}>Open backup folder</button>
-            </div>
-          </div>
-
-          <div className="backup-card">
-            <h4>Restore backup</h4>
-            <p>DexNest restores to staging first and creates a safety backup before replacing current local data.</p>
-            <div className="button-row">
-              <button type="button" onClick={() => void chooseRestoreZip()}>Select backup zip</button>
-              <button type="button" disabled={!restorePath} onClick={() => void previewRestore()}>Preview restore</button>
-              <button className="button-danger" type="button" disabled={!restorePreview?.ok} onClick={() => void restoreConfirmed()}>Restore confirmed</button>
-            </div>
-            {restorePath && <p className="technical technical--truncate">{restorePath}</p>}
-            {restorePreview && (
-              <div className="backup-preview">
-                <p>{restorePreview.ok ? "Preview valid" : "Preview failed"} / {formatBytes(restorePreview.sizeBytes)}</p>
-                <p>Roots: <span className="technical">{restorePreview.topLevel.join(", ") || "none"}</span></p>
-                {restorePreview.error && <p className="error-text">{restorePreview.error}</p>}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {backupMessage && <p className="technical">{backupMessage}</p>}
-        <div className="backup-list">
-          <h4>Recent backups</h4>
-          {backupState.backups.length === 0 ? (
-            <p className="empty-state">No local DexNest backups yet.</p>
-          ) : (
-            backupState.backups.slice(0, 5).map((backup) => (
-              <div className="settings-row" key={backup.path}>
-                <span>{backup.fileName}</span>
-                <strong className="technical">{formatBytes(backup.sizeBytes)} / {formatLocalDateTime(backup.createdAt)}</strong>
-              </div>
-            ))
           )}
-        </div>
-      </Panel>
 
+
+          {settingsSection === "data" && (
+            <DataManagementSection onAction={onAction} onRefresh={onRefresh} />
+          )}
+          {settingsSection === "diagnostics" && (
+          <GlassCard hover={false}>
+          <SectionTitle>Diagnostics</SectionTitle>
       <div className="settings-list">
         {rows.map(([label, value]) => (
           <div className="settings-row" key={label}>
@@ -15388,7 +16004,291 @@ function SettingsView({
           </div>
         ))}
       </div>
-    </section>
+          </GlassCard>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DataManagementSection({
+  onAction,
+  onRefresh
+}: {
+  onAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>;
+  onRefresh: () => Promise<void>;
+}) {
+  const [state, setState] = useState<DataManagementState | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [preview, setPreview] = useState<DataManagementPreview | null>(null);
+  const [confirmText, setConfirmText] = useState("");
+  const [stage, setStage] = useState<"select" | "preview">("select");
+  const [deleting, setDeleting] = useState(false);
+  const [result, setResult] = useState<DataManagementDeleteResult | null>(null);
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      setState(await getBridge().getDataManagementState());
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const categories = state?.categories ?? [];
+  const standard = categories.filter((category) => !category.sensitive);
+  const sensitive = categories.filter((category) => category.sensitive);
+  const lastDeletion = state?.lastDeletion;
+
+  const toggle = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+    setMessage("");
+  };
+
+  const selectAll = () => {
+    setSelected(new Set(categories.map((category) => category.id)));
+    setMessage("");
+  };
+
+  const clearAll = () => {
+    setSelected(new Set());
+    setMessage("");
+  };
+
+  const doPreview = async () => {
+    setBusy(true);
+    setMessage("");
+    try {
+      const res = (await onAction("system.data.preview_delete", "module_ui", { categoryIds: [...selected] })) as
+        | { ok?: boolean; preview?: DataManagementPreview; error?: string }
+        | undefined;
+      if (res?.ok && res.preview) {
+        setPreview(res.preview);
+        setConfirmText("");
+        setResult(null);
+        setStage("preview");
+      } else {
+        setMessage(res?.error ?? "Could not build a preview.");
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doDelete = async (createBackupFirst: boolean) => {
+    setDeleting(true);
+    setMessage("");
+    try {
+      const res = (await onAction("system.data.execute_delete", "module_ui", {
+        categoryIds: [...selected],
+        confirmText,
+        createBackupFirst,
+        confirmedDangerous: true
+      })) as (DataManagementDeleteResult & { error?: string }) | undefined;
+      if (res && Array.isArray(res.results)) {
+        setResult(res);
+        setStage("select");
+        setSelected(new Set());
+        setPreview(null);
+        setConfirmText("");
+        await load();
+        await onRefresh();
+      } else {
+        setMessage(res?.error ?? "Deletion failed.");
+      }
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const renderCategoryRow = (category: DataManagementCategoryState) => (
+    <label key={category.id} className="settings-row" style={{ alignItems: "flex-start", cursor: "pointer", gap: 12 }}>
+      <input type="checkbox" checked={selected.has(category.id)} onChange={() => toggle(category.id)} style={{ marginTop: 4 }} />
+      <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        <strong style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          {category.label}
+          {category.sensitive && <ShieldAlert size={13} color="#FB4D6A" />}
+        </strong>
+        <span style={{ opacity: 0.7, fontSize: 12 }}>{category.description}</span>
+        <span className="technical" style={{ opacity: 0.6, fontSize: 11 }}>
+          {category.records} record{category.records === 1 ? "" : "s"}
+          {category.files > 0 ? ` · ${category.files} file${category.files === 1 ? "" : "s"}` : ""}
+        </span>
+      </span>
+    </label>
+  );
+
+  return (
+    <GlassCard hover={false}>
+      <SectionTitle>Data Management</SectionTitle>
+      <p style={{ opacity: 0.75, fontSize: 13, marginTop: -4 }}>
+        Permanently delete selected DexNest data with an optional backup first. App code, schemas, the database structure,
+        sidecars, and package files are never touched — only DexNest-managed records and files are removed, and empty
+        defaults are recreated so the app stays usable.
+      </p>
+
+      {lastDeletion?.lastDeletionAt && (
+        <div className="settings-row" style={{ flexDirection: "column", alignItems: "flex-start", gap: 2, marginTop: 8 }}>
+          <span style={{ fontSize: 12, opacity: 0.7 }}>Last deletion</span>
+          <strong style={{ fontSize: 12 }}>
+            {formatLocalDateTime(lastDeletion.lastDeletionAt)} · {lastDeletion.status ?? "unknown"} · backup:{" "}
+            {lastDeletion.backupCreated ? lastDeletion.backupFileName ?? "yes" : "none"}
+          </strong>
+          {lastDeletion.categoriesCleared.length > 0 && (
+            <span style={{ fontSize: 11, opacity: 0.6 }}>Cleared: {lastDeletion.categoriesCleared.join(", ")}</span>
+          )}
+        </div>
+      )}
+
+      {result && (
+        <div
+          className="settings-row"
+          style={{
+            flexDirection: "column",
+            alignItems: "flex-start",
+            gap: 6,
+            marginTop: 10,
+            borderLeft: `3px solid ${result.status === "failed" ? "#FB4D6A" : result.status === "partial" ? "#F59E0B" : "#4ADE80"}`,
+            paddingLeft: 10
+          }}
+        >
+          <strong style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            {result.status === "failed" ? <AlertTriangle size={15} color="#FB4D6A" /> : <CheckCircle2 size={15} color="#4ADE80" />}
+            Deletion {result.status}
+          </strong>
+          {result.backupCreated && <span style={{ fontSize: 12, opacity: 0.8 }}>Backup created: {result.backupFileName}</span>}
+          {result.backupError && <span style={{ fontSize: 12, color: "#FB4D6A" }}>Backup: {result.backupError}</span>}
+          {result.results.map((entry) => (
+            <span key={entry.id} className="technical" style={{ fontSize: 11, opacity: entry.ok ? 0.75 : 1, color: entry.ok ? undefined : "#FB4D6A" }}>
+              {entry.ok ? "✓" : "✗"} {entry.label}: {entry.recordsCleared} record(s){entry.filesDeleted ? `, ${entry.filesDeleted} file(s)` : ""}
+              {entry.error ? ` — ${entry.error}` : ""}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {stage === "select" && (
+        <>
+          <div style={{ display: "flex", gap: 8, margin: "12px 0", flexWrap: "wrap" }}>
+            <button type="button" className="ghost-button" onClick={selectAll}>Select all (delete all data)</button>
+            <button type="button" className="ghost-button" onClick={clearAll} disabled={selected.size === 0}>Clear selection</button>
+            <span style={{ marginLeft: "auto", alignSelf: "center", fontSize: 12, opacity: 0.7 }}>{selected.size} selected</span>
+          </div>
+
+          <SectionTitle>Standard categories</SectionTitle>
+          <div className="settings-list">{standard.map(renderCategoryRow)}</div>
+
+          <SectionTitle>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <ShieldAlert size={15} color="#FB4D6A" /> Sensitive categories
+            </span>
+          </SectionTitle>
+          <p style={{ opacity: 0.7, fontSize: 12, marginTop: -4 }}>
+            These delete real managed files, credentials, backups, or the Secure Vault. Select each one explicitly.
+          </p>
+          <div className="settings-list">{sensitive.map(renderCategoryRow)}</div>
+
+          {message && <p style={{ color: "#FB4D6A", fontSize: 12 }}>{message}</p>}
+
+          <div style={{ marginTop: 12 }}>
+            <button type="button" className="primary-button" onClick={doPreview} disabled={selected.size === 0 || busy}>
+              {busy ? "Building preview…" : "Preview deletion"}
+            </button>
+          </div>
+        </>
+      )}
+
+      {stage === "preview" && preview && (
+        <div style={{ marginTop: 12 }}>
+          <SectionTitle>Preview deletion</SectionTitle>
+          <p style={{ fontSize: 13, opacity: 0.85 }}>
+            This will permanently delete <strong>{preview.totalRecords}</strong> record(s) and{" "}
+            <strong>{preview.totalFiles}</strong> managed file(s) across {preview.items.length} categor
+            {preview.items.length === 1 ? "y" : "ies"}. Counts and folders only — no private content is shown.
+          </p>
+          <div className="settings-list">
+            {preview.items.map((item) => (
+              <div className="settings-row" key={item.id} style={{ flexDirection: "column", alignItems: "flex-start", gap: 2 }}>
+                <strong style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  {item.label}
+                  {item.sensitive && <ShieldAlert size={13} color="#FB4D6A" />}
+                </strong>
+                <span className="technical" style={{ fontSize: 11, opacity: 0.7 }}>
+                  {item.records} record(s){item.files ? `, ${item.files} file(s)` : ""}
+                </span>
+                {item.folders.map((folder) => (
+                  <span key={folder} className="technical" style={{ fontSize: 11, opacity: 0.55 }}>{folder}</span>
+                ))}
+              </div>
+            ))}
+          </div>
+
+          <div className="settings-row" style={{ flexDirection: "column", alignItems: "flex-start", gap: 6, marginTop: 10 }}>
+            <span style={{ fontSize: 13 }}>
+              Type <strong>DELETE</strong> to confirm:
+            </span>
+            <input
+              type="text"
+              value={confirmText}
+              onChange={(event) => setConfirmText(event.target.value)}
+              placeholder="DELETE"
+              spellCheck={false}
+              autoComplete="off"
+              style={{ width: 200 }}
+            />
+          </div>
+
+          {message && <p style={{ color: "#FB4D6A", fontSize: 12 }}>{message}</p>}
+
+          <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+            <button type="button" className="primary-button" disabled={confirmText !== "DELETE" || deleting} onClick={() => doDelete(true)}>
+              Create backup first, then delete
+            </button>
+            <button type="button" className="ghost-button" disabled={confirmText !== "DELETE" || deleting} onClick={() => doDelete(false)}>
+              Continue without backup
+            </button>
+            <button type="button" className="ghost-button" disabled={deleting} onClick={() => { setStage("select"); setMessage(""); }}>
+              Back
+            </button>
+          </div>
+        </div>
+      )}
+
+      {deleting && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 9999,
+            background: "rgba(5, 7, 15, 0.85)",
+            backdropFilter: "blur(6px)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 16
+          }}
+        >
+          <RefreshCw size={48} color="#22D3EE" className="animate-spin-slow" />
+          <strong style={{ fontSize: 18 }}>Deleting selected DexNest data…</strong>
+          <span style={{ opacity: 0.7, fontSize: 13 }}>Please wait — do not close DexNest.</span>
+        </div>
+      )}
+    </GlassCard>
   );
 }
 
@@ -15400,6 +16300,11 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
     </article>
   );
 }
+
+try {
+  document.documentElement.setAttribute("data-reduce-motion", localStorage.getItem("dexnest:reduceMotion") === "1" ? "true" : "false");
+  document.documentElement.setAttribute("data-grain", localStorage.getItem("dexnest:grain") === "0" ? "false" : "true");
+} catch { /* ignore */ }
 
 const root = document.getElementById("root");
 
