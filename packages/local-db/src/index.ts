@@ -147,6 +147,14 @@ export function createLocalDb(options: CreateLocalDbOptions) {
     return before;
   }
 
+  // Deletes only event rows whose payload contains the given marker substring.
+  // Used to clear demo-seeded audit events (tagged with the demo seedId) without
+  // touching real activity. Returns the number of rows removed.
+  function deleteEventsWherePayloadContains(needle: string): number {
+    const result = getDb().prepare("DELETE FROM event_log WHERE payload_json LIKE ?").run(`%${needle}%`);
+    return Number(result.changes ?? 0);
+  }
+
   function close(): void {
     db?.close();
     db = null;
@@ -160,6 +168,7 @@ export function createLocalDb(options: CreateLocalDbOptions) {
     listRecentEvents,
     countEvents,
     clearEvents,
+    deleteEventsWherePayloadContains,
     close
   };
 }

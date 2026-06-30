@@ -445,6 +445,32 @@ export const seededActions = [
     status: "available" as const
   })),
   ...[
+    ["pins.show_pinned", "Show Pinned", "Open the DexNest Command Pinned view.", "safe", false, "desktop.view.command"],
+    ["pins.open_pinned", "Open Pinned Item", "Open a pinned DexNest item by name.", "safe", false, "pins.open_pinned"],
+    ["pins.pin_item", "Pin Item", "Pin a user-facing DexNest item to the shared pin store.", "caution", false, "pins.pin_item"],
+    ["pins.unpin_item", "Unpin Item", "Remove a DexNest item from the shared pin store.", "caution", false, "pins.unpin_item"],
+    ["demo.preview_seed", "Preview Demo Data", "Preview the safe demo data DexNest would seed for testing.", "safe", false, "demo.preview_seed"],
+    ["demo.seed", "Seed Demo Data", "Fill DexNest with safe, clearly-marked demo data for testing.", "caution", false, "demo.seed"],
+    ["demo.clear", "Clear Demo Data", "Remove only demo data (demoData=true) seeded for testing.", "caution", false, "demo.clear"]
+  ].map(([id, title, description, dangerLevel, requiresConfirmation, handlerRef]) => ({
+    id: id as string,
+    title: title as string,
+    moduleId: "command" as const,
+    module: "command" as const,
+    description: description as string,
+    category: "pins",
+    dangerLevel: dangerLevel as "safe" | "caution" | "danger" | "critical",
+    requiresConfirmation: requiresConfirmation as boolean,
+    confirmationRule: null,
+    reversible: false,
+    undoActionId: null,
+    handlerType: "internal_function" as const,
+    handlerRef: handlerRef as string,
+    allowedTriggers: ["command", "deck", "keyboard_shortcut", "tray", "assistant", "ambient_voice", "ambient_wake_word", "push_to_talk", "voice", "module_ui"] as Array<"command" | "deck" | "keyboard_shortcut" | "tray" | "assistant" | "ambient_voice" | "ambient_wake_word" | "push_to_talk" | "voice" | "module_ui">,
+    enabled: true,
+    status: "available" as const
+  })),
+  ...[
     ["deck.routine.create", "Create Deck Routine", "Create a local DexNest routine.", "deck.routines", "caution", false],
     ["deck.routine.update", "Update Deck Routine", "Update a local DexNest routine.", "deck.routines", "caution", false],
     ["deck.routine.delete", "Delete Deck Routine", "Delete a local DexNest routine.", "deck.routines", "danger", true],
@@ -2474,7 +2500,7 @@ export const seededActions = [
     reversible: false,
     undoActionId: null,
     handlerType: "internal_function",
-    handlerRef: "calendar.show_upcoming",
+    handlerRef: "desktop.view.calendar",
     allowedTriggers: ["command", "deck", "voice", "module_ui"],
     enabled: true,
     status: "available"

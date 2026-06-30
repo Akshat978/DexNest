@@ -16,7 +16,7 @@ import { Jimp } from "jimp";
 import { createActionRegistry, createStreamDeckActionCatalog, seededActions, streamDeckCatalogItems } from "@dexnest/action-registry";
 import { createLocalDb } from "@dexnest/local-db";
 import type { MessageBoxOptions, MessageBoxSyncOptions, OpenDialogOptions, OpenDialogSyncOptions } from "electron";
-import type { DexNestActionDefinition, DexNestActionTrigger, DexNestEventStatus } from "@dexnest/shared-types";
+import type { DexNestActionDefinition, DexNestActionTrigger, DexNestEventStatus, DexNestPin, DexNestPinType } from "@dexnest/shared-types";
 import { formatLocalDateTime, getLocalTodayDateString, parseLocalDateInput, resolveRelativeLocalDate, toLocalDateInputValue } from "@dexnest/shared-types";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
@@ -102,6 +102,9 @@ const performanceModeSettingsPath = join(settingsRoot, "performance-mode-setting
 const appLifecycleSettingsPath = join(settingsRoot, "app-lifecycle-settings.json");
 const searchIndexStatusPath = join(settingsRoot, "search-index-status.json");
 const dataManagementStatusPath = join(settingsRoot, "data-management-status.json");
+const pinsPath = join(settingsRoot, "pins.json");
+const demoSeedManifestPath = join(settingsRoot, "demo-seed-manifest.json");
+const demoFilesRoot = join(localDataRoot, "files", "demo");
 const backupsRoot = join(localDataRoot, "backups");
 const restoreStagingRoot = join(backupsRoot, "restore-staging");
 const actionPort = 43217;
@@ -4448,6 +4451,913 @@ function savePinnedActions(actionIds: string[]): string[] {
   return uniqueActionIds;
 }
 
+// ---------------------------------------------------------------------------
+// Universal pin/unpin system (shared across modules).
+//
+// Pins are stored in local-data/settings/pins.json as metadata-only favorites.
+// We never persist sensitive values here: Secure Vault secrets cannot be pinned,
+// and titles/subtitles are length-capped so private body content (clipboard
+// text, journal bodies, receipt contents) is not retained in the pin store.
+// ---------------------------------------------------------------------------
+
+const PIN_TYPES: DexNestPinType[] = ["action", "module", "document", "item", "routine", "project", "event", "result"];
+const PIN_TITLE_MAX = 120;
+const PIN_SUBTITLE_MAX = 160;
+
+function clampPinText(value: unknown, max: number): string {
+  if (typeof value !== "string") {
+    return "";
+  }
+  // Collapse whitespace and cap length so we never retain large private bodies.
+  const collapsed = value.replace(/\s+/g, " ").trim();
+  return collapsed.length > max ? `${collapsed.slice(0, max - 1)}…` : collapsed;
+}
+
+function loadPins(): DexNestPin[] {
+  const pins = readJsonFile<DexNestPin[]>(pinsPath, []);
+  return Array.isArray(pins) ? pins.filter((pin) => pin && typeof pin.id === "string") : [];
+}
+
+function savePins(pins: DexNestPin[]): DexNestPin[] {
+  // De-duplicate by id, keeping the most recent entry order.
+  const seen = new Set<string>();
+  const unique = pins.filter((pin) => {
+    if (seen.has(pin.id)) {
+      return false;
+    }
+    seen.add(pin.id);
+    return true;
+  });
+  writeJsonFile(pinsPath, unique);
+  return unique;
+}
+
+// Stable id so the same logical item never produces duplicate pins.
+function pinKey(input: { type: string; module: string; entityId: string; actionId?: string }): string {
+  const base = input.type === "action" && input.actionId ? input.actionId : `${input.module}:${input.entityId}`;
+  return `${input.type}:${base}`.toLowerCase().replace(/\s+/g, "-");
+}
+
+interface PinInput {
+  type?: string;
+  module?: string;
+  entityId?: string;
+  title?: string;
+  subtitle?: string;
+  actionId?: string;
+}
+
+function sanitizePinInput(input: PinInput): { ok: true; pin: Omit<DexNestPin, "createdAt" | "updatedAt"> } | { ok: false; error: string } {
+  const type = (PIN_TYPES.includes(input.type as DexNestPinType) ? input.type : "item") as DexNestPinType;
+  const module = clampPinText(input.module, 40) || "command";
+  const entityId = clampPinText(input.entityId, 200);
+  const actionId = typeof input.actionId === "string" && /^[a-z][a-z0-9_.-]+$/i.test(input.actionId) ? input.actionId : undefined;
+
+  // Privacy: never pin Secure Vault secret values, and never pin internal/audit
+  // actions that are not user-facing.
+  if (module === "secure_vault" || (entityId && entityId.startsWith("secret:"))) {
+    return { ok: false, error: "Secure Vault secret values cannot be pinned." };
+  }
+  if (actionId && (actionId.startsWith("audit.") || actionId.startsWith("system.data.") || actionId.includes(".secret") || actionId.includes("credentials"))) {
+    return { ok: false, error: "Internal or sensitive actions cannot be pinned." };
+  }
+  if (type === "action" && !actionId) {
+    return { ok: false, error: "An action pin needs a valid actionId." };
+  }
+  if (type !== "action" && !entityId) {
+    return { ok: false, error: "This item cannot be pinned without an entity id." };
+  }
+
+  const id = pinKey({ type, module, entityId, actionId });
+  return {
+    ok: true,
+    pin: {
+      id,
+      type,
+      module,
+      entityId,
+      title: clampPinText(input.title, PIN_TITLE_MAX) || actionId || entityId || "Pinned item",
+      subtitle: clampPinText(input.subtitle, PIN_SUBTITLE_MAX) || undefined,
+      actionId
+    }
+  };
+}
+
+function isPinned(id: string): boolean {
+  return loadPins().some((pin) => pin.id === id);
+}
+
+// Toggle a pin. Returns the new pin list and whether it is now pinned.
+function togglePin(input: PinInput, source: DexNestActionTrigger): { ok: boolean; pinned: boolean; pins: DexNestPin[]; error?: string; pin?: DexNestPin } {
+  const sanitized = sanitizePinInput(input);
+  if (!sanitized.ok) {
+    return { ok: false, pinned: false, pins: loadPins(), error: sanitized.error };
+  }
+  const now = new Date().toISOString();
+  const pins = loadPins();
+  const existingIndex = pins.findIndex((pin) => pin.id === sanitized.pin.id);
+
+  if (existingIndex >= 0) {
+    const next = pins.filter((pin) => pin.id !== sanitized.pin.id);
+    savePins(next);
+    logPinEvent("pins.unpin_item", source, "unpinned", sanitized.pin);
+    return { ok: true, pinned: false, pins: next };
+  }
+
+  const pin: DexNestPin = { ...sanitized.pin, createdAt: now, updatedAt: now };
+  const next = savePins([pin, ...pins]);
+  logPinEvent("pins.pin_item", source, "pinned", pin);
+  return { ok: true, pinned: true, pins: next, pin };
+}
+
+function setPinned(input: PinInput, pinned: boolean, source: DexNestActionTrigger): { ok: boolean; pinned: boolean; pins: DexNestPin[]; error?: string; pin?: DexNestPin } {
+  const sanitized = sanitizePinInput(input);
+  if (!sanitized.ok) {
+    return { ok: false, pinned: false, pins: loadPins(), error: sanitized.error };
+  }
+  const currentlyPinned = isPinned(sanitized.pin.id);
+  if (currentlyPinned === pinned) {
+    return { ok: true, pinned, pins: loadPins() };
+  }
+  return togglePin(input, source);
+}
+
+function unpinById(id: string, source: DexNestActionTrigger): { ok: boolean; pins: DexNestPin[] } {
+  const pins = loadPins();
+  const target = pins.find((pin) => pin.id === id);
+  const next = pins.filter((pin) => pin.id !== id);
+  savePins(next);
+  if (target) {
+    logPinEvent("pins.unpin_item", source, "unpinned", target);
+  }
+  return { ok: true, pins: next };
+}
+
+// Metadata-only audit: type, module, entityId (safe ids only) — never titles or
+// any private content.
+function logPinEvent(actionId: string, source: DexNestActionTrigger, verb: "pinned" | "unpinned", pin: Pick<DexNestPin, "type" | "module" | "entityId" | "actionId">): void {
+  localDb.appendActionEvent({
+    module: "command",
+    actionId,
+    eventType: verb === "pinned" ? "item_pinned" : "item_unpinned",
+    status: "success",
+    source,
+    summary: `${verb === "pinned" ? "Pinned" : "Unpinned"} a ${pin.type} in ${pin.module}.`,
+    metadataJson: { type: pin.type, module: pin.module, entityId: pin.entityId, actionId: pin.actionId ?? null }
+  });
+}
+
+// One-time migration: surface legacy pinned action ids in the shared pin store
+// without removing the old pinned-actions.json (Deck still reads it).
+function ensurePinsMigrated(): DexNestPin[] {
+  // Check existence BEFORE loadPins(), because readJsonFile() creates the file
+  // (as []) on first read — which would otherwise make migration dead code.
+  if (existsSync(pinsPath)) {
+    return loadPins();
+  }
+  const now = new Date().toISOString();
+  const migrated: DexNestPin[] = loadPinnedActions().map((actionId) => {
+    const action = actionRegistry.get(actionId);
+    return {
+      id: pinKey({ type: "action", module: action?.module ?? "command", entityId: actionId, actionId }),
+      type: "action" as const,
+      module: action?.module ?? "command",
+      entityId: actionId,
+      title: action?.title ?? actionId,
+      subtitle: action?.description ? clampPinText(action.description, PIN_SUBTITLE_MAX) : undefined,
+      actionId,
+      createdAt: now,
+      updatedAt: now
+    };
+  });
+  return savePins(migrated);
+}
+
+function pinsState(): { pins: DexNestPin[]; pinsPath: string } {
+  return { pins: ensurePinsMigrated(), pinsPath };
+}
+
+// Resolve a spoken/typed pin name to a stored pin (case-insensitive, prefers an
+// exact title match, then a startsWith, then a contains match).
+function findPinByName(pins: DexNestPin[], name: string): DexNestPin | undefined {
+  const needle = name.trim().toLowerCase();
+  if (!needle) {
+    return undefined;
+  }
+  return (
+    pins.find((pin) => pin.title.toLowerCase() === needle) ??
+    pins.find((pin) => pin.title.toLowerCase().startsWith(needle)) ??
+    pins.find((pin) => pin.title.toLowerCase().includes(needle) || needle.includes(pin.title.toLowerCase()))
+  );
+}
+
+// Map a pin's module to its DexNest view id for navigation.
+function moduleToView(module: string): string {
+  const map: Record<string, string> = {
+    command: "command", clipboard: "clipboard", drop: "drop", tools: "tools", vault: "vault",
+    search: "search", capture: "capture", journal: "journal", calendar: "calendar", finder: "finder",
+    finance: "finance", dev: "dev", deck: "deck", heatmap: "heatmap", backup: "backup",
+    external_devices: "devices", timetable: "timetable", utilities: "utilities", weather: "command", news: "news"
+  };
+  return map[module] ?? "command";
+}
+
+// ---------------------------------------------------------------------------
+// Demo Data Seeder
+//
+// Fills DexNest with safe, clearly-marked fake data for full-app testing. Every
+// seeded record carries `demoData: true` and `seedId: "default_demo_seed"`, and
+// a manifest (demo-seed-manifest.json) tracks the exact record ids + files so
+// Clear Demo Data removes ONLY demo data and never real user data, settings, or
+// credentials. All demo files live under ./local-data/files/demo (plus Vault OCR
+// text under the managed OCR root so Smart Lookup works). No real personal data,
+// no real API keys, no integration credentials.
+// ---------------------------------------------------------------------------
+
+const DEMO_SEED_ID = "default_demo_seed";
+
+interface DemoSeedOptions {
+  replaceExisting: boolean;
+  clipboard: boolean;
+  vault: boolean;
+  finance: boolean;
+  journalCalendar: boolean;
+  captureFinder: boolean;
+  timetable: boolean;
+  news: boolean;
+  devDeck: boolean;
+  secureVault: boolean;
+}
+
+interface DemoManifest {
+  seedId: string;
+  seededAt: string | null;
+  modules: Record<string, { records: number; recordIds: string[] }>;
+  ocrFiles: string[];
+  backupFiles: string[];
+}
+
+function defaultDemoOptions(): DemoSeedOptions {
+  return {
+    replaceExisting: true,
+    clipboard: true,
+    vault: true,
+    finance: true,
+    journalCalendar: true,
+    captureFinder: true,
+    timetable: true,
+    news: true,
+    devDeck: true,
+    secureVault: false
+  };
+}
+
+function loadDemoManifest(): DemoManifest {
+  return readJsonFile<DemoManifest>(demoSeedManifestPath, { seedId: DEMO_SEED_ID, seededAt: null, modules: {}, ocrFiles: [], backupFiles: [] });
+}
+
+function saveDemoManifest(manifest: DemoManifest): DemoManifest {
+  return writeJsonFile(demoSeedManifestPath, manifest);
+}
+
+function markDemo<T extends { id: string }>(record: T): T {
+  return { ...record, demoData: true, seedId: DEMO_SEED_ID } as T;
+}
+
+function isDemoRecord(record: unknown): boolean {
+  return typeof record === "object" && record !== null && (record as Record<string, unknown>).demoData === true && (record as Record<string, unknown>).seedId === DEMO_SEED_ID;
+}
+
+function writeDemoFile(subdir: string, name: string, content: string): string {
+  const dir = join(demoFilesRoot, subdir);
+  mkdirSync(dir, { recursive: true });
+  const filePath = join(dir, name);
+  writeFileSync(filePath, content, "utf8");
+  return filePath;
+}
+
+// Date helpers for realistic demo timestamps (local).
+function demoDateOffset(days: number): string {
+  const base = parseLocalDateInput(getLocalTodayDateString());
+  base.setDate(base.getDate() + days);
+  return toLocalDateInputValue(base);
+}
+function demoMinutesToHHMM(minutes: number): string {
+  const m = Math.max(0, Math.min(24 * 60 - 1, minutes));
+  return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+}
+
+// Generic record-array helpers ------------------------------------------------
+function seedRecordArray<T extends { id: string }>(
+  moduleId: string,
+  load: () => T[],
+  save: (items: T[]) => unknown,
+  demoRecords: T[],
+  options: DemoSeedOptions,
+  manifest: DemoManifest
+): number {
+  const priorIds = new Set(manifest.modules[moduleId]?.recordIds ?? []);
+  let existing = load();
+  if (options.replaceExisting) {
+    existing = existing.filter((record) => !isDemoRecord(record) && !priorIds.has(record.id));
+  }
+  const marked = demoRecords.map(markDemo);
+  save([...marked, ...existing]);
+  manifest.modules[moduleId] = { records: marked.length, recordIds: marked.map((record) => record.id) };
+  return marked.length;
+}
+
+function clearRecordArray<T extends { id: string }>(
+  moduleId: string,
+  load: () => T[],
+  save: (items: T[]) => unknown,
+  manifest: DemoManifest
+): number {
+  const ids = new Set(manifest.modules[moduleId]?.recordIds ?? []);
+  const existing = load();
+  const kept = existing.filter((record) => !isDemoRecord(record) && !ids.has(record.id));
+  if (kept.length !== existing.length) {
+    save(kept);
+  }
+  return existing.length - kept.length;
+}
+
+interface DemoModuleResult { module: string; label: string; records: number; files: number; status: "seeded" | "cleared" | "skipped" | "failed"; note?: string }
+
+// Returns the list of modules + counts a seed run WOULD create (no writes).
+function previewDemoData(options: DemoSeedOptions) {
+  const items: Array<{ module: string; records: number; files: number }> = [
+    { module: "Command / Audit", records: 6 + 3 + 2, files: 0 }, // events + nudges + pins
+    { module: "Drop", records: 4, files: 2 },
+    { module: "Tools", records: 3, files: 2 },
+    { module: "Heatmap", records: 20 + 2, files: 0 },
+    { module: "Backup", records: 1, files: 1 }
+  ];
+  if (options.clipboard) items.push({ module: "Clipboard", records: 4 + 3 + 3 + 1, files: 0 });
+  if (options.vault) items.push({ module: "Vault", records: 4 + 4, files: 4 + 4 });
+  if (options.finance) items.push({ module: "Finance", records: 2 + 4 + 2, files: 2 });
+  if (options.journalCalendar) items.push({ module: "Journal / Calendar", records: 3 + 5, files: 0 });
+  if (options.captureFinder) items.push({ module: "Capture / Finder", records: 4 + 5, files: 1 });
+  if (options.timetable) items.push({ module: "Timetable", records: 8, files: 0 });
+  items.push({ module: "Utilities", records: 3 + 2 + 1 + 1, files: 0 });
+  if (options.news) items.push({ module: "News", records: 10, files: 0 });
+  if (options.devDeck) items.push({ module: "Dev / Deck", records: 1 + 2 + 2, files: 0 });
+  if (options.secureVault) items.push({ module: "Secure Vault", records: 1, files: 0 });
+  return {
+    items,
+    totalRecords: items.reduce((sum, item) => sum + item.records, 0),
+    totalFiles: items.reduce((sum, item) => sum + item.files, 0),
+    demoFilesRoot,
+    notes: [
+      "All records are marked demoData=true / seedId=default_demo_seed.",
+      "Demo files are written only under ./local-data/files/demo (+ managed Vault OCR text).",
+      "No real personal data, API keys, or integration credentials are seeded.",
+      "Weather and External Devices are left untouched (already configured)."
+    ]
+  };
+}
+
+function seedDemoData(optionsInput: Partial<DemoSeedOptions>, source: DexNestActionTrigger): { ok: boolean; results: DemoModuleResult[]; totalRecords: number; totalFiles: number; seededAt: string } {
+  const options = { ...defaultDemoOptions(), ...optionsInput };
+  const manifest = loadDemoManifest();
+  manifest.seedId = DEMO_SEED_ID;
+  if (options.replaceExisting) {
+    // Wipe previously-seeded demo files so a re-seed does not accumulate them.
+    emptyManagedDir(demoFilesRoot);
+    for (const ocrFile of manifest.ocrFiles) {
+      if (isPathInside(localDataRoot, ocrFile) && existsSync(ocrFile)) { unlinkSync(ocrFile); }
+    }
+    manifest.ocrFiles = [];
+  }
+  const results: DemoModuleResult[] = [];
+  const nowIso = new Date().toISOString();
+  let totalFiles = 0;
+
+  const push = (module: string, label: string, records: number, files: number, status: DemoModuleResult["status"] = "seeded", note?: string) => {
+    results.push({ module, label, records, files, status, note });
+    totalFiles += files;
+  };
+
+  // 1. Command / Audit — nudges, demo pins, recent activity events.
+  try {
+    const nudges: Nudge[] = [
+      { id: createId("demo-nudge"), title: "Work Permit Demo expires soon", message: "Demo reminder: review your Work Permit Demo before expiry.", sourceModule: "vault", sourceId: null, date: demoDateOffset(0), time: null, priority: "urgent", status: "active", createdAt: nowIso, updatedAt: nowIso },
+      { id: createId("demo-nudge"), title: "Return window closing", message: "Demo: software subscription return window ends in 3 days.", sourceModule: "finance", sourceId: null, date: demoDateOffset(0), time: null, priority: "normal", status: "active", createdAt: nowIso, updatedAt: nowIso },
+      { id: createId("demo-nudge"), title: "Write today's journal", message: "Demo daily journal reminder.", sourceModule: "journal", sourceId: null, date: demoDateOffset(0), time: null, priority: "soft", status: "active", createdAt: nowIso, updatedAt: nowIso }
+    ];
+    const nudgeCount = seedRecordArray("command.nudges", loadNudges, saveNudges, nudges, options, manifest);
+
+    const demoPins: DexNestPin[] = ([
+      { id: pinKey({ type: "action", module: "search", entityId: "search.open", actionId: "search.open" }), type: "action", module: "search", entityId: "search.open", title: "Open Search", subtitle: "Demo pin", actionId: "search.open", createdAt: nowIso, updatedAt: nowIso },
+      { id: pinKey({ type: "action", module: "finance", entityId: "finance.open", actionId: "finance.open" }), type: "action", module: "finance", entityId: "finance.open", title: "Open Finance", subtitle: "Demo pin", actionId: "finance.open", createdAt: nowIso, updatedAt: nowIso }
+    ] as DexNestPin[]).map(markDemo);
+    const priorPinIds = new Set(manifest.modules["command.pins"]?.recordIds ?? []);
+    const existingPins = ensurePinsMigrated().filter((pin) => !isDemoRecord(pin) && !priorPinIds.has(pin.id) && !demoPins.some((demo) => demo.id === pin.id));
+    savePins([...demoPins, ...existingPins]);
+    manifest.modules["command.pins"] = { records: demoPins.length, recordIds: demoPins.map((pin) => pin.id) };
+
+    // Recent activity events (tagged with the demo seedId for safe clearing).
+    const demoEvents: Array<{ module: string; actionId: string; summary: string }> = [
+      { module: "vault", actionId: "vault.import_document", summary: "Imported Passport Demo into Vault." },
+      { module: "finance", actionId: "finance.create_transaction", summary: "Logged a demo groceries transaction." },
+      { module: "journal", actionId: "journal.save_entry", summary: "Saved today's demo journal entry." },
+      { module: "finder", actionId: "finder.create_item", summary: "Remembered where the demo passport is." },
+      { module: "calendar", actionId: "calendar.create_event", summary: "Added a demo meeting for tomorrow." },
+      { module: "backup", actionId: "backup.create", summary: "Created a demo local backup." }
+    ];
+    demoEvents.forEach((event, index) => {
+      localDb.appendActionEvent({ module: event.module, actionId: event.actionId, eventType: "demo_seeded_event", status: "success", source, summary: event.summary, metadataJson: { demoData: true, seedId: DEMO_SEED_ID }, durationMs: 10 + index });
+    });
+
+    push("command", "Command / Audit", nudgeCount + demoPins.length + demoEvents.length, 0);
+  } catch (error) {
+    push("command", "Command / Audit", 0, 0, "failed", error instanceof Error ? error.message : "failed");
+  }
+
+  // 2. Clipboard
+  if (options.clipboard) {
+    try {
+      const texts = [
+        { text: "Demo meeting notes: ship the v1 build on Friday.", source: "manual" as const },
+        { text: "const demoGreet = () => console.log('DexNest demo');", source: "manual" as const },
+        { text: "https://example.com/dexnest-demo", source: "manual" as const },
+        { text: "Demo card ending 4242 (fake — not a real number).", source: "manual" as const }
+      ];
+      const history: ClipboardHistoryItem[] = texts.map((entry, index) => ({ id: createId("demo-clip"), text: entry.text, preview: entry.text.slice(0, 80), byteLength: byteLength(entry.text), createdAt: new Date(Date.now() - index * 60000).toISOString(), source: entry.source }));
+      const historyCount = seedRecordArray("clipboard.history", loadClipboardHistory, saveClipboardHistory, history, options, manifest);
+
+      const snippets: ClipboardSnippet[] = [
+        { id: createId("demo-snip"), title: "Demo email signature", text: "Best,\nDemo User\nDexNest Demo", createdAt: nowIso, updatedAt: nowIso },
+        { id: createId("demo-snip"), title: "Demo address", text: "123 Demo Street, Regina, SK", createdAt: nowIso, updatedAt: nowIso },
+        { id: createId("demo-snip"), title: "Demo code template", text: "function demo() {\n  return 'DexNest';\n}", createdAt: nowIso, updatedAt: nowIso }
+      ];
+      const snippetCount = seedRecordArray("clipboard.snippets", loadClipboardSnippets, saveClipboardSnippets, snippets, options, manifest);
+
+      const group: ClipboardMultiGroup = { id: createId("demo-mcg"), name: "Demo multi-copy group", items: history.slice(0, 2), createdAt: nowIso, updatedAt: nowIso };
+      const groupCount = seedRecordArray("clipboard.groups", loadClipboardMultiGroups, saveClipboardMultiGroups, [group], options, manifest);
+
+      const slotTexts: Record<number, string> = { 1: "Demo slot one quick text", 2: "demo@dexnest.test", 3: "Demo snippet for slot three" };
+      const slots = loadClipboardSlots().map((slot) => slotTexts[slot.slot]
+        ? ({ ...slot, type: "text" as const, value: slotTexts[slot.slot], text: slotTexts[slot.slot], preview: slotTexts[slot.slot], byteLength: byteLength(slotTexts[slot.slot]), updatedAt: nowIso, source: "module_ui" as const, demoData: true, seedId: DEMO_SEED_ID } as ClipboardSlot)
+        : slot);
+      saveClipboardSlots(slots);
+      manifest.modules["clipboard.slots"] = { records: 3, recordIds: ["1", "2", "3"] };
+
+      push("clipboard", "Clipboard", historyCount + snippetCount + groupCount + 3, 0);
+    } catch (error) {
+      push("clipboard", "Clipboard", 0, 0, "failed", error instanceof Error ? error.message : "failed");
+    }
+  }
+
+  // 3. Drop
+  try {
+    const incomingFile = writeDemoFile("drop", "demo-incoming-note.txt", "This is a demo file received from a phone.\nNo real device required.");
+    const outgoingFile = writeDemoFile("drop", "demo-outgoing-list.txt", "Demo shopping list:\n- milk\n- bread\n- coffee");
+    const dropIncoming: DropShelfItem[] = [
+      { id: createId("demo-drop"), type: "text", text: "Demo phone text: don't forget the 3pm call.", preview: "Demo phone text: don't forget the 3pm call.", byteLength: 44, source: "phone", direction: "incoming", createdAt: nowIso, expiresAt: null },
+      { id: createId("demo-drop"), type: "file", fileName: "demo-incoming-note.txt", originalName: "demo-incoming-note.txt", path: incomingFile, byteLength: byteLength("demo file"), source: "phone", direction: "incoming", createdAt: nowIso, expiresAt: null }
+    ];
+    const dropOutgoing: DropShelfItem[] = [
+      { id: createId("demo-drop"), type: "text", text: "Demo outgoing: meeting link https://example.com/demo", preview: "Demo outgoing: meeting link", byteLength: 52, source: "manual", direction: "outgoing", createdAt: nowIso, expiresAt: null },
+      { id: createId("demo-drop"), type: "file", fileName: "demo-outgoing-list.txt", originalName: "demo-outgoing-list.txt", path: outgoingFile, byteLength: byteLength("demo list"), source: "desktop", direction: "outgoing", createdAt: nowIso, expiresAt: null }
+    ];
+    const inc = seedRecordArray("drop.incoming", loadDropIncoming, saveDropIncoming, dropIncoming, options, manifest);
+    const out = seedRecordArray("drop.shelf", loadDropShelf, saveDropShelf, dropOutgoing, options, manifest);
+    push("drop", "Drop", inc + out, 2);
+  } catch (error) {
+    push("drop", "Drop", 0, 0, "failed", error instanceof Error ? error.message : "failed");
+  }
+
+  // 4. Tools
+  try {
+    const mergeFile = writeDemoFile("tools", "demo-merged.pdf.txt", "Demo merged PDF output placeholder.");
+    const ocrFile = writeDemoFile("tools", "demo-scan-ocr.txt", "Demo OCR output: INVOICE 0042 total 84.20");
+    const outputs: ToolsOutputItem[] = [
+      { id: createId("demo-tool"), fileName: "demo-merged.pdf", path: mergeFile, byteLength: 24000, operation: "PDF merge (demo, completed)", createdAt: nowIso },
+      { id: createId("demo-tool"), fileName: "demo-scan-ocr.txt", path: ocrFile, byteLength: 1200, operation: "OCR scan (demo, completed)", createdAt: new Date(Date.now() - 120000).toISOString() },
+      { id: createId("demo-tool"), fileName: "demo-clean-scan.pdf", path: mergeFile, byteLength: 0, operation: "Clean scan (demo, failed)", createdAt: new Date(Date.now() - 240000).toISOString() }
+    ];
+    const count = seedRecordArray("tools.outputs", loadToolsOutputs, saveToolsOutputs, outputs, options, manifest);
+    push("tools", "Tools", count, 2);
+  } catch (error) {
+    push("tools", "Tools", 0, 0, "failed", error instanceof Error ? error.message : "failed");
+  }
+
+  // 5. Vault (documents + OCR text for Smart Lookup)
+  if (options.vault) {
+    try {
+      const docSpecs = [
+        { title: "Work Permit Demo", category: "Immigration", tags: ["work permit", "immigration", "demo"], expiry: demoDateOffset(180), ocr: "DEMO WORK PERMIT\nName: Demo User\nWork Permit Number: WP-DEMO-123456\nUCI: 00-DEMO-0000\nExpiry Date: " + demoDateOffset(180) + "\nEmployer: Demo Corp" },
+        { title: "Passport Demo", category: "Identity", tags: ["passport", "identity", "demo"], expiry: demoDateOffset(900), ocr: "DEMO PASSPORT\nName: Demo User\nPassport Number: P-DEMO-4421\nNationality: Demoland\nExpiry Date: " + demoDateOffset(900) },
+        { title: "Lease Demo", category: "Housing", tags: ["lease", "housing", "demo"], expiry: demoDateOffset(300), ocr: "DEMO LEASE AGREEMENT\nTenant: Demo User\nAddress: 123 Demo Street, Regina\nMonthly Rent: 1450\nLease End: " + demoDateOffset(300) },
+        { title: "Resume Demo", category: "Career", tags: ["resume", "career", "demo"], expiry: null as string | null, ocr: "DEMO RESUME\nDemo User\nExperience: DexNest demo testing\nSkills: testing, QA, demo data" }
+      ];
+      const docs: VaultDocumentRecord[] = [];
+      const jobs: VaultOcrJob[] = [];
+      for (const spec of docSpecs) {
+        const id = createId("demo-doc");
+        const storedFileName = `${id}.txt`;
+        const filePath = writeDemoFile("vault", storedFileName, spec.ocr);
+        const doc: VaultDocumentRecord = {
+          id, title: spec.title, originalFileName: `${spec.title}.txt`, storedFileName, filePath, fileType: "txt",
+          sizeBytes: byteLength(spec.ocr), category: spec.category, tags: spec.tags, notes: "Demo document for testing.", sourceModule: "vault",
+          expiryDate: spec.expiry, createdAt: nowIso, updatedAt: nowIso, versionGroupId: id, versionNumber: 1, ocrStatus: "completed", ocrTextPath: null, ocrMetadataPath: null, ocrError: null, ocrUpdatedAt: nowIso
+        };
+        const { textPath, metadataPath } = saveVaultOcrOutput(doc, spec.ocr, { engine: "paddleocr", device: "gpu", demoData: true, seedId: DEMO_SEED_ID });
+        doc.ocrTextPath = textPath;
+        doc.ocrMetadataPath = metadataPath;
+        manifest.ocrFiles.push(textPath, metadataPath);
+        docs.push(doc);
+        jobs.push({ id: createId("demo-ocr-job"), documentId: id, filePath, fileType: "txt", status: "completed", engine: "paddleocr", device: "gpu", createdAt: nowIso, startedAt: nowIso, completedAt: nowIso, error: null, outputTextPath: textPath, outputMetadataPath: metadataPath });
+      }
+      const docCount = seedRecordArray("vault.documents", loadVaultDocuments, saveVaultDocuments, docs, options, manifest);
+      const jobCount = seedRecordArray("vault.ocrJobs", loadVaultOcrJobs, saveVaultOcrJobs, jobs, options, manifest);
+      push("vault", "Vault", docCount + jobCount, docSpecs.length + manifest.ocrFiles.length);
+    } catch (error) {
+      push("vault", "Vault", 0, 0, "failed", error instanceof Error ? error.message : "failed");
+    }
+  }
+
+  // 6/7. Journal + Calendar
+  if (options.journalCalendar) {
+    try {
+      const journal: JournalEntry[] = [
+        { id: createId("demo-journal"), date: demoDateOffset(0), title: "Today — demo focus day", rawText: "Shipped the demo seeder and tested modules. Call Tim tomorrow at 3.", cleanedText: "Shipped the demo seeder and tested modules. Call Tim tomorrow at 3.", mood: "good", productivity: "high", tags: ["demo", "work"], peopleTags: ["Tim"], createdAt: nowIso, updatedAt: nowIso, extractedItems: [] },
+        { id: createId("demo-journal"), date: demoDateOffset(-1), title: "Yesterday", rawText: "Planned the week and reviewed finances.", cleanedText: "Planned the week and reviewed finances.", mood: "okay", productivity: "medium", tags: ["demo", "planning"], peopleTags: [], createdAt: nowIso, updatedAt: nowIso, extractedItems: [] },
+        { id: createId("demo-journal"), date: demoDateOffset(-3), title: "Earlier this week", rawText: "Gym in the morning, then deep work on DexNest.", cleanedText: "Gym in the morning, then deep work on DexNest.", mood: "great", productivity: "high", tags: ["demo", "gym"], peopleTags: [], createdAt: nowIso, updatedAt: nowIso, extractedItems: [] }
+      ];
+      const journalCount = seedRecordArray("journal.entries", loadJournalEntries, saveJournalEntries, journal, options, manifest);
+
+      const calendar: CalendarEvent[] = [
+        { id: createId("demo-cal"), title: "Demo focus block", date: demoDateOffset(0), startTime: "14:00", endTime: "15:00", allDay: false, sourceModule: "calendar", sourceId: null, recurrence: null, reminderLevel: "normal", notes: "Demo event today.", createdAt: nowIso, updatedAt: nowIso },
+        { id: createId("demo-cal"), title: "Meeting with Tim", date: demoDateOffset(1), startTime: "15:00", endTime: "15:30", allDay: false, sourceModule: "journal", sourceId: null, recurrence: null, reminderLevel: "urgent", notes: "From journal: Call Tim tomorrow at 3.", createdAt: nowIso, updatedAt: nowIso },
+        { id: createId("demo-cal"), title: "Demo User's Birthday", date: demoDateOffset(5), startTime: null, endTime: null, allDay: true, sourceModule: "calendar", sourceId: null, recurrence: "yearly-placeholder", reminderLevel: "soft", notes: "Demo all-day event.", createdAt: nowIso, updatedAt: nowIso },
+        { id: createId("demo-cal"), title: "Work Permit Demo expiry reminder", date: demoDateOffset(170), startTime: null, endTime: null, allDay: true, sourceModule: "vault", sourceId: null, recurrence: null, reminderLevel: "urgent", notes: "Demo reminder linked to Vault.", createdAt: nowIso, updatedAt: nowIso },
+        { id: createId("demo-cal"), title: "Demo dentist appointment", date: demoDateOffset(9), startTime: "10:30", endTime: "11:15", allDay: false, sourceModule: "calendar", sourceId: null, recurrence: null, reminderLevel: "normal", notes: "Upcoming demo event.", createdAt: nowIso, updatedAt: nowIso }
+      ];
+      const calCount = seedRecordArray("calendar.events", loadCalendarEvents, saveCalendarEvents, calendar, options, manifest);
+      push("journalCalendar", "Journal / Calendar", journalCount + calCount, 0);
+    } catch (error) {
+      push("journalCalendar", "Journal / Calendar", 0, 0, "failed", error instanceof Error ? error.message : "failed");
+    }
+  }
+
+  // 8/9. Capture + Finder
+  if (options.captureFinder) {
+    try {
+      const receiptFile = writeDemoFile("capture", "demo-receipt.txt", "DEMO RECEIPT\nStore: Demo Grocery\nTotal: 84.20");
+      const captures: CaptureItem[] = [
+        { id: createId("demo-cap"), type: "note", title: "Demo idea", text: "Test all DexNest modules with demo data.", source: "manual", filePath: null, originalFileName: null, url: null, tags: ["demo"], status: "inbox", routedTo: null, createdAt: nowIso, updatedAt: nowIso },
+        { id: createId("demo-cap"), type: "audio_placeholder", title: "Demo voice note", text: "Voice note metadata (no audio stored).", source: "command", filePath: null, originalFileName: null, url: null, tags: ["demo", "voice"], status: "inbox", routedTo: null, createdAt: nowIso, updatedAt: nowIso },
+        { id: createId("demo-cap"), type: "expense", title: "Demo receipt capture", text: "Grocery receipt for 84.20.", source: "finance", filePath: receiptFile, originalFileName: "demo-receipt.txt", url: null, tags: ["demo", "receipt"], status: "routed", routedTo: "finance", createdAt: nowIso, updatedAt: nowIso },
+        { id: createId("demo-cap"), type: "document", title: "Demo document capture", text: "Captured a document to file in Vault.", source: "drop", filePath: null, originalFileName: null, url: null, tags: ["demo"], status: "inbox", routedTo: null, createdAt: nowIso, updatedAt: nowIso }
+      ];
+      const capCount = seedRecordArray("capture.items", loadCaptureItems, saveCaptureItems, captures, options, manifest);
+
+      const finder: FinderItem[] = [
+        { id: createId("demo-finder"), itemName: "Passport", location: "black drawer", room: "Bedroom", container: "black drawer", notes: "Demo: passport is in the black drawer.", tags: ["documents", "demo"], status: "at_home", lentTo: null, photoPath: null, confidence: "sure", createdAt: nowIso, updatedAt: nowIso },
+        { id: createId("demo-finder"), itemName: "Charger", location: "beside bed", room: "Bedroom", container: "nightstand", notes: "Demo: charger beside the bed.", tags: ["electronics", "demo"], status: "at_home", lentTo: null, photoPath: null, confidence: "sure", createdAt: nowIso, updatedAt: nowIso },
+        { id: createId("demo-finder"), itemName: "Keys", location: "kitchen drawer", room: "Kitchen", container: "kitchen drawer", notes: "Demo: keys in the kitchen drawer.", tags: ["demo"], status: "at_home", lentTo: null, photoPath: null, confidence: "maybe", createdAt: nowIso, updatedAt: nowIso },
+        { id: createId("demo-finder"), itemName: "Headphones", location: "desk drawer", room: "Office", container: "desk drawer", notes: "Demo: headphones in desk drawer.", tags: ["electronics", "demo"], status: "at_home", lentTo: null, photoPath: null, confidence: "sure", createdAt: nowIso, updatedAt: nowIso },
+        { id: createId("demo-finder"), itemName: "Power bank", location: "with Alex", room: undefined, container: undefined, notes: "Demo: lent the power bank to Alex.", tags: ["demo", "lent"], status: "lent_out", lentTo: "Alex", photoPath: null, confidence: "sure", createdAt: nowIso, updatedAt: nowIso }
+      ];
+      const finderCount = seedRecordArray("finder.items", loadFinderItems, saveFinderItems, finder, options, manifest);
+      push("captureFinder", "Capture / Finder", capCount + finderCount, 1);
+    } catch (error) {
+      push("captureFinder", "Capture / Finder", 0, 0, "failed", error instanceof Error ? error.message : "failed");
+    }
+  }
+
+  // 10. Finance (profiles, transactions, recurring, receipts)
+  if (options.finance) {
+    try {
+      const personalId = "demo-profile-personal";
+      const businessId = "demo-profile-business";
+      const profilesFile = loadFinanceProfilesFile();
+      const keptProfiles = options.replaceExisting ? profilesFile.profiles.filter((profile) => !isDemoRecord(profile) && profile.id !== personalId && profile.id !== businessId) : profilesFile.profiles;
+      const demoProfiles: FinanceProfile[] = [
+        markDemo({ id: personalId, name: "Personal Finance", status: "active" as const, createdAt: nowIso, updatedAt: nowIso, isDefault: false }),
+        markDemo({ id: businessId, name: "Business Finance", status: "active" as const, createdAt: nowIso, updatedAt: nowIso, isDefault: false })
+      ];
+      const activeProfileId = keptProfiles.find((profile) => profile.id === profilesFile.activeProfileId) ? profilesFile.activeProfileId : personalId;
+      saveFinanceProfilesFile({ profiles: [...demoProfiles, ...keptProfiles], activeProfileId });
+      manifest.modules["finance.profiles"] = { records: demoProfiles.length, recordIds: demoProfiles.map((profile) => profile.id) };
+
+      const receipt1 = writeDemoFile("receipts", "demo-grocery-receipt.txt", "DEMO RECEIPT\nDemo Grocery\nTotal: 84.20");
+      const receipt2 = writeDemoFile("receipts", "demo-software-receipt.txt", "DEMO RECEIPT\nDemo SaaS\nTotal: 22.99");
+      const transactions: FinanceTransaction[] = [
+        { id: createId("demo-txn"), profileId: personalId, date: demoDateOffset(-2), store: "Demo Grocery", amount: 84.2, currency: "CAD", category: "Groceries", paymentType: "debit", cardName: null, notes: "Demo groceries.", receiptFilePath: receipt1, receiptOriginalName: "demo-grocery-receipt.txt", returnDeadline: null, warrantyUntil: null, tags: ["demo"], createdAt: nowIso, updatedAt: nowIso },
+        { id: createId("demo-txn"), profileId: personalId, date: demoDateOffset(-1), store: "Demo Landlord", amount: 1450, currency: "CAD", category: "Rent", paymentType: "e_transfer", cardName: null, notes: "Demo rent.", receiptFilePath: null, receiptOriginalName: null, returnDeadline: null, warrantyUntil: null, tags: ["demo"], createdAt: nowIso, updatedAt: nowIso },
+        { id: createId("demo-txn"), profileId: personalId, date: demoDateOffset(0), store: "Demo SaaS", amount: 22.99, currency: "CAD", category: "Software", paymentType: "credit", cardName: "Demo Visa", notes: "Demo subscription.", receiptFilePath: receipt2, receiptOriginalName: "demo-software-receipt.txt", returnDeadline: demoDateOffset(12), warrantyUntil: demoDateOffset(365), tags: ["demo", "subscription"], createdAt: nowIso, updatedAt: nowIso },
+        { id: createId("demo-txn"), profileId: businessId, date: demoDateOffset(-4), store: "Demo Client Inc", amount: 1200, currency: "CAD", category: "Income", paymentType: "e_transfer", cardName: null, notes: "Demo client payment.", receiptFilePath: null, receiptOriginalName: null, returnDeadline: null, warrantyUntil: null, tags: ["demo", "income"], createdAt: nowIso, updatedAt: nowIso }
+      ];
+      const txnCount = seedRecordArray("finance.transactions", loadFinanceTransactions, saveFinanceTransactions, transactions, options, manifest);
+
+      const recurring: FinanceRecurringExpense[] = [
+        { id: createId("demo-rec"), profileId: personalId, name: "Demo SaaS subscription", amount: 22.99, currency: "CAD", frequency: "monthly", nextDueDate: demoDateOffset(20), category: "Software", paymentType: "credit", notes: "Demo recurring.", active: true, createdAt: nowIso, updatedAt: nowIso },
+        { id: createId("demo-rec"), profileId: personalId, name: "Demo rent", amount: 1450, currency: "CAD", frequency: "monthly", nextDueDate: demoDateOffset(28), category: "Rent", paymentType: "e_transfer", notes: "Demo recurring.", active: true, createdAt: nowIso, updatedAt: nowIso }
+      ];
+      const recCount = seedRecordArray("finance.recurring", loadFinanceRecurring, saveFinanceRecurring, recurring, options, manifest);
+      push("finance", "Finance", demoProfiles.length + txnCount + recCount, 2);
+    } catch (error) {
+      push("finance", "Finance", 0, 0, "failed", error instanceof Error ? error.message : "failed");
+    }
+  }
+
+  // 11. Timetable (weekly blocks incl. current/next based on local time)
+  if (options.timetable) {
+    try {
+      const file = loadTimetableFile();
+      const template = file.templates.find((item) => item.id === file.activeTemplateId) ?? file.templates[0];
+      if (template) {
+        const today = currentTimetableDay();
+        const now = new Date();
+        const nowMin = now.getHours() * 60 + now.getMinutes();
+        const mk = (day: TimetableDay, start: number, end: number, title: string, category: string, accent: string, status: TimetableBlockStatus): TimetableBlock =>
+          markDemo({ id: createId("demo-block"), day, startTime: demoMinutesToHHMM(start), endTime: demoMinutesToHHMM(end), title, category, accent, notes: "Demo block.", status, createdAt: nowIso, updatedAt: nowIso });
+        const demoBlocks: TimetableBlock[] = [
+          mk(today, 7 * 60, 8 * 60, "Morning gym", "Gym", "#22C55E", "done"),
+          mk(today, Math.max(0, nowMin - 20), nowMin + 40, "Deep work — current", "Focus", "#22D3EE", "planned"),
+          mk(today, nowMin + 40, nowMin + 100, "Coding session — next", "Coding", "#3B82F6", "planned"),
+          mk(today, Math.min(22 * 60, nowMin + 120), Math.min(22 * 60 + 30, nowMin + 150), "Admin & email", "Admin", "#F59E0B", "skipped"),
+          mk(today, 12 * 60, 12 * 60 + 30, "Lunch break", "Break", "#A855F7", "planned"),
+          mk("monday", 9 * 60, 11 * 60, "Weekly planning", "Admin", "#F59E0B", "planned"),
+          mk("wednesday", 18 * 60, 19 * 60, "Gym", "Gym", "#22C55E", "planned"),
+          mk("friday", 16 * 60, 17 * 60, "Review & ship", "Focus", "#22D3EE", "planned")
+        ];
+        const priorIds = new Set(manifest.modules["timetable.blocks"]?.recordIds ?? []);
+        const updatedTemplates = file.templates.map((tpl) => tpl.id !== template.id ? tpl : {
+          ...tpl,
+          blocks: [...demoBlocks, ...(options.replaceExisting ? tpl.blocks.filter((block) => !isDemoRecord(block) && !priorIds.has(block.id)) : tpl.blocks)],
+          updatedAt: nowIso
+        });
+        saveTimetableFile({ ...file, templates: updatedTemplates, updatedAt: nowIso });
+        manifest.modules["timetable.blocks"] = { records: demoBlocks.length, recordIds: demoBlocks.map((block) => block.id) };
+        push("timetable", "Timetable", demoBlocks.length, 0);
+      } else {
+        push("timetable", "Timetable", 0, 0, "skipped", "No active template.");
+      }
+    } catch (error) {
+      push("timetable", "Timetable", 0, 0, "failed", error instanceof Error ? error.message : "failed");
+    }
+  }
+
+  // 12. Utilities
+  try {
+    const file = loadUtilitiesFile();
+    const priorIds = new Set(manifest.modules["utilities"]?.recordIds ?? []);
+    const keep = <T extends { id: string }>(arr: T[]) => options.replaceExisting ? arr.filter((item) => !isDemoRecord(item) && !priorIds.has(item.id)) : arr;
+    const recents: UtilityRecentResult[] = [
+      markDemo({ id: createId("demo-util"), type: "calculation" as const, input: "15% of 2400", result: "360", createdAt: nowIso }),
+      markDemo({ id: createId("demo-util"), type: "conversion" as const, input: "10 km to miles", result: "6.21 miles", createdAt: nowIso }),
+      markDemo({ id: createId("demo-util"), type: "date" as const, input: "days until demo", result: "12 days", createdAt: nowIso })
+    ];
+    const timers: UtilityTimer[] = [
+      markDemo({ id: createId("demo-timer"), label: "25 minute focus timer", durationSeconds: 1500, remainingSeconds: 900, status: "running" as const, startedAt: nowIso, completedAt: null, createdAt: nowIso, updatedAt: nowIso })
+    ];
+    const worldClocks: UtilityWorldClock[] = [
+      markDemo({ id: createId("demo-clock"), label: "London", timeZone: "Europe/London", createdAt: nowIso })
+    ];
+    const stopwatchHistory = [markDemo({ id: createId("demo-sw"), elapsedMs: 154000, createdAt: nowIso })];
+    const recordIds = [...recents, ...timers, ...worldClocks, ...stopwatchHistory].map((item) => item.id);
+    saveUtilitiesFile({
+      ...file,
+      recentResults: [...recents, ...keep(file.recentResults)].slice(0, 30),
+      timers: [...timers, ...keep(file.timers)].slice(0, 10),
+      worldClocks: [...worldClocks, ...keep(file.worldClocks)].slice(0, 12),
+      stopwatch: { ...file.stopwatch, history: [...stopwatchHistory, ...keep(file.stopwatch.history)].slice(0, 20) },
+      updatedAt: nowIso
+    });
+    manifest.modules["utilities"] = { records: recordIds.length, recordIds };
+    push("utilities", "Utilities", recordIds.length, 0);
+  } catch (error) {
+    push("utilities", "Utilities", 0, 0, "failed", error instanceof Error ? error.message : "failed");
+  }
+
+  // 13. News (cached headlines only — no network; Weather left as configured)
+  if (options.news) {
+    try {
+      const cats: Array<{ category: NewsCategory; titles: string[] }> = [
+        { category: "AI", titles: ["Demo: new local AI model runs offline", "Demo: assistants get better at routing"] },
+        { category: "Tech", titles: ["Demo: a faster local-first app stack", "Demo: keyboard-driven productivity"] },
+        { category: "Finance", titles: ["Demo: budgeting tips for the year", "Demo: tracking receipts locally"] },
+        { category: "Sports", titles: ["Demo: hometown team wins again"] },
+        { category: "Canada", titles: ["Demo: Regina weather stays mild", "Demo: local news roundup", "Demo: community event this weekend"] }
+      ];
+      const headlines: NewsHeadline[] = [];
+      const categoryCounts: Record<string, number> = {};
+      const sources = loadNewsSettings().sources;
+      for (const group of cats) {
+        const sourceForCat = sources.find((source) => source.category === group.category) ?? sources[0];
+        for (const title of group.titles) {
+          headlines.push({ id: createId("demo-news"), category: group.category, title, source: sourceForCat?.name ?? "Demo Source", sourceId: sourceForCat?.id ?? "demo-source", link: "https://example.com/demo-news", summary: "Demo cached headline for testing.", publishedAt: nowIso, fetchedAt: nowIso });
+        }
+        categoryCounts[group.category] = group.titles.length;
+      }
+      const markedHeadlines = headlines.map(markDemo);
+      saveNewsCache({ headlines: markedHeadlines, fetchedAt: nowIso, sourceStatus: "cached", error: null, categoryCounts });
+      manifest.modules["news.cache"] = { records: markedHeadlines.length, recordIds: markedHeadlines.map((headline) => headline.id) };
+      push("news", "News", markedHeadlines.length, 0);
+    } catch (error) {
+      push("news", "News", 0, 0, "failed", error instanceof Error ? error.message : "failed");
+    }
+  }
+
+  // 14/15. Dev + Deck
+  if (options.devDeck) {
+    try {
+      const demoProject: DexNestProject = markDemo({
+        id: createId("demo-project"), name: "DexNest Demo Project", path: join(demoFilesRoot, "dev"), description: "Safe demo project (commands are not run during seeding).", accent: "#3B82F6",
+        commands: { start: "echo demo start", build: "echo demo build", test: "echo demo test", typecheck: "echo demo typecheck", custom: "" },
+        urls: ["http://localhost:5173"], notes: "Demo only.", ports: [5173], createdAt: nowIso, updatedAt: nowIso, lastOpenedAt: null
+      });
+      mkdirSync(join(demoFilesRoot, "dev"), { recursive: true });
+      const projCount = seedRecordArray("dev.projects", loadProjects, (items) => saveProjects(items), [demoProject], options, manifest);
+
+      const routines: DexNestRoutine[] = [
+        markDemo({ id: createId("demo-routine"), name: "Demo Morning Routine", description: "Open Command, Search, and Journal.", steps: [{ id: createId("step"), actionId: "command.open_home" }, { id: createId("step"), actionId: "search.open" }], enabled: true, createdAt: nowIso, updatedAt: nowIso, lastRunAt: null, lastRunStatus: null, lastRunSummary: null }),
+        markDemo({ id: createId("demo-routine"), name: "Demo End of Day", description: "Save journal and create a backup.", steps: [{ id: createId("step"), actionId: "journal.open_today" }, { id: createId("step"), actionId: "backup.open" }], enabled: true, createdAt: nowIso, updatedAt: nowIso, lastRunAt: null, lastRunStatus: null, lastRunSummary: null })
+      ];
+      const routineCount = seedRecordArray("deck.routines", loadRoutines, saveRoutines, routines, options, manifest);
+      push("devDeck", "Dev / Deck", projCount + routineCount, 0);
+    } catch (error) {
+      push("devDeck", "Dev / Deck", 0, 0, "failed", error instanceof Error ? error.message : "failed");
+    }
+  }
+
+  // 16. Heatmap
+  try {
+    const apps = ["Code.exe — DexNest", "chrome.exe — Demo Docs", "Terminal — pnpm", "Figma — Demo UI", "Slack — Demo"];
+    const events: HeatmapEvent[] = [];
+    for (let i = 0; i < 20; i += 1) {
+      const appName = apps[i % apps.length];
+      events.push(markDemo({ id: createId("demo-heat"), timestamp: new Date(Date.now() - i * 3600000).toISOString(), appName, windowTitle: appName, projectId: null, active: i % 4 !== 0, idleSeconds: i % 4 === 0 ? 120 : 0, durationSeconds: 600 + (i % 5) * 120, createdAt: nowIso }));
+    }
+    const eventCount = seedRecordArray("heatmap.events", loadHeatmapEvents, saveHeatmapEvents, events, options, manifest);
+    const goals: HeatmapGoal[] = [
+      markDemo({ id: createId("demo-goal"), name: "Deep work", targetHoursPerWeek: 20, keyword: "DexNest", active: true, createdAt: nowIso, updatedAt: nowIso }),
+      markDemo({ id: createId("demo-goal"), name: "Learning", targetHoursPerWeek: 5, keyword: "Docs", active: true, createdAt: nowIso, updatedAt: nowIso })
+    ];
+    const goalCount = seedRecordArray("heatmap.goals", loadHeatmapGoals, saveHeatmapGoals, goals, options, manifest);
+    push("heatmap", "Heatmap", eventCount + goalCount, 0);
+  } catch (error) {
+    push("heatmap", "Heatmap", 0, 0, "failed", error instanceof Error ? error.message : "failed");
+  }
+
+  // 17. Backup (tiny demo zip — not a real full backup)
+  try {
+    ensureBackupRoot();
+    const zip = new AdmZip();
+    zip.addFile("backup-manifest.json", Buffer.from(JSON.stringify({ app: "DexNest", version: app.getVersion(), createdAt: nowIso, demoData: true, seedId: DEMO_SEED_ID, note: "Demo backup placeholder — not a real backup." }, null, 2)));
+    const fileName = `DexNest_Demo_Backup_${localBackupTimestamp()}.zip`;
+    const outPath = join(backupsRoot, fileName);
+    zip.writeZip(outPath);
+    manifest.backupFiles = [...new Set([...manifest.backupFiles, outPath])];
+    push("backup", "Backup", 1, 1);
+  } catch (error) {
+    push("backup", "Backup", 0, 0, "failed", error instanceof Error ? error.message : "failed");
+  }
+
+  // 18. Secure Vault (only when explicitly selected AND unlocked)
+  if (options.secureVault) {
+    try {
+      const file = loadSecureVaultFile();
+      if (!file || !secureVaultKey) {
+        push("secureVault", "Secure Vault", 0, 0, "skipped", "Unlock Secure Vault first to seed demo secure items.");
+      } else {
+        const item: SecureVaultStoredItem = {
+          id: createId("demo-secure"), title: "Demo Login (fake)", type: safeSecureItemType("login"), username: "demo@dexnest.test", url: "https://example.com/demo",
+          tags: ["demo"], secret: encryptSecureValue("DEMO-PASSWORD-NOT-REAL", secureVaultKey), notes: encryptSecureValue("Demo secure item — not a real secret.", secureVaultKey),
+          createdAt: nowIso, updatedAt: nowIso, lastCopiedAt: null, favorite: false
+        };
+        const markedItem = markDemo(item);
+        const priorIds = new Set(manifest.modules["secureVault.items"]?.recordIds ?? []);
+        const kept = file.items.filter((existing) => !isDemoRecord(existing) && !priorIds.has(existing.id));
+        saveSecureVaultFile({ ...file, items: [markedItem, ...kept] });
+        manifest.modules["secureVault.items"] = { records: 1, recordIds: [markedItem.id] };
+        push("secureVault", "Secure Vault", 1, 0);
+      }
+    } catch (error) {
+      push("secureVault", "Secure Vault", 0, 0, "failed", error instanceof Error ? error.message : "failed");
+    }
+  }
+
+  manifest.seededAt = nowIso;
+  saveDemoManifest(manifest);
+
+  // Make demo Vault/Journal/Finder/Finance/Capture searchable + Smart Lookup ready.
+  try { reindexSearchIndex("manual"); } catch { /* ignore */ }
+  try { lastAppHealthState = appHealthState("module_ui", false); } catch { /* ignore */ }
+
+  localDb.appendActionEvent({ module: "system", actionId: "demo.seed", eventType: "demo_data_seeded", status: results.some((r) => r.status === "failed") ? "failed" : "success", source, summary: `Seeded demo data across ${results.filter((r) => r.status === "seeded").length} module groups.`, metadataJson: { seedId: DEMO_SEED_ID, modules: results.map((r) => ({ module: r.module, records: r.records, status: r.status })) } });
+
+  return { ok: !results.some((r) => r.status === "failed"), results, totalRecords: results.reduce((sum, r) => sum + r.records, 0), totalFiles, seededAt: nowIso };
+}
+
+function clearDemoData(source: DexNestActionTrigger): { ok: boolean; results: DemoModuleResult[]; totalRemoved: number } {
+  const manifest = loadDemoManifest();
+  const results: DemoModuleResult[] = [];
+  const add = (module: string, label: string, removed: number) => results.push({ module, label, records: removed, files: 0, status: "cleared" });
+
+  // Record-array modules (manifest id + demoData flag, double safety).
+  add("clipboard", "Clipboard history", clearRecordArray("clipboard.history", loadClipboardHistory, saveClipboardHistory, manifest));
+  clearRecordArray("clipboard.snippets", loadClipboardSnippets, saveClipboardSnippets, manifest);
+  clearRecordArray("clipboard.groups", loadClipboardMultiGroups, saveClipboardMultiGroups, manifest);
+  // Clipboard slots (no id) — reset any demo slots to empty.
+  const slots = loadClipboardSlots().map((slot) => isDemoRecord(slot) ? ({ slot: slot.slot, slotId: slot.slotId, type: "text" as const, value: "", text: "", preview: "", byteLength: 0, updatedAt: new Date().toISOString() } as ClipboardSlot) : slot);
+  saveClipboardSlots(slots);
+
+  add("drop", "Drop", clearRecordArray("drop.incoming", loadDropIncoming, saveDropIncoming, manifest) + clearRecordArray("drop.shelf", loadDropShelf, saveDropShelf, manifest));
+  add("tools", "Tools", clearRecordArray("tools.outputs", loadToolsOutputs, saveToolsOutputs, manifest));
+  add("vault", "Vault", clearRecordArray("vault.documents", loadVaultDocuments, saveVaultDocuments, manifest) + clearRecordArray("vault.ocrJobs", loadVaultOcrJobs, saveVaultOcrJobs, manifest));
+  add("journalCalendar", "Journal / Calendar", clearRecordArray("journal.entries", loadJournalEntries, saveJournalEntries, manifest) + clearRecordArray("calendar.events", loadCalendarEvents, saveCalendarEvents, manifest));
+  add("captureFinder", "Capture / Finder", clearRecordArray("capture.items", loadCaptureItems, saveCaptureItems, manifest) + clearRecordArray("finder.items", loadFinderItems, saveFinderItems, manifest));
+  add("command", "Nudges", clearRecordArray("command.nudges", loadNudges, saveNudges, manifest));
+  add("finance", "Finance txns/recurring", clearRecordArray("finance.transactions", loadFinanceTransactions, saveFinanceTransactions, manifest) + clearRecordArray("finance.recurring", loadFinanceRecurring, saveFinanceRecurring, manifest));
+  add("heatmap", "Heatmap", clearRecordArray("heatmap.events", loadHeatmapEvents, saveHeatmapEvents, manifest) + clearRecordArray("heatmap.goals", loadHeatmapGoals, saveHeatmapGoals, manifest));
+  add("dev", "Dev projects", clearRecordArray("dev.projects", loadProjects, (items) => saveProjects(items), manifest));
+  add("deck", "Deck routines", clearRecordArray("deck.routines", loadRoutines, saveRoutines, manifest));
+
+  // Finance profiles — remove demo profiles, fix active pointer.
+  const profilesFile = loadFinanceProfilesFile();
+  const profileIds = new Set(manifest.modules["finance.profiles"]?.recordIds ?? []);
+  const keptProfiles = profilesFile.profiles.filter((profile) => !isDemoRecord(profile) && !profileIds.has(profile.id));
+  if (keptProfiles.length !== profilesFile.profiles.length) {
+    const nextActive = keptProfiles.find((profile) => profile.id === profilesFile.activeProfileId)?.id ?? keptProfiles.find((profile) => profile.isDefault)?.id ?? keptProfiles[0]?.id ?? "";
+    saveFinanceProfilesFile({ profiles: keptProfiles, activeProfileId: nextActive });
+  }
+
+  // Timetable demo blocks across all templates.
+  const ttFile = loadTimetableFile();
+  const blockIds = new Set(manifest.modules["timetable.blocks"]?.recordIds ?? []);
+  let removedBlocks = 0;
+  const ttTemplates = ttFile.templates.map((tpl) => {
+    const kept = tpl.blocks.filter((block) => !isDemoRecord(block) && !blockIds.has(block.id));
+    removedBlocks += tpl.blocks.length - kept.length;
+    return { ...tpl, blocks: kept };
+  });
+  if (removedBlocks > 0) { saveTimetableFile({ ...ttFile, templates: ttTemplates }); }
+  add("timetable", "Timetable", removedBlocks);
+
+  // Utilities demo entries.
+  const util = loadUtilitiesFile();
+  const utilRemoved = [util.recentResults, util.timers, util.worldClocks, util.stopwatch.history].reduce((sum, arr) => sum + arr.filter(isDemoRecord).length, 0);
+  saveUtilitiesFile({
+    ...util,
+    recentResults: util.recentResults.filter((item) => !isDemoRecord(item)),
+    timers: util.timers.filter((item) => !isDemoRecord(item)),
+    worldClocks: util.worldClocks.filter((item) => !isDemoRecord(item)),
+    stopwatch: { ...util.stopwatch, history: util.stopwatch.history.filter((item) => !isDemoRecord(item)) }
+  });
+  add("utilities", "Utilities", utilRemoved);
+
+  // News cache demo headlines.
+  const newsCache = loadNewsCache();
+  const keptHeadlines = newsCache.headlines.filter((headline) => !isDemoRecord(headline));
+  const removedNews = newsCache.headlines.length - keptHeadlines.length;
+  if (removedNews > 0) {
+    saveNewsCache({ headlines: keptHeadlines, fetchedAt: keptHeadlines.length ? newsCache.fetchedAt : null, sourceStatus: keptHeadlines.length ? newsCache.sourceStatus : "offline", error: null, categoryCounts: keptHeadlines.reduce<Record<string, number>>((counts, headline) => { counts[headline.category] = (counts[headline.category] ?? 0) + 1; return counts; }, {}) });
+  }
+  add("news", "News", removedNews);
+
+  // Pins.
+  const demoPinIds = new Set(manifest.modules["command.pins"]?.recordIds ?? []);
+  const keptPins = ensurePinsMigrated().filter((pin) => !isDemoRecord(pin) && !demoPinIds.has(pin.id));
+  savePins(keptPins);
+
+  // Secure Vault demo items (only those explicitly seeded).
+  const secureFile = loadSecureVaultFile();
+  if (secureFile) {
+    const secureIds = new Set(manifest.modules["secureVault.items"]?.recordIds ?? []);
+    const keptItems = secureFile.items.filter((item) => !isDemoRecord(item) && !secureIds.has(item.id));
+    if (keptItems.length !== secureFile.items.length) {
+      saveSecureVaultFile({ ...secureFile, items: keptItems });
+      add("secureVault", "Secure Vault", secureFile.items.length - keptItems.length);
+    }
+  }
+
+  // Demo audit events (tagged with seedId).
+  try { const removed = localDb.deleteEventsWherePayloadContains(DEMO_SEED_ID); add("audit", "Audit events", removed); } catch { /* ignore */ }
+
+  // Files: wipe demo files root, OCR text files, demo backup zips.
+  emptyManagedDir(demoFilesRoot);
+  for (const ocrFile of manifest.ocrFiles) {
+    if (isPathInside(localDataRoot, ocrFile) && existsSync(ocrFile)) { try { unlinkSync(ocrFile); } catch { /* ignore */ } }
+  }
+  for (const backupFile of manifest.backupFiles) {
+    if (isPathInside(backupsRoot, backupFile) && existsSync(backupFile)) { try { unlinkSync(backupFile); } catch { /* ignore */ } }
+  }
+
+  // Reset manifest.
+  saveDemoManifest({ seedId: DEMO_SEED_ID, seededAt: null, modules: {}, ocrFiles: [], backupFiles: [] });
+
+  try { reindexSearchIndex("manual"); } catch { /* ignore */ }
+
+  const totalRemoved = results.reduce((sum, r) => sum + r.records, 0);
+  localDb.appendActionEvent({ module: "system", actionId: "demo.clear", eventType: "demo_data_cleared", status: "success", source, summary: `Cleared demo data (${totalRemoved} records).`, metadataJson: { seedId: DEMO_SEED_ID, totalRemoved } });
+  return { ok: true, results, totalRemoved };
+}
+
 function deleteCommandResult(actionId: string): void {
   const results = loadCommandResults();
   delete results[actionId];
@@ -4804,6 +5714,35 @@ function focusDexNestWindow(
     source,
     summary: options.summary ?? (source === "tray" ? `Opened DexNest ${view} from tray.` : "Opened DexNest Command from global shortcut."),
     metadataJson: { view, focusAssistant: Boolean(options.focusAssistant) }
+  });
+}
+
+function restoreDexNestWindow(source: DexNestActionTrigger | "tray" | "system" = "tray"): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+  }
+
+  if (!mainWindow) {
+    return;
+  }
+
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  if (!mainWindow.isVisible()) {
+    mainWindow.show();
+  }
+  trayModeActive = false;
+  mainWindow.focus();
+
+  localDb.appendActionEvent({
+    module: "DexNest Command",
+    actionId: "tray.show_dexnest",
+    eventType: source === "tray" ? "tray_action_used" : "app_restored",
+    status: "success",
+    source,
+    summary: "Restored DexNest window.",
+    metadataJson: { preservesActiveView: true }
   });
 }
 
@@ -5236,12 +6175,12 @@ function createDexNestTray(): void {
     tray.setToolTip(performanceSettings.showTrayStatus && performance.enabled ? "DexNest - Performance Mode ON" : "DexNest");
     const nudgeCount = currentNudges().length;
     const menu = Menu.buildFromTemplate([
-      { label: mainWindow?.isVisible() ? "Hide DexNest" : "Show DexNest", click: () => mainWindow?.isVisible() ? hideDexNestToTray("tray") : focusDexNestWindow("command", "tray") },
+      { label: mainWindow?.isVisible() ? "Hide DexNest" : "Show DexNest", click: () => mainWindow?.isVisible() ? hideDexNestToTray("tray") : restoreDexNestWindow("tray") },
       { type: "separator" },
       { label: `${nudgeCount} active nudge${nudgeCount === 1 ? "" : "s"}`, enabled: false },
       ...(performanceSettings.showTrayStatus ? [{ label: `Performance Mode: ${performance.enabled ? "ON" : "OFF"}`, enabled: false } as Electron.MenuItemConstructorOptions] : []),
       { type: "separator" },
-      { label: "Show DexNest", click: () => focusDexNestWindow("command", "tray") },
+      { label: "Show DexNest", click: () => restoreDexNestWindow("tray") },
       { label: "Ask DexNest", click: () => askDexNestFromTray() },
       { label: "Start Listening", enabled: !ambient.pausedByPerformanceMode, click: () => requestAmbientListening("tray") },
       { label: "Open Search", click: () => focusDexNestWindow("search", "tray") },
@@ -5261,8 +6200,8 @@ function createDexNestTray(): void {
       { label: "Quit DexNest", click: () => quitDexNestFully("system") }
     ]);
     tray.setContextMenu(menu);
-    tray.on("click", () => focusDexNestWindow("command", "tray"));
-    tray.on("double-click", () => focusDexNestWindow("command", "tray"));
+    tray.on("click", () => restoreDexNestWindow("tray"));
+    tray.on("double-click", () => restoreDexNestWindow("tray"));
     saveCommandSettings({ ...loadCommandSettings(), trayStatus: "active" });
   } catch {
     saveCommandSettings({ ...loadCommandSettings(), trayStatus: "failed" });
@@ -8174,7 +9113,10 @@ async function transcribeSpeechAudio(input: {
   ensureSpeechRoot();
   const settings = loadSpeechSettings();
   const source = input.source ?? "module_ui";
-  if (performanceModeState().enabled && settings.pauseInPerformanceMode && input.manualOverride !== true) {
+  // Speech is paused by Performance Mode UNLESS it is a manual mic click OR the
+  // wake word is enabled — in which case speech must stay available so wake
+  // commands can still transcribe (matches warmSpeechEngine + performancePaused).
+  if (performanceModeState().enabled && settings.pauseInPerformanceMode && input.manualOverride !== true && !loadAmbientVoiceSettings().wakeWordEnabled) {
     const result: SpeechTranscriptionResult = {
       transcript: "",
       engine: settings.speechEngine,
@@ -16700,6 +17642,62 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
     return { actionId, ...result };
   }
 
+  if (action.id === "pins.show_pinned") {
+    focusDexNestWindow("command", source, { actionId, eventType: "navigation_action_opened", summary: "Opened DexNest pinned items.", writeAudit: false });
+    logActionEvent(action, "success", source, "Opened DexNest pinned items.", { view: "command", pinned: true });
+    return { ok: true, actionId, message: "Showing pinned items.", pins: pinsState().pins };
+  }
+
+  if (action.id === "pins.pin_item") {
+    const input = (typeof dp.pin === "object" && dp.pin !== null ? dp.pin : {}) as PinInput;
+    const result = setPinned(input, true, source);
+    if (!result.ok) {
+      return { ok: false, actionId, error: result.error };
+    }
+    return { ok: true, actionId, pinned: result.pinned, pins: result.pins, message: result.pinned ? "Pinned." : "Already pinned." };
+  }
+
+  if (action.id === "pins.unpin_item") {
+    if (typeof dp.id === "string" && dp.id) {
+      const r = unpinById(dp.id, source);
+      return { ok: true, actionId, pins: r.pins, message: "Unpinned." };
+    }
+    const input = (typeof dp.pin === "object" && dp.pin !== null ? dp.pin : {}) as PinInput;
+    const result = setPinned(input, false, source);
+    return { ok: result.ok, actionId, pins: result.pins, error: result.error, message: result.ok ? "Unpinned." : undefined };
+  }
+
+  if (action.id === "demo.preview_seed") {
+    const options = { ...defaultDemoOptions(), ...(typeof dp.options === "object" && dp.options !== null ? dp.options as Partial<DemoSeedOptions> : {}) };
+    return { ok: true, actionId, preview: previewDemoData(options) };
+  }
+
+  if (action.id === "demo.seed") {
+    const options = typeof dp.options === "object" && dp.options !== null ? dp.options as Partial<DemoSeedOptions> : {};
+    const result = seedDemoData(options, source);
+    return { actionId, ...result };
+  }
+
+  if (action.id === "demo.clear") {
+    const result = clearDemoData(source);
+    return { actionId, ...result };
+  }
+
+  if (action.id === "pins.open_pinned") {
+    const name = typeof dp.name === "string" ? dp.name : typeof dp.query === "string" ? dp.query : "";
+    const pins = pinsState().pins;
+    const match = findPinByName(pins, name);
+    if (!match) {
+      return { ok: false, actionId, error: name ? `No pinned item matches "${name}".` : "Say which pinned item to open." };
+    }
+    if (match.actionId) {
+      return await runRegisteredAction(match.actionId, source, {});
+    }
+    focusDexNestWindow(moduleToView(match.module), source, { actionId, eventType: "navigation_action_opened", summary: `Opened pinned ${match.type}.`, writeAudit: false });
+    logActionEvent(action, "success", source, "Opened a pinned item.", { type: match.type, module: match.module, entityId: match.entityId });
+    return { ok: true, actionId, message: `Opening ${match.title}.`, pin: match };
+  }
+
   if (action.module === "clipboard") {
     const result = runClipboardAction(action, source, payload);
     if (result) {
@@ -18135,6 +19133,15 @@ function registerIpcHandlers(): void {
   ipcMain.handle("dexnest:list-pinned-actions", () => loadPinnedActions());
 
   ipcMain.handle("dexnest:save-pinned-actions", (_event, actionIds: string[]) => savePinnedActions(actionIds));
+
+  ipcMain.handle("dexnest:get-pins", () => pinsState());
+  ipcMain.handle("dexnest:get-demo-state", () => {
+    const manifest = loadDemoManifest();
+    return { seededAt: manifest.seededAt, moduleCount: Object.keys(manifest.modules).length, defaultOptions: defaultDemoOptions() };
+  });
+  ipcMain.handle("dexnest:toggle-pin", (_event, input: PinInput) => togglePin(input ?? {}, "module_ui"));
+  ipcMain.handle("dexnest:set-pin", (_event, input: { pin: PinInput; pinned: boolean }) => setPinned(input?.pin ?? {}, Boolean(input?.pinned), "module_ui"));
+  ipcMain.handle("dexnest:unpin-by-id", (_event, id: string) => unpinById(String(id ?? ""), "module_ui"));
 
   ipcMain.handle("dexnest:get-clipboard-state", () => clipboardState());
 

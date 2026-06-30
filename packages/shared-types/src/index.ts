@@ -47,6 +47,31 @@ export type DexNestActionTrigger =
 export type DexNestEventStatus = "success" | "failed" | "skipped" | "cancelled" | "pending";
 export type DexNestEventSource = DexNestActionTrigger | "system" | "phone_pwa";
 
+// Shared pin (favorite) across DexNest modules. Stored in
+// local-data/settings/pins.json. Metadata only — never store sensitive values
+// (no Secure Vault secrets, no clipboard/journal/receipt body content).
+export type DexNestPinType =
+  | "action"
+  | "module"
+  | "document"
+  | "item"
+  | "routine"
+  | "project"
+  | "event"
+  | "result";
+
+export interface DexNestPin {
+  id: string;
+  type: DexNestPinType;
+  module: string;
+  entityId: string;
+  title: string;
+  subtitle?: string;
+  actionId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface DexNestActionDefinition {
   id: string;
   title: string;

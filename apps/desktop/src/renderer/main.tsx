@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExtern
 import { createRoot } from "react-dom/client";
 import QRCode from "qrcode";
 import { formatLocalDate, formatLocalDateTime, getLocalTodayDateString, parseLocalDateInput, resolveRelativeLocalDate, toLocalDateInputValue } from "@dexnest/shared-types";
+import type { DexNestPin } from "@dexnest/shared-types";
 import { createStreamDeckActionCatalog } from "@dexnest/action-registry";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -1898,6 +1899,22 @@ interface DataManagementState {
   lastDeletion: DataManagementLastDeletion;
 }
 
+interface DemoSeedOptions {
+  replaceExisting: boolean;
+  clipboard: boolean;
+  vault: boolean;
+  finance: boolean;
+  journalCalendar: boolean;
+  captureFinder: boolean;
+  timetable: boolean;
+  news: boolean;
+  devDeck: boolean;
+  secureVault: boolean;
+}
+
+interface DemoModuleResult { module: string; label: string; records: number; files: number; status: "seeded" | "cleared" | "skipped" | "failed"; note?: string }
+interface DemoPreview { items: Array<{ module: string; records: number; files: number }>; totalRecords: number; totalFiles: number; demoFilesRoot: string; notes: string[] }
+
 interface DataManagementPreviewItem {
   id: string;
   label: string;
@@ -1932,6 +1949,11 @@ interface DexNestBridge {
   clearCommandResult: (actionId: string) => Promise<void>;
   listPinnedActions: () => Promise<string[]>;
   savePinnedActions: (actionIds: string[]) => Promise<string[]>;
+  getPins: () => Promise<{ pins: DexNestPin[]; pinsPath: string }>;
+  getDemoState: () => Promise<{ seededAt: string | null; moduleCount: number; defaultOptions: DemoSeedOptions }>;
+  togglePin: (pin: PinInput) => Promise<{ ok: boolean; pinned: boolean; pins: DexNestPin[]; error?: string }>;
+  setPin: (payload: { pin: PinInput; pinned: boolean }) => Promise<{ ok: boolean; pinned: boolean; pins: DexNestPin[]; error?: string }>;
+  unpinById: (id: string) => Promise<{ ok: boolean; pins: DexNestPin[] }>;
   getClipboardState: () => Promise<ClipboardState>;
   getDropState: () => Promise<DropState>;
   getToolsState: () => Promise<ToolsState>;
@@ -2453,6 +2475,11 @@ const fallbackBridge: DexNestBridge = {
   clearCommandResult: async () => undefined,
   listPinnedActions: async () => ["command.open_home", "dev.open_dashboard", "deck.test_endpoint"],
   savePinnedActions: async (actionIds) => actionIds,
+  getPins: async () => ({ pins: [], pinsPath: "" }),
+  getDemoState: async () => ({ seededAt: null, moduleCount: 0, defaultOptions: { replaceExisting: true, clipboard: true, vault: true, finance: true, journalCalendar: true, captureFinder: true, timetable: true, news: true, devDeck: true, secureVault: false } }),
+  togglePin: async () => ({ ok: true, pinned: false, pins: [] }),
+  setPin: async () => ({ ok: true, pinned: false, pins: [] }),
+  unpinById: async () => ({ ok: true, pins: [] }),
   getClipboardState: async () => ({
     history: [],
     snippets: [],
@@ -2930,6 +2957,11 @@ const BASE_VOICE_CAPABILITY_GROUPS: VoiceCapabilityGroup[] = [
   { module: "Command / Core", accent: "var(--accent-command)", items: [
     { label: "Open Command", examples: ["open command", "go home"], sources: ALL_VOICE },
     { label: "Open Settings", examples: ["open settings"], sources: ALL_VOICE }
+  ] },
+  { module: "Pins", accent: "var(--accent-command)", items: [
+    { label: "Show pinned", examples: ["show pinned", "show my pins"], sources: ALL_VOICE },
+    { label: "Open pinned item", examples: ["open pinned passport", "open pin morning routine"], sources: VOICE_NO_DECK },
+    { label: "Pin / unpin current", examples: ["pin this", "unpin this"], sources: ALL_VOICE }
   ] },
   { module: "Search / Ask DexNest", accent: "var(--accent-search)", items: [
     { label: "Search", examples: ["search work permit", "find document passport"], sources: VOICE_NO_DECK },
@@ -3745,6 +3777,22 @@ function capabilityFastRoute(normalized: string, trimmed: string, actions: Actio
   // Core navigation aliases that users actually say.
   if (/^(go\s+home|home|open\s+home|command\s+home)$/.test(normalized) && has("command.open_home")) {
     return make("command.open_home", {}, "Opens DexNest Command Home.", "open_module", "command");
+  }
+
+  // Universal pins. "open pinned <name>" must be matched before the generic
+  // open-module alias and before "show pinned".
+  const openPinnedMatch = trimmed.match(/\bopen\s+(?:pinned|pin)\s+(.+)$/i);
+  if (openPinnedMatch && has("pins.open_pinned")) {
+    return make("pins.open_pinned", { name: openPinnedMatch[1].trim() }, `Opens the pinned item "${openPinnedMatch[1].trim()}".`, "run_action", "command");
+  }
+  if (/\b(show|open|view|list)\b.*\b(pinned|pins)\b/.test(normalized) && has("pins.show_pinned")) {
+    return make("pins.show_pinned", {}, "Shows your pinned DexNest items.", "open_module", "command");
+  }
+  if (/^\s*pin this\b/.test(normalized) && has("pins.pin_item")) {
+    return make("pins.pin_item", {}, "Pins the current DexNest item.", "run_action", "command");
+  }
+  if (/^\s*unpin this\b/.test(normalized) && has("pins.unpin_item")) {
+    return make("pins.unpin_item", {}, "Unpins the current DexNest item.", "run_action", "command");
   }
 
   // Utilities: local calculator/converter/timer/date fast-paths.
@@ -4935,13 +4983,87 @@ function assistantNeedsConfirm(route: VoiceRouteResult, actions: ActionDefinitio
   return false;
 }
 
+// --- Universal pin/unpin -----------------------------------------------------
+// A shared React context lets any module card drop in <PinButton> without
+// threading props through the whole tree. computePinId mirrors the main process
+// pinKey() so pinned state resolves consistently across surfaces.
+interface PinInput {
+  type: DexNestPin["type"];
+  module: string;
+  entityId?: string;
+  title: string;
+  subtitle?: string;
+  actionId?: string;
+}
+
+function computePinId(input: PinInput): string {
+  const base = input.type === "action" && input.actionId ? input.actionId : `${input.module}:${input.entityId ?? ""}`;
+  return `${input.type}:${base}`.toLowerCase().replace(/\s+/g, "-");
+}
+
+function pinModuleToView(module: string): ViewId {
+  const map: Record<string, ViewId> = {
+    command: "command", clipboard: "clipboard", drop: "drop", tools: "tools", vault: "vault",
+    search: "search", capture: "capture", journal: "journal", calendar: "calendar", finder: "finder",
+    finance: "finance", dev: "dev", deck: "deck", heatmap: "heatmap", backup: "backup",
+    external_devices: "devices", timetable: "timetable", utilities: "utilities", news: "news"
+  };
+  return map[module] ?? "command";
+}
+
+interface PinsContextValue {
+  pins: DexNestPin[];
+  isPinned: (id: string) => boolean;
+  toggle: (input: PinInput) => void;
+}
+
+const PinsContext = React.createContext<PinsContextValue>({ pins: [], isPinned: () => false, toggle: () => undefined });
+
+// One consistent pin control across the app: outline when unpinned, filled accent
+// when pinned, with a hover state (styled in styles.css via .pin-btn).
+function PinButton({ input, size = 14, className = "" }: { input: PinInput; size?: number; className?: string }) {
+  const ctx = React.useContext(PinsContext);
+  const pinned = ctx.isPinned(computePinId(input));
+  return (
+    <button
+      type="button"
+      className={`pin-btn${pinned ? " pin-btn--on" : ""} ${className}`.trim()}
+      title={pinned ? "Unpin" : "Pin"}
+      aria-label={pinned ? "Unpin" : "Pin"}
+      aria-pressed={pinned}
+      onClick={(event) => {
+        event.stopPropagation();
+        event.preventDefault();
+        ctx.toggle(input);
+      }}
+    >
+      <Pin size={size} fill={pinned ? "currentColor" : "none"} strokeWidth={2} />
+    </button>
+  );
+}
+
+// Module-level handle to the current voice/Ask pin context (the focused or active
+// pinnable item). "pin this" / "unpin this" only act when this is set.
+let activePinContext: PinInput | null = null;
+function setActivePinContext(input: PinInput | null): void {
+  activePinContext = input;
+}
+
 function DexNestApp() {
-  const [activeView, setActiveView] = useState<ViewId>("command");
+  const [activeView, setActiveView] = useState<ViewId>(() => {
+    try {
+      const saved = sessionStorage.getItem("dexnest:lastActiveView") as ViewId | null;
+      return saved && views.some((view) => view.id === saved) ? saved : "command";
+    } catch { return "command"; }
+  });
   const [userName, setUserName] = useState(() => { try { return localStorage.getItem("dexnest:userName") ?? ""; } catch { return ""; } });
   useEffect(() => { try { localStorage.setItem("dexnest:userName", userName); } catch { /* ignore */ } }, [userName]);
   const multiCopyAutoStartedRef = useRef(false);
   const activeViewRef = useRef<ViewId>("command");
-  useEffect(() => { activeViewRef.current = activeView; }, [activeView]);
+  useEffect(() => {
+    activeViewRef.current = activeView;
+    try { sessionStorage.setItem("dexnest:lastActiveView", activeView); } catch { /* ignore */ }
+  }, [activeView]);
   // Per-view loading status drives the in-content loading overlay / error card.
   // Only heavy, async-loaded views are tracked; light views (Command, Journal,
   // Calendar, Clipboard, Drop, Tools, Dev, Deck) render from shell state that is
@@ -4969,6 +5091,7 @@ function DexNestApp() {
   const [bootReady, setBootReady] = useState(false);
   const [bootStatus, setBootStatus] = useState("Loading DexNest…");
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
+  const [pins, setPins] = useState<DexNestPin[]>([]);
   const [actions, setActions] = useState<ActionDefinition[]>([]);
   const [projects, setProjects] = useState<DexNestProject[]>([]);
   const [commandResults, setCommandResults] = useState<Record<string, ProjectCommandResult>>({});
@@ -5116,6 +5239,7 @@ function DexNestApp() {
       backupReminderAfterDays: 7
     }
   });
+  const [calendarInitialView, setCalendarInitialView] = useState<"day" | "week" | "month">("day");
   const [timetableState, setTimetableState] = useState<TimetableState>(defaultTimetableState);
   const [utilitiesState, setUtilitiesState] = useState<UtilitiesState>(defaultUtilitiesState);
   const [weatherState, setWeatherState] = useState<WeatherState>(defaultWeatherState);
@@ -6273,10 +6397,22 @@ function DexNestApp() {
   }
 
   async function runAction(actionId: string, source = "module_ui", params: unknown = {}) {
+    // "pin this" / "unpin this" carry no explicit target — inject the active
+    // pin context if one exists (a focused/open pinnable item).
+    let effectiveParams = params;
+    if (actionId === "pins.pin_item" || actionId === "pins.unpin_item") {
+      const p = (typeof params === "object" && params !== null ? params : {}) as Record<string, unknown>;
+      if (!p.pin && activePinContext) {
+        effectiveParams = { ...p, pin: activePinContext };
+      }
+    }
     return track(
       (async () => {
-        const result = await getBridge().runAction({ actionId, source, params });
+        const result = await getBridge().runAction({ actionId, source, params: effectiveParams });
         await refreshShellData();
+        if (actionId.startsWith("pins.")) {
+          void refreshPins();
+        }
         return result;
       })()
     );
@@ -6294,6 +6430,21 @@ function DexNestApp() {
     return result;
   }
 
+  // Assistant runner that also navigates for "open/show module" actions. Voice
+  // commands route through this; unlike module-UI buttons (runUiAction), the
+  // lightweight assistant runner did not switch views, so spoken "open calendar",
+  // "show today's calendar", "open journal", etc. ran their action but never
+  // navigated. We mirror runUiAction's viewFromAction navigation here so any
+  // action whose handler opens a view (handlerRef desktop.view.*) actually opens.
+  async function runAssistantActionWithNav(actionId: string, source = "module_ui", params: unknown = {}) {
+    const result = await runAssistantAction(actionId, source, params);
+    const view = viewFromAction(actions.find((item) => item.id === actionId));
+    if (view) {
+      setActiveView(view);
+    }
+    return result;
+  }
+
   // Multi-copy session is ON by default: auto-start once per app launch if none is active.
   useEffect(() => {
     if (!bootReady || multiCopyAutoStartedRef.current) { return; }
@@ -6305,6 +6456,11 @@ function DexNestApp() {
 
   async function runUiAction(actionId: string, source = "module_ui", params: unknown = {}) {
     const action = actions.find((item) => item.id === actionId);
+    if (actionId === "calendar.show_today" || actionId === "calendar.open") {
+      setCalendarInitialView("day");
+    } else if (actionId === "calendar.show_upcoming") {
+      setCalendarInitialView("week");
+    }
     const result = await runAction(actionId, source, params);
     const targetView = viewFromAction(action);
 
@@ -6314,6 +6470,46 @@ function DexNestApp() {
 
     return result;
   }
+
+  // --- Universal pins: shared state + context -------------------------------
+  const refreshPins = useCallback(async () => {
+    try {
+      const state = await getBridge().getPins();
+      setPins(Array.isArray(state?.pins) ? state.pins : []);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshPins();
+  }, [refreshPins]);
+
+  const pinnedIdSet = useMemo(() => new Set(pins.map((pin) => pin.id)), [pins]);
+  const isPinned = useCallback((id: string) => pinnedIdSet.has(id), [pinnedIdSet]);
+  const togglePinInput = useCallback(async (input: PinInput) => {
+    try {
+      const res = await getBridge().togglePin(input);
+      if (res && Array.isArray(res.pins)) {
+        setPins(res.pins);
+      } else {
+        void refreshPins();
+      }
+    } catch {
+      void refreshPins();
+    }
+  }, [refreshPins]);
+  const pinsContextValue = useMemo<PinsContextValue>(
+    () => ({ pins, isPinned, toggle: (input) => { void togglePinInput(input); } }),
+    [pins, isPinned, togglePinInput]
+  );
+
+  // Default pin context for "pin this" / "unpin this": the current module view.
+  // Specific views may set a finer context when an item is focused.
+  useEffect(() => {
+    const view = views.find((item) => item.id === activeView);
+    setActivePinContext(view ? { type: "module", module: view.id, entityId: view.id, title: view.label, actionId: view.actionId } : null);
+  }, [activeView]);
 
   async function navigate(view: ViewId): Promise<void> {
     // Switch instantly — the view renders from already-loaded state. The view's
@@ -6366,6 +6562,7 @@ function DexNestApp() {
   ];
 
   return (
+    <PinsContext.Provider value={pinsContextValue}>
     <div className="grain relative flex h-screen overflow-hidden bg-black" data-sidebar-collapsed={sidebarCollapsed}>
       <div
         className="pointer-events-none absolute inset-0 z-0 opacity-60"
@@ -6398,25 +6595,38 @@ function DexNestApp() {
         aria-label="DexNest navigation"
         className={`relative z-30 flex h-screen flex-col border-r border-[#161616] bg-[#050505] transition-[width] duration-300 ${sidebarCollapsed ? "w-[68px]" : "w-[244px]"}`}
       >
-        <div className={`flex items-center border-b border-[#161616] py-4 ${sidebarCollapsed ? "justify-center gap-1 px-1" : "gap-2.5 px-4"}`}>
-          <span className={`flex shrink-0 items-center justify-center overflow-hidden rounded-xl border border-[#1f1f1f] bg-black ${sidebarCollapsed ? "h-8 w-8" : "h-9 w-9"}`}>
-            <img src={logoUrl} alt="DexNest" className="h-full w-full object-cover" />
-          </span>
+        <div className={`flex items-center border-b border-[#161616] py-4 ${sidebarCollapsed ? "justify-center px-2.5" : "gap-2.5 px-4"}`}>
+          <button
+            type="button"
+            className="sidebar-logo-toggle group relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-[#1f1f1f] bg-black transition-colors hover:border-[var(--accent-command)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent-command)]"
+            onClick={() => { if (sidebarCollapsed) { setSidebarCollapsed(false); } }}
+            title={sidebarCollapsed ? "Expand sidebar" : "DexNest"}
+            aria-label={sidebarCollapsed ? "Expand sidebar" : "DexNest"}
+          >
+            <img src={logoUrl} alt="DexNest" className="h-full w-full scale-[1.18] object-cover" />
+            {sidebarCollapsed && (
+              <span className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-xl border border-[var(--accent-command)] bg-[#0b0b0b] text-[var(--accent-command)] opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+                <PanelLeft className="h-[18px] w-[18px]" />
+              </span>
+            )}
+          </button>
           {!sidebarCollapsed && (
             <div className="min-w-0 flex-1 leading-tight">
               <p className="text-sm font-semibold tracking-tight text-[#F5F5F5]">DexNest</p>
             </div>
           )}
-          <button
-            type="button"
-            data-testid="sidebar-toggle"
-            onClick={() => setSidebarCollapsed((current) => !current)}
-            title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-            className={`flex shrink-0 items-center justify-center rounded-lg border border-[#262626] bg-[#0d0d0d] text-[#A3A3A3] transition-colors hover:border-[#3a3a3a] hover:text-[#F5F5F5] ${sidebarCollapsed ? "h-7 w-7" : "h-8 w-8"}`}
-          >
-            {sidebarCollapsed ? <PanelLeft className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
-          </button>
+          {!sidebarCollapsed && (
+            <button
+              type="button"
+              data-testid="sidebar-toggle"
+              onClick={() => setSidebarCollapsed(true)}
+              title="Collapse sidebar"
+              aria-label="Collapse sidebar"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--surface)] text-[var(--text-muted)] transition-colors hover:border-[var(--accent-command)] hover:text-[var(--text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent-command)]"
+            >
+              <PanelLeftClose className="h-5 w-5" />
+            </button>
+          )}
         </div>
 
         <nav className="sidebar-scroll flex-1 space-y-0.5 overflow-y-auto px-2.5 py-3">
@@ -6431,7 +6641,7 @@ function DexNestApp() {
                 title={view.label}
                 data-testid={`nav-${view.id}`}
                 onClick={() => void navigate(view.id)}
-                className={`group relative flex w-full items-center gap-3 rounded-lg border px-2.5 py-2 text-sm outline-none transition-colors ${active ? "border-transparent text-[#F5F5F5]" : "border-transparent text-[#A3A3A3] hover:bg-[#0d0d0d] hover:text-[#F5F5F5]"}`}
+                className={`group relative flex w-full items-center gap-3 rounded-lg border px-2.5 py-2 text-sm outline-none transition-colors ${sidebarCollapsed ? "justify-center" : ""} ${active ? "border-transparent text-[#F5F5F5]" : "border-transparent text-[#A3A3A3] hover:bg-[#0d0d0d] hover:text-[#F5F5F5]"}`}
                 style={active ? { background: `${meta.accent}12`, borderColor: `${meta.accent}26`, boxShadow: `inset 0 0 18px ${meta.accent}10` } : undefined}
               >
                 {active && (
@@ -6702,7 +6912,7 @@ function DexNestApp() {
                 error: ""
               }))}
               onAction={runUiAction}
-              assistantAction={runAssistantAction}
+              assistantAction={runAssistantActionWithNav}
               onRefresh={refreshShellData}
             />
           )}
@@ -6741,6 +6951,7 @@ function DexNestApp() {
           {activeView === "calendar" && (
             <CalendarView
               calendarState={calendarState}
+              initialView={calendarInitialView}
               speechState={speechState}
               voiceWorkflow={voiceWorkflow}
               voiceWorkflowSettings={voiceWorkflowSettings}
@@ -6773,6 +6984,7 @@ function DexNestApp() {
               newsState={newsState}
               onAction={runUiAction}
               onRefresh={refreshShellData}
+              onNavigate={(view) => void navigate(view)}
             />
           )}
           {activeView === "finder" && (
@@ -6820,6 +7032,7 @@ function DexNestApp() {
               backupState={backupState}
               calendarState={calendarState}
               weatherState={weatherState}
+              newsState={newsState}
               performanceModeState={performanceModeState}
               performanceModeSettings={performanceModeSettings}
               ambientVoiceState={ambientVoiceState}
@@ -6857,6 +7070,7 @@ function DexNestApp() {
         </main>
       </div>
     </div>
+    </PinsContext.Provider>
   );
 }
 
@@ -6870,6 +7084,16 @@ function formatSessionRemaining(ms: number): string {
 // DexNest Assistant ("Ask DexNest"). Lives inside Search. Routes natural language
 // to existing Search/Smart Lookup/Vault/Finder/Calendar/Drop/Dev actions, and
 // honors the trusted sensitive-access session for auto-revealing answers.
+// Module-level "consumed" trackers for Ask DexNest's one-shot signals. Ask
+// DexNest lives inside the Search view, so navigating away unmounts it and coming
+// back remounts it. React effects always run on mount, which previously REPLAYED
+// the last queued voice command (e.g. re-running "turn on performance mode") and
+// could re-trigger listening. Because there is only ever one Ask DexNest, these
+// module-level values survive remounts and let us run each signal exactly once —
+// while still letting a genuinely new wake/deep-link command fire on mount.
+let lastConsumedQueuedCommandId: string | null = null;
+let lastConsumedListenSignal = 0;
+
 function AskDexNest({
   actions,
   assistantSettings,
@@ -6952,6 +7176,7 @@ function AskDexNest({
   const [secSpeak, setSecSpeak] = useState(securityState.settings.speakSensitiveAnswers);
   const [secLockOnClose, setSecLockOnClose] = useState(securityState.settings.lockOnAppClose);
   const ttsUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const spokenResponseIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     setAssistantEngineEnabled(assistantSettings.localIntentEngineEnabled);
@@ -6983,18 +7208,29 @@ function AskDexNest({
   }, [focusSignal]);
 
   useEffect(() => {
-    if (listenSignal > 0) {
-      void startVoiceListening(listenSource);
+    // Start listening only for a not-yet-consumed signal. A fresh wake/deep-link
+    // signal still fires on mount; a stale signal on plain remount does not.
+    if (listenSignal <= 0 || listenSignal === lastConsumedListenSignal) {
+      return;
     }
+    lastConsumedListenSignal = listenSignal;
+    void startVoiceListening(listenSource);
   }, [listenSignal]);
 
   useEffect(() => {
-    if (queuedCommandSignal > 0 && queuedCommand?.text.trim()) {
-      if (queuedCommand.metrics) {
-        onWakeMetricsUpdate(queuedCommand.metrics);
-      }
-      void sendAssistant(queuedCommand.text, queuedCommand.source);
+    // Run each queued command exactly once, keyed by its unique id. This fires a
+    // genuinely new wake/Stream Deck/deep-link command (even when it arrives with
+    // the mount), but never replays the last command when the user simply
+    // navigates back to Search and Ask DexNest remounts.
+    const command = queuedCommand;
+    if (!command?.text.trim() || command.id === lastConsumedQueuedCommandId) {
+      return;
     }
+    lastConsumedQueuedCommandId = command.id;
+    if (command.metrics) {
+      onWakeMetricsUpdate(command.metrics);
+    }
+    void sendAssistant(command.text, command.source);
   }, [queuedCommandSignal]);
 
   // Pre-warm the mic AND the faster-whisper engine while Ask DexNest is open so
@@ -7076,7 +7312,16 @@ function AskDexNest({
     return fallback.replace(/\s+/g, " ").slice(0, 120);
   }
 
-  async function speakDexNestResponse(text: string, context: { sensitivity: VoiceSensitivity; source: string; actionId?: string; allowSpeakSensitive?: boolean; kind?: "success" | "error" | "confirmation" | "workflow" }): Promise<void> {
+  async function speakDexNestResponse(text: string, context: { sensitivity: VoiceSensitivity; source: string; actionId?: string; responseId?: string; allowSpeakSensitive?: boolean; kind?: "success" | "error" | "confirmation" | "workflow" }): Promise<void> {
+    if (context.responseId) {
+      if (spokenResponseIdsRef.current.has(context.responseId)) {
+        return;
+      }
+      spokenResponseIdsRef.current.add(context.responseId);
+      if (spokenResponseIdsRef.current.size > 100) {
+        spokenResponseIdsRef.current = new Set(Array.from(spokenResponseIdsRef.current).slice(-50));
+      }
+    }
     const settings = ambientVoiceState.settings;
     const speakableSources = ["ambient_wake_word", "push_to_talk", "assistant", "voice"];
     let blockedReason = "";
@@ -7285,6 +7530,7 @@ function AskDexNest({
       sensitivity: route.sensitivity,
       source: commandSource,
       actionId: route.actionId,
+      responseId: messageId,
       allowSpeakSensitive: Boolean(route.intent === "smart_lookup"),
       kind: result.ok === false ? "error" : "success"
     });
@@ -7819,7 +8065,7 @@ function AskDexNest({
       </div>
       <div className="section-heading section-heading--row">
         <div>
-          <p className="technical">Local-only · no cloud · sensitive answers stay masked{assistantSettings.localIntentEngineEnabled ? " · local LLM on" : " · rules only"}</p>
+          {assistantDebug && <p className="technical">Local-only · no cloud · sensitive answers stay masked{assistantSettings.localIntentEngineEnabled ? " · local LLM on" : " · rules only"}</p>}
         </div>
         <label className="assistant__debug-toggle">
           <input type="checkbox" checked={assistantDebug} onChange={(event) => setAssistantDebug(event.target.checked)} />
@@ -7827,6 +8073,7 @@ function AskDexNest({
         </label>
       </div>
 
+      {(assistantDebug || securityState.sessionUnlocked) && (
       <div className="assistant__session" data-unlocked={securityState.sessionUnlocked}>
         {!sessionEnabled ? (
           <span className="technical">Trusted session disabled. Sensitive answers always require Reveal.</span>
@@ -7858,6 +8105,7 @@ function AskDexNest({
           </>
         )}
       </div>
+      )}
       {sessionStatus && <p className="inline-status">{sessionStatus}</p>}
 
       <div className="assistant__transcript" ref={assistantScrollRef}>
@@ -8085,6 +8333,8 @@ function CommandView({
   const [paletteIndex, setPaletteIndex] = useState(0);
   const [paletteMessage, setPaletteMessage] = useState("");
   const [performanceBusy, setPerformanceBusy] = useState(false);
+  const [weatherCommandRefreshing, setWeatherCommandRefreshing] = useState(false);
+  const pinsCtx = React.useContext(PinsContext);
   const modules = [...new Set(actions.map((action) => action.module).filter(Boolean))].sort();
   const pinnedActions = pinnedActionIds
     .map((actionId) => actions.find((action) => action.id === actionId))
@@ -8264,6 +8514,40 @@ function CommandView({
     void onAction("weather.refresh", "command", { refreshReason: "command_open" });
   }, [weatherVisible, weatherState.settings.refreshOnCommandOpen, weatherState.status, weatherState.cache.fetchedAt, onAction]);
 
+  function openCommandWeatherSettings(): void {
+    try { sessionStorage.setItem("dexnest:settingsSection", "weather"); } catch { /* ignore */ }
+    onNavigate("settings");
+  }
+
+  async function refreshCommandWeather(): Promise<void> {
+    if (!weatherState.settings.weatherEnabled || weatherCommandRefreshing) {
+      return;
+    }
+    setWeatherCommandRefreshing(true);
+    try {
+      await onAction("weather.refresh", "command", { refreshReason: "manual" });
+    } finally {
+      setWeatherCommandRefreshing(false);
+    }
+  }
+
+  function commandWeatherLabel(): string {
+    const location = weatherState.cache.locationName || weatherState.settings.locationName || "Weather";
+    if (weatherCommandRefreshing) {
+      return `${location} · refreshing`;
+    }
+    if (weatherState.cache.temperature !== null) {
+      const feels = weatherState.cache.feelsLike !== null ? ` · feels ${formatWeatherNumber(weatherState.cache.feelsLike)} ${weatherUnit}` : "";
+      const condition = weatherState.cache.condition ? ` · ${weatherState.cache.condition}` : "";
+      const cacheStatus = weatherState.status === "offline" ? " · cached/offline" : weatherState.status === "stale" ? " · cached" : "";
+      return `${location} · ${formatWeatherNumber(weatherState.cache.temperature)} ${weatherUnit}${feels}${condition}${cacheStatus}`;
+    }
+    if (weatherState.status === "offline" || weatherState.status === "error") {
+      return "Weather unavailable";
+    }
+    return "Weather · no cache";
+  }
+
   return (
     <div className="space-y-6">
       {/* Greeting + system summary */}
@@ -8285,6 +8569,23 @@ function CommandView({
               <span className="font-mono font-medium" style={{ color: s.c }}>{s.value}</span>
             </span>
           ))}
+          {weatherVisible && (
+            <button
+              type="button"
+              className="inline-flex max-w-[26rem] items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface)] px-2.5 py-1 text-[11px] transition-colors hover:border-[var(--accent-weather)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent-weather)]"
+              title="Click to refresh Weather. Shift+click for Weather settings."
+              onClick={(event) => {
+                if (event.shiftKey) {
+                  openCommandWeatherSettings();
+                  return;
+                }
+                void refreshCommandWeather();
+              }}
+            >
+              {weatherCommandRefreshing ? <Spinner size="sm" /> : <CloudSun className="h-3.5 w-3.5 shrink-0" style={{ color: weatherAccent }} />}
+              <span className="truncate text-[var(--text-muted)]">{commandWeatherLabel()}</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -8314,6 +8615,40 @@ function CommandView({
                     <p className="truncate text-xs text-[#525252]">{viewFromAction(action) ? "Open" : action.module}</p>
                   </div>
                 </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Pinned items (shared cross-module pin store) */}
+      <div>
+        <SectionTitle>Pinned</SectionTitle>
+        {pinsCtx.pins.length === 0 ? (
+          <GlassCard hover={false}><p className="text-xs text-[#A3A3A3]">Pin items across DexNest — search results, Vault documents, journal entries, Dev projects, Deck routines and more — to see them here.</p></GlassCard>
+        ) : (
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {pinsCtx.pins.map((pin) => {
+              const meta = MODULE_META[pin.module as keyof typeof MODULE_META] ?? { icon: Pin, accent: "#22D3EE" };
+              const Icon = meta.icon;
+              const openPin = () => {
+                if (pin.actionId) {
+                  void onAction(pin.actionId, "module_ui", {});
+                } else {
+                  onNavigate(pinModuleToView(pin.module));
+                }
+              };
+              return (
+                <div key={pin.id} className="glass-card group flex items-center gap-3 p-2.5">
+                  <button type="button" onClick={openPin} className="flex min-w-0 flex-1 items-center gap-3 text-left">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ background: `${meta.accent}18`, color: meta.accent }}><Icon className="h-4 w-4" /></div>
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-[#F5F5F5]">{pin.title}</p>
+                      <p className="truncate font-mono text-[10px] text-[#525252]">{pin.type} · {pin.module}{pin.subtitle ? ` · ${pin.subtitle}` : ""}</p>
+                    </div>
+                  </button>
+                  <PinButton input={{ type: pin.type, module: pin.module, entityId: pin.entityId, title: pin.title, subtitle: pin.subtitle, actionId: pin.actionId }} />
+                </div>
               );
             })}
           </div>
@@ -8406,7 +8741,7 @@ function CommandView({
             </div>
           </GlassCard>
 
-          {weatherVisible && (
+          {false && weatherVisible && (
             <GlassCard accent={weatherAccent} hover={false}>
               <SectionTitle
                 action={(
@@ -8434,7 +8769,7 @@ function CommandView({
                       : `${formatWeatherNumber(weatherState.cache.temperature)} ${weatherUnit} · ${weatherState.cache.condition || "weather"}`}
                   </p>
                   <p className="mt-1 font-mono text-[10px] text-[var(--text-muted)]">
-                    {weatherState.cache.fetchedAt ? `Updated ${formatLocalDateTime(weatherState.cache.fetchedAt)}` : "Refresh to fetch from Open-Meteo."}
+                    {weatherState.cache.fetchedAt ? `Updated ${formatLocalDateTime(weatherState.cache.fetchedAt ?? "")}` : "Refresh to fetch from Open-Meteo."}
                   </p>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
@@ -8592,7 +8927,420 @@ const emptyProjectForm: ProjectFormState = {
   healthUrl: ""
 };
 
+function newsTone(status: NewsCacheStatus, enabled: boolean): "ok" | "warn" | "info" | "error" {
+  if (!enabled) return "info";
+  if (status === "fresh") return "ok";
+  if (status === "error") return "error";
+  if (status === "offline" || status === "stale") return "warn";
+  return "info";
+}
+
+function newsStatusText(newsState: NewsState): string {
+  if (!newsState.settings.newsEnabled) return "disabled";
+  if (newsState.cache.sourceStatus === "online") return "online";
+  if (newsState.cache.sourceStatus === "cached") return "cached";
+  if (newsState.cache.sourceStatus === "offline") return "offline";
+  return newsState.status;
+}
+
+function newsRefreshLabel(mode: NewsRefreshMode): string {
+  return mode
+    .replace("every_1_hour", "Every hour")
+    .replace("every_3_hours", "Every 3 hours")
+    .replace("every_6_hours", "Every 6 hours")
+    .replace("daily_morning", "Daily morning")
+    .replace("manual", "Manual");
+}
+
+function NewsSettingsPanel({
+  newsState,
+  onAction,
+  onRefresh
+}: {
+  newsState: NewsState;
+  onAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>;
+  onRefresh: () => Promise<void>;
+}) {
+  const [settingsDraft, setSettingsDraft] = useState<NewsSettings>(newsState.settings);
+  const [sourceDraft, setSourceDraft] = useState({ category: "Top" as NewsCategory, name: "", url: "" });
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("");
+
+  useEffect(() => {
+    setSettingsDraft(newsState.settings);
+  }, [newsState.settings]);
+
+  async function runSettingsAction(params: Partial<NewsSettings> | { source?: Partial<NewsSource>; sourceId?: string } = settingsDraft): Promise<void> {
+    setBusy(true);
+    setStatus("");
+    try {
+      const result = await onAction("news.update_settings", "module_ui", params) as { message?: string; error?: string };
+      await onRefresh();
+      setStatus(result.message ?? result.error ?? "News settings saved.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "News settings update failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleNews(enabled: boolean): Promise<void> {
+    setBusy(true);
+    setStatus("");
+    try {
+      const result = await onAction("news.toggle_enabled", "module_ui", { enabled }) as { message?: string; error?: string };
+      await onRefresh();
+      setStatus(result.message ?? result.error ?? (enabled ? "News enabled." : "News disabled."));
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "News toggle failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function toggleCategory(category: NewsCategory, field: "selectedCategories" | "readMorningBriefingCategories"): void {
+    setSettingsDraft((current) => {
+      const list = current[field];
+      return {
+        ...current,
+        [field]: list.includes(category) ? list.filter((item) => item !== category) : [...list, category]
+      };
+    });
+  }
+
+  async function addSource(): Promise<void> {
+    if (!sourceDraft.name.trim() || !sourceDraft.url.trim()) {
+      setStatus("Add a source name and RSS URL.");
+      return;
+    }
+    await runSettingsAction({ source: { ...sourceDraft, enabled: true } });
+    setSourceDraft({ category: sourceDraft.category, name: "", url: "" });
+  }
+
+  async function testSource(sourceId: string): Promise<void> {
+    setBusy(true);
+    setStatus("");
+    try {
+      const result = await onAction("news.refresh", "module_ui", { refreshReason: "manual", sourceId }) as { message?: string; error?: string };
+      await onRefresh();
+      setStatus(result.message ?? result.error ?? "Source tested.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Source test failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Panel title="News">
+      <div className="settings-grid">
+        <article>
+          <span>News</span>
+          <strong>{settingsDraft.newsEnabled ? "Enabled" : "Disabled"}</strong>
+          <p>Selected RSS headlines cached locally.</p>
+        </article>
+        <article>
+          <span>Cache</span>
+          <strong>{newsStatusText(newsState)}</strong>
+          <p className="technical">{newsState.cache.fetchedAt ? formatLocalDateTime(newsState.cache.fetchedAt) : "No cached headlines yet."}</p>
+        </article>
+        <article>
+          <span>Sources</span>
+          <strong>{settingsDraft.sources.filter((source) => source.enabled).length} active</strong>
+          <p>{settingsDraft.sources.length} configured RSS sources.</p>
+        </article>
+      </div>
+
+      <div className="registry-controls">
+        <label className="checkbox-row">
+          <input type="checkbox" checked={settingsDraft.newsEnabled} onChange={(event) => setSettingsDraft((current) => ({ ...current, newsEnabled: event.target.checked }))} />
+          <span>Enable News</span>
+        </label>
+        <label className="checkbox-row">
+          <input type="checkbox" checked={settingsDraft.showNewsOnCommand} onChange={(event) => setSettingsDraft((current) => ({ ...current, showNewsOnCommand: event.target.checked }))} />
+          <span>Show News on Command</span>
+        </label>
+        <label>
+          Refresh mode
+          <select value={settingsDraft.refreshMode} onChange={(event) => setSettingsDraft((current) => ({ ...current, refreshMode: event.target.value as NewsRefreshMode }))}>
+            <option value="manual">Manual</option>
+            <option value="every_1_hour">Every hour</option>
+            <option value="every_3_hours">Every 3 hours</option>
+            <option value="every_6_hours">Every 6 hours</option>
+            <option value="daily_morning">Daily morning</option>
+          </select>
+        </label>
+        <label>
+          Max items per category
+          <input type="number" min="1" max="30" value={settingsDraft.maxItemsPerCategory} onChange={(event) => setSettingsDraft((current) => ({ ...current, maxItemsPerCategory: Number(event.target.value) || 10 }))} />
+        </label>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+        <div className="glass-card p-3">
+          <p className="mb-2 text-sm font-semibold text-[var(--text)]">Selected categories</p>
+          <div className="flex flex-wrap gap-2">
+            {NEWS_CATEGORIES.map((category) => <button key={category} type="button" className={`chip ${settingsDraft.selectedCategories.includes(category) ? "is-active" : ""}`} onClick={() => toggleCategory(category, "selectedCategories")}>{category}</button>)}
+          </div>
+        </div>
+        <div className="glass-card p-3">
+          <p className="mb-2 text-sm font-semibold text-[var(--text)]">Briefing categories</p>
+          <div className="flex flex-wrap gap-2">
+            {NEWS_CATEGORIES.map((category) => <button key={category} type="button" className={`chip ${settingsDraft.readMorningBriefingCategories.includes(category) ? "is-active" : ""}`} onClick={() => toggleCategory(category, "readMorningBriefingCategories")}>{category}</button>)}
+          </div>
+        </div>
+      </div>
+
+      <GlassCard accent="var(--accent-news)" hover={false} className="mt-4">
+        <SectionTitle action={<StatusChip tone={newsTone(newsState.status, newsState.settings.newsEnabled)}>{newsState.cache.sourceStatus}</StatusChip>}>RSS Source Manager</SectionTitle>
+        <div className="registry-controls">
+          <label>
+            Category
+            <select value={sourceDraft.category} onChange={(event) => setSourceDraft((current) => ({ ...current, category: event.target.value as NewsCategory }))}>
+              {NEWS_CATEGORIES.map((category) => <option key={category} value={category}>{category}</option>)}
+            </select>
+          </label>
+          <label>
+            Source name
+            <input value={sourceDraft.name} onChange={(event) => setSourceDraft((current) => ({ ...current, name: event.target.value }))} placeholder="My RSS source" />
+          </label>
+          <label>
+            RSS URL
+            <input value={sourceDraft.url} onChange={(event) => setSourceDraft((current) => ({ ...current, url: event.target.value }))} placeholder="https://example.com/feed.xml" />
+          </label>
+        </div>
+        <div className="button-row">
+          <ActionButton icon={Plus} accent="var(--accent-news)" disabled={busy} onClick={() => void addSource()}>Add source</ActionButton>
+        </div>
+        <div className="mt-3 max-h-80 space-y-2 overflow-y-auto pr-1">
+          {settingsDraft.sources.length === 0 ? (
+            <p className="empty-state">No RSS sources configured yet.</p>
+          ) : settingsDraft.sources.map((source) => (
+            <div key={source.id} className="glass-card flex flex-wrap items-center gap-3 p-2.5">
+              <label className="checkbox-row min-w-0 flex-1">
+                <input
+                  type="checkbox"
+                  checked={source.enabled}
+                  onChange={(event) => setSettingsDraft((current) => ({ ...current, sources: current.sources.map((item) => item.id === source.id ? { ...item, enabled: event.target.checked } : item) }))}
+                />
+                <span className="min-w-0">
+                  <strong className="block truncate text-sm text-[var(--text)]">{source.name}</strong>
+                  <span className="technical block truncate">{source.category} · {source.url}</span>
+                  {source.lastError && <span className="block truncate text-xs text-[var(--error)]">{source.lastError}</span>}
+                </span>
+              </label>
+              <StatusChip tone={source.lastTestStatus === "failed" ? "error" : source.lastTestStatus === "success" ? "ok" : "info"}>{source.lastTestStatus ?? "untested"}</StatusChip>
+              <ActionButton icon={RefreshCw} accent="var(--accent-news)" variant="ghost" disabled={busy || !settingsDraft.newsEnabled} onClick={() => void testSource(source.id)}>Test</ActionButton>
+              <ActionButton icon={Trash2} accent="var(--error)" variant="ghost" disabled={busy} onClick={() => setSettingsDraft((current) => ({ ...current, sources: current.sources.filter((item) => item.id !== source.id) }))}>Remove</ActionButton>
+            </div>
+          ))}
+        </div>
+      </GlassCard>
+
+      <div className="button-row mt-4">
+        <ActionButton icon={Save} accent="var(--accent-news)" disabled={busy} onClick={() => void runSettingsAction(settingsDraft)}>
+          {busy && <Spinner size="sm" />}
+          Save News settings
+        </ActionButton>
+        <ActionButton icon={Power} accent="var(--accent-news)" variant="ghost" disabled={busy} onClick={() => void toggleNews(!newsState.settings.newsEnabled)}>
+          {newsState.settings.newsEnabled ? "Disable News" : "Enable News"}
+        </ActionButton>
+      </div>
+      {status && <p className="inline-status">{status}</p>}
+      <p className="technical">{newsState.settingsPath}</p>
+      <p className="technical">{newsState.cachePath}</p>
+    </Panel>
+  );
+}
+
 function NewsView({
+  newsState,
+  onAction,
+  onRefresh,
+  onNavigate
+}: {
+  newsState: NewsState;
+  onAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>;
+  onRefresh: () => Promise<void>;
+  onNavigate: (view: ViewId) => void;
+}) {
+  const visibleCategories = newsState.settings.selectedCategories.length > 0 ? newsState.settings.selectedCategories : NEWS_CATEGORIES;
+  const firstVisibleCategory = visibleCategories[0] ?? "Top";
+  const [selectedCategory, setSelectedCategory] = useState<NewsCategory>(firstVisibleCategory);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("");
+
+  useEffect(() => {
+    if (!visibleCategories.includes(selectedCategory)) {
+      setSelectedCategory(firstVisibleCategory);
+    }
+  }, [firstVisibleCategory, selectedCategory, visibleCategories]);
+
+  const selectedHeadlines = newsState.cache.headlines
+    .filter((headline) => headline.category === selectedCategory)
+    .slice(0, newsState.settings.maxItemsPerCategory);
+  const briefingCategories = newsState.settings.readMorningBriefingCategories.length > 0 ? newsState.settings.readMorningBriefingCategories : visibleCategories;
+  const briefingHeadlines = newsState.cache.headlines.filter((headline) => briefingCategories.includes(headline.category)).slice(0, 8);
+  const activeSourceCount = newsState.settings.sources.filter((source) => source.enabled).length;
+  const headlineCount = newsState.cache.headlines.length;
+
+  function openNewsSettings(): void {
+    try { sessionStorage.setItem("dexnest:settingsSection", "news"); } catch { /* ignore */ }
+    onNavigate("settings");
+  }
+
+  async function runNews(actionId: string, params: unknown = {}): Promise<void> {
+    setBusy(true);
+    setStatus("");
+    try {
+      const result = await onAction(actionId, "module_ui", params) as { message?: string; error?: string; briefingText?: string };
+      if (actionId === "news.read_briefing") {
+        const text = result.briefingText ?? result.message ?? "";
+        if (text && typeof window !== "undefined" && "speechSynthesis" in window) {
+          window.speechSynthesis.cancel();
+          window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+        }
+      }
+      await onRefresh();
+      setStatus(result.message ?? result.error ?? "News action finished.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "News action failed.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function readHeadline(headline: NewsHeadline): void {
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(new SpeechSynthesisUtterance(`${headline.category}. ${headline.title}. ${headline.summary}`));
+    }
+  }
+
+  return (
+    <div className="space-y-5">
+      <PageHeader
+        eyebrow="Selected headlines, cached locally."
+        title="News"
+        titleId="news-title"
+        actions={(
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <StatusChip tone={newsTone(newsState.status, newsState.settings.newsEnabled)}>{newsStatusText(newsState)}</StatusChip>
+            {newsState.cache.fetchedAt && <span className="technical hidden sm:inline">Updated {formatLocalDateTime(newsState.cache.fetchedAt)}</span>}
+            <ActionButton icon={RefreshCw} accent="var(--accent-news)" disabled={busy || !newsState.settings.newsEnabled} onClick={() => void runNews("news.refresh", { refreshReason: "manual" })}>Refresh</ActionButton>
+            {headlineCount > 0 && <ActionButton icon={AudioLines} accent="var(--accent-news)" variant="soft" disabled={busy || !newsState.settings.newsEnabled} onClick={() => void runNews("news.read_briefing", {})}>Read Briefing</ActionButton>}
+          </div>
+        )}
+      />
+
+      {!newsState.settings.newsEnabled ? (
+        <GlassCard accent="var(--accent-news)" hover={false} className="p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <SectionTitle>News is disabled</SectionTitle>
+              <p className="text-sm text-[var(--text-muted)]">Enable News in Settings to refresh RSS headlines. Existing cache stays local.</p>
+            </div>
+            <ActionButton icon={SettingsIcon} accent="var(--accent-news)" variant="soft" onClick={openNewsSettings}>Open News Settings</ActionButton>
+          </div>
+        </GlassCard>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            {visibleCategories.map((category) => {
+              const count = newsState.cache.categoryCounts[category] ?? 0;
+              return (
+                <button key={category} type="button" className={`chip ${selectedCategory === category ? "is-active" : ""}`} onClick={() => setSelectedCategory(category)}>
+                  <span>{category}</span>
+                  {count > 0 && <span className="news-category-count">{count}</span>}
+                </button>
+              );
+            })}
+            <button type="button" className="chip" onClick={openNewsSettings}>
+              <SettingsIcon className="h-3.5 w-3.5" />
+              News settings
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
+            <div className="space-y-5">
+              <GlassCard accent="var(--accent-news)" hover={false}>
+                <SectionTitle action={<span className="technical">{selectedHeadlines.length} shown</span>}>{selectedCategory} Headlines</SectionTitle>
+                {selectedHeadlines.length === 0 ? (
+                  <div className="empty-state">
+                    {newsState.cache.error || "No cached headlines for this category yet."}
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <ActionButton icon={RefreshCw} accent="var(--accent-news)" disabled={busy} onClick={() => void runNews("news.refresh", { refreshReason: "manual" })}>Refresh</ActionButton>
+                      <ActionButton icon={SettingsIcon} accent="var(--accent-news)" variant="ghost" onClick={openNewsSettings}>Open News Settings</ActionButton>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {selectedHeadlines.map((headline) => (
+                      <article key={headline.id} className="glass-card p-3">
+                        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                          <div className="min-w-0 flex-1">
+                            <div className="mb-1 flex flex-wrap items-center gap-2">
+                              <StatusChip tone="info">{headline.category}</StatusChip>
+                              <span className="technical">{headline.source}</span>
+                              <span className="technical">{headline.publishedAt ? formatLocalDateTime(headline.publishedAt) : "RSS time unavailable"}</span>
+                            </div>
+                            <h3 className="text-base font-semibold text-[var(--text)]">{headline.title}</h3>
+                            {headline.summary && <p className="mt-1 line-clamp-2 text-sm text-[var(--text-muted)]">{headline.summary}</p>}
+                          </div>
+                          <div className="flex shrink-0 flex-wrap gap-2">
+                            <ActionButton icon={ExternalLink} accent="var(--accent-news)" variant="ghost" onClick={() => void runNews("news.open_headline", { headlineId: headline.id })}>Open</ActionButton>
+                            <ActionButton icon={NotebookPen} accent="var(--accent-news)" variant="ghost" onClick={() => void runNews("news.save_headline_to_journal", { headlineId: headline.id })}>Save to Journal</ActionButton>
+                            <ActionButton icon={AudioLines} accent="var(--accent-news)" variant="ghost" onClick={() => readHeadline(headline)}>Read aloud</ActionButton>
+                          </div>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </GlassCard>
+            </div>
+
+            <aside className="space-y-5">
+              <GlassCard accent="var(--accent-news)" hover={false}>
+                <SectionTitle>Morning Briefing</SectionTitle>
+                <p className="text-sm text-[var(--text-muted)]">{briefingHeadlines.length} cached headlines selected for briefing.</p>
+                {briefingHeadlines.length > 0 ? (
+                  <div className="mt-3 space-y-2">
+                    {briefingHeadlines.slice(0, 4).map((headline) => (
+                      <div key={headline.id} className="glass-card p-2.5">
+                        <p className="truncate text-sm font-medium text-[var(--text)]">{headline.title}</p>
+                        <p className="technical">{headline.category} · {headline.source}</p>
+                      </div>
+                    ))}
+                    <ActionButton icon={AudioLines} accent="var(--accent-news)" className="mt-2" disabled={busy} onClick={() => void runNews("news.read_briefing", {})}>Read Briefing</ActionButton>
+                  </div>
+                ) : (
+                  <p className="empty-state">No briefing headlines yet. Refresh after enabling sources.</p>
+                )}
+              </GlassCard>
+
+              <GlassCard hover={false}>
+                <SectionTitle>Source Summary</SectionTitle>
+                <div className="settings-list">
+                  <div className="settings-row"><span>Status</span><strong>{newsStatusText(newsState)}</strong></div>
+                  <div className="settings-row"><span>Sources</span><strong>{activeSourceCount} active</strong></div>
+                  <div className="settings-row"><span>Headlines</span><strong>{headlineCount}</strong></div>
+                  <div className="settings-row"><span>Refresh</span><strong>{newsRefreshLabel(newsState.settings.refreshMode)}</strong></div>
+                  <div className="settings-row"><span>Next</span><strong>{newsState.nextRefreshAt ? formatLocalDateTime(newsState.nextRefreshAt) : "Manual"}</strong></div>
+                </div>
+                {newsState.cache.error && <p className="mt-3 text-sm text-[var(--error)]">{newsState.cache.error}</p>}
+                {status && <p className="mt-3 inline-status">{status}</p>}
+                <ActionButton icon={SettingsIcon} accent="var(--accent-news)" variant="ghost" className="mt-3" onClick={openNewsSettings}>Open News Settings</ActionButton>
+              </GlassCard>
+            </aside>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function NewsViewLegacy({
   newsState,
   onAction,
   onRefresh
@@ -8768,6 +9516,7 @@ function NewsView({
                       <span className="technical block truncate">{source.category} · {source.url}</span>
                     </span>
                   </label>
+                  <PinButton input={{ type: "item", module: "news", entityId: source.id, title: source.name, subtitle: source.category }} />
                   <ActionButton icon={RefreshCw} accent="var(--accent-news)" variant="ghost" disabled={busy || !newsState.settings.newsEnabled} onClick={() => void runNews("news.refresh", { refreshReason: "manual", sourceId: source.id })}>Test</ActionButton>
                   <ActionButton icon={Trash2} accent="var(--error)" variant="ghost" onClick={() => setSettingsDraft((current) => ({ ...current, sources: current.sources.filter((item) => item.id !== source.id) }))}>Remove</ActionButton>
                 </div>
@@ -9219,6 +9968,7 @@ function DevView({
               <Panel title={project.name} key={project.id}>
                 <p className="technical">{project.path}</p>
                 <div className="button-row">
+                  <PinButton input={{ type: "project", module: "dev", entityId: project.id, title: project.name, subtitle: "Dev project", actionId: `dev.project.${project.id}.open_folder` }} />
                   <button type="button" onClick={() => { setForm(projectToForm(project)); setActiveProjectId(project.id); }}>Edit</button>
                   <button type="button" onClick={() => void runProjectAction(project, `${base}.open_folder`)}>Folder</button>
                   <button type="button" onClick={() => void runProjectAction(project, `${base}.open_vscode`)}>VS Code</button>
@@ -9663,6 +10413,7 @@ function ClipboardView({
                 <div key={s.id} className="glass-card flex w-full items-center gap-2 p-2.5">
                   <button type="button" onClick={() => void insertSnippet(s.text, s.title)} className="min-w-0 flex-1 truncate text-left text-sm text-[#F5F5F5]" title={s.text}>{s.title}</button>
                   <button type="button" onClick={() => void insertSnippet(s.text, s.title)} title="Copy" className="text-[#525252] hover:text-[#8B5CF6]"><ClipIcon className="h-3.5 w-3.5" /></button>
+                  <PinButton input={{ type: "item", module: "clipboard", entityId: s.id, title: s.title, subtitle: "Snippet" }} />
                   <button type="button" onClick={() => void deleteSnippet(s.id)} title="Delete" className="text-[#525252] hover:text-[#EF4444]"><Trash2 className="h-3.5 w-3.5" /></button>
                 </div>
               ))}
@@ -10029,7 +10780,7 @@ function ToolsView({
               <UploadCloud className="h-7 w-7 text-[#F97316]" />
               <p className="mt-2 text-sm text-[#F5F5F5]">Drop files for <span className="font-medium">{selectedTool.name}</span></p>
               <p className="text-[11px] text-[#525252]">accepts {selectedTool.fmt}</p>
-              <button type="button" onClick={() => void selectFiles(selectedTool.kind)} className="mt-2 rounded-lg border border-[#F97316]/30 bg-[#F97316]/10 px-3 py-1 text-xs font-medium text-[#F97316]">Choose files</button>
+              <button type="button" onClick={() => void selectFiles(selectedTool.kind)} className="tools-action-button tools-action-button--outline mt-2">Choose files</button>
               {selectedFiles.length > 0 && <p className="mt-2 font-mono text-[10px] text-[#A3A3A3]">{selectedFiles.length} file{selectedFiles.length === 1 ? "" : "s"} selected</p>}
             </section>
 
@@ -10050,7 +10801,7 @@ function ToolsView({
               </div>
             )}
 
-            <button type="button" disabled={runningActionId === selectedTool.id || selectedFiles.length === 0} onClick={() => void runTool(selectedTool.id, toolParams(selectedTool.id))} className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-[#F97316] px-4 py-2 text-sm font-bold text-[#1a0d00] transition-all hover:brightness-110 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40">
+            <button type="button" disabled={runningActionId === selectedTool.id || selectedFiles.length === 0} onClick={() => void runTool(selectedTool.id, toolParams(selectedTool.id))} className="tools-action-button tools-action-button--primary mt-3 w-full">
               {runningActionId === selectedTool.id ? <><Spinner size="sm" /> Running…</> : <>Run {selectedTool.name}</>}
             </button>
           </GlassCard>
@@ -10085,8 +10836,8 @@ function ToolsView({
 
           <div className="grid grid-cols-3 gap-2">
             <ActionButton accent={ACCENT_TOOLS} variant="ghost" icon={FolderOpen} className="justify-center text-xs" onClick={() => void onAction("tools.open_output_folder")}>Output</ActionButton>
-            <button type="button" disabled={!latestOutput} onClick={() => latestOutput && void saveOutputToVault(latestOutput)} className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-[#10B981]/30 bg-[#10B981]/10 px-3 py-2 text-xs font-medium text-[#10B981] transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"><Vault className="h-4 w-4" />To Vault</button>
-            <button type="button" disabled={!latestOutput} onClick={() => latestOutput && void sendOutputToDrop(latestOutput)} className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-[#38BDF8]/30 bg-[#38BDF8]/10 px-3 py-2 text-xs font-medium text-[#38BDF8] transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"><Share2 className="h-4 w-4" />To Drop</button>
+            <button type="button" disabled={!latestOutput} onClick={() => latestOutput && void saveOutputToVault(latestOutput)} className="tools-action-button tools-action-button--vault"><Vault className="h-4 w-4" />To Vault</button>
+            <button type="button" disabled={!latestOutput} onClick={() => latestOutput && void sendOutputToDrop(latestOutput)} className="tools-action-button tools-action-button--drop"><Share2 className="h-4 w-4" />To Drop</button>
           </div>
 
           {ocrPreview && (
@@ -10538,6 +11289,7 @@ function VaultView({
                             <p className="technical">{document.filePath}</p>
                           </div>
                           <div className="button-row">
+                            <PinButton input={{ type: "document", module: "vault", entityId: document.id, title: document.title, subtitle: document.category }} />
                             <button type="button" onClick={() => void runDocumentAction("vault.open_document", document)}>Open file</button>
                             <button type="button" onClick={() => void runDocumentAction("vault.open_document_folder", document)}>Open folder</button>
                             <button type="button" onClick={() => startEdit(document)}>Edit metadata</button>
@@ -11069,12 +11821,12 @@ function DropView({
             <div className="glass-card flex items-center gap-2.5 p-2.5">
               <Smartphone className="h-4 w-4 shrink-0 text-[#38BDF8]" />
               <div className="min-w-0 flex-1"><p className="text-[10px] uppercase tracking-wider text-[#525252]">Phone URL</p><p className="truncate font-mono text-xs text-[#F5F5F5]">{dropState.phoneUrl || "Loading"}</p></div>
-              <button type="button" onClick={() => void copyTextToClipboard(dropState.phoneUrl || "", "Phone URL copied")} title="Copy" className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#1a1a1a] hover:text-[#38BDF8]"><Copy className="h-3.5 w-3.5" /></button>
+              <button type="button" onClick={() => void copyTextToClipboard(dropState.phoneUrl || "", "Phone URL copied")} title="Copy Phone URL" aria-label="Copy Phone URL" className="drop-url-copy-button"><Copy className="h-4 w-4" /><span className="hidden sm:inline">Copy</span></button>
             </div>
             <div className="glass-card flex items-center gap-2.5 p-2.5">
               <Monitor className="h-4 w-4 shrink-0 text-[#38BDF8]" />
               <div className="min-w-0 flex-1"><p className="text-[10px] uppercase tracking-wider text-[#525252]">PC URL</p><p className="truncate font-mono text-xs text-[#F5F5F5]">{dropState.localUrl || endpoint || "Loading"}</p></div>
-              <button type="button" onClick={() => void copyTextToClipboard(dropState.localUrl || endpoint || "", "PC URL copied")} title="Copy" className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#1a1a1a] hover:text-[#38BDF8]"><Copy className="h-3.5 w-3.5" /></button>
+              <button type="button" onClick={() => void copyTextToClipboard(dropState.localUrl || endpoint || "", "PC URL copied")} title="Copy PC URL" aria-label="Copy PC URL" className="drop-url-copy-button"><Copy className="h-4 w-4" /><span className="hidden sm:inline">Copy</span></button>
             </div>
             <p className="font-mono text-[10px] text-[#525252]">LAN IP · {dropState.lanIp ?? "not detected"}</p>
           </div>
@@ -11959,6 +12711,7 @@ function JournalView({
               {journalState.entries.length === 0 ? <p>No Journal entries yet.</p> : journalState.entries.map((entry) => (
                 <CollapsibleListItem accentClass="accent-journal" key={entry.id} title={entry.title || formatLocalDate(entry.date)} meta={`${formatLocalDate(entry.date)} / mood: ${entry.mood || "unset"} / productivity: ${entry.productivity || "unset"}`}
                   actions={(<>
+                    <PinButton input={{ type: "item", module: "journal", entityId: entry.id, title: `Journal — ${formatLocalDate(entry.date)}`, subtitle: "Journal entry" }} />
                     <button type="button" onClick={() => loadEntry(entry)}>Edit</button>
                     <button className="danger-button" type="button" onClick={() => void deleteEntry(entry)}>Delete</button>
                   </>)}>
@@ -12017,7 +12770,7 @@ function safeWorldClockTime(timeZone: string): string {
   }
 }
 
-function UtilitiesView({
+function UtilitiesViewLegacy({
   utilitiesState,
   onAction,
   onRefresh
@@ -12223,7 +12976,378 @@ function UtilitiesView({
   );
 }
 
-function TimetableView({
+function UtilitiesView({
+  utilitiesState,
+  onAction,
+  onRefresh
+}: {
+  utilitiesState: UtilitiesState;
+  onAction: (actionId: string, source?: string, params?: unknown) => Promise<{ ok?: boolean; error?: string; message?: string; result?: string; utilitiesState?: UtilitiesState }>;
+  onRefresh: () => Promise<void>;
+}) {
+  const ACCENT = "var(--accent-utilities)";
+  const SECONDARY = "var(--accent-utilities-secondary)";
+  const [tab, setTab] = useState<"calculate" | "convert" | "time" | "history">("calculate");
+  const [tick, setTick] = useState(Date.now());
+  const [message, setMessage] = useState("");
+  const [expression, setExpression] = useState("15%2400");
+  const [category, setCategory] = useState<UtilityConversionCategory>("length");
+  const [convertValue, setConvertValue] = useState("10");
+  const [fromUnit, setFromUnit] = useState("km");
+  const [toUnit, setToUnit] = useState("mi");
+  const [dateMode, setDateMode] = useState<"between" | "add" | "subtract" | "countdown">("countdown");
+  const [startDate, setStartDate] = useState(getLocalTodayDateString());
+  const [endDate, setEndDate] = useState(getLocalTodayDateString());
+  const [days, setDays] = useState("7");
+  const [timerMinutes, setTimerMinutes] = useState(String(utilitiesState.settings.defaultTimerMinutes || 25));
+  const [timerLabel, setTimerLabel] = useState("Focus timer");
+  const [clockLabel, setClockLabel] = useState("Toronto");
+  const [clockZone, setClockZone] = useState("America/Toronto");
+
+  useEffect(() => {
+    if (utilitiesState.activeTimer?.status !== "running" && utilitiesState.stopwatch.status !== "running") {
+      return;
+    }
+    const interval = window.setInterval(() => setTick(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [utilitiesState.activeTimer?.status, utilitiesState.stopwatch.status]);
+
+  useEffect(() => {
+    const units = utilityConversionUnits[category];
+    if (!units.includes(fromUnit)) {
+      setFromUnit(units[0]);
+    }
+    if (!units.includes(toUnit)) {
+      setToUnit(units[1] ?? units[0]);
+    }
+  }, [category, fromUnit, toUnit]);
+
+  async function runUtility(actionId: string, params: Record<string, unknown> = {}): Promise<void> {
+    const result = await onAction(actionId, "module_ui", params);
+    setMessage(result.ok === false ? result.error ?? "Utilities action failed." : result.message ?? "Done.");
+    await onRefresh();
+  }
+
+  const latestResult = utilitiesState.recentResults[0];
+  const latestCalculation = utilitiesState.recentResults.find((item) => item.type === "calculation");
+  const latestConversion = utilitiesState.recentResults.find((item) => item.type === "conversion");
+  const latestDate = utilitiesState.recentResults.find((item) => item.type === "date");
+  const activeTimer = utilitiesState.activeTimer;
+  const remaining = utilityTimerRemaining(activeTimer);
+  const timerProgress = activeTimer ? Math.max(0, Math.min(100, ((activeTimer.durationSeconds - remaining) / Math.max(1, activeTimer.durationSeconds)) * 100)) : 0;
+  const stopwatchDisplay = formatStopwatchMs(utilityStopwatchMs(utilitiesState.stopwatch));
+  const units = utilityConversionUnits[category];
+  const tabButton = (id: typeof tab, label: string) => (
+    <button
+      key={id}
+      type="button"
+      onClick={() => setTab(id)}
+      className="rounded-full border px-3 py-1.5 text-sm capitalize"
+      style={{
+        borderColor: tab === id ? ACCENT : "var(--border)",
+        background: tab === id ? "color-mix(in srgb, var(--accent-utilities) 14%, transparent)" : "var(--surface)",
+        color: tab === id ? ACCENT : "var(--text-muted)"
+      }}
+    >
+      {label}
+    </button>
+  );
+  const overview = [
+    { id: "calculate" as const, title: "Calculator", icon: Calculator, value: latestCalculation?.result ?? "No result yet", sub: latestCalculation?.input ?? "Expressions and percent math", accent: ACCENT },
+    { id: "convert" as const, title: "Converter", icon: ArrowRightLeft, value: latestConversion?.result ?? `${convertValue} ${fromUnit}`, sub: latestConversion?.input ?? `${fromUnit} to ${toUnit}`, accent: SECONDARY },
+    { id: "time" as const, title: "Timer", icon: Timer, value: activeTimer ? formatDuration(remaining) : `${timerMinutes}m`, sub: activeTimer?.label ?? "No active timer", accent: ACCENT },
+    { id: "time" as const, title: "Stopwatch", icon: Clock, value: stopwatchDisplay, sub: utilitiesState.stopwatch.status, accent: SECONDARY },
+    { id: "time" as const, title: "World Clock", icon: Globe2, value: `${utilitiesState.worldClocks.length} saved`, sub: new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(new Date(tick)), accent: ACCENT }
+  ];
+  const presets: Array<{ label: string; category: UtilityConversionCategory; value: string; from: string; to: string }> = [
+    { label: "km to miles", category: "length", value: "10", from: "km", to: "mi" },
+    { label: "ft to cm", category: "length", value: "5.9167", from: "ft", to: "cm" },
+    { label: "lbs to kg", category: "weight", value: "150", from: "lb", to: "kg" },
+    { label: "C to F", category: "temperature", value: "20", from: "celsius", to: "fahrenheit" },
+    { label: "MB to GB", category: "data", value: "2048", from: "mb", to: "gb" }
+  ];
+  const keypad = ["7", "8", "9", "/", "4", "5", "6", "*", "1", "2", "3", "-", "0", ".", "%", "+"];
+  const dateResultSentence = latestDate ? `${latestDate.result} / ${latestDate.input}` : "Run a date calculation to see the answer here.";
+
+  function applyPreset(preset: typeof presets[number]): void {
+    setCategory(preset.category);
+    setConvertValue(preset.value);
+    setFromUnit(preset.from);
+    setToUnit(preset.to);
+  }
+
+  function appendExpression(value: string): void {
+    setExpression((current) => `${current}${value}`);
+  }
+
+  function percentHelper(percent: number): void {
+    setExpression((current) => current.trim() ? `(${percent}/100)*(${current})` : `${percent}%`);
+  }
+
+  function swapUnits(): void {
+    setFromUnit(toUnit);
+    setToUnit(fromUnit);
+  }
+
+  return (
+    <div className="space-y-5 accent-utilities">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: "color-mix(in srgb, var(--accent-utilities) 40%, transparent)", background: "color-mix(in srgb, var(--accent-utilities) 14%, transparent)", color: ACCENT }}>
+            <Calculator className="h-5 w-5" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight" style={{ color: "var(--text)" }}>Utilities</h1>
+            <p className="text-sm" style={{ color: "var(--text-muted)" }}>Fast local calculations, timers, and conversions.</p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <StatusChip tone="info">local</StatusChip>
+          {(["calculate", "convert", "time", "history"] as const).map((id) => tabButton(id, id))}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-5">
+        {overview.map((item) => {
+          const Icon = item.icon;
+          return (
+            <button key={`${item.title}-${item.id}`} type="button" onClick={() => setTab(item.id)} className="glass-card min-h-28 p-3 text-left transition-all hover:brightness-110" style={{ borderColor: tab === item.id ? item.accent : "var(--border)" }}>
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <Icon className="h-4 w-4" style={{ color: item.accent }} />
+                <span className="font-mono text-[10px]" style={{ color: "var(--text-disabled)" }}>{item.title}</span>
+              </div>
+              <p className="truncate font-mono text-lg" style={{ color: "var(--text)" }}>{item.value}</p>
+              <p className="mt-1 truncate text-xs" style={{ color: "var(--text-muted)" }}>{item.sub}</p>
+            </button>
+          );
+        })}
+      </div>
+
+      {tab === "calculate" && (
+        <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.3fr)_minmax(20rem,0.7fr)]">
+          <GlassCard accent={ACCENT} glow hover={false}>
+            <SectionTitle action={<Calculator className="h-3.5 w-3.5" style={{ color: ACCENT }} />}>Calculator</SectionTitle>
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_16rem]">
+              <div className="space-y-4">
+                <label>
+                  Expression
+                  <input className="technical" value={expression} onChange={(event) => setExpression(event.target.value)} placeholder="(15/100)*2400" />
+                </label>
+                <div className="rounded-xl border p-4" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
+                  <p className="text-xs uppercase tracking-[0.14em]" style={{ color: "var(--text-disabled)" }}>Latest result</p>
+                  <p className="mt-2 truncate font-mono text-3xl" style={{ color: ACCENT }}>{latestCalculation?.result ?? "ready"}</p>
+                  <p className="mt-1 truncate font-mono text-xs" style={{ color: "var(--text-muted)" }}>{latestCalculation?.input ?? "No calculation yet."}</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {[10, 15, 20].map((percent) => <button key={percent} type="button" onClick={() => percentHelper(percent)}>{percent}%</button>)}
+                  <button type="button" onClick={() => setExpression((current) => current ? `(${current})*1.13` : "100*1.13")}>tax helper</button>
+                  <button type="button" onClick={() => setExpression((current) => current ? `(${current})*1.15` : "100*1.15")}>tip helper</button>
+                </div>
+                <div className="button-row">
+                  <ActionButton accent={ACCENT} icon={Calculator} onClick={() => void runUtility("utilities.calculate", { expression })}>Calculate</ActionButton>
+                  <button type="button" onClick={() => void runUtility("utilities.copy_result")}>Copy result</button>
+                  <button type="button" onClick={() => setExpression("")}>Clear</button>
+                </div>
+              </div>
+              <div className="grid grid-cols-4 gap-2 self-start">
+                {keypad.map((token) => (
+                  <button key={token} type="button" onClick={() => appendExpression(token)} className="h-12 rounded-lg border font-mono text-sm" style={{ borderColor: "var(--border)", color: /[/*+\-%]/.test(token) ? ACCENT : "var(--text)", background: "var(--surface-2)" }}>{token}</button>
+                ))}
+                <button type="button" onClick={() => appendExpression("(")} className="h-12 font-mono">(</button>
+                <button type="button" onClick={() => appendExpression(")")} className="h-12 font-mono">)</button>
+                <button type="button" onClick={() => setExpression((current) => current.slice(0, -1))} className="h-12 font-mono">del</button>
+                <button type="button" onClick={() => void runUtility("utilities.calculate", { expression })} className="h-12 font-mono" style={{ color: ACCENT }}>=</button>
+              </div>
+            </div>
+          </GlassCard>
+
+          <GlassCard accent={SECONDARY} hover={false}>
+            <SectionTitle action={<HistoryIcon className="h-3.5 w-3.5" style={{ color: SECONDARY }} />}>Recent calculations</SectionTitle>
+            {utilitiesState.recentResults.filter((item) => item.type === "calculation").length === 0 ? <EmptyState>No calculations yet.</EmptyState> : (
+              <div className="space-y-2">
+                {utilitiesState.recentResults.filter((item) => item.type === "calculation").slice(0, 8).map((item) => (
+                  <button key={item.id} type="button" onClick={() => setExpression(item.input)} className="glass-card w-full p-3 text-left">
+                    <p className="truncate font-mono text-sm" style={{ color: "var(--text)" }}>{item.result}</p>
+                    <p className="truncate font-mono text-[10px]" style={{ color: "var(--text-muted)" }}>{item.input} / {formatLocalDateTime(item.createdAt)}</p>
+                  </button>
+                ))}
+              </div>
+            )}
+          </GlassCard>
+        </div>
+      )}
+
+      {tab === "convert" && (
+        <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.25fr)_minmax(20rem,0.75fr)]">
+          <GlassCard accent={SECONDARY} glow hover={false}>
+            <SectionTitle action={<ArrowRightLeft className="h-3.5 w-3.5" style={{ color: SECONDARY }} />}>Unit Converter</SectionTitle>
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_16rem]">
+              <div className="space-y-4">
+                <div className="registry-controls">
+                  <label>Category<select value={category} onChange={(event) => setCategory(event.target.value as UtilityConversionCategory)}>{Object.keys(utilityConversionUnits).map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+                  <label>Value<input className="technical" value={convertValue} onChange={(event) => setConvertValue(event.target.value)} /></label>
+                  <label>From<select value={fromUnit} onChange={(event) => setFromUnit(event.target.value)}>{units.map((unit) => <option key={unit} value={unit}>{unit}</option>)}</select></label>
+                  <label>To<select value={toUnit} onChange={(event) => setToUnit(event.target.value)}>{units.map((unit) => <option key={unit} value={unit}>{unit}</option>)}</select></label>
+                </div>
+                <div className="button-row">
+                  <ActionButton accent={SECONDARY} icon={ArrowRightLeft} onClick={() => void runUtility("utilities.convert_units", { category, value: convertValue, fromUnit, toUnit })}>Convert</ActionButton>
+                  <button type="button" onClick={swapUnits}>Swap</button>
+                  <button type="button" onClick={() => void runUtility("utilities.copy_result")}>Copy result</button>
+                </div>
+              </div>
+              <div className="rounded-xl border p-4" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
+                <p className="text-xs uppercase tracking-[0.14em]" style={{ color: "var(--text-disabled)" }}>Result</p>
+                <p className="mt-3 truncate font-mono text-3xl" style={{ color: SECONDARY }}>{latestConversion?.result ?? "--"}</p>
+                <p className="mt-1 truncate font-mono text-xs" style={{ color: "var(--text-muted)" }}>{latestConversion?.input ?? `${convertValue} ${fromUnit} to ${toUnit}`}</p>
+              </div>
+            </div>
+          </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle>Common presets</SectionTitle>
+            <div className="grid gap-2">
+              {presets.map((preset) => (
+                <button key={preset.label} type="button" onClick={() => applyPreset(preset)} className="glass-card flex items-center justify-between gap-3 p-3 text-left">
+                  <span style={{ color: "var(--text)" }}>{preset.label}</span>
+                  <span className="font-mono text-[10px]" style={{ color: "var(--text-muted)" }}>{preset.from} to {preset.to}</span>
+                </button>
+              ))}
+            </div>
+          </GlassCard>
+        </div>
+      )}
+
+      {tab === "time" && (
+        <div className="grid grid-cols-1 gap-5 xl:grid-cols-12">
+          <div className="space-y-5 xl:col-span-7">
+            <GlassCard accent={ACCENT} glow hover={false}>
+              <SectionTitle action={<Timer className="h-3.5 w-3.5" style={{ color: ACCENT }} />}>Timer</SectionTitle>
+              <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                <div>
+                  <p className="text-lg font-semibold" style={{ color: "var(--text)" }}>{activeTimer?.label ?? "No active timer"}</p>
+                  <p className="font-mono text-5xl" style={{ color: ACCENT }}>{formatDuration(remaining)}</p>
+                  <p className="mt-1 text-sm" style={{ color: "var(--text-muted)" }}>{activeTimer ? activeTimer.status : "Choose a preset or custom duration."}</p>
+                </div>
+                <ProgressRing value={timerProgress} color="var(--accent-utilities)" size={86} />
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                {[5, 10, 25, 30, 60].map((minutes) => <button key={minutes} type="button" onClick={() => { setTimerMinutes(String(minutes)); setTimerLabel(`${minutes} minute timer`); }}>{minutes}m</button>)}
+              </div>
+              <div className="registry-controls mt-4">
+                <label>Minutes<input className="technical" value={timerMinutes} onChange={(event) => setTimerMinutes(event.target.value)} /></label>
+                <label>Label<input value={timerLabel} onChange={(event) => setTimerLabel(event.target.value)} /></label>
+              </div>
+              <div className="button-row">
+                <ActionButton accent={ACCENT} icon={Play} onClick={() => void runUtility("utilities.timer.start", { durationMinutes: timerMinutes, label: timerLabel })}>Start</ActionButton>
+                <button type="button" onClick={() => void runUtility("utilities.timer.pause")}>Pause</button>
+                <button type="button" onClick={() => void runUtility("utilities.timer.reset")}>Reset</button>
+              </div>
+            </GlassCard>
+
+            <GlassCard accent={SECONDARY} hover={false}>
+              <SectionTitle action={<Clock className="h-3.5 w-3.5" style={{ color: SECONDARY }} />}>Stopwatch</SectionTitle>
+              <div className="flex flex-wrap items-end justify-between gap-4">
+                <div>
+                  <p className="font-mono text-5xl" style={{ color: SECONDARY }}>{stopwatchDisplay}</p>
+                  <p className="mt-1 text-sm" style={{ color: "var(--text-muted)" }}>{utilitiesState.stopwatch.status}</p>
+                </div>
+                <div className="button-row">
+                  <ActionButton accent={SECONDARY} icon={Play} onClick={() => void runUtility("utilities.stopwatch.start")}>Start</ActionButton>
+                  <button type="button" onClick={() => void runUtility("utilities.stopwatch.pause")}>Pause</button>
+                  <button type="button" onClick={() => void runUtility("utilities.stopwatch.reset")}>Reset</button>
+                </div>
+              </div>
+              {utilitiesState.stopwatch.laps.length === 0 ? <p className="mt-3 text-sm" style={{ color: "var(--text-muted)" }}>Lap list placeholder. Stopwatch history is kept locally after reset.</p> : null}
+            </GlassCard>
+          </div>
+
+          <div className="space-y-5 xl:col-span-5">
+            <GlassCard accent={ACCENT} hover={false}>
+              <SectionTitle action={<Globe2 className="h-3.5 w-3.5" style={{ color: ACCENT }} />}>World Clock</SectionTitle>
+              <div className="glass-card mb-3 flex items-center justify-between gap-3 p-3">
+                <span style={{ color: "var(--text)" }}>Local</span>
+                <span className="font-mono" style={{ color: ACCENT }}>{new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", weekday: "short" }).format(new Date(tick))}</span>
+              </div>
+              <div className="registry-controls">
+                <label>City<input value={clockLabel} onChange={(event) => setClockLabel(event.target.value)} placeholder="Toronto" /></label>
+                <label>Timezone<input className="technical" value={clockZone} onChange={(event) => setClockZone(event.target.value)} placeholder="America/Toronto" /></label>
+              </div>
+              <ActionButton accent={ACCENT} icon={Plus} className="mt-3" onClick={() => void runUtility("utilities.world_clock.add", { city: clockLabel, timeZone: clockZone })}>Add clock</ActionButton>
+              <div className="mt-4 space-y-2">
+                {utilitiesState.worldClocks.length === 0 ? <EmptyState>No saved world clocks yet.</EmptyState> : utilitiesState.worldClocks.map((clock) => (
+                  <div key={clock.id} className="glass-card flex items-center justify-between gap-3 p-3">
+                    <div className="min-w-0">
+                      <p className="truncate" style={{ color: "var(--text)" }}>{clock.label}</p>
+                      <p className="truncate font-mono text-xs" style={{ color: "var(--text-muted)" }}>{clock.timeZone}</p>
+                    </div>
+                    <span className="font-mono" style={{ color: ACCENT }}>{safeWorldClockTime(clock.timeZone)}</span>
+                    <button type="button" onClick={() => void runUtility("utilities.world_clock.remove", { id: clock.id })}>Remove</button>
+                  </div>
+                ))}
+              </div>
+            </GlassCard>
+          </div>
+        </div>
+      )}
+
+      {tab === "history" && (
+        <GlassCard accent={SECONDARY} hover={false}>
+          <SectionTitle action={<HistoryIcon className="h-3.5 w-3.5" style={{ color: SECONDARY }} />}>Recent Results</SectionTitle>
+          {utilitiesState.recentResults.length === 0 ? <EmptyState>No utility results yet.</EmptyState> : (
+            <div className="grid gap-2 md:grid-cols-2">
+              {utilitiesState.recentResults.slice(0, 18).map((item) => (
+                <article key={item.id} className="glass-card p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate font-mono text-sm" style={{ color: "var(--text)" }}>{item.result}</p>
+                      <p className="truncate font-mono text-[10px]" style={{ color: "var(--text-muted)" }}>{item.input}</p>
+                    </div>
+                    <StatusChip tone="info" dot={false}>{item.type}</StatusChip>
+                  </div>
+                  <p className="mt-2 font-mono text-[10px]" style={{ color: "var(--text-disabled)" }}>{formatLocalDateTime(item.createdAt)}</p>
+                </article>
+              ))}
+            </div>
+          )}
+        </GlassCard>
+      )}
+
+      {tab === "calculate" && (
+        <GlassCard accent={ACCENT} hover={false}>
+          <SectionTitle action={<CalendarClock className="h-3.5 w-3.5" style={{ color: ACCENT }} />}>Date Calculator</SectionTitle>
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
+            <div className="registry-controls">
+              <label>Mode<select value={dateMode} onChange={(event) => setDateMode(event.target.value as typeof dateMode)}><option value="countdown">Countdown</option><option value="between">Days between</option><option value="add">Add days</option><option value="subtract">Subtract days</option></select></label>
+              <label>{dateMode === "between" ? "Start date" : "Base date"}<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} /></label>
+              {(dateMode === "between" || dateMode === "countdown") && <label>{dateMode === "countdown" ? "Target date" : "End date"}<input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} /></label>}
+              {(dateMode === "add" || dateMode === "subtract") && <label>Days<input className="technical" value={days} onChange={(event) => setDays(event.target.value)} /></label>}
+            </div>
+            <div className="rounded-xl border p-4" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
+              <p className="text-xs uppercase tracking-[0.14em]" style={{ color: "var(--text-disabled)" }}>Date result</p>
+              <p className="mt-3 font-mono text-lg" style={{ color: ACCENT }}>{dateResultSentence}</p>
+            </div>
+          </div>
+          <div className="button-row mt-3">
+            <ActionButton accent={ACCENT} icon={CalendarClock} onClick={() => void runUtility("utilities.date_calculate", { mode: dateMode, startDate, endDate, baseDate: startDate, targetDate: endDate, days })}>Calculate date</ActionButton>
+          </div>
+        </GlassCard>
+      )}
+
+      <GlassCard hover={false}>
+        <SectionTitle>Things you can say</SectionTitle>
+        <div className="flex flex-wrap gap-2">
+          {["Calculate 15 percent of 2400", "Convert 5 feet 11 to centimeters", "Start a 25 minute timer", "Start stopwatch", "How many days until July 1?"].map((hint) => (
+            <span key={hint} className="rounded-full border px-3 py-1 font-mono text-[11px]" style={{ borderColor: "var(--border)", color: "var(--text-muted)", background: "var(--surface)" }}>{hint}</span>
+          ))}
+        </div>
+        {message && <p className="inline-status">{message}</p>}
+        <p className="technical mt-3">{utilitiesState.utilitiesPath}</p>
+      </GlassCard>
+    </div>
+  );
+}
+
+function TimetableViewLegacy({
   timetableState,
   calendarState,
   onAction,
@@ -12590,8 +13714,618 @@ function TimetableView({
   );
 }
 
+function TimetableView({
+  timetableState,
+  calendarState,
+  onAction,
+  onRefresh
+}: {
+  timetableState: TimetableState;
+  calendarState: CalendarState;
+  onAction: (actionId: string, source?: string, params?: unknown) => Promise<{ ok?: boolean; error?: string; message?: string; timetableState?: TimetableState }>;
+  onRefresh: () => Promise<void>;
+}) {
+  const ACCENT = "var(--accent-timetable)";
+  const SECONDARY = "var(--accent-timetable-secondary)";
+  const [selectedDay, setSelectedDay] = useState<TimetableDay>(timetableState.today);
+  const [mode, setMode] = useState<"today" | "week" | "templates">("today");
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [tick, setTick] = useState(Date.now());
+  const [form, setForm] = useState({
+    title: "",
+    day: timetableState.today as TimetableDay,
+    startTime: "09:00",
+    endTime: "10:00",
+    category: "Focus",
+    notes: ""
+  });
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    setSelectedDay(timetableState.today);
+    setForm((current) => ({ ...current, day: timetableState.today }));
+  }, [timetableState.today]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setTick(Date.now()), 60000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const sortedBlocks = [...timetableState.activeTemplate.blocks].sort((left, right) => {
+    const dayDiff = TIMETABLE_DAYS.indexOf(left.day) - TIMETABLE_DAYS.indexOf(right.day);
+    return dayDiff || left.startTime.localeCompare(right.startTime);
+  });
+  const selectedBlocks = sortedBlocks.filter((block) => block.day === selectedDay);
+  const todayBlocks = sortedBlocks.filter((block) => block.day === timetableState.today);
+  const selectedDate = dateForTimetableDay(selectedDay, calendarState.today);
+  const selectedEvents = calendarState.events.filter((event) => event.date === selectedDate);
+  const now = new Date(tick);
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const currentBlock = timetableState.currentBlock;
+  const nextBlock = timetableState.nextBlock;
+
+  function titleCaseDay(day: TimetableDay): string {
+    return day.slice(0, 1).toUpperCase() + day.slice(1);
+  }
+
+  function timeToMinutes(value: string): number {
+    const [hours = "0", minutes = "0"] = value.split(":");
+    return Number(hours) * 60 + Number(minutes);
+  }
+
+  function blockHours(block: TimetableBlock): number {
+    return Math.max(0, timeToMinutes(block.endTime) - timeToMinutes(block.startTime)) / 60;
+  }
+
+  function blockProgress(block: TimetableBlock): number {
+    if (block.day !== timetableState.today) {
+      return 0;
+    }
+    const start = timeToMinutes(block.startTime);
+    const end = timeToMinutes(block.endTime);
+    return Math.max(0, Math.min(100, ((nowMinutes - start) / Math.max(1, end - start)) * 100));
+  }
+
+  function countdownText(block: TimetableBlock | null): string {
+    if (!block) {
+      return "No upcoming block";
+    }
+    if (block.day !== timetableState.today) {
+      return titleCaseDay(block.day);
+    }
+    const diff = timeToMinutes(block.startTime) - nowMinutes;
+    if (diff <= 0) {
+      return "Now";
+    }
+    if (diff < 60) {
+      return `in ${diff}m`;
+    }
+    return `in ${Math.floor(diff / 60)}h ${diff % 60}m`;
+  }
+
+  function dateForTimetableDay(day: TimetableDay, today: string): string {
+    const todayDate = parseLocalDateInput(today);
+    const currentMondayIndex = (todayDate.getDay() + 6) % 7;
+    const targetIndex = TIMETABLE_DAYS.indexOf(day);
+    const next = new Date(todayDate);
+    next.setDate(todayDate.getDate() + targetIndex - currentMondayIndex);
+    return toLocalDateInputValue(next);
+  }
+
+  function eventConflicts(block: TimetableBlock): CalendarEvent[] {
+    const start = timeToMinutes(block.startTime);
+    const end = timeToMinutes(block.endTime);
+    return selectedEvents.filter((event) => {
+      if (event.allDay) {
+        return true;
+      }
+      const eventStart = event.startTime ? timeToMinutes(event.startTime) : 0;
+      const eventEnd = event.endTime ? timeToMinutes(event.endTime) : eventStart + 30;
+      return start < eventEnd && end > eventStart;
+    });
+  }
+
+  function resetForm(day: TimetableDay = selectedDay): void {
+    setEditingId(null);
+    setForm({ title: "", day, startTime: "09:00", endTime: "10:00", category: "Focus", notes: "" });
+  }
+
+  function openAddBlock(day: TimetableDay = selectedDay): void {
+    resetForm(day);
+    setEditorOpen(true);
+  }
+
+  function loadBlock(block: TimetableBlock): void {
+    setEditingId(block.id);
+    setSelectedDay(block.day);
+    setForm({
+      title: block.title,
+      day: block.day,
+      startTime: block.startTime,
+      endTime: block.endTime,
+      category: block.category,
+      notes: block.notes
+    });
+    setEditorOpen(true);
+  }
+
+  async function saveBlock(): Promise<void> {
+    if (!form.title.trim()) {
+      setMessage("Block title is required.");
+      return;
+    }
+    if (timeToMinutes(form.endTime) <= timeToMinutes(form.startTime)) {
+      setMessage("End time must be after start time.");
+      return;
+    }
+    const result = await onAction(editingId ? "timetable.update_block" : "timetable.create_block", "module_ui", {
+      blockId: editingId ?? undefined,
+      ...form,
+      accent: ACCENT
+    });
+    setMessage(result.ok === false ? result.error ?? "Timetable save failed." : result.message ?? "Timetable block saved.");
+    if (result.ok !== false) {
+      const day = form.day;
+      resetForm(day);
+      setSelectedDay(day);
+      setEditorOpen(false);
+      await onRefresh();
+    }
+  }
+
+  async function deleteBlock(block: TimetableBlock): Promise<void> {
+    if (!window.confirm(`Delete "${block.title}" from ${titleCaseDay(block.day)}?`)) {
+      return;
+    }
+    const result = await onAction("timetable.delete_block", "module_ui", { blockId: block.id, confirmedDangerous: true });
+    setMessage(result.ok === false ? result.error ?? "Delete failed." : "Timetable block deleted.");
+    await onRefresh();
+  }
+
+  async function markBlock(block: TimetableBlock, actionId: "timetable.mark_done" | "timetable.mark_skipped"): Promise<void> {
+    const result = await onAction(actionId, "module_ui", { blockId: block.id });
+    setMessage(result.ok === false ? result.error ?? "Status update failed." : result.message ?? "Timetable block updated.");
+    await onRefresh();
+  }
+
+  async function copyDay(): Promise<void> {
+    const toDay = TIMETABLE_DAYS[(TIMETABLE_DAYS.indexOf(selectedDay) + 1) % TIMETABLE_DAYS.length];
+    const result = await onAction("timetable.copy_day", "module_ui", { fromDay: selectedDay, toDay });
+    setMessage(result.ok === false ? result.error ?? "Copy day failed." : result.message ?? `Copied to ${titleCaseDay(toDay)}.`);
+    await onRefresh();
+  }
+
+  async function clearDay(): Promise<void> {
+    if (!window.confirm(`Clear all ${titleCaseDay(selectedDay)} Timetable blocks?`)) {
+      return;
+    }
+    const result = await onAction("timetable.clear_day", "module_ui", { day: selectedDay, confirmedDangerous: true });
+    setMessage(result.ok === false ? result.error ?? "Clear day failed." : result.message ?? "Day cleared.");
+    await onRefresh();
+  }
+
+  async function runCurrentAction(actionId: "timetable.mark_done" | "timetable.mark_skipped"): Promise<void> {
+    if (!currentBlock) {
+      setMessage("No current Timetable block is active.");
+      return;
+    }
+    await markBlock(currentBlock, actionId);
+  }
+
+  function goToday(): void {
+    setMode("today");
+    setSelectedDay(timetableState.today);
+    setForm((current) => ({ ...current, day: timetableState.today }));
+  }
+
+  const categoryOptions = ["Focus", "Study", "Work", "Coding", "Gym", "Break", "Admin", "Personal"];
+  const categoryTone = (category: string): string => {
+    const normalized = category.toLowerCase();
+    if (normalized.includes("break") || normalized.includes("personal")) return SECONDARY;
+    if (normalized.includes("gym")) return "var(--success)";
+    if (normalized.includes("admin")) return "var(--warning)";
+    if (normalized.includes("coding") || normalized.includes("work")) return "var(--info)";
+    return ACCENT;
+  };
+
+  const CategoryChip = ({ category }: { category: string }) => {
+    const color = categoryTone(category);
+    return (
+      <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium" style={{ borderColor: `color-mix(in srgb, ${color} 45%, transparent)`, background: `color-mix(in srgb, ${color} 12%, transparent)`, color }}>
+        {category || "Focus"}
+      </span>
+    );
+  };
+
+  const todayHours = todayBlocks.reduce((sum, block) => sum + blockHours(block), 0);
+  const todayDone = todayBlocks.filter((block) => block.status === "done").length;
+  const todaySkipped = todayBlocks.filter((block) => block.status === "skipped").length;
+  const todayRemaining = todayBlocks.filter((block) => block.status === "planned" || block.status === "moved").length;
+  const todayProgress = todayBlocks.length ? ((todayDone + todaySkipped) / todayBlocks.length) * 100 : 0;
+  const focusHours = sortedBlocks.filter((block) => /focus|study|coding|work/i.test(block.category)).reduce((sum, block) => sum + blockHours(block), 0);
+  const statCards = [
+    ["planned today", `${todayHours.toFixed(1)}h`],
+    ["completed", todayDone],
+    ["skipped", todaySkipped],
+    ["remaining", todayRemaining],
+    ["focus hours", `${focusHours.toFixed(1)}h`],
+    ["week planned", `${timetableState.stats.plannedHours.toFixed(1)}h`]
+  ] as const;
+  const timelineStart = Math.min(6 * 60, ...selectedBlocks.map((block) => timeToMinutes(block.startTime)));
+  const timelineEnd = Math.max(22 * 60, ...selectedBlocks.map((block) => timeToMinutes(block.endTime)));
+  const timelineRange = Math.max(60, timelineEnd - timelineStart);
+  const timelineHours = Array.from({ length: Math.floor((timelineEnd - timelineStart) / 60) + 1 }, (_, index) => timelineStart + index * 60);
+
+  return (
+    <div className="space-y-5 accent-timetable">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: "color-mix(in srgb, var(--accent-timetable) 40%, transparent)", background: "color-mix(in srgb, var(--accent-timetable) 14%, transparent)", color: ACCENT }}>
+            <CalendarClock className="h-5 w-5" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight" style={{ color: "var(--text)" }}>Timetable</h1>
+            <p className="text-sm" style={{ color: "var(--text-muted)" }}>Plan your week. Follow the current block.</p>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <StatusChip tone="info">{timetableState.activeTemplate.name}</StatusChip>
+          <button type="button" onClick={goToday}>Today</button>
+          <ActionButton accent={ACCENT} icon={Plus} onClick={() => openAddBlock(selectedDay)}>Add block</ActionButton>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        {(["today", "week", "templates"] as const).map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            onClick={() => {
+              setMode(tab);
+              if (tab === "today") {
+                setSelectedDay(timetableState.today);
+              }
+            }}
+            className="rounded-full border px-3 py-1.5 text-sm capitalize"
+            style={{
+              borderColor: mode === tab ? ACCENT : "var(--border)",
+              background: mode === tab ? "color-mix(in srgb, var(--accent-timetable) 14%, transparent)" : "var(--surface)",
+              color: mode === tab ? ACCENT : "var(--text-muted)"
+            }}
+          >
+            {tab}
+          </button>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(20rem,0.8fr)]">
+        <GlassCard accent={ACCENT} glow hover={false}>
+          <SectionTitle action={<Clock className="h-3.5 w-3.5" style={{ color: ACCENT }} />}>What should I be doing now?</SectionTitle>
+          {currentBlock ? (
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+              <div className="min-w-0">
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <CategoryChip category={currentBlock.category} />
+                  <StatusChip tone={currentBlock.status === "done" ? "ok" : currentBlock.status === "skipped" ? "warn" : "running"}>{currentBlock.status}</StatusChip>
+                  <span className="font-mono text-xs" style={{ color: "var(--text-muted)" }}>{currentBlock.startTime} - {currentBlock.endTime}</span>
+                </div>
+                <h2 className="truncate text-3xl font-semibold tracking-tight" style={{ color: "var(--text)" }}>{currentBlock.title}</h2>
+                {currentBlock.notes ? <p className="mt-2 line-clamp-2 text-sm" style={{ color: "var(--text-muted)" }}>{currentBlock.notes}</p> : <p className="mt-2 text-sm" style={{ color: "var(--text-disabled)" }}>No notes for this block.</p>}
+                <div className="mt-4 h-2 overflow-hidden rounded-full" style={{ background: "var(--surface-2)" }}>
+                  <div className="h-full rounded-full" style={{ width: `${blockProgress(currentBlock)}%`, background: ACCENT }} />
+                </div>
+                <p className="mt-1 font-mono text-[10px]" style={{ color: "var(--text-muted)" }}>{Math.round(blockProgress(currentBlock))}% through this block</p>
+              </div>
+              <div className="flex flex-wrap gap-2 md:flex-col">
+                <ActionButton accent={ACCENT} icon={Check} onClick={() => void runCurrentAction("timetable.mark_done")}>Mark Done</ActionButton>
+                <ActionButton accent={SECONDARY} icon={ArrowRight} variant="soft" onClick={() => void runCurrentAction("timetable.mark_skipped")}>Skip</ActionButton>
+                <button type="button" onClick={() => loadBlock(currentBlock)}>Move</button>
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+              <div>
+                <h2 className="text-2xl font-semibold" style={{ color: "var(--text)" }}>No block is active right now.</h2>
+                <p className="mt-2 text-sm" style={{ color: "var(--text-muted)" }}>{nextBlock ? `Next: ${nextBlock.title} at ${nextBlock.startTime}.` : "Build your routine one block at a time."}</p>
+              </div>
+              <div className="flex flex-wrap gap-2 md:flex-col">
+                <ActionButton accent={ACCENT} icon={Plus} onClick={() => openAddBlock(timetableState.today)}>Add block</ActionButton>
+                <button type="button" onClick={goToday}>Show today</button>
+              </div>
+            </div>
+          )}
+        </GlassCard>
+
+        <GlassCard accent={SECONDARY} hover={false}>
+          <SectionTitle action={<ArrowRight className="h-3.5 w-3.5" style={{ color: SECONDARY }} />}>Next block</SectionTitle>
+          {nextBlock ? (
+            <div className="space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate text-xl font-semibold" style={{ color: "var(--text)" }}>{nextBlock.title}</p>
+                  <p className="font-mono text-xs" style={{ color: "var(--text-muted)" }}>{titleCaseDay(nextBlock.day)} / {nextBlock.startTime} - {nextBlock.endTime}</p>
+                </div>
+                <CategoryChip category={nextBlock.category} />
+              </div>
+              <div className="rounded-xl border px-3 py-2" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
+                <span className="font-mono text-sm" style={{ color: SECONDARY }}>{countdownText(nextBlock)}</span>
+              </div>
+              {nextBlock.notes && <p className="line-clamp-2 text-sm" style={{ color: "var(--text-muted)" }}>{nextBlock.notes}</p>}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <EmptyState>No upcoming block remains today.</EmptyState>
+              <ActionButton accent={SECONDARY} icon={Plus} variant="ghost" onClick={() => openAddBlock(timetableState.today)}>Add later block</ActionButton>
+            </div>
+          )}
+        </GlassCard>
+      </div>
+
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-12">
+        <div className="space-y-5 xl:col-span-8">
+          {mode !== "templates" && (
+            <GlassCard hover={false}>
+              <SectionTitle action={<span className="font-mono text-[10px]" style={{ color: "var(--text-disabled)" }}>{formatLocalDate(selectedDate)}</span>}>Day timeline</SectionTitle>
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap gap-2">
+                  {TIMETABLE_DAYS.map((day) => {
+                    const count = sortedBlocks.filter((block) => block.day === day).length;
+                    const active = day === selectedDay;
+                    return (
+                      <button
+                        key={day}
+                        type="button"
+                        onClick={() => { setSelectedDay(day); setForm((current) => ({ ...current, day })); setMode(day === timetableState.today ? "today" : "week"); }}
+                        className="rounded-full border px-3 py-1.5 text-xs"
+                        style={{
+                          borderColor: active ? ACCENT : "var(--border)",
+                          background: active ? "color-mix(in srgb, var(--accent-timetable) 14%, transparent)" : "var(--surface-2)",
+                          color: active ? ACCENT : "var(--text-muted)"
+                        }}
+                      >
+                        {titleCaseDay(day).slice(0, 3)} <span className="font-mono">{count}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <ActionButton accent={ACCENT} icon={Plus} variant="ghost" onClick={() => openAddBlock(selectedDay)}>Add {titleCaseDay(selectedDay).slice(0, 3)}</ActionButton>
+                  <button type="button" onClick={() => void copyDay()}>Copy day</button>
+                  <ActionButton accent={SECONDARY} icon={FileStack} variant="ghost" disabled title="Template duplication will reuse the same action spine later.">Duplicate template</ActionButton>
+                  <button type="button" className="danger-button" onClick={() => void clearDay()}>Clear day</button>
+                </div>
+              </div>
+
+              {selectedBlocks.length === 0 ? (
+                <div className="rounded-xl border p-6 text-center" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
+                  <p className="text-lg font-semibold" style={{ color: "var(--text)" }}>No blocks planned for {titleCaseDay(selectedDay)}.</p>
+                  <p className="mt-1 text-sm" style={{ color: "var(--text-muted)" }}>Build your routine one block at a time.</p>
+                  <ActionButton accent={ACCENT} icon={Plus} className="mt-4" onClick={() => openAddBlock(selectedDay)}>Add {titleCaseDay(selectedDay)} block</ActionButton>
+                </div>
+              ) : (
+                <div className="relative min-h-[34rem] rounded-xl border p-4" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
+                  {timelineHours.map((minute) => (
+                    <div key={minute} className="absolute left-4 right-4 border-t" style={{ top: `${((minute - timelineStart) / timelineRange) * 100}%`, borderColor: "var(--border)" }}>
+                      <span className="absolute -top-2 w-14 pr-2 text-right font-mono text-[10px]" style={{ color: "var(--text-disabled)", background: "var(--surface)" }}>{`${String(Math.floor(minute / 60)).padStart(2, "0")}:00`}</span>
+                    </div>
+                  ))}
+                  <div className="absolute bottom-4 left-[5.25rem] right-4 top-4">
+                    {selectedBlocks.map((block) => {
+                      const top = ((timeToMinutes(block.startTime) - timelineStart) / timelineRange) * 100;
+                      const height = Math.max(8, ((timeToMinutes(block.endTime) - timeToMinutes(block.startTime)) / timelineRange) * 100);
+                      const conflicts = eventConflicts(block);
+                      const color = categoryTone(block.category);
+                      return (
+                        <article
+                          key={block.id}
+                          className="absolute left-0 right-0 overflow-hidden rounded-xl border px-3 py-2 shadow-sm"
+                          style={{
+                            top: `${top}%`,
+                            minHeight: "4.25rem",
+                            height: `${height}%`,
+                            borderColor: `color-mix(in srgb, ${color} 44%, var(--border))`,
+                            background: `linear-gradient(90deg, color-mix(in srgb, ${color} 12%, transparent), var(--surface-2))`
+                          }}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="truncate font-semibold" style={{ color: "var(--text)" }}>{block.title}</p>
+                                <CategoryChip category={block.category} />
+                                <StatusChip tone={block.status === "done" ? "ok" : block.status === "skipped" ? "warn" : "info"}>{block.status}</StatusChip>
+                                {conflicts.length > 0 && <StatusChip tone="warn">{conflicts.length} conflict{conflicts.length === 1 ? "" : "s"}</StatusChip>}
+                              </div>
+                              <p className="mt-1 font-mono text-[10px]" style={{ color: "var(--text-muted)" }}>{block.startTime} - {block.endTime} / {blockHours(block).toFixed(1)}h</p>
+                              {block.notes && <p className="mt-1 line-clamp-1 text-xs" style={{ color: "var(--text-muted)" }}>{block.notes}</p>}
+                            </div>
+                            <div className="flex shrink-0 flex-wrap gap-1">
+                              <button type="button" onClick={() => loadBlock(block)}>Edit</button>
+                              <button type="button" onClick={() => void markBlock(block, "timetable.mark_done")}>Done</button>
+                              <button type="button" onClick={() => void markBlock(block, "timetable.mark_skipped")}>Skip</button>
+                              <button type="button" className="danger-button" onClick={() => void deleteBlock(block)}>Delete</button>
+                            </div>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </GlassCard>
+          )}
+
+          {mode !== "today" && (
+            <GlassCard hover={false}>
+              <SectionTitle>Weekly overview</SectionTitle>
+              <div className="grid grid-cols-1 gap-2 md:grid-cols-7">
+                {TIMETABLE_DAYS.map((day) => {
+                  const dayBlocks = sortedBlocks.filter((block) => block.day === day);
+                  const hours = dayBlocks.reduce((sum, block) => sum + blockHours(block), 0);
+                  return (
+                    <button key={day} type="button" onClick={() => { setSelectedDay(day); setMode(day === timetableState.today ? "today" : "week"); }} className="glass-card min-h-32 p-3 text-left">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <span className="text-xs font-semibold" style={{ color: "var(--text)" }}>{titleCaseDay(day).slice(0, 3)}</span>
+                        <span className="font-mono text-[10px]" style={{ color: "var(--text-muted)" }}>{hours.toFixed(1)}h</span>
+                      </div>
+                      <p className="font-mono text-[10px]" style={{ color: "var(--text-muted)" }}>{dayBlocks.length} block{dayBlocks.length === 1 ? "" : "s"}</p>
+                      <div className="mt-3 flex h-2 overflow-hidden rounded-full" style={{ background: "var(--surface-2)" }}>
+                        {dayBlocks.length === 0 ? <span className="h-full flex-1" style={{ background: "var(--border)" }} /> : dayBlocks.map((block) => (
+                          <span key={block.id} className="h-full min-w-1" style={{ flex: Math.max(0.25, blockHours(block)), background: categoryTone(block.category) }} />
+                        ))}
+                      </div>
+                      <div className="mt-3 space-y-1">
+                        {dayBlocks.slice(0, 2).map((block) => (
+                          <p key={block.id} className="truncate font-mono text-[10px]" style={{ color: block.status === "done" ? "var(--success)" : block.status === "skipped" ? "var(--warning)" : "var(--text-muted)" }}>
+                            {block.startTime} {block.title}
+                          </p>
+                        ))}
+                        {dayBlocks.length === 0 && <p className="text-[10px]" style={{ color: "var(--text-disabled)" }}>Open day to plan.</p>}
+                        {dayBlocks.length > 2 && <p className="font-mono text-[10px]" style={{ color: "var(--text-disabled)" }}>+{dayBlocks.length - 2} more</p>}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </GlassCard>
+          )}
+
+          {mode === "templates" && (
+            <GlassCard accent={SECONDARY} hover={false}>
+              <SectionTitle action={<FileStack className="h-3.5 w-3.5" style={{ color: SECONDARY }} />}>Templates</SectionTitle>
+              <div className="grid gap-3 md:grid-cols-2">
+                {timetableState.templates.map((template) => (
+                  <article key={template.id} className="glass-card p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <p className="font-semibold" style={{ color: "var(--text)" }}>{template.name}</p>
+                        <p className="font-mono text-[10px]" style={{ color: "var(--text-muted)" }}>{template.blocks.length} blocks / updated {formatLocalDateTime(template.updatedAt)}</p>
+                      </div>
+                      {template.id === timetableState.file.activeTemplateId && <StatusChip tone="ok">active</StatusChip>}
+                    </div>
+                  </article>
+                ))}
+              </div>
+              <p className="mt-3 text-sm" style={{ color: "var(--text-muted)" }}>Full template management can build on the existing active template spine later.</p>
+            </GlassCard>
+          )}
+        </div>
+
+        <div className="space-y-5 xl:col-span-4">
+          <GlassCard hover={false}>
+            <SectionTitle action={<ProgressRing value={todayProgress} color="var(--accent-timetable)" size={40} />}>Quick stats</SectionTitle>
+            <div className="grid grid-cols-2 gap-2">
+              {statCards.map(([label, value]) => (
+                <div key={label} className="glass-card p-3">
+                  <p className="text-[10px] uppercase tracking-[0.12em]" style={{ color: "var(--text-disabled)" }}>{label}</p>
+                  <p className="mt-1 font-mono text-lg" style={{ color: "var(--text)" }}>{value}</p>
+                </div>
+              ))}
+            </div>
+          </GlassCard>
+
+          <GlassCard accent={ACCENT} hover={false}>
+            <SectionTitle action={<Mic className="h-3.5 w-3.5" style={{ color: ACCENT }} />}>Voice hints</SectionTitle>
+            <div className="grid gap-2">
+              {[
+                ["What should I do now?", "timetable.current_block"],
+                ["Show today's timetable", "timetable.show_today"],
+                ["Mark current block done", "timetable.mark_done"],
+                ["Skip current block", "timetable.mark_skipped"]
+              ].map(([hint, actionId]) => (
+                <button key={hint} type="button" onClick={() => void onAction(actionId, "module_ui")} className="text-left font-mono text-xs">
+                  {hint}
+                </button>
+              ))}
+            </div>
+          </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle>Calendar conflicts</SectionTitle>
+            {selectedEvents.length === 0 ? (
+              <EmptyState>No Calendar events on {formatLocalDate(selectedDate)}.</EmptyState>
+            ) : (
+              <div className="space-y-2">
+                {selectedEvents.slice(0, 6).map((event) => (
+                  <div key={event.id} className="glass-card p-2.5">
+                    <p className="truncate text-sm font-medium" style={{ color: "var(--text)" }}>{event.title}</p>
+                    <p className="font-mono text-[10px]" style={{ color: "var(--text-muted)" }}>{event.allDay ? "all-day" : `${event.startTime ?? "no start"} - ${event.endTime ?? "open"}`} / {event.sourceModule}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle>Today summary</SectionTitle>
+            <p className="text-sm" style={{ color: "var(--text-muted)" }}>{todayBlocks.length} block{todayBlocks.length === 1 ? "" : "s"} today. {currentBlock ? `Now: ${currentBlock.title}.` : "No block is active right now."}</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <ActionButton accent={ACCENT} icon={NotebookPen} variant="ghost" disabled title="Journal summary action placeholder.">Send to Journal</ActionButton>
+              <ActionButton accent={SECONDARY} icon={Search} variant="ghost" onClick={() => void onAction("timetable.current_block", "module_ui")}>Ask now</ActionButton>
+            </div>
+            <p className="mt-3 font-mono text-[10px]" style={{ color: "var(--text-disabled)" }}>{timetableState.timetablePath}</p>
+          </GlassCard>
+        </div>
+      </div>
+
+      {editorOpen && (
+        <div className="fixed inset-0 z-50 flex justify-end bg-black/70 p-3 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={editingId ? "Edit timetable block" : "Add timetable block"}>
+          <div className="h-full w-full max-w-xl overflow-y-auto rounded-2xl border p-5 shadow-2xl" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs uppercase tracking-[0.16em]" style={{ color: ACCENT }}>{editingId ? "Edit block" : "Add block"}</p>
+                <h2 className="text-2xl font-semibold" style={{ color: "var(--text)" }}>{editingId ? "Tune this routine block" : "Build your next routine block"}</h2>
+              </div>
+              <button type="button" aria-label="Close block editor" onClick={() => setEditorOpen(false)}><Square className="h-4 w-4" /></button>
+            </div>
+            <div className="space-y-4">
+              <label>Title<input value={form.title} onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))} placeholder="Study, work, gym" /></label>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label>Day<select value={form.day} onChange={(event) => setForm((current) => ({ ...current, day: event.target.value as TimetableDay }))}>{TIMETABLE_DAYS.map((day) => <option key={day} value={day}>{titleCaseDay(day)}</option>)}</select></label>
+                <label>Category<input value={form.category} onChange={(event) => setForm((current) => ({ ...current, category: event.target.value }))} placeholder="Focus" /></label>
+                <label>Start<input type="time" value={form.startTime} onChange={(event) => setForm((current) => ({ ...current, startTime: event.target.value }))} /></label>
+                <label>End<input type="time" value={form.endTime} onChange={(event) => setForm((current) => ({ ...current, endTime: event.target.value }))} /></label>
+              </div>
+              <div>
+                <p className="mb-2 text-sm" style={{ color: "var(--text-muted)" }}>Category chips</p>
+                <div className="flex flex-wrap gap-2">
+                  {categoryOptions.map((category) => (
+                    <button
+                      key={category}
+                      type="button"
+                      onClick={() => setForm((current) => ({ ...current, category }))}
+                      className="rounded-full border px-3 py-1.5 text-xs"
+                      style={{
+                        borderColor: form.category === category ? categoryTone(category) : "var(--border)",
+                        background: form.category === category ? `color-mix(in srgb, ${categoryTone(category)} 14%, transparent)` : "var(--surface-2)",
+                        color: form.category === category ? categoryTone(category) : "var(--text-muted)"
+                      }}
+                    >
+                      {category}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <label>Notes<textarea value={form.notes} onChange={(event) => setForm((current) => ({ ...current, notes: event.target.value }))} placeholder="Optional routine notes" /></label>
+              <div className="flex flex-wrap gap-2">
+                <ActionButton accent={ACCENT} icon={Save} onClick={() => void saveBlock()}>{editingId ? "Update block" : "Save block"}</ActionButton>
+                <button type="button" onClick={() => resetForm(form.day)}>Reset</button>
+                <button type="button" onClick={() => setEditorOpen(false)}>Cancel</button>
+              </div>
+              {message && <p className="text-xs" style={{ color: "var(--text-muted)" }}>{message}</p>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!editorOpen && message && <p className="inline-status">{message}</p>}
+    </div>
+  );
+}
+
 function CalendarView({
   calendarState,
+  initialView,
   speechState,
   voiceWorkflow,
   voiceWorkflowSettings,
@@ -12604,6 +14338,7 @@ function CalendarView({
   onRefresh
 }: {
   calendarState: CalendarState;
+  initialView: "day" | "week" | "month";
   speechState: SpeechServiceState;
   voiceWorkflow: VoiceWorkflowState;
   voiceWorkflowSettings: VoiceWorkflowSettings;
@@ -12627,6 +14362,8 @@ function CalendarView({
   const [status, setStatus] = useState("");
   const [visibleMonth, setVisibleMonth] = useState(() => calendarState.today.slice(0, 7));
   const [selectedDate, setSelectedDate] = useState(calendarState.today);
+  const [viewMode, setViewMode] = useState<"day" | "week" | "month">(initialView);
+  const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [nudgeSettingsForm, setNudgeSettingsForm] = useState({
     enabled: calendarState.nudgeSettings.enabled,
     vaultExpiryReminderDays: calendarState.nudgeSettings.vaultExpiryReminderDays.join(", "),
@@ -12646,13 +14383,23 @@ function CalendarView({
     });
   }, [calendarState.nudgeSettings]);
 
+  useEffect(() => {
+    setViewMode(initialView);
+    if (initialView === "day") {
+      setSelectedDate(calendarState.today);
+      setDate(calendarState.today);
+      setVisibleMonth(calendarState.today.slice(0, 7));
+    }
+  }, [calendarState.today, initialView]);
+
   const monthDate = parseLocalDateInput(`${visibleMonth}-01`);
   const monthLabel = monthDate.toLocaleDateString(undefined, { month: "long", year: "numeric" });
   const calendarVoiceCandidate = voiceWorkflow.mode === "calendar_create" ? voiceWorkflow.calendarCandidate : null;
   const calendarDays = useMemo(() => {
     const firstOfMonth = new Date(monthDate);
     const gridStart = new Date(firstOfMonth);
-    gridStart.setDate(firstOfMonth.getDate() - firstOfMonth.getDay());
+    const firstWeekday = firstOfMonth.getDay();
+    gridStart.setDate(firstOfMonth.getDate() - (firstWeekday === 0 ? 6 : firstWeekday - 1));
     return Array.from({ length: 42 }, (_, index) => {
       const day = new Date(gridStart);
       day.setDate(gridStart.getDate() + index);
@@ -12667,6 +14414,64 @@ function CalendarView({
     });
   }, [calendarState.events, calendarState.today, visibleMonth]);
   const selectedDateEvents = calendarState.events.filter((event) => event.date === selectedDate);
+  const selectedEvent = selectedEventId ? calendarState.events.find((event) => event.id === selectedEventId) ?? null : null;
+  const sortedSelectedEvents = [...selectedDateEvents].sort(sortCalendarEvents);
+  const allDaySelectedEvents = sortedSelectedEvents.filter((event) => event.allDay);
+  const timedSelectedEvents = sortedSelectedEvents.filter((event) => !event.allDay);
+  const weekStartDate = weekStartForDate(selectedDate);
+  const weekDays = Array.from({ length: 7 }, (_, index) => {
+    const day = addCalendarDays(weekStartDate, index);
+    const value = toLocalDateInputValue(day);
+    return {
+      value,
+      label: day.toLocaleDateString(undefined, { weekday: "short" }),
+      dayNumber: day.getDate(),
+      isToday: value === calendarState.today,
+      events: calendarState.events.filter((event) => event.date === value).sort(sortCalendarEvents)
+    };
+  });
+  const headerTitle = viewMode === "day"
+    ? parseLocalDateInput(selectedDate).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" })
+    : viewMode === "week"
+      ? `${weekStartDate.toLocaleDateString(undefined, { month: "short", day: "numeric" })} - ${addCalendarDays(weekStartDate, 6).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`
+      : monthLabel;
+  const calendarHours = Array.from({ length: 16 }, (_, index) => index + 6);
+
+  function sortCalendarEvents(left: CalendarEvent, right: CalendarEvent): number {
+    if (left.allDay !== right.allDay) {
+      return left.allDay ? -1 : 1;
+    }
+    return timeToMinutes(left.startTime) - timeToMinutes(right.startTime) || left.title.localeCompare(right.title);
+  }
+
+  function addCalendarDays(dateValue: Date, days: number): Date {
+    const next = new Date(dateValue);
+    next.setDate(next.getDate() + days);
+    return next;
+  }
+
+  function weekStartForDate(value: string): Date {
+    const dateValue = parseLocalDateInput(value);
+    const day = dateValue.getDay();
+    const mondayOffset = day === 0 ? -6 : 1 - day;
+    return addCalendarDays(dateValue, mondayOffset);
+  }
+
+  function timeToMinutes(value?: string | null): number {
+    if (!value) {
+      return 24 * 60;
+    }
+    const [hours, minutes] = value.split(":").map(Number);
+    return (Number.isFinite(hours) ? hours : 0) * 60 + (Number.isFinite(minutes) ? minutes : 0);
+  }
+
+  function formatHour(hour: number): string {
+    return `${String(hour).padStart(2, "0")}:00`;
+  }
+
+  function eventTimeLabel(event: CalendarEvent): string {
+    return event.allDay ? "all-day" : `${event.startTime || "no start"}${event.endTime ? ` - ${event.endTime}` : ""}`;
+  }
 
   function shiftMonth(offset: number): void {
     const next = new Date(monthDate);
@@ -12683,9 +14488,11 @@ function CalendarView({
   function selectCalendarDate(value: string): void {
     setSelectedDate(value);
     setDate(value);
+    setSelectedEventId(null);
   }
 
   function loadEvent(event: CalendarEvent): void {
+    setSelectedEventId(event.id);
     setEditingId(event.id);
     setTitle(event.title);
     setDate(event.date);
@@ -12697,6 +14504,28 @@ function CalendarView({
     setReminderLevel(event.reminderLevel);
     setRecurrence(event.recurrence ?? "");
     setNotes(event.notes ?? "");
+  }
+
+  function createEventAt(value: string, hour?: number): void {
+    setEditingId(undefined);
+    setSelectedEventId(null);
+    setSelectedDate(value);
+    setVisibleMonth(value.slice(0, 7));
+    setDate(value);
+    setTitle("");
+    setAllDay(false);
+    if (typeof hour === "number") {
+      const start = formatHour(hour);
+      setStartTime(start);
+      setEndTime(addMinutesToTime(start, voiceWorkflowSettings.defaultMeetingDurationMinutes || 30));
+    } else {
+      setStartTime("");
+      setEndTime("");
+    }
+    setReminderLevel("normal");
+    setRecurrence("");
+    setNotes("");
+    calendarTitleRef.current?.focus();
   }
 
   function loadVoiceCandidateForEdit(candidate: CalendarVoiceCandidate): void {
@@ -12740,6 +14569,9 @@ function CalendarView({
     });
     setStatus(result.ok ? "Calendar event saved." : result.error ?? "Calendar save failed.");
     if (result.ok) {
+      if (editingId) {
+        setSelectedEventId(editingId);
+      }
       resetForm();
       await onRefresh();
     }
@@ -12751,6 +14583,10 @@ function CalendarView({
     }
     const result = await onAction("calendar.delete_event", "module_ui", { eventId: event.id, confirmedDangerous: true });
     setStatus(result.ok ? "Calendar event deleted." : result.error ?? "Delete failed.");
+    if (result.ok && selectedEventId === event.id) {
+      setSelectedEventId(null);
+      resetForm();
+    }
     await onRefresh();
   }
 
@@ -12832,22 +14668,198 @@ function CalendarView({
   }
 
   const ACCENT_CAL = "#14B8A6";
-  const calHeaderDate = parseLocalDateInput(calendarState.today).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
   const calReminders = [...calendarState.todayNudges, ...calendarState.upcomingNudges].slice(0, 4);
   const nudgeColor = (p: string): string => p === "urgent" ? "#EF4444" : p === "normal" ? "#F59E0B" : "#14B8A6";
+
+  function CalendarEventChip({ event, compact = false }: { event: CalendarEvent; compact?: boolean }) {
+    return (
+      <button
+        type="button"
+        className={`calendar-event-chip ${compact ? "calendar-event-chip--compact" : ""}`}
+        onClick={(clickEvent) => {
+          clickEvent.stopPropagation();
+          loadEvent(event);
+        }}
+        title={`${event.title} / ${eventTimeLabel(event)}`}
+      >
+        <span>{event.title}</span>
+        {!compact && <small>{eventTimeLabel(event)}</small>}
+      </button>
+    );
+  }
+
+  function renderMonthView() {
+    return (
+      <GlassCard hover={false}>
+        <SectionTitle action={<div className="calendar-view-nav"><button type="button" onClick={() => shiftMonth(-1)}>Prev</button><span>{monthLabel}</span><button type="button" onClick={() => shiftMonth(1)}>Next</button></div>}>Month</SectionTitle>
+        <div className="calendar-month-grid">
+          {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((dayName) => <div key={dayName} className="calendar-weekday">{dayName}</div>)}
+          {calendarDays.map((day) => {
+            const selected = day.value === selectedDate;
+            const visibleEvents = day.events.slice(0, 3);
+            const extraCount = Math.max(0, day.events.length - visibleEvents.length);
+            return (
+              <div
+                key={day.value}
+                role="button"
+                tabIndex={0}
+                onClick={() => selectCalendarDate(day.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    selectCalendarDate(day.value);
+                  }
+                }}
+                className={`calendar-month-cell ${day.inMonth ? "" : "is-muted"} ${day.isToday ? "is-today" : ""} ${selected ? "is-selected" : ""}`}
+              >
+                <span className="calendar-cell-date">{day.label}</span>
+                <div className="calendar-cell-events">
+                  {visibleEvents.map((event) => <CalendarEventChip key={event.id} event={event} compact />)}
+                  {extraCount > 0 && <span className="calendar-more">+{extraCount} more</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </GlassCard>
+    );
+  }
+
+  function renderWeekView() {
+    return (
+      <GlassCard hover={false}>
+        <SectionTitle action={<span className="technical">{headerTitle}</span>}>Week timeline</SectionTitle>
+        <div className="calendar-week-shell">
+          <div className="calendar-week-header">
+            <span />
+            {weekDays.map((day) => (
+              <button key={day.value} type="button" className={`calendar-week-day ${day.isToday ? "is-today" : ""} ${day.value === selectedDate ? "is-selected" : ""}`} onClick={() => selectCalendarDate(day.value)}>
+                <span>{day.label}</span>
+                <strong>{day.dayNumber}</strong>
+              </button>
+            ))}
+          </div>
+          <div className="calendar-all-day-row">
+            <span className="calendar-hour-label">all-day</span>
+            {weekDays.map((day) => (
+              <div key={day.value} className="calendar-all-day-cell">
+                {day.events.filter((event) => event.allDay).slice(0, 2).map((event) => <CalendarEventChip key={event.id} event={event} compact />)}
+              </div>
+            ))}
+          </div>
+          <div className="calendar-week-body">
+            {calendarHours.map((hour) => (
+              <div key={hour} className="calendar-week-hour">
+                <button type="button" className="calendar-hour-label" onClick={() => createEventAt(selectedDate, hour)}>{formatHour(hour)}</button>
+                {weekDays.map((day) => {
+                  const eventsAtHour = day.events.filter((event) => !event.allDay && Math.floor(timeToMinutes(event.startTime) / 60) === hour);
+                  return (
+                    <div
+                      key={`${day.value}-${hour}`}
+                      role="button"
+                      tabIndex={0}
+                      className="calendar-week-slot"
+                      onClick={() => createEventAt(day.value, hour)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          createEventAt(day.value, hour);
+                        }
+                      }}
+                    >
+                      {eventsAtHour.map((event) => <CalendarEventChip key={event.id} event={event} />)}
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        </div>
+      </GlassCard>
+    );
+  }
+
+  function renderDayView() {
+    return (
+      <GlassCard hover={false}>
+        <SectionTitle action={<button type="button" onClick={() => createEventAt(selectedDate)} className="calendar-inline-action">Add event</button>}>Day agenda</SectionTitle>
+        <div className="calendar-day-title">
+          <strong>{formatLocalDate(selectedDate)}</strong>
+          <span>{sortedSelectedEvents.length} event{sortedSelectedEvents.length === 1 ? "" : "s"}</span>
+        </div>
+        {sortedSelectedEvents.length === 0 ? (
+          <div className="calendar-empty-state">
+            <strong>No events today.</strong>
+            <span>Click a time below to plan the day.</span>
+            <button type="button" onClick={() => createEventAt(selectedDate)}>Create event</button>
+          </div>
+        ) : (
+          <>
+            {allDaySelectedEvents.length > 0 && (
+              <div className="calendar-all-day-list">
+                {allDaySelectedEvents.map((event) => <CalendarEventChip key={event.id} event={event} />)}
+              </div>
+            )}
+            <div className="calendar-day-agenda">
+              {timedSelectedEvents.map((event) => (
+                <button key={event.id} type="button" className="calendar-agenda-event" onClick={() => loadEvent(event)}>
+                  <span className="technical">{eventTimeLabel(event)}</span>
+                  <strong>{event.title}</strong>
+                  <small>{event.sourceModule}{event.recurrence ? ` / ${event.recurrence}` : ""}</small>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+        <div className="calendar-day-slots">
+          {calendarHours.map((hour) => (
+            <button key={hour} type="button" onClick={() => createEventAt(selectedDate, hour)}>
+              <span className="technical">{formatHour(hour)}</span>
+              <span>Add event</span>
+            </button>
+          ))}
+        </div>
+      </GlassCard>
+    );
+  }
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div className="flex items-center gap-3">
           <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_CAL}40`, background: `${ACCENT_CAL}14`, color: ACCENT_CAL }}><CalendarDays className="h-5 w-5" /></div>
-          <div><h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Calendar</h1><p className="text-sm text-[#A3A3A3]">{calHeaderDate} · agenda &amp; reminders</p></div>
+          <div><h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Calendar</h1><p className="text-sm text-[#A3A3A3]">{headerTitle} / agenda &amp; reminders</p></div>
         </div>
-        <ActionButton accent={ACCENT_CAL} icon={Plus} onClick={resetForm}>Add event</ActionButton>
+        <div className="calendar-header-actions">
+          <div className="calendar-view-switcher" role="tablist" aria-label="Calendar view">
+            {(["day", "week", "month"] as const).map((mode) => (
+              <button key={mode} type="button" className={viewMode === mode ? "is-active" : ""} onClick={() => setViewMode(mode)}>
+                {mode[0].toUpperCase()}{mode.slice(1)}
+              </button>
+            ))}
+          </div>
+          <button type="button" onClick={goToToday}>Today</button>
+          <button type="button" onClick={() => {
+            if (viewMode === "month") {
+              shiftMonth(-1);
+              return;
+            }
+            const next = addCalendarDays(parseLocalDateInput(selectedDate), viewMode === "day" ? -1 : -7);
+            selectCalendarDate(toLocalDateInputValue(next));
+          }}>Prev</button>
+          <button type="button" onClick={() => {
+            if (viewMode === "month") {
+              shiftMonth(1);
+              return;
+            }
+            const next = addCalendarDays(parseLocalDateInput(selectedDate), viewMode === "day" ? 1 : 7);
+            selectCalendarDate(toLocalDateInputValue(next));
+          }}>Next</button>
+          <ActionButton accent={ACCENT_CAL} icon={Plus} onClick={() => createEventAt(selectedDate)}>Add event</ActionButton>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
-        {/* Voice candidate + month + reminders */}
         <div className="space-y-5 lg:col-span-8">
           {calendarVoiceCandidate && (
             <GlassCard accent="#06B6D4" hover={false}>
@@ -12855,7 +14867,7 @@ function CalendarView({
                 <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#06B6D4]/15 text-[#06B6D4]"><Mic className="h-4 w-4" /></div>
                 <div className="flex-1">
                   <div className="flex items-center gap-2"><span className="text-sm font-medium text-[#F5F5F5]">Voice event candidate</span>{calendarVoiceCandidate.missingFields.length > 0 && <StatusChip tone="warn">missing {calendarVoiceCandidate.missingFields.join(", ")}</StatusChip>}</div>
-                  <p className="mt-0.5 text-sm text-[#A3A3A3]">{calendarVoiceCandidate.title} → {formatLocalDate(calendarVoiceCandidate.date)}{calendarVoiceCandidate.startTime ? ` · ${calendarVoiceCandidate.startTime}` : " · no time detected"}</p>
+                  <p className="mt-0.5 text-sm text-[#A3A3A3]">{calendarVoiceCandidate.title} / {formatLocalDate(calendarVoiceCandidate.date)}{calendarVoiceCandidate.startTime ? ` / ${calendarVoiceCandidate.startTime}` : " / no time detected"}</p>
                   <div className="mt-3 flex flex-wrap items-center gap-2">
                     {!calendarVoiceCandidate.allDay && <input type="time" value={calendarVoiceCandidate.startTime ?? ""} onChange={(event) => onCalendarCandidateChange({ startTime: event.target.value || null, endTime: event.target.value ? addMinutesToTime(event.target.value, voiceWorkflowSettings.defaultMeetingDurationMinutes || 30) : null })} className="h-8 w-32 rounded-lg border border-[#1f1f1f] bg-[#0A0A0A] px-2 text-xs text-[#F5F5F5]" />}
                     <ActionButton accent={ACCENT_CAL} icon={Check} className="text-xs" onClick={() => void onConfirmCalendarCandidate()}>Add</ActionButton>
@@ -12866,21 +14878,7 @@ function CalendarView({
             </GlassCard>
           )}
 
-          <GlassCard hover={false}>
-            <SectionTitle action={<div className="flex items-center gap-2"><button type="button" onClick={() => shiftMonth(-1)} className="font-mono text-xs text-[#525252] hover:text-[#A3A3A3]">‹</button><span className="font-mono text-[10px] text-[#525252]">{monthLabel}</span><button type="button" onClick={() => shiftMonth(1)} className="font-mono text-xs text-[#525252] hover:text-[#A3A3A3]">›</button></div>}>Month</SectionTitle>
-            <div className="grid grid-cols-7 gap-1 text-center">
-              {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((d) => <div key={d} className="py-1 text-[10px] font-medium uppercase tracking-wider text-[#525252]">{d}</div>)}
-              {calendarDays.map((day) => {
-                const selected = day.value === selectedDate;
-                return (
-                  <button key={day.value} type="button" onClick={() => selectCalendarDate(day.value)} className={`flex aspect-square flex-col items-center justify-center rounded-md text-sm transition-colors ${!day.inMonth ? "opacity-30" : ""} ${day.isToday ? "bg-[#14B8A6]/15 font-semibold text-[#14B8A6]" : selected ? "bg-[#0d0d0d] text-[#F5F5F5]" : "text-[#A3A3A3] hover:bg-[#0d0d0d]"}`} style={selected && !day.isToday ? { boxShadow: "inset 0 0 0 1px #14B8A655" } : undefined}>
-                    {day.label}
-                    {day.events.length > 0 && <span className="mt-0.5 h-1 w-1 rounded-full bg-[#14B8A6]" />}
-                  </button>
-                );
-              })}
-            </div>
-          </GlassCard>
+          {viewMode === "day" ? renderDayView() : viewMode === "week" ? renderWeekView() : renderMonthView()}
 
           <GlassCard hover={false}>
             <SectionTitle action={<Bell className="h-3.5 w-3.5 text-[#14B8A6]" />}>Reminders &amp; nudges</SectionTitle>
@@ -12889,7 +14887,7 @@ function CalendarView({
                 {calReminders.map((r) => (
                   <div key={r.id} className="glass-card flex items-center gap-2.5 p-2.5">
                     <span className="h-7 w-px shrink-0 rounded-full" style={{ background: nudgeColor(r.priority) }} />
-                    <div className="min-w-0 flex-1"><p className="truncate text-xs text-[#F5F5F5]" title={r.message}>{r.title}</p><p className="font-mono text-[10px] text-[#525252]">{formatLocalDate(r.date)} · {r.sourceModule}{r.sourceModule === "finance" && r.sourceProfileName ? ` · ${r.sourceProfileName}` : ""}</p></div>
+                    <div className="min-w-0 flex-1"><p className="truncate text-xs text-[#F5F5F5]" title={r.message}>{r.title}</p><p className="font-mono text-[10px] text-[#525252]">{formatLocalDate(r.date)} / {r.sourceModule}{r.sourceModule === "finance" && r.sourceProfileName ? ` / ${r.sourceProfileName}` : ""}</p></div>
                   </div>
                 ))}
               </div>
@@ -12897,20 +14895,43 @@ function CalendarView({
           </GlassCard>
         </div>
 
-        {/* Right rail */}
         <div className="space-y-5 lg:col-span-4">
           <GlassCard accent={ACCENT_CAL} hover={false}>
-            <SectionTitle action={<Clock className="h-3.5 w-3.5 text-[#14B8A6]" />}>Today</SectionTitle>
-            {calendarState.todayEvents.length === 0 ? <p className="text-xs text-[#525252]">No events today.</p> : (
+            <SectionTitle action={<Clock className="h-3.5 w-3.5 text-[#14B8A6]" />}>Selected day</SectionTitle>
+            <div className="calendar-selected-day-summary">
+              <strong>{formatLocalDate(selectedDate)}</strong>
+              <span>{sortedSelectedEvents.length} event{sortedSelectedEvents.length === 1 ? "" : "s"}</span>
+            </div>
+            {sortedSelectedEvents.length === 0 ? <EmptyState>No events on this day.</EmptyState> : (
               <div className="space-y-2">
-                {calendarState.todayEvents.map((e) => (
-                  <div key={e.id} className="glass-card flex items-center gap-3 p-2.5">
-                    <div className="font-mono text-xs text-[#A3A3A3]"><div>{e.allDay ? "all-day" : e.startTime || "—"}</div>{e.endTime && <div className="text-[#525252]">{e.endTime}</div>}</div>
+                {sortedSelectedEvents.map((e) => (
+                  <button key={e.id} type="button" className="calendar-side-event" onClick={() => loadEvent(e)}>
+                    <div className="font-mono text-xs text-[#A3A3A3]"><div>{e.allDay ? "all-day" : e.startTime || "-"}</div>{e.endTime && <div className="text-[#525252]">{e.endTime}</div>}</div>
                     <div className="h-8 w-[2px] rounded-full" style={{ background: ACCENT_CAL }} />
                     <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{e.title}</p><span className="font-mono text-[10px] text-[#14B8A6]">{e.sourceModule}</span></div>
-                  </div>
+                  </button>
                 ))}
               </div>
+            )}
+          </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle action={selectedEvent ? <StatusChip tone={selectedEvent.reminderLevel === "urgent" ? "error" : selectedEvent.reminderLevel === "normal" ? "warn" : "ok"}>{selectedEvent.reminderLevel}</StatusChip> : null}>Event detail</SectionTitle>
+            {selectedEvent ? (
+              <div className="calendar-event-detail">
+                <h3>{selectedEvent.title}</h3>
+                <p className="technical">{formatLocalDate(selectedEvent.date)} / {eventTimeLabel(selectedEvent)}</p>
+                <p>{selectedEvent.allDay ? "All-day event" : "Timed event"}{selectedEvent.recurrence ? ` / ${selectedEvent.recurrence}` : ""}</p>
+                <p><span>Source</span><strong>{selectedEvent.sourceModule}</strong></p>
+                {selectedEvent.notes && <p>{selectedEvent.notes}</p>}
+                <p className="technical">{selectedEvent.id}</p>
+                <div className="button-row">
+                  <button type="button" onClick={() => loadEvent(selectedEvent)}>Edit</button>
+                  <button type="button" className="danger-button" onClick={() => void deleteEvent(selectedEvent)}>Delete</button>
+                </div>
+              </div>
+            ) : (
+              <EmptyState>Select an event from Day, Week, or Month to view details.</EmptyState>
             )}
           </GlassCard>
 
@@ -12921,11 +14942,12 @@ function CalendarView({
                 {calendarState.upcomingEvents.slice(0, 6).map((e) => {
                   const bday = /birthday/i.test(e.title);
                   return (
-                    <div key={e.id} className="glass-card flex items-center gap-3 p-2.5">
+                    <button key={e.id} type="button" className="calendar-side-event" onClick={() => loadEvent(e)}>
                       <div className="flex h-8 w-8 items-center justify-center rounded-lg" style={{ background: `${ACCENT_CAL}14`, color: ACCENT_CAL }}>{bday ? <Cake className="h-4 w-4" /> : <CalendarDays className="h-4 w-4" />}</div>
-                      <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{e.title}</p><p className="font-mono text-[10px] text-[#525252]">{formatLocalDate(e.date)} · {e.allDay ? "all-day" : e.startTime || "—"}</p></div>
+                      <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{e.title}</p><p className="font-mono text-[10px] text-[#525252]">{formatLocalDate(e.date)} / {e.allDay ? "all-day" : e.startTime || "-"}</p></div>
+                      <PinButton input={{ type: "event", module: "calendar", entityId: e.id, title: e.title, subtitle: formatLocalDate(e.date) }} />
                       <span className="font-mono text-[10px] text-[#14B8A6]">{e.sourceModule}</span>
-                    </div>
+                    </button>
                   );
                 })}
               </div>
@@ -13188,6 +15210,7 @@ function FinderView({
         meta={`${item.location}${item.room ? ` / ${item.room}` : ""}${item.container ? ` / ${item.container}` : ""} / ${item.status}`}
         actions={(
           <>
+          <PinButton input={{ type: "item", module: "finder", entityId: item.id, title: item.itemName, subtitle: "Finder item" }} />
           <button type="button" onClick={() => loadItem(item)}>Edit</button>
           <button type="button" onClick={() => {
             setMoveItemId(item.id);
@@ -14289,6 +16312,7 @@ function CaptureView({
                           </div>
                         </div>
                         <div className="flex shrink-0 items-center gap-1">
+                          <PinButton input={{ type: "item", module: "capture", entityId: item.id, title: item.title || `Capture ${m.label}`, subtitle: "Capture" }} />
                           {item.status !== "archived" && <button type="button" onClick={() => void archiveCapture(item)} title="Archive" className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#161616] hover:text-[#F5F5F5]"><Archive className="h-3.5 w-3.5" /></button>}
                           <button type="button" onClick={() => void deleteCapture(item)} title="Delete" className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#EF4444]/10 hover:text-[#EF4444]"><Trash2 className="h-3.5 w-3.5" /></button>
                         </div>
@@ -14801,6 +16825,7 @@ function SearchView({
                         <p className="mt-1 font-mono text-[10px] text-[#525252]">{result.sourceModule} · {result.entityType}{result.fileType ? ` · ${result.fileType}` : ""}{result.sourceModule === "finance" && result.profileName ? ` · profile: ${result.profileName}` : ""}</p>
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
+                        <PinButton input={{ type: "result", module: "search", entityId: result.id, title: result.title, subtitle: result.sourceModule }} />
                         {result.filePath && <button type="button" title="Open file" onClick={() => void resultAction("search.open_result", result.id)} className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#1a1a1a] hover:text-[#F5F5F5]"><ExternalLink className="h-3.5 w-3.5" /></button>}
                         {result.filePath && <button type="button" title="Send to phone" onClick={() => void resultAction("search.send_result_to_drop", result.id)} className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#1a1a1a] hover:text-[#F5F5F5]"><Copy className="h-3.5 w-3.5" /></button>}
                       </div>
@@ -15418,6 +17443,7 @@ function DeckView({
                 {routinesState.routines.map((routine) => (
                   <div key={routine.id} className="glass-card flex items-center gap-3 p-2.5">
                     <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{routine.name}</p><p className="font-mono text-[10px] text-[#525252]">{routine.steps.length} steps · {routine.lastRunAt ? formatLocalDateTime(routine.lastRunAt) : "never run"}</p></div>
+                    <PinButton input={{ type: "routine", module: "deck", entityId: routine.id, title: routine.name, subtitle: "Deck routine" }} />
                     <ActionButton accent={ACCENT_DECK} icon={Play} className="text-xs" onClick={() => void runRoutine(routine)}>Run</ActionButton>
                   </div>
                 ))}
@@ -15996,6 +18022,7 @@ function SettingsView({
   backupState,
   calendarState,
   weatherState,
+  newsState,
   ambientVoiceState,
   speechState,
   ttsDiagnostics,
@@ -16021,6 +18048,7 @@ function SettingsView({
   backupState: BackupState;
   calendarState: CalendarState;
   weatherState: WeatherState;
+  newsState: NewsState;
   ambientVoiceState: AmbientVoiceState;
   speechState: SpeechServiceState;
   ttsDiagnostics: TtsDiagnostics;
@@ -16040,7 +18068,13 @@ function SettingsView({
   onRefresh: () => Promise<void>;
 }) {
   const perf = useSyncExternalStore(subscribePerf, getPerfStats, getPerfStats);
-  const [settingsSection, setSettingsSection] = useState("profile");
+  const [settingsSection, setSettingsSection] = useState(() => {
+    try {
+      const requested = sessionStorage.getItem("dexnest:settingsSection");
+      sessionStorage.removeItem("dexnest:settingsSection");
+      return requested ?? "profile";
+    } catch { return "profile"; }
+  });
   const [reduceMotion, setReduceMotion] = useState(() => { try { return localStorage.getItem("dexnest:reduceMotion") === "1"; } catch { return false; } });
   const [showGrain, setShowGrain] = useState(() => { try { return localStorage.getItem("dexnest:grain") !== "0"; } catch { return true; } });
   useEffect(() => {
@@ -16063,6 +18097,7 @@ function SettingsView({
     { id: "startup", label: "Startup & Tray", icon: Power, accent: "#A855F7" },
     { id: "nudges", label: "Reminders & Nudges", icon: Bell, accent: "#14B8A6" },
     { id: "weather", label: "Weather", icon: CloudSun, accent: "var(--accent-weather)" },
+    { id: "news", label: "News", icon: Newspaper, accent: "var(--accent-news)" },
     { id: "data", label: "Data Management", icon: Trash2, accent: "#FB4D6A" },
     { id: "diagnostics", label: "Diagnostics", icon: Wrench, accent: "#3B82F6" }
   ];
@@ -18088,9 +20123,16 @@ function SettingsView({
       </Panel>
           )}
 
+          {settingsSection === "news" && (
+            <NewsSettingsPanel newsState={newsState} onAction={onAction} onRefresh={onRefresh} />
+          )}
+
 
           {settingsSection === "data" && (
-            <DataManagementSection onAction={onAction} onRefresh={onRefresh} />
+            <div className="space-y-4">
+              <DemoDataSection onAction={onAction} onRefresh={onRefresh} />
+              <DataManagementSection onAction={onAction} onRefresh={onRefresh} />
+            </div>
           )}
           {settingsSection === "diagnostics" && (
           <GlassCard hover={false}>
@@ -18108,6 +20150,136 @@ function SettingsView({
         </div>
       </div>
     </div>
+  );
+}
+
+const DEMO_OPTION_ROWS: Array<{ key: keyof DemoSeedOptions; label: string; description: string }> = [
+  { key: "clipboard", label: "Clipboard demo data", description: "History, snippets, slots, and a multi-copy group." },
+  { key: "vault", label: "Vault demo documents", description: "Work Permit / Passport / Lease / Resume with OCR text for Smart Lookup." },
+  { key: "finance", label: "Finance demo data", description: "Personal + Business profiles, transactions, recurring, receipts." },
+  { key: "journalCalendar", label: "Journal / Calendar demo data", description: "Entries (incl. ‘Call Tim tomorrow at 3’) and events." },
+  { key: "captureFinder", label: "Capture / Finder demo data", description: "Inbox captures and item locations." },
+  { key: "timetable", label: "Timetable demo data", description: "Weekly blocks incl. current/next based on the time now." },
+  { key: "news", label: "News cached demo", description: "Cached AI/Tech/Finance/Sports/Canada headlines (no network)." },
+  { key: "devDeck", label: "Dev / Deck demo data", description: "A safe demo project and demo routines (commands not run)." }
+];
+
+function DemoDataSection({ onAction, onRefresh }: { onAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>; onRefresh: () => Promise<void> }) {
+  const [options, setOptions] = useState<DemoSeedOptions>({ replaceExisting: true, clipboard: true, vault: true, finance: true, journalCalendar: true, captureFinder: true, timetable: true, news: true, devDeck: true, secureVault: false });
+  const [preview, setPreview] = useState<DemoPreview | null>(null);
+  const [results, setResults] = useState<DemoModuleResult[] | null>(null);
+  const [busy, setBusy] = useState<null | "preview" | "seed" | "clear">(null);
+  const [message, setMessage] = useState("");
+  const [seededAt, setSeededAt] = useState<string | null>(null);
+
+  const loadState = useCallback(async () => {
+    try { const s = await getBridge().getDemoState(); setSeededAt(s?.seededAt ?? null); } catch { /* ignore */ }
+  }, []);
+  useEffect(() => { void loadState(); }, [loadState]);
+
+  const setOption = (key: keyof DemoSeedOptions, value: boolean) => { setOptions((current) => ({ ...current, [key]: value })); setPreview(null); };
+
+  const doPreview = async () => {
+    setBusy("preview"); setMessage("");
+    try {
+      const res = (await onAction("demo.preview_seed", "module_ui", { options })) as { ok?: boolean; preview?: DemoPreview; error?: string } | undefined;
+      if (res?.ok && res.preview) { setPreview(res.preview); setResults(null); } else { setMessage(res?.error ?? "Could not build a preview."); }
+    } finally { setBusy(null); }
+  };
+
+  const doSeed = async () => {
+    setBusy("seed"); setMessage("");
+    try {
+      const res = (await onAction("demo.seed", "module_ui", { options })) as { ok?: boolean; results?: DemoModuleResult[]; error?: string } | undefined;
+      if (res && Array.isArray(res.results)) { setResults(res.results); setPreview(null); await loadState(); await onRefresh(); } else { setMessage(res?.error ?? "Seeding failed."); }
+    } finally { setBusy(null); }
+  };
+
+  const doClear = async () => {
+    setBusy("clear"); setMessage("");
+    try {
+      const res = (await onAction("demo.clear", "module_ui", {})) as { ok?: boolean; results?: DemoModuleResult[]; totalRemoved?: number; error?: string } | undefined;
+      if (res && Array.isArray(res.results)) { setResults(res.results); setPreview(null); await loadState(); await onRefresh(); } else { setMessage(res?.error ?? "Clearing failed."); }
+    } finally { setBusy(null); }
+  };
+
+  return (
+    <GlassCard hover={false}>
+      <SectionTitle>Demo Data</SectionTitle>
+      <p style={{ opacity: 0.75, fontSize: 13, marginTop: -4 }}>
+        Fill DexNest with safe, clearly-marked fake data (<span className="technical">demoData=true</span>, <span className="technical">seedId=default_demo_seed</span>) to test every module, then remove it cleanly. No real personal data, API keys, or credentials are seeded; Weather and External Devices are left as you configured them.
+      </p>
+      {seededAt && <p style={{ fontSize: 12, opacity: 0.7, marginTop: 6 }}>Demo data last seeded: <strong>{formatLocalDateTime(seededAt)}</strong></p>}
+
+      <div className="settings-list" style={{ marginTop: 10 }}>
+        <label className="settings-row" style={{ cursor: "pointer", gap: 12 }}>
+          <input type="checkbox" checked={options.replaceExisting} onChange={(e) => setOption("replaceExisting", e.target.checked)} />
+          <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            <strong>Replace existing demo data before seeding</strong>
+            <span style={{ opacity: 0.7, fontSize: 12 }}>Removes prior demo records first so re-seeding never duplicates. Real data is untouched.</span>
+          </span>
+        </label>
+        {DEMO_OPTION_ROWS.map((row) => (
+          <label key={row.key} className="settings-row" style={{ cursor: "pointer", gap: 12 }}>
+            <input type="checkbox" checked={options[row.key]} onChange={(e) => setOption(row.key, e.target.checked)} />
+            <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              <strong>{row.label}</strong>
+              <span style={{ opacity: 0.7, fontSize: 12 }}>{row.description}</span>
+            </span>
+          </label>
+        ))}
+        <label className="settings-row" style={{ cursor: "pointer", gap: 12 }}>
+          <input type="checkbox" checked={options.secureVault} onChange={(e) => setOption("secureVault", e.target.checked)} />
+          <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            <strong style={{ display: "flex", alignItems: "center", gap: 6 }}><ShieldAlert size={13} color="#FB4D6A" /> Secure Vault demo item (off by default)</strong>
+            <span style={{ opacity: 0.7, fontSize: 12 }}>Adds one obviously-fake login. Requires Secure Vault to be unlocked.</span>
+          </span>
+        </label>
+      </div>
+
+      <p style={{ opacity: 0.55, fontSize: 11, marginTop: 8 }}>Command/Audit, Drop, Tools, Heatmap, Utilities, and a tiny demo Backup are always included.</p>
+
+      {message && <p style={{ color: "#FB4D6A", fontSize: 12 }}>{message}</p>}
+
+      {preview && (
+        <div className="settings-row" style={{ flexDirection: "column", alignItems: "flex-start", gap: 4, marginTop: 10, borderLeft: "3px solid #22D3EE", paddingLeft: 10 }}>
+          <strong>Preview — {preview.totalRecords} record(s), {preview.totalFiles} demo file(s)</strong>
+          {preview.items.map((item) => (
+            <span key={item.module} className="technical" style={{ fontSize: 11, opacity: 0.8 }}>{item.module}: {item.records} record(s){item.files ? `, ${item.files} file(s)` : ""}</span>
+          ))}
+          <span style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>Demo files: {preview.demoFilesRoot}</span>
+          {preview.notes.map((note) => <span key={note} style={{ fontSize: 11, opacity: 0.6 }}>• {note}</span>)}
+        </div>
+      )}
+
+      {results && (
+        <div className="settings-row" style={{ flexDirection: "column", alignItems: "flex-start", gap: 4, marginTop: 10, borderLeft: `3px solid ${results.some((r) => r.status === "failed") ? "#FB4D6A" : "#4ADE80"}`, paddingLeft: 10 }}>
+          <strong style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            {results.some((r) => r.status === "failed") ? <AlertTriangle size={15} color="#FB4D6A" /> : <CheckCircle2 size={15} color="#4ADE80" />}
+            {results.some((r) => r.status === "cleared") ? "Demo data cleared" : "Demo data seeded"}
+          </strong>
+          {results.map((r) => (
+            <span key={r.module} className="technical" style={{ fontSize: 11, opacity: r.status === "failed" ? 1 : 0.78, color: r.status === "failed" ? "#FB4D6A" : undefined }}>
+              {r.status === "failed" ? "✗" : r.status === "skipped" ? "—" : "✓"} {r.label}: {r.records} record(s){r.files ? `, ${r.files} file(s)` : ""}{r.note ? ` — ${r.note}` : ""}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+        <button type="button" className="ghost-button" onClick={doPreview} disabled={busy !== null}>{busy === "preview" ? "Building…" : "Preview Demo Data"}</button>
+        <button type="button" className="primary-button" onClick={doSeed} disabled={busy !== null}>{busy === "seed" ? "Seeding…" : "Seed Demo Data"}</button>
+        <button type="button" className="ghost-button" onClick={doClear} disabled={busy !== null}>{busy === "clear" ? "Clearing…" : "Clear Demo Data"}</button>
+      </div>
+
+      {(busy === "seed" || busy === "clear") && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(5,7,15,0.85)", backdropFilter: "blur(6px)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16 }}>
+          <RefreshCw size={48} color="#22D3EE" className="animate-spin-slow" />
+          <strong style={{ fontSize: 18 }}>{busy === "seed" ? "Seeding demo data across modules…" : "Clearing demo data…"}</strong>
+          <span style={{ opacity: 0.7, fontSize: 13 }}>Please wait — do not close DexNest.</span>
+        </div>
+      )}
+    </GlassCard>
   );
 }
 

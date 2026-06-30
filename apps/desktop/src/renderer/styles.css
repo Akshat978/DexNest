@@ -16,6 +16,103 @@ body {
   font-family: var(--font-ui);
 }
 
+/* ---------------------------------------------------------------------------
+   Global scrollbar polish — DexNest black/glass/neon.
+   Thin, dark, rounded thumb on a transparent track, with a subtle accent tint
+   on hover. Applies to every scroll container (main content, sidebar, settings
+   panels, lists, cards, dropdowns/popovers). Scrollbars stay visible (never
+   fully hidden) so scrolling remains discoverable and accessible.
+   --------------------------------------------------------------------------- */
+* {
+  scrollbar-width: thin;                          /* Firefox/Gecko */
+  scrollbar-color: var(--border) transparent;     /* thumb / track */
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  /* 3px transparent border + padding-box clip = a slim ~4px floating thumb. */
+  background-color: var(--border); /* #262626 */
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+  transition: background-color 0.18s ease;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: #333333;                                   /* fallback */
+  background-color: color-mix(in srgb, var(--accent) 30%, #2a2a2a);
+}
+
+*::-webkit-scrollbar-thumb:active {
+  background-color: #3a3a3a;
+  background-color: color-mix(in srgb, var(--accent) 45%, #2c2c2c);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Hide scrollbars only on tiny non-essential chrome where a track would look
+   broken (e.g. single-row pill rails). Real content areas keep theirs. */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* ---------------------------------------------------------------------------
+   Universal pin/unpin control — one consistent icon button across the app.
+   Unpinned: muted outline. Hover: accent tint. Pinned: filled accent.
+   --------------------------------------------------------------------------- */
+.pin-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md, 8px);
+  background: transparent;
+  color: var(--text-disabled, #525252);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+}
+
+.pin-btn:hover {
+  color: var(--accent, #22d3ee);
+  background: rgba(34, 211, 238, 0.08);
+  border-color: rgba(34, 211, 238, 0.25);
+}
+
+.pin-btn:active {
+  transform: scale(0.92);
+}
+
+.pin-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.4);
+}
+
+.pin-btn--on {
+  color: var(--accent, #22d3ee);
+}
+
+.pin-btn--on:hover {
+  color: var(--accent, #22d3ee);
+  background: rgba(34, 211, 238, 0.12);
+}
+
 button,
 input,
 textarea,
@@ -73,6 +170,383 @@ select:disabled {
 button:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
+}
+
+.news-category-count {
+  display: inline-flex;
+  min-width: 1.15rem;
+  height: 1.15rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent-news) 32%, transparent);
+  background: color-mix(in srgb, var(--accent-news) 14%, var(--surface));
+  color: var(--accent-news);
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0 0.28rem;
+}
+
+.drop-url-copy-button {
+  display: inline-flex;
+  min-width: 2.5rem;
+  height: 2.5rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  border-radius: 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--accent-drop) 24%, var(--border));
+  background: color-mix(in srgb, var(--accent-drop) 10%, var(--surface));
+  color: var(--text);
+  font-size: 0.72rem;
+  font-weight: 700;
+  transition: border-color 160ms ease, background 160ms ease, color 160ms ease, transform 160ms ease;
+}
+
+.drop-url-copy-button:hover {
+  border-color: color-mix(in srgb, var(--accent-drop) 70%, var(--border));
+  background: color-mix(in srgb, var(--accent-drop) 18%, var(--surface-hover));
+  color: var(--accent-drop);
+  transform: translateY(-1px);
+}
+
+.tools-action-button {
+  display: inline-flex;
+  min-height: 2.5rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  border-radius: 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--accent-tools) 36%, var(--border));
+  padding: 0.5rem 0.85rem;
+  font-size: 0.78rem;
+  font-weight: 800;
+  line-height: 1;
+  transition: border-color 160ms ease, background 160ms ease, color 160ms ease, opacity 160ms ease, transform 160ms ease;
+}
+
+.tools-action-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.tools-action-button--primary {
+  background: linear-gradient(135deg, var(--accent-tools), color-mix(in srgb, var(--accent-tools) 72%, var(--surface)));
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent-tools) 70%, var(--border));
+}
+
+.tools-action-button--outline {
+  background: color-mix(in srgb, var(--accent-tools) 12%, var(--surface));
+  color: var(--text);
+}
+
+.tools-action-button--vault {
+  background: color-mix(in srgb, var(--accent-vault) 14%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent-vault) 36%, var(--border));
+  color: var(--text);
+}
+
+.tools-action-button--drop {
+  background: color-mix(in srgb, var(--accent-drop) 14%, var(--surface));
+  border-color: color-mix(in srgb, var(--accent-drop) 36%, var(--border));
+  color: var(--text);
+}
+
+.tools-action-button:disabled {
+  background: color-mix(in srgb, var(--surface-2) 84%, var(--accent-tools));
+  border-color: var(--border);
+  color: var(--text-muted);
+  cursor: not-allowed;
+  opacity: 0.82;
+  transform: none;
+}
+
+.calendar-header-actions,
+.calendar-view-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.calendar-view-switcher {
+  display: inline-flex;
+  gap: 0.25rem;
+  padding: 0.2rem;
+  border: 1px solid var(--border);
+  border-radius: 0.85rem;
+  background: color-mix(in srgb, var(--surface-2) 70%, transparent);
+}
+
+.calendar-view-switcher button,
+.calendar-inline-action {
+  min-height: 1.85rem;
+  border-radius: 0.65rem;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.calendar-view-switcher button.is-active {
+  border-color: color-mix(in srgb, var(--accent-calendar) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent-calendar) 18%, var(--surface));
+  color: var(--text);
+}
+
+.calendar-month-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.calendar-weekday {
+  padding: 0.2rem 0;
+  color: var(--text-disabled);
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.calendar-month-cell {
+  display: flex;
+  min-height: 7.2rem;
+  align-items: stretch;
+  justify-content: flex-start;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.55rem;
+  overflow: hidden;
+  text-align: left;
+  border-color: var(--border);
+  background: color-mix(in srgb, var(--surface-2) 82%, transparent);
+  cursor: pointer;
+}
+
+.calendar-month-cell.is-muted {
+  opacity: 0.45;
+}
+
+.calendar-month-cell.is-today {
+  border-color: color-mix(in srgb, var(--accent-calendar) 65%, var(--border));
+  background: color-mix(in srgb, var(--accent-calendar) 11%, var(--surface));
+}
+
+.calendar-month-cell.is-selected {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-calendar) 72%, transparent);
+}
+
+.calendar-cell-date {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  font-weight: 900;
+}
+
+.calendar-cell-events,
+.calendar-all-day-cell,
+.calendar-all-day-list,
+.calendar-day-agenda {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.calendar-event-chip {
+  display: grid;
+  min-height: 2.2rem;
+  justify-items: start;
+  gap: 0.05rem;
+  padding: 0.35rem 0.45rem;
+  overflow: hidden;
+  border-color: color-mix(in srgb, var(--accent-calendar) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent-calendar) 10%, var(--surface-2));
+  color: var(--text);
+  text-align: left;
+}
+
+.calendar-event-chip span,
+.calendar-agenda-event strong,
+.calendar-side-event p {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.calendar-event-chip small,
+.calendar-agenda-event small {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+}
+
+.calendar-event-chip--compact {
+  min-height: 1.7rem;
+  padding: 0.25rem 0.38rem;
+  font-size: 0.68rem;
+}
+
+.calendar-more {
+  color: var(--accent-calendar);
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 800;
+}
+
+.calendar-week-shell {
+  display: grid;
+  gap: 0.5rem;
+  overflow-x: auto;
+}
+
+.calendar-week-header,
+.calendar-all-day-row,
+.calendar-week-hour {
+  display: grid;
+  grid-template-columns: 4.2rem repeat(7, minmax(6.6rem, 1fr));
+  gap: 0.35rem;
+  min-width: 54rem;
+}
+
+.calendar-week-day {
+  display: grid;
+  justify-items: center;
+  gap: 0.1rem;
+  min-height: 3rem;
+  border-color: var(--border);
+}
+
+.calendar-week-day span,
+.calendar-hour-label {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+}
+
+.calendar-week-day strong {
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.calendar-week-day.is-today,
+.calendar-week-day.is-selected {
+  border-color: color-mix(in srgb, var(--accent-calendar) 56%, var(--border));
+  background: color-mix(in srgb, var(--accent-calendar) 12%, var(--surface));
+}
+
+.calendar-hour-label {
+  display: flex;
+  min-height: 3.1rem;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 0.4rem;
+  background: transparent;
+  border-color: transparent;
+}
+
+.calendar-week-slot {
+  display: grid;
+  align-content: start;
+  gap: 0.25rem;
+  min-height: 3.1rem;
+  padding: 0.25rem;
+  border-color: color-mix(in srgb, var(--border) 82%, transparent);
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  cursor: pointer;
+}
+
+.calendar-month-cell:focus-visible,
+.calendar-week-slot:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.calendar-day-title,
+.calendar-selected-day-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.calendar-day-title span,
+.calendar-selected-day-summary span {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+}
+
+.calendar-empty-state {
+  display: grid;
+  gap: 0.45rem;
+  padding: 1rem;
+  border: 1px dashed color-mix(in srgb, var(--accent-calendar) 35%, var(--border));
+  border-radius: 0.85rem;
+  background: color-mix(in srgb, var(--accent-calendar) 7%, var(--surface));
+}
+
+.calendar-empty-state span {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.calendar-day-slots {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+  gap: 0.45rem;
+  margin-top: 0.9rem;
+}
+
+.calendar-day-slots button {
+  display: flex;
+  justify-content: space-between;
+  min-height: 2.2rem;
+  color: var(--text-muted);
+}
+
+.calendar-agenda-event,
+.calendar-side-event {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 0.75rem;
+  justify-content: flex-start;
+  text-align: left;
+  border-color: color-mix(in srgb, var(--accent-calendar) 28%, var(--border));
+  background: color-mix(in srgb, var(--surface-2) 78%, transparent);
+}
+
+.calendar-agenda-event {
+  display: grid;
+  grid-template-columns: 5.2rem minmax(0, 1fr) auto;
+}
+
+.calendar-event-detail {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.calendar-event-detail h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 1rem;
+}
+
+.calendar-event-detail p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.calendar-event-detail p:has(span) {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
 }
 
 .app-shell {
