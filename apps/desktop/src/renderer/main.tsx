@@ -919,6 +919,7 @@ interface VaultDocumentRecord {
   category: string;
   tags: string[];
   notes: string;
+  keyFields?: Array<{ id: string; label: string; value: string }>;
   sourceModule: string;
   expiryDate?: string | null;
   createdAt: string;
@@ -1857,6 +1858,8 @@ interface HealthCheckResult {
   status: HealthStatus;
   detail: string;
   suggestion?: string;
+  actionId?: string;
+  actionLabel?: string;
 }
 
 interface HealthGroup {
@@ -5865,10 +5868,36 @@ function DexNestApp() {
     }
   }, [speechState.performancePaused, journalVoice.mode, journalVoice.status]);
 
+  // The global voice-workflow indicator should only persist for LIVE states
+  // (listening/saving/candidate). Terminal result states (a finished Finder
+  // lookup, a saved capture, an error) used to stick at the top of every module
+  // forever. Auto-dismiss them after a few seconds so they behave like a toast;
+  // the full result still lives in the Ask DexNest conversation.
+  const VOICE_WORKFLOW_RESULT_STATES: VoiceWorkflowStatus[] = ["saved", "lookup_complete", "error"];
+  useEffect(() => {
+    if (!VOICE_WORKFLOW_RESULT_STATES.includes(voiceWorkflow.status)) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setVoiceWorkflow((current) => (VOICE_WORKFLOW_RESULT_STATES.includes(current.status) ? { ...defaultVoiceWorkflowState } : current));
+    }, 4500);
+    return () => window.clearTimeout(timer);
+  }, [voiceWorkflow.status, voiceWorkflow.lastSavedAt]);
+
+  // Switching modules must not keep an old result banner visible. Clear terminal
+  // result/cancelled states on navigation (live workflows are left untouched).
+  useEffect(() => {
+    setVoiceWorkflow((current) =>
+      [...VOICE_WORKFLOW_RESULT_STATES, "cancelled"].includes(current.status) ? { ...defaultVoiceWorkflowState } : current
+    );
+  }, [activeView]);
+
   // --- Wake word "Nest" MVP (Phase 23.8) ----------------------------------
-  // Wake word is always available — Performance Mode never pauses it.
+  // Performance Mode pauses the wake word when pauseWakeWordInPerformanceMode is
+  // on (default). The main process stops the sidecar to match; this keeps the
+  // renderer UI + wake-event handling consistent. Push-to-talk is unaffected.
   function wakePerfPaused(): boolean {
-    return false;
+    return (ambientVoiceState.settings.pauseWakeWordInPerformanceMode ?? true) && performanceModeState.enabled;
   }
 
   // ONE listening indicator, switched by window visibility: when DexNest is
@@ -6096,7 +6125,7 @@ function DexNestApp() {
       wakeWordService.stop();
       setWakeWordState((current) => ({ ...current, status: "disabled" }));
     }
-  }, [ambientVoiceState.settings.wakeWordEnabled, ambientVoiceState.settings.pauseWakeWordInPerformanceMode, speechState.performancePaused]);
+  }, [ambientVoiceState.settings.wakeWordEnabled, ambientVoiceState.settings.pauseWakeWordInPerformanceMode, performanceModeState.enabled, speechState.performancePaused]);
 
   // Keep the renderer microphone pre-warmed the WHOLE time the wake engine is
   // listening (regardless of which view is open), so a wake event records in
@@ -6598,14 +6627,14 @@ function DexNestApp() {
         <div className={`flex items-center border-b border-[#161616] py-4 ${sidebarCollapsed ? "justify-center px-2.5" : "gap-2.5 px-4"}`}>
           <button
             type="button"
-            className="sidebar-logo-toggle group relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-[#1f1f1f] bg-black transition-colors hover:border-[var(--accent-command)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent-command)]"
+            className="sidebar-logo-toggle group relative flex h-10 w-10 shrink-0 items-center justify-center rounded-lg outline-none transition-transform duration-150 hover:scale-[1.06] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent-command)]"
             onClick={() => { if (sidebarCollapsed) { setSidebarCollapsed(false); } }}
             title={sidebarCollapsed ? "Expand sidebar" : "DexNest"}
             aria-label={sidebarCollapsed ? "Expand sidebar" : "DexNest"}
           >
-            <img src={logoUrl} alt="DexNest" className="h-full w-full scale-[1.18] object-cover" />
+            <img src={logoUrl} alt="DexNest" className="h-full w-full rounded-lg object-contain" />
             {sidebarCollapsed && (
-              <span className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-xl border border-[var(--accent-command)] bg-[#0b0b0b] text-[var(--accent-command)] opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+              <span className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-lg bg-black/65 text-[var(--accent-command)] opacity-0 backdrop-blur-sm transition-opacity duration-150 group-hover:opacity-100">
                 <PanelLeft className="h-[18px] w-[18px]" />
               </span>
             )}
@@ -7030,6 +7059,9 @@ function DexNestApp() {
               onUserNameChange={setUserName}
               appInfo={appInfo}
               backupState={backupState}
+              toolsState={toolsState}
+              vaultState={vaultState}
+              heatmapState={heatmapState}
               calendarState={calendarState}
               weatherState={weatherState}
               newsState={newsState}
@@ -9666,7 +9698,20 @@ function DevView({
   onProjectsChanged: () => Promise<void>;
 }) {
   const [form, setForm] = useState<ProjectFormState>(emptyProjectForm);
+  const [showProjectModal, setShowProjectModal] = useState(false);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  function startAddProject(): void {
+    setForm(emptyProjectForm);
+    setActiveProjectId(null);
+    setSaveStatus(null);
+    setShowProjectModal(true);
+  }
+  function startEditProject(project: DexNestProject): void {
+    setForm(projectToForm(project));
+    setActiveProjectId(project.id);
+    setSaveStatus(null);
+    setShowProjectModal(true);
+  }
   const [expandedProjectIds, setExpandedProjectIds] = useState<Record<string, boolean>>({});
   const [commandRunResults, setCommandRunResults] = useState<Record<string, ProjectCommandResult>>(commandResults);
   const [expandedLogIds, setExpandedLogIds] = useState<Record<string, boolean>>({});
@@ -9697,6 +9742,7 @@ function DevView({
 
       setForm(emptyProjectForm);
       setActiveProjectId(null);
+      setShowProjectModal(false);
       setSaveStatus({ tone: "success", message: `Saved ${savedProject.name}.` });
       await onProjectsChanged();
     } catch (error) {
@@ -9819,11 +9865,14 @@ function DevView({
           <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_DEV}40`, background: `${ACCENT_DEV}14`, color: ACCENT_DEV }}><Code2 className="h-5 w-5" /></div>
           <div><h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Dev</h1><p className="text-sm text-[#A3A3A3]">Developer cockpit · local projects &amp; commands</p></div>
         </div>
-        <StatusChip tone="info">{projects.length} project{projects.length === 1 ? "" : "s"}</StatusChip>
+        <div className="flex items-center gap-3">
+          <StatusChip tone="info">{projects.length} project{projects.length === 1 ? "" : "s"}</StatusChip>
+          <ActionButton accent={ACCENT_DEV} icon={Plus} onClick={() => startAddProject()}>Add project</ActionButton>
+        </div>
       </div>
 
       {projects.length === 0 ? (
-        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-[#262626] py-16 text-center"><Code2 className="h-8 w-8 text-[#525252]" /><p className="mt-2 text-sm text-[#A3A3A3]">No Dev projects yet</p><p className="text-xs text-[#525252]">Add a local project path in Advanced to generate Dev &amp; Deck actions.</p></div>
+        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-[#262626] py-16 text-center"><Code2 className="h-8 w-8 text-[#525252]" /><p className="mt-2 text-sm text-[#A3A3A3]">No Dev projects yet</p><p className="text-xs text-[#525252]">Add a local project to generate Dev &amp; Deck actions.</p><button type="button" onClick={() => startAddProject()} className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-[#3B82F6]/40 bg-[#3B82F6]/10 px-3 py-1.5 text-xs font-medium text-[#3B82F6] hover:bg-[#3B82F6]/15"><Plus className="h-3.5 w-3.5" />Add project</button></div>
       ) : (
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
           <div className="space-y-4 lg:col-span-5">
@@ -9845,11 +9894,18 @@ function DevView({
               );
             })}
             {selProject && (
-              <div className="grid grid-cols-3 gap-2">
-                <ActionButton accent={ACCENT_DEV} variant="ghost" icon={Code2} className="text-xs" onClick={() => void runProjectAction(selProject, `dev.project.${selProject.id}.open_vscode`)}>VS Code</ActionButton>
-                <ActionButton accent={ACCENT_DEV} variant="ghost" icon={FolderOpen} className="text-xs" onClick={() => void runProjectAction(selProject, `dev.project.${selProject.id}.open_folder`)}>Folder</ActionButton>
-                <ActionButton accent={ACCENT_DEV} variant="ghost" icon={TerminalSquare} className="text-xs" onClick={() => void runProjectAction(selProject, `dev.project.${selProject.id}.open_terminal`)}>Terminal</ActionButton>
-              </div>
+              <>
+                <div className="grid grid-cols-3 gap-2">
+                  <ActionButton accent={ACCENT_DEV} variant="ghost" icon={Code2} className="text-xs" onClick={() => void runProjectAction(selProject, `dev.project.${selProject.id}.open_vscode`)}>VS Code</ActionButton>
+                  <ActionButton accent={ACCENT_DEV} variant="ghost" icon={FolderOpen} className="text-xs" onClick={() => void runProjectAction(selProject, `dev.project.${selProject.id}.open_folder`)}>Folder</ActionButton>
+                  <ActionButton accent={ACCENT_DEV} variant="ghost" icon={TerminalSquare} className="text-xs" onClick={() => void runProjectAction(selProject, `dev.project.${selProject.id}.open_terminal`)}>Terminal</ActionButton>
+                </div>
+                <div className="flex items-center gap-2">
+                  <PinButton input={{ type: "project", module: "dev", entityId: selProject.id, title: selProject.name, subtitle: "Dev project", actionId: `dev.project.${selProject.id}.open_folder` }} />
+                  <button type="button" onClick={() => startEditProject(selProject)} className="min-h-0 flex-1 rounded-lg border border-[#262626] bg-transparent px-3 py-1.5 text-xs text-[#A3A3A3] hover:border-[#3B82F6]/40 hover:text-[#F5F5F5]">Edit</button>
+                  <button type="button" onClick={() => void deleteProject(selProject)} className="min-h-0 flex-1 rounded-lg border border-[#262626] bg-transparent px-3 py-1.5 text-xs text-[#A3A3A3] hover:border-[#EF4444]/40 hover:text-[#EF4444]">Delete</button>
+                </div>
+              </>
             )}
           </div>
 
@@ -9871,6 +9927,16 @@ function DevView({
                         </button>
                       );
                     })}
+                    {selProject.commands.custom?.trim() && (() => {
+                      const actionId = `dev.project.${selProject.id}.run_custom`;
+                      const running = commandRunResults[actionId]?.status === "running";
+                      return (
+                        <button type="button" disabled={running} onClick={() => void runProjectAction(selProject, actionId, selProject.commands.custom)} className="glass-card lift flex flex-col items-center gap-2 p-3 disabled:opacity-40" title={selProject.commands.custom}>
+                          <TerminalSquare className="h-5 w-5" style={{ color: "#EC4899" }} />
+                          <span className="font-mono text-xs text-[#F5F5F5]">{running ? "…" : "custom"}</span>
+                        </button>
+                      );
+                    })()}
                   </div>
                 </GlassCard>
 
@@ -9933,80 +9999,37 @@ function DevView({
         </div>
       )}
 
-      {/* Advanced: add/edit project, per-project full command logs */}
-      <details className="rounded-lg border border-[#1a1a1a] bg-[#080808]">
-        <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] text-[#525252] hover:text-[#A3A3A3]">advanced · add/edit project, custom commands, logs</summary>
-        <div className="space-y-4 border-t border-[#1a1a1a] p-3">
-          <Panel title={form.id ? "Edit Project" : "Add Project"}>
-            <div className="project-form">
-              <label>Name<input value={form.name} onChange={(event) => updateForm("name", event.target.value)} /></label>
-              <label>Path<input className="technical" value={form.path} onChange={(event) => updateForm("path", event.target.value)} /></label>
-              <label>Description<input value={form.description} onChange={(event) => updateForm("description", event.target.value)} /></label>
-              <label>Local URLs<textarea className="technical" value={form.urls} onChange={(event) => updateForm("urls", event.target.value)} /></label>
+      {showProjectModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={form.id ? "Edit project" : "Add project"}>
+          <div className="w-full max-w-3xl overflow-y-auto rounded-2xl border p-5 shadow-2xl" style={{ borderColor: "var(--border)", background: "var(--surface)", maxHeight: "90vh" }}>
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div><p className="text-xs uppercase tracking-[0.16em]" style={{ color: ACCENT_DEV }}>{form.id ? "Edit" : "New"}</p><h2 className="text-xl font-semibold text-[#F5F5F5]">{form.id ? "Edit project" : "Add project"}</h2></div>
+              <button type="button" aria-label="Close" onClick={() => { setShowProjectModal(false); setForm(emptyProjectForm); setActiveProjectId(null); }} className="min-h-0 border-0 bg-transparent text-[#A3A3A3] hover:text-[#F5F5F5]">✕</button>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <label className="text-xs text-[#A3A3A3]">Name<input className="mt-1 w-full" value={form.name} onChange={(event) => updateForm("name", event.target.value)} /></label>
+              <label className="text-xs text-[#A3A3A3]">Path<input className="technical mt-1 w-full" value={form.path} onChange={(event) => updateForm("path", event.target.value)} placeholder="C:\\path\\to\\project" /></label>
+              <label className="text-xs text-[#A3A3A3] sm:col-span-2">Description<input className="mt-1 w-full" value={form.description} onChange={(event) => updateForm("description", event.target.value)} /></label>
+              <label className="text-xs text-[#A3A3A3] sm:col-span-2">Local URLs<textarea className="technical mt-1 w-full" value={form.urls} onChange={(event) => updateForm("urls", event.target.value)} placeholder="one per line or comma-separated" /></label>
               {(["start", "build", "test", "typecheck", "custom"] as const).map((key) => (
-                <label key={key}>{key} command<input className="technical" value={form[key]} onChange={(event) => updateForm(key, event.target.value)} /></label>
+                <label key={key} className="text-xs text-[#A3A3A3]">{key} command<input className="technical mt-1 w-full" value={form[key]} onChange={(event) => updateForm(key, event.target.value)} /></label>
               ))}
-              <label>Ports (lifecycle)<input className="technical" value={form.ports} onChange={(event) => updateForm("ports", event.target.value)} placeholder="5173, 8080" /></label>
-              <label>Stop command<input className="technical" value={form.stopCommand} onChange={(event) => updateForm("stopCommand", event.target.value)} placeholder="optional explicit stop" /></label>
-              <label>Health URL<input className="technical" value={form.healthUrl} onChange={(event) => updateForm("healthUrl", event.target.value)} placeholder="http://localhost:5173/health" /></label>
-              <label>Log path<input className="technical" value={form.logPath} onChange={(event) => updateForm("logPath", event.target.value)} placeholder="file/folder to open" /></label>
-              <label>Log command<input className="technical" value={form.logCommand} onChange={(event) => updateForm("logCommand", event.target.value)} placeholder="e.g. docker compose logs --tail 200" /></label>
-              <label className="checkbox-row"><input type="checkbox" checked={form.dockerComposeEnabled} onChange={(event) => setForm((current) => ({ ...current, dockerComposeEnabled: event.target.checked }))} /><span>Docker Compose in project (enables Docker down)</span></label>
-              <label>Notes<textarea value={form.notes} onChange={(event) => updateForm("notes", event.target.value)} /></label>
+              <label className="text-xs text-[#A3A3A3]">Ports (lifecycle)<input className="technical mt-1 w-full" value={form.ports} onChange={(event) => updateForm("ports", event.target.value)} placeholder="5173, 8080" /></label>
+              <label className="text-xs text-[#A3A3A3]">Stop command<input className="technical mt-1 w-full" value={form.stopCommand} onChange={(event) => updateForm("stopCommand", event.target.value)} placeholder="optional explicit stop" /></label>
+              <label className="text-xs text-[#A3A3A3]">Health URL<input className="technical mt-1 w-full" value={form.healthUrl} onChange={(event) => updateForm("healthUrl", event.target.value)} placeholder="http://localhost:5173/health" /></label>
+              <label className="text-xs text-[#A3A3A3]">Log path<input className="technical mt-1 w-full" value={form.logPath} onChange={(event) => updateForm("logPath", event.target.value)} placeholder="file/folder to open" /></label>
+              <label className="text-xs text-[#A3A3A3] sm:col-span-2">Log command<input className="technical mt-1 w-full" value={form.logCommand} onChange={(event) => updateForm("logCommand", event.target.value)} placeholder="e.g. docker compose logs --tail 200" /></label>
             </div>
-            <div className="button-row">
-              <button type="button" onClick={() => void saveProject()}>{form.id ? "Save Project" : "Add Project"}</button>
-              {form.id && <button type="button" onClick={() => { setForm(emptyProjectForm); setActiveProjectId(null); }}>Cancel Edit</button>}
+            <label className="mt-3 flex items-center gap-2 text-xs text-[#A3A3A3]"><input type="checkbox" checked={form.dockerComposeEnabled} onChange={(event) => setForm((current) => ({ ...current, dockerComposeEnabled: event.target.checked }))} />Docker Compose in project (enables Docker down)</label>
+            <label className="mt-3 block text-xs text-[#A3A3A3]">Notes<textarea className="mt-1 w-full" value={form.notes} onChange={(event) => updateForm("notes", event.target.value)} /></label>
+            <div className="button-row mt-4">
+              <button type="button" className="button-primary" disabled={!form.name.trim() || !form.path.trim()} onClick={() => void saveProject()}>{form.id ? "Save changes" : "Add project"}</button>
+              <button type="button" onClick={() => { setShowProjectModal(false); setForm(emptyProjectForm); setActiveProjectId(null); }}>Cancel</button>
             </div>
-            {saveStatus && <p className={`form-status form-status--${saveStatus.tone}`}>{saveStatus.message}</p>}
-          </Panel>
-
-          {projects.map((project) => {
-            const base = `dev.project.${project.id}`;
-            const commandEntries = Object.entries(project.commands).filter(([, command]) => command.trim());
-            return (
-              <Panel title={project.name} key={project.id}>
-                <p className="technical">{project.path}</p>
-                <div className="button-row">
-                  <PinButton input={{ type: "project", module: "dev", entityId: project.id, title: project.name, subtitle: "Dev project", actionId: `dev.project.${project.id}.open_folder` }} />
-                  <button type="button" onClick={() => { setForm(projectToForm(project)); setActiveProjectId(project.id); }}>Edit</button>
-                  <button type="button" onClick={() => void runProjectAction(project, `${base}.open_folder`)}>Folder</button>
-                  <button type="button" onClick={() => void runProjectAction(project, `${base}.open_vscode`)}>VS Code</button>
-                  <button type="button" onClick={() => void runProjectAction(project, `${base}.open_terminal`)}>Terminal</button>
-                  {project.urls.length > 0 && <button type="button" onClick={() => void runProjectAction(project, `${base}.open_url`)}>Open URL</button>}
-                  <button className="danger-button" type="button" onClick={() => void deleteProject(project)}>Delete</button>
-                </div>
-                {commandEntries.length > 0 && (
-                  <div className="command-list">
-                    {commandEntries.map(([key, command]) => {
-                      const actionId = `${base}.run_${key}`;
-                      const result = commandRunResults[actionId];
-                      const hasOutput = Boolean(result?.stdout || result?.stderr || result?.summary || result?.errorMessage);
-                      const isLogExpanded = Boolean(expandedLogIds[actionId]);
-                      return (
-                        <div className="command-row" key={key}>
-                          <div className="command-row__main"><div className="command-row__summary"><div><strong>{key}</strong><p className="technical">{command}</p></div><span className={`command-status command-status--${result?.status ?? "idle"}`}>{result?.status ?? "idle"}</span></div></div>
-                          <div className="command-row__actions">
-                            {hasOutput && <button type="button" onClick={() => toggleCommandLog(actionId)}>{isLogExpanded ? "Hide Log" : "Show Log"}</button>}
-                            <button type="button" disabled={result?.status === "running"} onClick={() => void runProjectAction(project, actionId, command)}>{result?.status === "running" ? "Running" : "Run"}</button>
-                          </div>
-                          {hasOutput && isLogExpanded && (
-                            <div className="command-log">
-                              <div className="button-row"><button type="button" onClick={() => void copyCommandOutput(actionId)}>Copy output</button><button type="button" onClick={() => void clearCommandOutput(actionId)}>Clear output</button></div>
-                              <pre className="technical">{[result?.summary, result?.errorMessage, result?.stdout ? `stdout:\n${stripAnsiForDisplay(result.stdout)}` : "", result?.stderr ? `stderr:\n${stripAnsiForDisplay(result.stderr)}` : ""].filter(Boolean).join("\n\n")}</pre>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-                {project.notes && <div className="notes-box"><strong>Notes</strong><p>{project.notes}</p></div>}
-              </Panel>
-            );
-          })}
+            {saveStatus && <p className={`form-status form-status--${saveStatus.tone} mt-2`}>{saveStatus.message}</p>}
+          </div>
         </div>
-      </details>
+      )}
     </div>
   );
 
@@ -10414,7 +10437,7 @@ function ClipboardView({
                   <button type="button" onClick={() => void insertSnippet(s.text, s.title)} className="min-w-0 flex-1 truncate text-left text-sm text-[#F5F5F5]" title={s.text}>{s.title}</button>
                   <button type="button" onClick={() => void insertSnippet(s.text, s.title)} title="Copy" className="text-[#525252] hover:text-[#8B5CF6]"><ClipIcon className="h-3.5 w-3.5" /></button>
                   <PinButton input={{ type: "item", module: "clipboard", entityId: s.id, title: s.title, subtitle: "Snippet" }} />
-                  <button type="button" onClick={() => void deleteSnippet(s.id)} title="Delete" className="text-[#525252] hover:text-[#EF4444]"><Trash2 className="h-3.5 w-3.5" /></button>
+                  <button type="button" onClick={() => void deleteSnippet(s.id)} title="Delete" className="min-h-0 border-0 bg-transparent px-1 text-[#A3A3A3] hover:text-[#EF4444]"><Trash2 className="h-3.5 w-3.5" /></button>
                 </div>
               ))}
             </div>
@@ -10533,10 +10556,6 @@ function ToolsView({
   const [resizeWidth, setResizeWidth] = useState("");
   const [resizeHeight, setResizeHeight] = useState("");
   const [activeTab, setActiveTab] = useState<"pdf" | "images" | "ocr" | "media" | "office" | "outputs" | "settings">("pdf");
-  const [ffmpegPath, setFfmpegPath] = useState(toolsState.ffmpegPath ?? "");
-  const [libreOfficePath, setLibreOfficePath] = useState(toolsState.libreOfficePath ?? "");
-  const [tesseractPath, setTesseractPath] = useState(toolsState.tesseractPath ?? "");
-  const [pythonPath, setPythonPath] = useState(toolsState.pythonPath ?? "");
   const [ocrEngine, setOcrEngine] = useState<"tesseract" | "paddleocr" | "easyocr_placeholder">(toolsState.ocrEngine ?? "paddleocr");
   const [ocrDevice, setOcrDevice] = useState<"gpu" | "cpu">(toolsState.ocrDevice ?? "gpu");
   const [ocrLanguage, setOcrLanguage] = useState(toolsState.ocrLanguage ?? "eng");
@@ -10556,14 +10575,10 @@ function ToolsView({
   const selectedPaths = selectedFiles.map((file) => file.path);
 
   useEffect(() => {
-    setFfmpegPath(toolsState.ffmpegPath ?? "");
-    setLibreOfficePath(toolsState.libreOfficePath ?? "");
-    setTesseractPath(toolsState.tesseractPath ?? "");
-    setPythonPath(toolsState.pythonPath ?? "");
     setOcrEngine(toolsState.ocrEngine ?? "paddleocr");
     setOcrDevice(toolsState.ocrDevice ?? "gpu");
     setOcrLanguage(toolsState.ocrLanguage ?? "eng");
-  }, [toolsState.ffmpegPath, toolsState.libreOfficePath, toolsState.tesseractPath, toolsState.pythonPath, toolsState.ocrEngine, toolsState.ocrDevice, toolsState.ocrLanguage]);
+  }, [toolsState.ocrEngine, toolsState.ocrDevice, toolsState.ocrLanguage]);
 
   function showStatus(message: string, tone: "success" | "error" = "success"): void {
     setStatus({ tone, message });
@@ -10641,40 +10656,6 @@ function ToolsView({
     }
   }
 
-  async function chooseOutputFolder(): Promise<void> {
-    const result = await getBridge().chooseToolsOutputFolder();
-    if (result.ok) {
-      showStatus("Output folder changed.");
-      await onRefresh();
-    } else {
-      showStatus(result.error ?? "Output folder change cancelled.", "error");
-    }
-  }
-
-  async function resetOutputFolder(): Promise<void> {
-    const result = await getBridge().resetToolsOutputFolder();
-    showStatus(result.ok ? "Output folder reset." : "Output folder reset failed.", result.ok ? "success" : "error");
-    await onRefresh();
-  }
-
-  async function saveDependencySettings(): Promise<void> {
-    try {
-      await getBridge().saveToolsSettings({
-        ffmpegPath,
-        libreOfficePath,
-        tesseractPath,
-        pythonPath,
-        ocrEngine,
-        ocrDevice,
-        ocrLanguage
-      });
-      showStatus("Tools dependency settings saved.");
-      await onRefresh();
-    } catch (error) {
-      showStatus(error instanceof Error ? error.message : "Tools settings save failed.", "error");
-    }
-  }
-
   async function sendOutputToDrop(output: ToolsOutputItem): Promise<void> {
     const result = await onAction("tools.send_output_to_drop", "module_ui", { path: output.path });
     showStatus(result.ok ? "Output sent to phone." : result.error ?? "Send to phone failed.", result.ok ? "success" : "error");
@@ -10696,21 +10677,31 @@ function ToolsView({
   const TOOL_CATS: Array<{ label: string; tools: Array<{ id: string; name: string; icon: LucideIcon; desc: string; fmt: string; out: string; kind: "pdf" | "image" | "any" }> }> = [
     { label: "PDF tools", tools: [
       { id: "tools.merge_pdfs", name: "Merge PDF", icon: FileStack, desc: "Combine multiple PDFs", fmt: "PDF", out: "PDF", kind: "pdf" },
-      { id: "tools.split_pdf", name: "Split PDF", icon: Scissors, desc: "Extract selected pages", fmt: "PDF", out: "PDF", kind: "pdf" }
+      { id: "tools.split_pdf", name: "Split PDF", icon: Scissors, desc: "Extract selected pages", fmt: "PDF", out: "PDF", kind: "pdf" },
+      { id: "tools.pdf_to_text", name: "PDF → text", icon: FileText, desc: "Extract text from a PDF", fmt: "PDF", out: "TXT", kind: "pdf" },
+      { id: "tools.pdf_to_docx_experimental", name: "PDF → DOCX", icon: FileType2, desc: "Convert a PDF to Word", fmt: "PDF", out: "DOCX", kind: "pdf" }
     ] },
     { label: "OCR / Scan", tools: [
       { id: "tools.ocr_image", name: "OCR Image", icon: ScanText, desc: "Extract text locally", fmt: "PNG · JPG", out: "TXT", kind: "image" },
       { id: "tools.ocr_pdf", name: "OCR PDF", icon: ScanText, desc: "Make scans searchable", fmt: "PDF", out: "PDF", kind: "pdf" },
       { id: "tools.clean_scan", name: "Clean Scan", icon: Sparkles, desc: "Enhance scanned docs", fmt: "PNG · JPG", out: "IMG", kind: "image" }
     ] },
-    { label: "Media", tools: [
+    { label: "Images", tools: [
       { id: "tools.images_to_pdf", name: "Images → PDF", icon: FileImage, desc: "Bundle images to PDF", fmt: "PNG · JPG", out: "PDF", kind: "image" },
+      { id: "tools.convert_image", name: "Convert image", icon: FileImage, desc: "Change image format", fmt: "PNG · JPG · WEBP", out: "IMG", kind: "image" },
+      { id: "tools.compress_image", name: "Compress image", icon: FileImage, desc: "Shrink image size", fmt: "PNG · JPG", out: "JPG", kind: "image" },
+      { id: "tools.resize_image", name: "Resize image", icon: FileImage, desc: "Resize to width / height", fmt: "PNG · JPG", out: "IMG", kind: "image" }
+    ] },
+    { label: "Media", tools: [
       { id: "tools.pdf_to_images", name: "PDF → Images", icon: Images, desc: "Export pages as images", fmt: "PDF", out: "PNG", kind: "pdf" },
-      { id: "tools.mp4_to_mp3", name: "MP4 → MP3", icon: FileAudio, desc: "Extract audio track", fmt: "MP4 · MOV", out: "MP3", kind: "any" }
+      { id: "tools.mp4_to_mp3", name: "MP4 → MP3", icon: FileAudio, desc: "Extract audio track", fmt: "MP4 · MOV", out: "MP3", kind: "any" },
+      { id: "tools.extract_audio", name: "Extract audio", icon: FileAudio, desc: "Audio track from video", fmt: "MP4 · MOV", out: "MP3 · WAV", kind: "any" },
+      { id: "tools.convert_audio", name: "Convert audio", icon: AudioLines, desc: "Change audio format", fmt: "MP3 · WAV · AAC", out: "AUDIO", kind: "any" }
     ] },
     { label: "Office", tools: [
       { id: "tools.docx_to_pdf", name: "DOCX → PDF", icon: FileType2, desc: "Convert office docs", fmt: "DOCX", out: "PDF", kind: "any" },
-      { id: "tools.pptx_to_pdf", name: "PPTX → PDF", icon: FileType2, desc: "Convert slides", fmt: "PPTX", out: "PDF", kind: "any" }
+      { id: "tools.pptx_to_pdf", name: "PPTX → PDF", icon: FileType2, desc: "Convert slides", fmt: "PPTX", out: "PDF", kind: "any" },
+      { id: "tools.pptx_to_images", name: "PPTX → images", icon: Images, desc: "Slides to images", fmt: "PPTX", out: "PNG", kind: "any" }
     ] }
   ];
   const allTools = TOOL_CATS.flatMap((c) => c.tools);
@@ -10720,6 +10711,10 @@ function ToolsView({
     if (id === "tools.ocr_image" || id === "tools.ocr_pdf") return { engine: ocrEngine, device: ocrDevice, language: ocrLanguage, upscale: ocrUpscale, grayscale: scanGrayscale, contrastBoost: true, sharpen: scanSharpen, threshold: ocrThreshold, rotateDegrees: scanRotate };
     if (id === "tools.clean_scan") return { grayscale: scanGrayscale, sharpen: scanSharpen, contrast: scanContrast, rotateDegrees: scanRotate };
     if (id === "tools.mp4_to_mp3") return { format: "mp3" };
+    if (id === "tools.convert_image") return { format: imageFormat, quality: imageQuality };
+    if (id === "tools.compress_image") return { format: "jpg", quality: imageQuality };
+    if (id === "tools.resize_image") return { format: imageFormat, quality: imageQuality, width: resizeWidth, height: resizeHeight };
+    if (id === "tools.extract_audio" || id === "tools.convert_audio") return { format: audioFormat };
     return {};
   };
   const latestOutput = toolsState.outputs[0];
@@ -10784,6 +10779,30 @@ function ToolsView({
               {selectedFiles.length > 0 && <p className="mt-2 font-mono text-[10px] text-[#A3A3A3]">{selectedFiles.length} file{selectedFiles.length === 1 ? "" : "s"} selected</p>}
             </section>
 
+            {/* Selected files — drag to reorder (matters for Merge PDF & Images → PDF). */}
+            {selectedFiles.length > 0 && (
+              <div className="mt-3">
+                <div className="mb-1 flex items-center justify-between">
+                  <span className="text-[11px] text-[#A3A3A3]">Selected files{selectedFiles.length > 1 ? " · drag to reorder" : ""}</span>
+                  <button type="button" onClick={() => setSelectedFiles([])} className="font-mono text-[10px] text-[#525252] hover:text-[#A3A3A3]">clear</button>
+                </div>
+                <div className="file-list">
+                  {selectedFiles.map((file, index) => (
+                    <div className="file-row" data-dragging={draggedFileIndex === index} draggable key={file.path}
+                      onDragStart={(event) => { event.stopPropagation(); setDraggedFileIndex(index); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-dexnest-tools-reorder", String(index)); }}
+                      onDragOver={(event) => { event.preventDefault(); reorderSelectedFile(index); }}
+                      onDragEnd={() => setDraggedFileIndex(null)}>
+                      <span><span className="font-mono text-[10px] text-[#525252]">{index + 1}.</span> {file.name}</span>
+                      <span className="flex items-center gap-2">
+                        <strong className="technical">{formatBytes(file.byteLength)}</strong>
+                        <button type="button" title="Remove file" onClick={() => setSelectedFiles((current) => current.filter((_, i) => i !== index))} className="min-h-0 border-0 bg-transparent px-1 text-[#A3A3A3] hover:text-[#EF4444]">✕</button>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* tool-specific options */}
             {selectedTool.id === "tools.split_pdf" && (
               <label className="mt-3 block text-xs text-[#A3A3A3]">Page range<input className="technical mt-1" value={pageRange} onChange={(event) => setPageRange(event.target.value)} placeholder="1-3,5" /></label>
@@ -10800,6 +10819,23 @@ function ToolsView({
                 <label className="flex items-center gap-1.5"><input type="checkbox" checked={scanSharpen} onChange={(event) => setScanSharpen(event.target.checked)} />Sharpen</label>
               </div>
             )}
+            {(selectedTool.id === "tools.convert_image" || selectedTool.id === "tools.compress_image" || selectedTool.id === "tools.resize_image") && (
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                {selectedTool.id !== "tools.compress_image" && (
+                  <label className="text-xs text-[#A3A3A3]">Format<select className="mt-1" value={imageFormat} onChange={(event) => setImageFormat(event.target.value)}><option value="jpg">jpg</option><option value="png">png</option><option value="webp">webp</option></select></label>
+                )}
+                <label className="text-xs text-[#A3A3A3]">Quality<input className="mt-1" value={imageQuality} onChange={(event) => setImageQuality(event.target.value)} placeholder="80" /></label>
+                {selectedTool.id === "tools.resize_image" && (<>
+                  <label className="text-xs text-[#A3A3A3]">Width<input className="mt-1" value={resizeWidth} onChange={(event) => setResizeWidth(event.target.value)} placeholder="px" /></label>
+                  <label className="text-xs text-[#A3A3A3]">Height<input className="mt-1" value={resizeHeight} onChange={(event) => setResizeHeight(event.target.value)} placeholder="px" /></label>
+                </>)}
+              </div>
+            )}
+            {(selectedTool.id === "tools.extract_audio" || selectedTool.id === "tools.convert_audio") && (
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <label className="text-xs text-[#A3A3A3]">Audio format<select className="mt-1" value={audioFormat} onChange={(event) => setAudioFormat(event.target.value)}><option value="mp3">mp3</option><option value="wav">wav</option><option value="aac">aac</option></select></label>
+              </div>
+            )}
 
             <button type="button" disabled={runningActionId === selectedTool.id || selectedFiles.length === 0} onClick={() => void runTool(selectedTool.id, toolParams(selectedTool.id))} className="tools-action-button tools-action-button--primary mt-3 w-full">
               {runningActionId === selectedTool.id ? <><Spinner size="sm" /> Running…</> : <>Run {selectedTool.name}</>}
@@ -10807,7 +10843,14 @@ function ToolsView({
           </GlassCard>
 
           <GlassCard hover={false}>
-            <SectionTitle action={<StatusChip tone={runningActionId ? "running" : "ok"}>{runningActionId ? "running" : `${toolsState.outputs.length} outputs`}</StatusChip>}>Job Queue</SectionTitle>
+            <SectionTitle action={
+              <span className="flex items-center gap-2">
+                {toolsState.outputs.length > 0 && (
+                  <button type="button" onClick={() => void (async () => { if (!window.confirm("Clear the Tools output list? Files on disk are kept.")) { return; } const r = await onAction("tools.clear_outputs", "module_ui", {}) as { ok?: boolean }; if (r.ok) { await onRefresh(); } })()} className="font-mono text-[10px] text-[#525252] hover:text-[#A3A3A3]">Clear</button>
+                )}
+                <StatusChip tone={runningActionId ? "running" : "ok"}>{runningActionId ? "running" : `${toolsState.outputs.length} outputs`}</StatusChip>
+              </span>
+            }>Job Queue</SectionTitle>
             <div className="space-y-2">
               {runningActionId && (
                 <div className="glass-card flex items-center gap-3 p-2.5">
@@ -10821,12 +10864,12 @@ function ToolsView({
               ) : (
                 <LimitedList items={toolsState.outputs} step={20}>
                   {(output) => (
-                    <div key={output.id} className="glass-card flex items-center gap-3 p-2.5">
+                    <div key={output.id} className="glass-card flex items-center gap-2 p-2.5">
                       <ProgressRing value={100} size={36} stroke={3} color="#22C55E" label="✓" />
                       <div className="min-w-0 flex-1"><p className="truncate font-mono text-xs text-[#F5F5F5]">{output.operation} · {output.fileName}</p><p className="font-mono text-[10px] text-[#525252]">{formatBytes(output.byteLength)} · {formatDate(output.createdAt)}</p></div>
-                      <button type="button" onClick={() => void getBridge().openToolsFile(output.path)} title="Open" className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#1a1a1a] hover:text-[#F97316]"><FolderOpen className="h-3.5 w-3.5" /></button>
-                      <button type="button" title="Remove from DexNest list (keeps the file)" onClick={() => void (async () => { const r = await onAction("tools.delete_output", "module_ui", { id: output.id }) as { ok?: boolean }; if (r.ok) { await onRefresh(); } })()} className="rounded-md px-1.5 py-0.5 font-mono text-[10px] text-[#525252] hover:text-[#A3A3A3]">remove</button>
-                      <button type="button" title="Delete output file from disk" onClick={() => void (async () => { if (!window.confirm(`Delete ${output.fileName} from disk? This cannot be undone.`)) { return; } const r = await onAction("tools.delete_output_file", "module_ui", { id: output.id, confirmedDangerous: true }) as { ok?: boolean }; if (r.ok) { await onRefresh(); } })()} className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#EF4444]/10 hover:text-[#EF4444]"><Trash2 className="h-3.5 w-3.5" /></button>
+                      <button type="button" onClick={() => void getBridge().openToolsFile(output.path)} title="Open the output file" className="inline-flex shrink-0 items-center gap-1 rounded-md border border-[#262626] px-2 py-1 text-[10px] text-[#A3A3A3] hover:border-[#F97316]/40 hover:text-[#F97316]"><FolderOpen className="h-3 w-3" />Open</button>
+                      <button type="button" title="Remove from the list (keeps the file on disk)" onClick={() => void (async () => { const r = await onAction("tools.delete_output", "module_ui", { id: output.id }) as { ok?: boolean }; if (r.ok) { await onRefresh(); } })()} className="inline-flex shrink-0 items-center rounded-md border border-[#262626] px-2 py-1 text-[10px] text-[#A3A3A3] hover:text-[#F5F5F5]">Remove</button>
+                      <button type="button" title="Delete the output file from disk" onClick={() => void (async () => { if (!window.confirm(`Delete ${output.fileName} from disk? This cannot be undone.`)) { return; } const r = await onAction("tools.delete_output_file", "module_ui", { id: output.id, confirmedDangerous: true }) as { ok?: boolean }; if (r.ok) { await onRefresh(); } })()} className="inline-flex shrink-0 items-center gap-1 rounded-md border border-[#262626] px-2 py-1 text-[10px] text-[#A3A3A3] hover:border-[#EF4444]/40 hover:text-[#EF4444]"><Trash2 className="h-3 w-3" />Delete</button>
                     </div>
                   )}
                 </LimitedList>
@@ -10848,85 +10891,6 @@ function ToolsView({
           )}
         </div>
       </div>
-
-      {/* Advanced: more tools, dependency + output settings, reorderable files */}
-      <details className="rounded-lg border border-[#1a1a1a] bg-[#080808]">
-        <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] text-[#525252] hover:text-[#A3A3A3]">advanced · more converters, dependencies, output folder, file order</summary>
-        <div className="space-y-4 border-t border-[#1a1a1a] p-3">
-          <Panel title="Selected files (reorder for merge / images→PDF)">
-            <div className="button-row">
-              <button type="button" onClick={() => void selectFiles("pdf")}>Select PDFs</button>
-              <button type="button" onClick={() => void selectFiles("image")}>Select Images</button>
-              <button type="button" onClick={() => void selectFiles("any")}>Select Any</button>
-            </div>
-            <div className="file-list">
-              {selectedFiles.length === 0 ? <p className="empty-inline">No files selected.</p> : selectedFiles.map((file, index) => (
-                <div className="file-row" data-dragging={draggedFileIndex === index} draggable key={file.path}
-                  onDragStart={(event) => { event.stopPropagation(); setDraggedFileIndex(index); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-dexnest-tools-reorder", String(index)); }}
-                  onDragOver={(event) => { event.preventDefault(); reorderSelectedFile(index); }}
-                  onDragEnd={() => setDraggedFileIndex(null)}>
-                  <span>{file.name}</span><strong className="technical">{formatBytes(file.byteLength)}</strong>
-                </div>
-              ))}
-            </div>
-          </Panel>
-
-          <Panel title="More converters">
-            <div className="button-row">
-              <button type="button" onClick={() => void runTool("tools.images_to_pdf")}>Images → PDF</button>
-              <button type="button" onClick={() => void runTool("tools.pdf_to_text")}>PDF → text</button>
-              <button type="button" onClick={() => void runTool("tools.pdf_to_docx_experimental")}>PDF → DOCX</button>
-              <button type="button" onClick={() => void runTool("tools.convert_image", { format: imageFormat, quality: imageQuality })}>Convert image</button>
-              <button type="button" onClick={() => void runTool("tools.compress_image", { format: "jpg", quality: imageQuality })}>Compress image</button>
-              <button type="button" onClick={() => void runTool("tools.resize_image", { format: imageFormat, quality: imageQuality, width: resizeWidth, height: resizeHeight })}>Resize image</button>
-              <button type="button" onClick={() => void runTool("tools.extract_audio", { format: audioFormat })}>Extract audio</button>
-              <button type="button" onClick={() => void runTool("tools.convert_audio", { format: audioFormat })}>Convert audio</button>
-              <button type="button" onClick={() => void runTool("tools.pptx_to_images")}>PPTX → images</button>
-            </div>
-            <div className="tools-form-grid">
-              <label>Image format<select value={imageFormat} onChange={(event) => setImageFormat(event.target.value)}><option value="jpg">jpg</option><option value="png">png</option><option value="webp">webp</option></select></label>
-              <label>Quality<input className="technical" value={imageQuality} onChange={(event) => setImageQuality(event.target.value)} /></label>
-              <label>Resize W<input className="technical" value={resizeWidth} onChange={(event) => setResizeWidth(event.target.value)} /></label>
-              <label>Resize H<input className="technical" value={resizeHeight} onChange={(event) => setResizeHeight(event.target.value)} /></label>
-              <label>Audio format<select value={audioFormat} onChange={(event) => setAudioFormat(event.target.value)}><option value="mp3">mp3</option><option value="wav">wav</option><option value="aac">aac</option></select></label>
-            </div>
-          </Panel>
-
-          <Panel title="Local dependency settings">
-            <div className="tools-form-grid">
-              <label>ffmpeg path<input className="technical" value={ffmpegPath} onChange={(event) => setFfmpegPath(event.target.value)} /></label>
-              <label>LibreOffice path<input className="technical" value={libreOfficePath} onChange={(event) => setLibreOfficePath(event.target.value)} /></label>
-              <label>Tesseract path<input className="technical" value={tesseractPath} onChange={(event) => setTesseractPath(event.target.value)} /></label>
-              <label>Python path<input className="technical" value={pythonPath} onChange={(event) => setPythonPath(event.target.value)} /></label>
-              <label>OCR engine<select value={ocrEngine} onChange={(event) => setOcrEngine(event.target.value as typeof ocrEngine)}><option value="paddleocr">paddleocr</option><option value="tesseract">tesseract</option><option value="easyocr_placeholder">easyocr (placeholder)</option></select></label>
-              <label>OCR device<select value={ocrDevice} onChange={(event) => setOcrDevice(event.target.value as typeof ocrDevice)}><option value="gpu">gpu</option><option value="cpu">cpu</option></select></label>
-              <label>OCR language<input className="technical" value={ocrLanguage} onChange={(event) => setOcrLanguage(event.target.value)} /></label>
-            </div>
-            <div className="button-row">
-              <button type="button" className="button-primary" onClick={() => void saveDependencySettings()}>Save dependency settings</button>
-              <button type="button" onClick={() => void chooseOutputFolder()}>Change output folder</button>
-              <button type="button" onClick={() => void resetOutputFolder()}>Reset output folder</button>
-            </div>
-            <p className="technical">{toolsState.outputFolderPath}</p>
-          </Panel>
-
-          <Panel title="Recent Outputs">
-            <div className="item-list">
-              {toolsState.outputs.length === 0 ? <p className="empty-inline">No Tools outputs yet.</p> : toolsState.outputs.map((output) => (
-                <CollapsibleListItem accentClass="accent-tools" key={output.id} title={output.fileName} meta={`${output.operation} / ${formatBytes(output.byteLength)} / ${formatDate(output.createdAt)}`}
-                  actions={(<>
-                    <button type="button" onClick={() => void getBridge().openToolsFile(output.path)}>Open file</button>
-                    <button type="button" onClick={() => void onAction("tools.open_output_folder")}>Open folder</button>
-                    <button type="button" onClick={() => void sendOutputToDrop(output)}>Send to phone</button>
-                    <button type="button" onClick={() => void saveOutputToVault(output)}>Save to Vault</button>
-                  </>)}>
-                  <p className="technical">{output.path}</p>
-                </CollapsibleListItem>
-              ))}
-            </div>
-          </Panel>
-        </div>
-      </details>
     </div>
   );
 }
@@ -10954,17 +10918,12 @@ function VaultView({
   const [editTags, setEditTags] = useState("");
   const [editNotes, setEditNotes] = useState("");
   const [editExpiryDate, setEditExpiryDate] = useState("");
-  const [expandedDocumentIds, setExpandedDocumentIds] = useState<string[]>([]);
+  const [editKeyFields, setEditKeyFields] = useState<Array<{ id: string; label: string; value: string }>>([]);
+  const [showImport, setShowImport] = useState(false);
+  const [detailDocId, setDetailDocId] = useState<string | null>(null);
   const [activeVaultTab, setActiveVaultTab] = useState<"documents" | "secure">("documents");
   const [vaultCategory, setVaultCategory] = useState("All");
-  const [autoOcrOnImport, setAutoOcrOnImport] = useState(vaultState.ocrSettings.autoOcrOnImport);
-  const [vaultOcrPythonPath, setVaultOcrPythonPath] = useState(vaultState.ocrSettings.pythonPath ?? "");
   const [status, setStatus] = useState<{ tone: "success" | "error"; message: string } | null>(null);
-
-  useEffect(() => {
-    setAutoOcrOnImport(vaultState.ocrSettings.autoOcrOnImport);
-    setVaultOcrPythonPath(vaultState.ocrSettings.pythonPath ?? "");
-  }, [vaultState.ocrSettings.autoOcrOnImport, vaultState.ocrSettings.pythonPath]);
 
   const recentImports = vaultState.documents.slice(0, 5);
   const categoryCounts = vaultState.categories.map((item) => ({
@@ -10998,14 +10957,6 @@ function VaultView({
     }, 3000);
   }
 
-  function toggleDocument(documentId: string): void {
-    setExpandedDocumentIds((current) => (
-      current.includes(documentId)
-        ? current.filter((id) => id !== documentId)
-        : [...current, documentId]
-    ));
-  }
-
   async function chooseFiles(): Promise<void> {
     const files = await getBridge().selectVaultFiles();
     setSelectedFiles(files);
@@ -11035,6 +10986,9 @@ function VaultView({
     if (result.ok) {
       setSelectedFiles([]);
       setNotes("");
+      setTags("");
+      setExpiryDate("");
+      setShowImport(false);
       await onRefresh();
     }
   }
@@ -11046,6 +11000,17 @@ function VaultView({
     setEditTags(document.tags.join(", "));
     setEditNotes(document.notes);
     setEditExpiryDate(document.expiryDate ?? "");
+    setEditKeyFields((document.keyFields ?? []).map((field) => ({ id: field.id, label: field.label, value: field.value })));
+  }
+
+  function addEditKeyField(): void {
+    setEditKeyFields((current) => [...current, { id: `kf-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, label: "", value: "" }]);
+  }
+  function updateEditKeyField(id: string, patch: Partial<{ label: string; value: string }>): void {
+    setEditKeyFields((current) => current.map((field) => (field.id === id ? { ...field, ...patch } : field)));
+  }
+  function removeEditKeyField(id: string): void {
+    setEditKeyFields((current) => current.filter((field) => field.id !== id));
   }
 
   async function saveMetadata(): Promise<void> {
@@ -11058,7 +11023,8 @@ function VaultView({
       category: editCategory,
       tags: editTags,
       notes: editNotes,
-      expiryDate: editExpiryDate || null
+      expiryDate: editExpiryDate || null,
+      keyFields: editKeyFields.filter((field) => field.label.trim() && field.value.trim())
     });
     showStatus(result.ok ? "Vault metadata saved." : result.error ?? "Metadata update failed.", result.ok ? "success" : "error");
     if (result.ok) {
@@ -11074,6 +11040,7 @@ function VaultView({
     const deleteFile = window.confirm("Also delete the copied Vault file? Originals outside Vault are never deleted.");
     const result = await onAction("vault.delete_document", "module_ui", { documentId: document.id, deleteFile, confirmedDangerous: true });
     showStatus(result.ok ? "Vault document deleted." : result.error ?? "Delete failed.", result.ok ? "success" : "error");
+    if (result.ok) { setDetailDocId(null); setEditingDocumentId(null); }
     await onRefresh();
   }
 
@@ -11100,15 +11067,6 @@ function VaultView({
     await onRefresh();
   }
 
-  async function saveVaultOcrSettings(): Promise<void> {
-    const result = await onAction("vault.ocr.update_settings", "module_ui", {
-      autoOcrOnImport,
-      pythonPath: vaultOcrPythonPath || null
-    });
-    showStatus(result.ok ? "Vault OCR settings saved." : result.error ?? "Vault OCR settings failed.", result.ok ? "success" : "error");
-    await onRefresh();
-  }
-
   function documentOcrStatus(document: VaultDocumentRecord): string {
     return document.ocrStatus ?? ([".png", ".jpg", ".jpeg", ".webp", ".pdf"].includes(document.fileType) ? "not_ocred" : "unsupported");
   }
@@ -11122,6 +11080,8 @@ function VaultView({
     .sort((a, b) => a.days - b.days)
     .slice(0, 5);
   const expirySoon = expiryItems.filter((e) => e.days <= 30).length;
+  const detailDoc = detailDocId ? vaultState.documents.find((d) => d.id === detailDocId) ?? null : null;
+  const isEditing = Boolean(detailDoc && editingDocumentId === detailDoc.id);
 
   return (
     <div className="space-y-6">
@@ -11148,7 +11108,7 @@ function VaultView({
                 <button key={c} type="button" onClick={() => setVaultCategory(c)} className="rounded-full border px-3 py-1 text-xs font-medium transition-all" style={vaultCategory === c ? { borderColor: `${ACCENT_VAULT}55`, background: `${ACCENT_VAULT}1a`, color: ACCENT_VAULT } : { borderColor: "#1f1f1f", color: "#A3A3A3" }}>{c}</button>
               ))}
             </div>
-            <ActionButton accent={ACCENT_VAULT} icon={Upload} onClick={() => void chooseFiles()}>Import</ActionButton>
+            <ActionButton accent={ACCENT_VAULT} icon={Upload} onClick={() => setShowImport(true)}>Import</ActionButton>
           </div>
 
           {visibleDocs.length === 0 ? (
@@ -11160,7 +11120,7 @@ function VaultView({
                   const ocr = documentOcrStatus(document);
                   const ocrOk = /complete|index|done/i.test(ocr);
                   return (
-                    <button key={document.id} type="button" onClick={() => void runDocumentAction("vault.open_document", document)} className="glass-card lift flex flex-col gap-1.5 p-3 text-left">
+                    <button key={document.id} type="button" onClick={() => setDetailDocId(document.id)} className="glass-card lift flex flex-col gap-1.5 p-3 text-left">
                       <div className="flex items-center gap-2">
                         <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#10B981]/12 text-[#10B981]"><FileText className="h-3.5 w-3.5" /></div>
                         <p className="min-w-0 flex-1 truncate text-sm font-medium text-[#F5F5F5]">{document.title}</p>
@@ -11205,111 +11165,106 @@ function VaultView({
         </div>
       </div>
 
-      {/* Advanced: import form, OCR queue, document library (full actions), edit, settings */}
-      <details className="rounded-lg border border-[#1a1a1a] bg-[#080808]">
-        <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] text-[#525252] hover:text-[#A3A3A3]">advanced · import, OCR queue, full library, edit, settings</summary>
-        <div className="space-y-4 border-t border-[#1a1a1a] p-3">
-          <div className="tools-grid">
-            <Panel title="Import Document">
-              <section className="drop-zone" onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
-                <div><h3>Copy files into Vault</h3><p>Original files are never moved or deleted.</p></div>
-                <button type="button" className="button-primary" onClick={() => void chooseFiles()}>Select documents</button>
-                <div className="file-list">
-                  {selectedFiles.length === 0 ? <p className="empty-inline">No documents selected.</p> : selectedFiles.map((file) => (<div className="file-row" key={file.path}><span>{file.name}</span><strong className="technical">{formatBytes(file.byteLength)}</strong></div>))}
-                </div>
-              </section>
-              <div className="tools-form-grid">
-                <label>Category<select value={category} onChange={(event) => setCategory(event.target.value)}>{vaultState.categories.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
-                <label>Expiry date<input className="technical" type="date" value={expiryDate} onChange={(event) => setExpiryDate(event.target.value)} /></label>
+      {showImport && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="Import document to Vault">
+          <div className="w-full max-w-lg overflow-y-auto rounded-2xl border p-5 shadow-2xl" style={{ borderColor: "var(--border)", background: "var(--surface)", maxHeight: "90vh" }}>
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs uppercase tracking-[0.16em]" style={{ color: ACCENT_VAULT }}>Import</p>
+                <h2 className="text-xl font-semibold text-[#F5F5F5]">Import to Vault</h2>
               </div>
-              <label>Tags<input className="technical" value={tags} onChange={(event) => setTags(event.target.value)} placeholder="resume, contract, receipt" /></label>
-              <label>Notes<textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Private notes stay local." /></label>
-              <button type="button" className="button-primary" onClick={() => void importDocuments()}>Import to Vault</button>
-            </Panel>
-            <Panel title="Vault Settings">
-              <p className="technical">{vaultState.documentsPath}</p>
-              <p className="technical">{vaultState.ocrOutputPath}</p>
-              <p>{vaultState.documentCount} documents / {formatBytes(vaultState.totalSizeBytes)}</p>
-              <p>Secure Vault is encrypted separately. Document OCR is local PaddleOCR GPU only.</p>
-            </Panel>
+              <button type="button" aria-label="Close" onClick={() => setShowImport(false)} className="text-[#A3A3A3] hover:text-[#F5F5F5]">✕</button>
+            </div>
+            <section className="drop-zone" onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
+              <div><h3>Copy files into Vault</h3><p>Original files are never moved or deleted.</p></div>
+              <button type="button" className="button-primary" onClick={() => void chooseFiles()}>Select documents</button>
+              <div className="file-list">
+                {selectedFiles.length === 0 ? <p className="empty-inline">No documents selected.</p> : selectedFiles.map((file) => (<div className="file-row" key={file.path}><span>{file.name}</span><strong className="technical">{formatBytes(file.byteLength)}</strong></div>))}
+              </div>
+            </section>
+            <div className="tools-form-grid">
+              <label>Category<select value={category} onChange={(event) => setCategory(event.target.value)}>{vaultState.categories.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+              <label>Expiry date<input className="technical" type="date" value={expiryDate} onChange={(event) => setExpiryDate(event.target.value)} /></label>
+            </div>
+            <label>Tags<input className="technical" value={tags} onChange={(event) => setTags(event.target.value)} placeholder="resume, contract, receipt" /></label>
+            <label>Notes<textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Private notes stay local." /></label>
+            <div className="button-row" style={{ marginTop: 12 }}>
+              <button type="button" className="button-primary" disabled={selectedFiles.length === 0} onClick={() => void importDocuments()}>Import to Vault</button>
+              <button type="button" onClick={() => setShowImport(false)}>Cancel</button>
+            </div>
           </div>
-
-          <Panel title="GPU OCR Queue">
-            <div className="settings-grid">
-              <article><span>Queue</span><strong>{vaultState.ocrQueueRunning ? "Running" : vaultState.ocrQueuePaused ? "Paused" : "Idle"}</strong><p>{vaultState.ocrJobs.filter((job) => job.status === "queued").length} queued / {vaultState.ocrJobs.filter((job) => job.status === "failed").length} failed</p></article>
-              <article><span>PaddleOCR GPU</span><strong>{vaultState.paddleGpuStatus.ok ? "Ready" : "Needs setup"}</strong><p>{vaultState.paddleGpuStatus.message}</p></article>
-              <article><span>Runtime</span><strong>{vaultState.paddleGpuStatus.paddleVersion ?? "unknown"}</strong><p className="technical">{vaultState.paddleGpuStatus.pythonPath ?? "No Python path"}</p></article>
-            </div>
-            <div className="registry-controls">
-              <label className="checkbox-row"><input type="checkbox" checked={autoOcrOnImport} onChange={(event) => setAutoOcrOnImport(event.target.checked)} /><span>Auto OCR supported Vault imports</span></label>
-              <label>Python path<input className="technical" value={vaultOcrPythonPath} onChange={(event) => setVaultOcrPythonPath(event.target.value)} placeholder="Use detected Tools Python if empty" /></label>
-            </div>
-            <div className="button-row">
-              <button type="button" onClick={() => void runVaultOcrAction("vault.ocr.run_queue")}>Run OCR queue now</button>
-              <button type="button" onClick={() => void runVaultOcrAction("vault.ocr.pause_queue")}>Pause OCR queue</button>
-              <button type="button" onClick={() => void runVaultOcrAction("vault.ocr.retry_failed")}>Retry failed OCR</button>
-              <button type="button" onClick={() => void saveVaultOcrSettings()}>Save OCR settings</button>
-            </div>
-          </Panel>
-
-          {editingDocumentId && (
-            <Panel title="Edit Metadata">
-              <div className="tools-form-grid">
-                <label>Title<input value={editTitle} onChange={(event) => setEditTitle(event.target.value)} /></label>
-                <label>Category<select value={editCategory} onChange={(event) => setEditCategory(event.target.value)}>{vaultState.categories.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
-                <label>Tags<input className="technical" value={editTags} onChange={(event) => setEditTags(event.target.value)} /></label>
-                <label>Expiry date<input className="technical" type="date" value={editExpiryDate} onChange={(event) => setEditExpiryDate(event.target.value)} /></label>
-              </div>
-              <label>Notes<textarea value={editNotes} onChange={(event) => setEditNotes(event.target.value)} /></label>
-              <div className="button-row">
-                <button type="button" className="button-primary" onClick={() => void saveMetadata()}>Save metadata</button>
-                <button type="button" onClick={() => setEditingDocumentId(null)}>Cancel</button>
-              </div>
-            </Panel>
-          )}
-
-          <Panel title="Document Library">
-            <div className="item-list">
-              {vaultState.documents.length === 0 ? <p className="empty-inline">No Vault documents yet.</p> : (
-                <LimitedList items={vaultState.documents} step={50}>{(document) => {
-                  const expanded = expandedDocumentIds.includes(document.id);
-                  return (
-                    <article className="vault-document accent-vault" data-expanded={expanded} key={document.id}>
-                      <button type="button" className="vault-document__summary" aria-expanded={expanded} onClick={() => toggleDocument(document.id)}>
-                        <span className="vault-document__chevron" aria-hidden="true" />
-                        <span><strong>{document.title}</strong><small>{document.category} / {document.fileType} / {formatBytes(document.sizeBytes)} / Version {document.versionNumber ?? 1}</small></span>
-                        <span className="status-pill">{documentOcrStatus(document)}</span>
-                      </button>
-                      {expanded && (
-                        <div className="vault-document__details">
-                          <div>
-                            <p>{document.tags.length ? document.tags.join(", ") : "No tags"}{document.expiryDate ? ` / expires ${formatLocalDate(document.expiryDate)}` : ""}</p>
-                            <p>OCR: {documentOcrStatus(document)}{document.ocrUpdatedAt ? ` / ${formatLocalDateTime(document.ocrUpdatedAt)}` : ""}</p>
-                            {document.ocrError && <p>{document.ocrError}</p>}
-                            <p className="technical">{document.filePath}</p>
-                          </div>
-                          <div className="button-row">
-                            <PinButton input={{ type: "document", module: "vault", entityId: document.id, title: document.title, subtitle: document.category }} />
-                            <button type="button" onClick={() => void runDocumentAction("vault.open_document", document)}>Open file</button>
-                            <button type="button" onClick={() => void runDocumentAction("vault.open_document_folder", document)}>Open folder</button>
-                            <button type="button" onClick={() => startEdit(document)}>Edit metadata</button>
-                            <button type="button" onClick={() => void addVersion(document)}>New version</button>
-                            <button type="button" onClick={() => void runVaultOcrAction("vault.ocr.rerun_document", { documentId: document.id })}>{document.ocrStatus === "completed" ? "Re-run OCR" : "Run OCR"}</button>
-                            <button type="button" disabled={!document.ocrTextPath} onClick={() => void runDocumentAction("vault.ocr.open_text", document)}>Open OCR text</button>
-                            <button type="button" disabled={!document.ocrTextPath} onClick={() => void runDocumentAction("vault.ocr.copy_text", document)}>Copy OCR text</button>
-                            <button type="button" onClick={() => void runDocumentAction("vault.send_document_to_drop", document)}>Send to Drop</button>
-                            <button type="button" className="button-danger" onClick={() => void deleteDocument(document)}>Delete</button>
-                          </div>
-                        </div>
-                      )}
-                    </article>
-                  );
-                }}</LimitedList>
-              )}
-            </div>
-          </Panel>
         </div>
-      </details>
+      )}
+
+      {detailDoc && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="Vault document">
+          <div className="w-full max-w-lg overflow-y-auto rounded-2xl border p-5 shadow-2xl" style={{ borderColor: "var(--border)", background: "var(--surface)", maxHeight: "90vh" }}>
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <p className="text-xs uppercase tracking-[0.16em]" style={{ color: ACCENT_VAULT }}>{detailDoc.category} · v{detailDoc.versionNumber ?? 1}</p>
+                <h2 className="truncate text-xl font-semibold text-[#F5F5F5]">{detailDoc.title}</h2>
+              </div>
+              <button type="button" aria-label="Close" onClick={() => { setDetailDocId(null); setEditingDocumentId(null); }} className="text-[#A3A3A3] hover:text-[#F5F5F5]">✕</button>
+            </div>
+            {isEditing ? (
+              <>
+                <div className="tools-form-grid">
+                  <label>Title<input value={editTitle} onChange={(event) => setEditTitle(event.target.value)} /></label>
+                  <label>Category<select value={editCategory} onChange={(event) => setEditCategory(event.target.value)}>{vaultState.categories.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+                  <label>Tags<input className="technical" value={editTags} onChange={(event) => setEditTags(event.target.value)} /></label>
+                  <label>Expiry date<input className="technical" type="date" value={editExpiryDate} onChange={(event) => setEditExpiryDate(event.target.value)} /></label>
+                </div>
+                <label>Notes<textarea value={editNotes} onChange={(event) => setEditNotes(event.target.value)} /></label>
+                <div style={{ marginTop: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                    <span style={{ fontSize: 12, color: "#A3A3A3" }}>Key fields <span style={{ color: "#525252" }}>— e.g. “Work Permit Number” → 272829 (used by Smart Lookup &amp; Search)</span></span>
+                    <button type="button" onClick={() => addEditKeyField()} style={{ fontSize: 11 }}>+ Add field</button>
+                  </div>
+                  {editKeyFields.length === 0 ? (
+                    <p className="empty-inline" style={{ fontSize: 12 }}>No key fields yet. Add the document number, expiry, etc. so DexNest can answer reliably.</p>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      {editKeyFields.map((field) => (
+                        <div key={field.id} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                          <input style={{ flex: "0 0 40%" }} value={field.label} placeholder="Label (e.g. Work Permit Number)" onChange={(event) => updateEditKeyField(field.id, { label: event.target.value })} />
+                          <input style={{ flex: 1 }} className="technical" value={field.value} placeholder="Value (e.g. 272829)" onChange={(event) => updateEditKeyField(field.id, { value: event.target.value })} />
+                          <button type="button" className="danger-button" onClick={() => removeEditKeyField(field.id)} title="Remove field">✕</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <div className="button-row" style={{ marginTop: 12 }}>
+                  <button type="button" className="button-primary" onClick={() => void saveMetadata()}>Save metadata</button>
+                  <button type="button" onClick={() => setEditingDocumentId(null)}>Cancel</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="space-y-1 text-xs text-[#A3A3A3]">
+                  <p>{detailDoc.tags.length ? detailDoc.tags.join(", ") : "No tags"}{detailDoc.expiryDate ? ` · expires ${formatLocalDate(detailDoc.expiryDate)}` : ""}</p>
+                  <p>{detailDoc.fileType} · {formatBytes(detailDoc.sizeBytes)}</p>
+                  <p>OCR: {documentOcrStatus(detailDoc)}{detailDoc.ocrUpdatedAt ? ` · ${formatLocalDateTime(detailDoc.ocrUpdatedAt)}` : ""}</p>
+                  {detailDoc.ocrError && <p className="text-[#EF4444]">{detailDoc.ocrError}</p>}
+                  <p className="technical break-all">{detailDoc.filePath}</p>
+                </div>
+                <div className="button-row" style={{ marginTop: 12, flexWrap: "wrap" }}>
+                  <PinButton input={{ type: "document", module: "vault", entityId: detailDoc.id, title: detailDoc.title, subtitle: detailDoc.category }} />
+                  <button type="button" onClick={() => void runDocumentAction("vault.open_document", detailDoc)}>Open file</button>
+                  <button type="button" onClick={() => void runDocumentAction("vault.open_document_folder", detailDoc)}>Open folder</button>
+                  <button type="button" onClick={() => startEdit(detailDoc)}>Edit metadata</button>
+                  <button type="button" onClick={() => void addVersion(detailDoc)}>New version</button>
+                  <button type="button" onClick={() => void runVaultOcrAction("vault.ocr.rerun_document", { documentId: detailDoc.id })}>{detailDoc.ocrStatus === "completed" ? "Re-run OCR" : "Run OCR"}</button>
+                  <button type="button" disabled={!detailDoc.ocrTextPath} onClick={() => void runDocumentAction("vault.ocr.open_text", detailDoc)}>Open OCR text</button>
+                  <button type="button" disabled={!detailDoc.ocrTextPath} onClick={() => void runDocumentAction("vault.ocr.copy_text", detailDoc)}>Copy OCR text</button>
+                  <button type="button" onClick={() => void runDocumentAction("vault.send_document_to_drop", detailDoc)}>Send to Drop</button>
+                  <button type="button" className="button-danger" onClick={() => void deleteDocument(detailDoc)}>Delete</button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -12609,6 +12564,19 @@ function JournalView({
               <button type="button" onClick={() => void extractEvents()} className="rounded-md border border-[#262626] px-3 py-1 text-xs text-[#A3A3A3] hover:text-[#F5F5F5]">Extract events</button>
             </div>
             {status && <p className="mt-2 text-xs text-[#A3A3A3]">{status}</p>}
+            <div className="mt-4 border-t border-[#1a1a1a] pt-4">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <label className="text-xs text-[#A3A3A3]">Date<input type="date" className="technical mt-1 w-full" value={date} onChange={(event) => setDate(event.target.value)} /></label>
+                <label className="text-xs text-[#A3A3A3]">Title<input className="mt-1 w-full" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Optional title" /></label>
+                <label className="text-xs text-[#A3A3A3]">Mode<select className="mt-1 w-full" value={mode} onChange={(event) => setMode(event.target.value as "one-line" | "full")}><option value="full">Full entry</option><option value="one-line">One-line mode</option></select></label>
+                <label className="text-xs text-[#A3A3A3]">Productivity<input className="mt-1 w-full" value={productivity} onChange={(event) => setProductivity(event.target.value)} placeholder="low, medium, high" /></label>
+                <label className="text-xs text-[#A3A3A3]">Tags<input className="mt-1 w-full" value={tags} onChange={(event) => setTags(event.target.value)} placeholder="work, school" /></label>
+                <label className="text-xs text-[#A3A3A3]">People tags<input className="mt-1 w-full" value={peopleTags} onChange={(event) => setPeopleTags(event.target.value)} placeholder="Arjun, Maya" /></label>
+              </div>
+              <div className="mt-3">
+                <VoiceInput targetLabel="Journal entry" speechState={speechState} onSpeechStateChanged={onSpeechStateChange} onAction={onAction} onBeforeDictation={() => journalTextRef.current?.focus()} onTranscript={(text) => setRawText((current) => `${current}${current ? " " : ""}${text}`)} />
+              </div>
+            </div>
           </GlassCard>
 
           <GlassCard accent={ACCENT_JOURNAL} hover={false}>
@@ -12642,6 +12610,7 @@ function JournalView({
                     <CalendarPlus className="h-4 w-4 shrink-0 text-[#22D3EE]" />
                     <span className="min-w-0 flex-1 truncate text-xs text-[#F5F5F5]" title={candidate.sourceSentence}>{candidate.title} → {formatLocalDate(candidate.date)}</span>
                     <button type="button" disabled={candidateAlreadyAdded(candidate)} onClick={() => void addCandidate(candidate)} className="shrink-0 text-[10px] font-medium text-[#22D3EE] disabled:text-[#525252]">{candidateAlreadyAdded(candidate) ? "added" : "add"}</button>
+                    <button type="button" onClick={() => setCandidates((current) => current.filter((item) => item.id !== candidate.id))} className="shrink-0 text-[10px] text-[#525252] hover:text-[#A3A3A3]">skip</button>
                   </div>
                 ))}
               </div>
@@ -12653,11 +12622,14 @@ function JournalView({
             {journalState.entries.length === 0 ? <p className="text-xs text-[#525252]">No entries yet.</p> : (
               <div className="space-y-1.5">
                 {journalState.entries.slice(0, 8).map((entry) => (
-                  <button key={entry.id} type="button" onClick={() => loadEntry(entry)} className="glass-card flex w-full items-center gap-3 p-2.5 text-left">
-                    <span className="font-mono text-xs text-[#A3A3A3]">{formatLocalDate(entry.date)}</span>
-                    {entry.mood && <StatusChip tone="info" dot={false} style={{ color: ACCENT_JOURNAL, borderColor: `${ACCENT_JOURNAL}33`, background: `${ACCENT_JOURNAL}12` }}>{entry.mood}</StatusChip>}
-                    <span className="ml-auto font-mono text-[10px] text-[#525252]">{entry.productivity ? `prod ${entry.productivity} · ` : ""}{journalWords(entry.cleanedText || entry.rawText)}w</span>
-                  </button>
+                  <div key={entry.id} className="glass-card flex w-full items-center gap-3 p-2.5">
+                    <button type="button" onClick={() => loadEntry(entry)} className="flex min-w-0 flex-1 items-center gap-3 text-left" title="Load this entry to edit">
+                      <span className="font-mono text-xs text-[#A3A3A3]">{formatLocalDate(entry.date)}</span>
+                      {entry.mood && <StatusChip tone="info" dot={false} style={{ color: ACCENT_JOURNAL, borderColor: `${ACCENT_JOURNAL}33`, background: `${ACCENT_JOURNAL}12` }}>{entry.mood}</StatusChip>}
+                      <span className="ml-auto font-mono text-[10px] text-[#525252]">{entry.productivity ? `prod ${entry.productivity} · ` : ""}{journalWords(entry.cleanedText || entry.rawText)}w</span>
+                    </button>
+                    <button type="button" onClick={() => void deleteEntry(entry)} title="Delete entry" className="min-h-0 shrink-0 border-0 bg-transparent px-1 text-[#A3A3A3] hover:text-[#EF4444]"><Trash2 className="h-3.5 w-3.5" /></button>
+                  </div>
                 ))}
               </div>
             )}
@@ -12670,58 +12642,6 @@ function JournalView({
         </div>
       </div>
 
-      {/* Advanced: full metadata, shutdown assistant, full entry list */}
-      <details className="rounded-lg border border-[#1a1a1a] bg-[#080808]">
-        <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] text-[#525252] hover:text-[#A3A3A3]">advanced · entry metadata, shutdown assistant, all entries</summary>
-        <div className="space-y-4 border-t border-[#1a1a1a] p-3">
-          <Panel title="Entry metadata">
-            <div className="registry-controls">
-              <label>Date<input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
-              <label>Title<input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Optional title" /></label>
-              <label>Mode<select value={mode} onChange={(event) => setMode(event.target.value as "one-line" | "full")}><option value="full">Full entry</option><option value="one-line">One-line mode</option></select></label>
-            </div>
-            <div className="registry-controls">
-              <label>Mood<input value={mood} onChange={(event) => setMood(event.target.value)} placeholder="calm, stressed, focused" /></label>
-              <label>Productivity<input value={productivity} onChange={(event) => setProductivity(event.target.value)} placeholder="low, medium, high" /></label>
-              <label>Tags<input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="work, school" /></label>
-              <label>People tags<input value={peopleTags} onChange={(event) => setPeopleTags(event.target.value)} placeholder="Arjun, Maya" /></label>
-            </div>
-            <div className="button-row">
-              <button type="button" onClick={() => void saveEntry()}>Save entry</button>
-              <VoiceInput targetLabel="Journal entry" speechState={speechState} onSpeechStateChanged={onSpeechStateChange} onAction={onAction} onBeforeDictation={() => journalTextRef.current?.focus()} onTranscript={(text) => setRawText((current) => `${current}${current ? " " : ""}${text}`)} />
-            </div>
-          </Panel>
-
-          <Panel title="Extracted Calendar Candidates">
-            <div className="action-list">
-              {candidates.length === 0 ? <p>No candidates yet.</p> : candidates.map((candidate) => (
-                <article className="action-row accent-calendar" key={candidate.id}>
-                  <div><h3>{candidate.title}</h3><p>{formatLocalDate(candidate.date)} / {candidate.type} / {candidate.allDay ? "all-day" : "timed later"}</p><p>{candidate.sourceSentence}</p></div>
-                  <div>
-                    <button type="button" disabled={candidateAlreadyAdded(candidate)} onClick={() => void addCandidate(candidate)}>{candidateAlreadyAdded(candidate) ? "Added" : "Add"}</button>
-                    <button type="button" onClick={() => setCandidates((current) => current.filter((item) => item.id !== candidate.id))}>Skip</button>
-                  </div>
-                </article>
-              ))}
-            </div>
-          </Panel>
-
-          <Panel title="All entries">
-            <div className="action-list">
-              {journalState.entries.length === 0 ? <p>No Journal entries yet.</p> : journalState.entries.map((entry) => (
-                <CollapsibleListItem accentClass="accent-journal" key={entry.id} title={entry.title || formatLocalDate(entry.date)} meta={`${formatLocalDate(entry.date)} / mood: ${entry.mood || "unset"} / productivity: ${entry.productivity || "unset"}`}
-                  actions={(<>
-                    <PinButton input={{ type: "item", module: "journal", entityId: entry.id, title: `Journal — ${formatLocalDate(entry.date)}`, subtitle: "Journal entry" }} />
-                    <button type="button" onClick={() => loadEntry(entry)}>Edit</button>
-                    <button className="danger-button" type="button" onClick={() => void deleteEntry(entry)}>Delete</button>
-                  </>)}>
-                  <p>{entry.cleanedText?.slice(0, 280) || "No text"}</p>
-                </CollapsibleListItem>
-              ))}
-            </div>
-          </Panel>
-        </div>
-      </details>
     </div>
   );
 
@@ -12770,212 +12690,6 @@ function safeWorldClockTime(timeZone: string): string {
   }
 }
 
-function UtilitiesViewLegacy({
-  utilitiesState,
-  onAction,
-  onRefresh
-}: {
-  utilitiesState: UtilitiesState;
-  onAction: (actionId: string, source?: string, params?: unknown) => Promise<{ ok?: boolean; error?: string; message?: string; result?: string; utilitiesState?: UtilitiesState }>;
-  onRefresh: () => Promise<void>;
-}) {
-  const ACCENT = "var(--accent-utilities)";
-  const SECONDARY = "var(--accent-utilities-secondary)";
-  const [tick, setTick] = useState(Date.now());
-  const [message, setMessage] = useState("");
-  const [expression, setExpression] = useState("15%2400");
-  const [category, setCategory] = useState<UtilityConversionCategory>("length");
-  const [convertValue, setConvertValue] = useState("10");
-  const [fromUnit, setFromUnit] = useState("km");
-  const [toUnit, setToUnit] = useState("mi");
-  const [dateMode, setDateMode] = useState<"between" | "add" | "subtract" | "countdown">("countdown");
-  const [startDate, setStartDate] = useState(getLocalTodayDateString());
-  const [endDate, setEndDate] = useState(getLocalTodayDateString());
-  const [days, setDays] = useState("7");
-  const [timerMinutes, setTimerMinutes] = useState(String(utilitiesState.settings.defaultTimerMinutes || 25));
-  const [timerLabel, setTimerLabel] = useState("Focus timer");
-  const [clockLabel, setClockLabel] = useState("Toronto");
-  const [clockZone, setClockZone] = useState("America/Toronto");
-
-  useEffect(() => {
-    if (utilitiesState.activeTimer?.status !== "running" && utilitiesState.stopwatch.status !== "running") {
-      return;
-    }
-    const interval = window.setInterval(() => setTick(Date.now()), 1000);
-    return () => window.clearInterval(interval);
-  }, [utilitiesState.activeTimer?.status, utilitiesState.stopwatch.status]);
-
-  useEffect(() => {
-    const units = utilityConversionUnits[category];
-    if (!units.includes(fromUnit)) {
-      setFromUnit(units[0]);
-    }
-    if (!units.includes(toUnit)) {
-      setToUnit(units[1] ?? units[0]);
-    }
-  }, [category, fromUnit, toUnit]);
-
-  async function runUtility(actionId: string, params: Record<string, unknown>): Promise<void> {
-    const result = await onAction(actionId, "module_ui", params);
-    setMessage(result.ok === false ? result.error ?? "Utilities action failed." : result.message ?? "Done.");
-    await onRefresh();
-  }
-
-  const activeTimer = utilitiesState.activeTimer;
-  const remaining = utilityTimerRemaining(activeTimer);
-  const timerProgress = activeTimer ? Math.max(0, Math.min(100, ((activeTimer.durationSeconds - remaining) / Math.max(1, activeTimer.durationSeconds)) * 100)) : 0;
-  const stopwatchDisplay = formatStopwatchMs(utilityStopwatchMs(utilitiesState.stopwatch));
-
-  return (
-    <div className="space-y-6 accent-utilities">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: "color-mix(in srgb, var(--accent-utilities) 40%, transparent)", background: "color-mix(in srgb, var(--accent-utilities) 14%, transparent)", color: ACCENT }}>
-            <Calculator className="h-5 w-5" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight" style={{ color: "var(--text)" }}>Utilities</h1>
-            <p className="text-sm" style={{ color: "var(--text-muted)" }}>Fast local calculator, converters, timers, and clocks.</p>
-          </div>
-        </div>
-        <StatusChip tone={activeTimer?.status === "running" ? "running" : utilitiesState.stopwatch.status === "running" ? "running" : "info"}>
-          {activeTimer?.status === "running" ? "timer running" : utilitiesState.stopwatch.status === "running" ? "stopwatch running" : "local"}
-        </StatusChip>
-      </div>
-
-      <div className="grid grid-cols-1 gap-5 xl:grid-cols-12">
-        <div className="space-y-5 xl:col-span-7">
-          <GlassCard accent={ACCENT} hover={false}>
-            <SectionTitle action={<Calculator className="h-3.5 w-3.5" style={{ color: ACCENT }} />}>Calculator</SectionTitle>
-            <div className="registry-controls">
-              <label>
-                Expression
-                <input value={expression} onChange={(event) => setExpression(event.target.value)} placeholder="(15/100)*2400" />
-              </label>
-            </div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {["7", "8", "9", "/", "4", "5", "6", "*", "1", "2", "3", "-", "0", ".", "(", ")", "+", "%"].map((token) => (
-                <button key={token} type="button" onClick={() => setExpression((current) => `${current}${token}`)} className="min-w-10 rounded-lg border px-3 py-2 font-mono text-sm" style={{ borderColor: "var(--border)", color: "var(--text)" }}>{token}</button>
-              ))}
-              <button type="button" onClick={() => setExpression("")}>Clear</button>
-              <ActionButton accent={ACCENT} icon={Calculator} onClick={() => void runUtility("utilities.calculate", { expression })}>Calculate</ActionButton>
-              <button type="button" onClick={() => void runUtility("utilities.copy_result", {})}>Copy result</button>
-            </div>
-          </GlassCard>
-
-          <GlassCard accent={SECONDARY} hover={false}>
-            <SectionTitle action={<ArrowRightLeft className="h-3.5 w-3.5" style={{ color: SECONDARY }} />}>Unit Converter</SectionTitle>
-            <div className="registry-controls">
-              <label>Category<select value={category} onChange={(event) => setCategory(event.target.value as UtilityConversionCategory)}>{Object.keys(utilityConversionUnits).map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
-              <label>Value<input value={convertValue} onChange={(event) => setConvertValue(event.target.value)} /></label>
-              <label>From<select value={fromUnit} onChange={(event) => setFromUnit(event.target.value)}>{utilityConversionUnits[category].map((unit) => <option key={unit} value={unit}>{unit}</option>)}</select></label>
-              <label>To<select value={toUnit} onChange={(event) => setToUnit(event.target.value)}>{utilityConversionUnits[category].map((unit) => <option key={unit} value={unit}>{unit}</option>)}</select></label>
-            </div>
-            <div className="button-row">
-              <ActionButton accent={SECONDARY} icon={ArrowRightLeft} onClick={() => void runUtility("utilities.convert_units", { category, value: convertValue, fromUnit, toUnit })}>Convert</ActionButton>
-            </div>
-          </GlassCard>
-
-          <GlassCard accent={ACCENT} hover={false}>
-            <SectionTitle action={<CalendarClock className="h-3.5 w-3.5" style={{ color: ACCENT }} />}>Date Calculator</SectionTitle>
-            <div className="registry-controls">
-              <label>Mode<select value={dateMode} onChange={(event) => setDateMode(event.target.value as typeof dateMode)}><option value="countdown">Countdown</option><option value="between">Days between</option><option value="add">Add days</option><option value="subtract">Subtract days</option></select></label>
-              <label>{dateMode === "between" ? "Start date" : "Base date"}<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} /></label>
-              {(dateMode === "between" || dateMode === "countdown") && <label>{dateMode === "countdown" ? "Target date" : "End date"}<input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} /></label>}
-              {(dateMode === "add" || dateMode === "subtract") && <label>Days<input value={days} onChange={(event) => setDays(event.target.value)} /></label>}
-            </div>
-            <div className="button-row">
-              <ActionButton accent={ACCENT} icon={CalendarClock} onClick={() => void runUtility("utilities.date_calculate", { mode: dateMode, startDate, endDate, baseDate: startDate, targetDate: endDate, days })}>Calculate date</ActionButton>
-            </div>
-          </GlassCard>
-        </div>
-
-        <div className="space-y-5 xl:col-span-5">
-          <GlassCard accent={ACCENT} glow hover={false}>
-            <SectionTitle action={<Timer className="h-3.5 w-3.5" style={{ color: ACCENT }} />}>Timer</SectionTitle>
-            <div className="rounded-xl border p-4" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-lg font-semibold" style={{ color: "var(--text)" }}>{activeTimer?.label ?? "No active timer"}</p>
-                  <p className="font-mono text-3xl" style={{ color: ACCENT }}>{formatDuration(remaining)}</p>
-                </div>
-                <ProgressRing value={timerProgress} color="var(--accent-utilities)" />
-              </div>
-            </div>
-            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
-              {[5, 10, 25, 30, 60].map((minutes) => <button key={minutes} type="button" onClick={() => { setTimerMinutes(String(minutes)); setTimerLabel(`${minutes} minute timer`); }}>{minutes}m</button>)}
-            </div>
-            <div className="registry-controls mt-3">
-              <label>Minutes<input value={timerMinutes} onChange={(event) => setTimerMinutes(event.target.value)} /></label>
-              <label>Label<input value={timerLabel} onChange={(event) => setTimerLabel(event.target.value)} /></label>
-            </div>
-            <div className="button-row">
-              <ActionButton accent={ACCENT} icon={Play} onClick={() => void runUtility("utilities.timer.start", { durationMinutes: timerMinutes, label: timerLabel })}>Start timer</ActionButton>
-              <button type="button" onClick={() => void runUtility("utilities.timer.pause", {})}>Pause</button>
-              <button type="button" onClick={() => void runUtility("utilities.timer.reset", {})}>Reset</button>
-            </div>
-          </GlassCard>
-
-          <GlassCard accent={SECONDARY} hover={false}>
-            <SectionTitle action={<Clock className="h-3.5 w-3.5" style={{ color: SECONDARY }} />}>Stopwatch</SectionTitle>
-            <p className="font-mono text-4xl" style={{ color: SECONDARY }}>{stopwatchDisplay}</p>
-            <div className="button-row mt-3">
-              <ActionButton accent={SECONDARY} icon={Play} onClick={() => void runUtility("utilities.stopwatch.start", {})}>Start</ActionButton>
-              <button type="button" onClick={() => void runUtility("utilities.stopwatch.pause", {})}>Pause</button>
-              <button type="button" onClick={() => void runUtility("utilities.stopwatch.reset", {})}>Reset</button>
-            </div>
-          </GlassCard>
-
-          <GlassCard accent={ACCENT} hover={false}>
-            <SectionTitle action={<Globe2 className="h-3.5 w-3.5" style={{ color: ACCENT }} />}>World Clock</SectionTitle>
-            <div className="registry-controls">
-              <label>City<input value={clockLabel} onChange={(event) => setClockLabel(event.target.value)} placeholder="Toronto" /></label>
-              <label>Timezone<input value={clockZone} onChange={(event) => setClockZone(event.target.value)} placeholder="America/Toronto" /></label>
-            </div>
-            <div className="button-row">
-              <ActionButton accent={ACCENT} icon={Plus} onClick={() => void runUtility("utilities.world_clock.add", { city: clockLabel, timeZone: clockZone })}>Add clock</ActionButton>
-            </div>
-            <div className="mt-3 space-y-2">
-              <div className="glass-card flex items-center justify-between gap-3 p-3">
-                <span style={{ color: "var(--text)" }}>Local</span>
-                <span className="font-mono" style={{ color: "var(--text-muted)" }}>{new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", weekday: "short" }).format(new Date(tick))}</span>
-              </div>
-              {utilitiesState.worldClocks.map((clock) => (
-                <div key={clock.id} className="glass-card flex items-center justify-between gap-3 p-3">
-                  <div>
-                    <p style={{ color: "var(--text)" }}>{clock.label}</p>
-                    <p className="font-mono text-xs" style={{ color: "var(--text-muted)" }}>{clock.timeZone}</p>
-                  </div>
-                  <span className="font-mono" style={{ color: ACCENT }}>{safeWorldClockTime(clock.timeZone)}</span>
-                  <button type="button" onClick={() => void runUtility("utilities.world_clock.remove", { id: clock.id })}>Remove</button>
-                </div>
-              ))}
-            </div>
-          </GlassCard>
-        </div>
-      </div>
-
-      <GlassCard accent={SECONDARY} hover={false}>
-        <SectionTitle action={<HistoryIcon className="h-3.5 w-3.5" style={{ color: SECONDARY }} />}>Recent Results</SectionTitle>
-        {utilitiesState.recentResults.length === 0 ? <p style={{ color: "var(--text-muted)" }}>No utility results yet.</p> : (
-          <div className="action-list">
-            {utilitiesState.recentResults.slice(0, 12).map((item) => (
-              <article key={item.id} className="action-row accent-utilities">
-                <div>
-                  <h3>{item.result}</h3>
-                  <p className="technical">{item.type} / {item.input} / {formatLocalDateTime(item.createdAt)}</p>
-                </div>
-              </article>
-            ))}
-          </div>
-        )}
-        {message && <p className="inline-status">{message}</p>}
-        <p className="technical">{utilitiesState.utilitiesPath}</p>
-      </GlassCard>
-    </div>
-  );
-}
-
 function UtilitiesView({
   utilitiesState,
   onAction,
@@ -13008,9 +12722,18 @@ function UtilitiesView({
     if (utilitiesState.activeTimer?.status !== "running" && utilitiesState.stopwatch.status !== "running") {
       return;
     }
-    const interval = window.setInterval(() => setTick(Date.now()), 1000);
+    // Tick ~10x/sec so the timer counts down smoothly second-by-second and the
+    // stopwatch's centiseconds advance fluidly instead of jumping once a second.
+    const interval = window.setInterval(() => setTick(Date.now()), 100);
     return () => window.clearInterval(interval);
   }, [utilitiesState.activeTimer?.status, utilitiesState.stopwatch.status]);
+
+  // When a running timer reaches zero locally, refresh so it flips to "done".
+  useEffect(() => {
+    if (utilitiesState.activeTimer?.status === "running" && utilityTimerRemaining(utilitiesState.activeTimer) <= 0) {
+      void onRefresh();
+    }
+  }, [tick]);
 
   useEffect(() => {
     const units = utilityConversionUnits[category];
@@ -13036,6 +12759,9 @@ function UtilitiesView({
   const remaining = utilityTimerRemaining(activeTimer);
   const timerProgress = activeTimer ? Math.max(0, Math.min(100, ((activeTimer.durationSeconds - remaining) / Math.max(1, activeTimer.durationSeconds)) * 100)) : 0;
   const stopwatchDisplay = formatStopwatchMs(utilityStopwatchMs(utilitiesState.stopwatch));
+  const timerRunning = activeTimer?.status === "running";
+  const timerPaused = activeTimer?.status === "paused";
+  const stopwatchStatus = utilitiesState.stopwatch.status;
   const units = utilityConversionUnits[category];
   const tabButton = (id: typeof tab, label: string) => (
     <button
@@ -13162,7 +12888,7 @@ function UtilitiesView({
           </GlassCard>
 
           <GlassCard accent={SECONDARY} hover={false}>
-            <SectionTitle action={<HistoryIcon className="h-3.5 w-3.5" style={{ color: SECONDARY }} />}>Recent calculations</SectionTitle>
+            <SectionTitle action={utilitiesState.recentResults.some((item) => item.type === "calculation") ? <button type="button" className="text-[11px]" style={{ color: "var(--text-muted)" }} onClick={() => void runUtility("utilities.clear_history", { scope: "calculation" })}>Clear</button> : <HistoryIcon className="h-3.5 w-3.5" style={{ color: SECONDARY }} />}>Recent calculations</SectionTitle>
             {utilitiesState.recentResults.filter((item) => item.type === "calculation").length === 0 ? <EmptyState>No calculations yet.</EmptyState> : (
               <div className="space-y-2">
                 {utilitiesState.recentResults.filter((item) => item.type === "calculation").slice(0, 8).map((item) => (
@@ -13180,7 +12906,7 @@ function UtilitiesView({
       {tab === "convert" && (
         <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.25fr)_minmax(20rem,0.75fr)]">
           <GlassCard accent={SECONDARY} glow hover={false}>
-            <SectionTitle action={<ArrowRightLeft className="h-3.5 w-3.5" style={{ color: SECONDARY }} />}>Unit Converter</SectionTitle>
+            <SectionTitle action={utilitiesState.recentResults.some((item) => item.type === "conversion") ? <button type="button" className="text-[11px]" style={{ color: "var(--text-muted)" }} onClick={() => void runUtility("utilities.clear_history", { scope: "conversion" })}>Clear conversions</button> : <ArrowRightLeft className="h-3.5 w-3.5" style={{ color: SECONDARY }} />}>Unit Converter</SectionTitle>
             <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_16rem]">
               <div className="space-y-4">
                 <div className="registry-controls">
@@ -13238,8 +12964,13 @@ function UtilitiesView({
                 <label>Label<input value={timerLabel} onChange={(event) => setTimerLabel(event.target.value)} /></label>
               </div>
               <div className="button-row">
-                <ActionButton accent={ACCENT} icon={Play} onClick={() => void runUtility("utilities.timer.start", { durationMinutes: timerMinutes, label: timerLabel })}>Start</ActionButton>
-                <button type="button" onClick={() => void runUtility("utilities.timer.pause")}>Pause</button>
+                {timerRunning ? (
+                  <ActionButton accent={ACCENT} icon={Pause} onClick={() => void runUtility("utilities.timer.pause")}>Pause</ActionButton>
+                ) : timerPaused ? (
+                  <ActionButton accent={ACCENT} icon={Play} onClick={() => void runUtility("utilities.timer.pause")}>Resume</ActionButton>
+                ) : (
+                  <ActionButton accent={ACCENT} icon={Play} onClick={() => void runUtility("utilities.timer.start", { durationMinutes: timerMinutes, label: timerLabel })}>Start</ActionButton>
+                )}
                 <button type="button" onClick={() => void runUtility("utilities.timer.reset")}>Reset</button>
               </div>
             </GlassCard>
@@ -13252,8 +12983,11 @@ function UtilitiesView({
                   <p className="mt-1 text-sm" style={{ color: "var(--text-muted)" }}>{utilitiesState.stopwatch.status}</p>
                 </div>
                 <div className="button-row">
-                  <ActionButton accent={SECONDARY} icon={Play} onClick={() => void runUtility("utilities.stopwatch.start")}>Start</ActionButton>
-                  <button type="button" onClick={() => void runUtility("utilities.stopwatch.pause")}>Pause</button>
+                  {stopwatchStatus === "running" ? (
+                    <ActionButton accent={SECONDARY} icon={Pause} onClick={() => void runUtility("utilities.stopwatch.pause")}>Stop</ActionButton>
+                  ) : (
+                    <ActionButton accent={SECONDARY} icon={Play} onClick={() => void runUtility("utilities.stopwatch.start")}>{stopwatchStatus === "paused" ? "Resume" : "Start"}</ActionButton>
+                  )}
                   <button type="button" onClick={() => void runUtility("utilities.stopwatch.reset")}>Reset</button>
                 </div>
               </div>
@@ -13292,7 +13026,7 @@ function UtilitiesView({
 
       {tab === "history" && (
         <GlassCard accent={SECONDARY} hover={false}>
-          <SectionTitle action={<HistoryIcon className="h-3.5 w-3.5" style={{ color: SECONDARY }} />}>Recent Results</SectionTitle>
+          <SectionTitle action={utilitiesState.recentResults.length > 0 ? <button type="button" className="text-[11px]" style={{ color: "var(--error)" }} onClick={() => void runUtility("utilities.clear_history", { scope: "all" })}>Clear all history</button> : <HistoryIcon className="h-3.5 w-3.5" style={{ color: SECONDARY }} />}>Recent Results</SectionTitle>
           {utilitiesState.recentResults.length === 0 ? <EmptyState>No utility results yet.</EmptyState> : (
             <div className="grid gap-2 md:grid-cols-2">
               {utilitiesState.recentResults.slice(0, 18).map((item) => (
@@ -13314,7 +13048,7 @@ function UtilitiesView({
 
       {tab === "calculate" && (
         <GlassCard accent={ACCENT} hover={false}>
-          <SectionTitle action={<CalendarClock className="h-3.5 w-3.5" style={{ color: ACCENT }} />}>Date Calculator</SectionTitle>
+          <SectionTitle action={utilitiesState.recentResults.some((item) => item.type === "date") ? <button type="button" className="text-[11px]" style={{ color: "var(--text-muted)" }} onClick={() => void runUtility("utilities.clear_history", { scope: "date" })}>Clear date history</button> : <CalendarClock className="h-3.5 w-3.5" style={{ color: ACCENT }} />}>Date Calculator</SectionTitle>
           <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
             <div className="registry-controls">
               <label>Mode<select value={dateMode} onChange={(event) => setDateMode(event.target.value as typeof dateMode)}><option value="countdown">Countdown</option><option value="between">Days between</option><option value="add">Add days</option><option value="subtract">Subtract days</option></select></label>
@@ -14364,24 +14098,8 @@ function CalendarView({
   const [selectedDate, setSelectedDate] = useState(calendarState.today);
   const [viewMode, setViewMode] = useState<"day" | "week" | "month">(initialView);
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
-  const [nudgeSettingsForm, setNudgeSettingsForm] = useState({
-    enabled: calendarState.nudgeSettings.enabled,
-    vaultExpiryReminderDays: calendarState.nudgeSettings.vaultExpiryReminderDays.join(", "),
-    returnReminderDays: calendarState.nudgeSettings.returnReminderDays.join(", "),
-    dailyJournalReminderEnabled: calendarState.nudgeSettings.dailyJournalReminderEnabled,
-    backupReminderAfterDays: String(calendarState.nudgeSettings.backupReminderAfterDays)
-  });
+  const [showEventModal, setShowEventModal] = useState(false);
   const calendarTitleRef = useRef<HTMLInputElement | null>(null);
-
-  useEffect(() => {
-    setNudgeSettingsForm({
-      enabled: calendarState.nudgeSettings.enabled,
-      vaultExpiryReminderDays: calendarState.nudgeSettings.vaultExpiryReminderDays.join(", "),
-      returnReminderDays: calendarState.nudgeSettings.returnReminderDays.join(", "),
-      dailyJournalReminderEnabled: calendarState.nudgeSettings.dailyJournalReminderEnabled,
-      backupReminderAfterDays: String(calendarState.nudgeSettings.backupReminderAfterDays)
-    });
-  }, [calendarState.nudgeSettings]);
 
   useEffect(() => {
     setViewMode(initialView);
@@ -14525,7 +14243,8 @@ function CalendarView({
     setReminderLevel("normal");
     setRecurrence("");
     setNotes("");
-    calendarTitleRef.current?.focus();
+    setShowEventModal(true);
+    window.setTimeout(() => calendarTitleRef.current?.focus(), 0);
   }
 
   function loadVoiceCandidateForEdit(candidate: CalendarVoiceCandidate): void {
@@ -14573,6 +14292,7 @@ function CalendarView({
         setSelectedEventId(editingId);
       }
       resetForm();
+      setShowEventModal(false);
       await onRefresh();
     }
   }
@@ -14596,79 +14316,9 @@ function CalendarView({
     await onRefresh();
   }
 
-  async function refreshNudgeList(): Promise<void> {
-    const result = await onAction("calendar.nudge.refresh", "module_ui");
-    setStatus(result.ok ? "Nudges refreshed." : result.error ?? "Nudge refresh failed.");
-    await onRefresh();
-  }
-
-  function parseDayList(value: string): number[] {
-    return value
-      .split(",")
-      .map((item) => Number(item.trim()))
-      .filter((item) => Number.isFinite(item) && item > 0)
-      .sort((left, right) => right - left);
-  }
-
-  async function saveNudgeSettings(): Promise<void> {
-    const result = await onAction("calendar.nudge.update_settings", "module_ui", {
-      nudgeSettings: {
-        enabled: nudgeSettingsForm.enabled,
-        vaultExpiryReminderDays: parseDayList(nudgeSettingsForm.vaultExpiryReminderDays),
-        returnReminderDays: parseDayList(nudgeSettingsForm.returnReminderDays),
-        dailyJournalReminderEnabled: nudgeSettingsForm.dailyJournalReminderEnabled,
-        backupReminderAfterDays: Number(nudgeSettingsForm.backupReminderAfterDays) || 7
-      }
-    });
-    setStatus(result.ok ? "Nudge settings saved." : result.error ?? "Nudge settings failed.");
-    await onRefresh();
-  }
-
-  function renderNudge(nudge: Nudge) {
-    return (
-      <CollapsibleListItem
-        accentClass="accent-calendar"
-        key={nudge.id}
-        title={nudge.title}
-        meta={`${formatLocalDate(nudge.date)}${nudge.time ? ` / ${nudge.time}` : ""} / ${nudge.priority} / ${nudge.sourceModule}${nudge.sourceModule === "finance" && nudge.sourceProfileName ? ` (${nudge.sourceProfileName})` : ""}`}
-        actions={(
-          <>
-          <button type="button" onClick={() => void runNudgeAction("calendar.nudge.open_source", nudge)}>Open source</button>
-          <button type="button" onClick={() => void runNudgeAction("calendar.nudge.snooze", nudge, { snoozeMinutes: 60 })}>Snooze</button>
-          <button type="button" onClick={() => void runNudgeAction("calendar.nudge.complete", nudge)}>Done</button>
-          <button type="button" onClick={() => void runNudgeAction("calendar.nudge.dismiss", nudge)}>Dismiss</button>
-          </>
-        )}
-      >
-        <p>{nudge.message}</p>
-        <p className="technical">{nudge.id}</p>
-        {nudge.snoozeUntil && <p>Snoozed until {formatLocalDateTime(nudge.snoozeUntil)}</p>}
-      </CollapsibleListItem>
-    );
-  }
-
-  function renderEvent(event: CalendarEvent) {
-    return (
-      <CollapsibleListItem
-        accentClass="accent-calendar"
-        key={event.id}
-        title={event.title}
-        meta={`${formatLocalDate(event.date)} / ${event.allDay ? "all-day" : `${event.startTime || "no start"} ${event.endTime ? `to ${event.endTime}` : ""}`} / ${event.reminderLevel}`}
-        actions={(
-          <>
-          <button type="button" onClick={() => loadEvent(event)}>Edit</button>
-          <button className="danger-button" type="button" onClick={() => void deleteEvent(event)}>Delete</button>
-          </>
-        )}
-      >
-        <p>{event.sourceModule}{event.recurrence ? ` / ${event.recurrence}` : ""}</p>
-        <p className="technical">{event.id}</p>
-      </CollapsibleListItem>
-    );
-  }
-
   const ACCENT_CAL = "#14B8A6";
   const calReminders = [...calendarState.todayNudges, ...calendarState.upcomingNudges].slice(0, 4);
+  const nudgeList = [...calendarState.todayNudges, ...calendarState.upcomingNudges].slice(0, 8);
   const nudgeColor = (p: string): string => p === "urgent" ? "#EF4444" : p === "normal" ? "#F59E0B" : "#14B8A6";
 
   function CalendarEventChip({ event, compact = false }: { event: CalendarEvent; compact?: boolean }) {
@@ -14787,38 +14437,27 @@ function CalendarView({
           <strong>{formatLocalDate(selectedDate)}</strong>
           <span>{sortedSelectedEvents.length} event{sortedSelectedEvents.length === 1 ? "" : "s"}</span>
         </div>
+        {/* Clean agenda: all-day chips + a simple list of the day's events. Add via the header/Add event button. */}
         {sortedSelectedEvents.length === 0 ? (
-          <div className="calendar-empty-state">
-            <strong>No events today.</strong>
-            <span>Click a time below to plan the day.</span>
-            <button type="button" onClick={() => createEventAt(selectedDate)}>Create event</button>
+          <div className="mt-2 flex flex-col items-center justify-center rounded-xl border border-dashed border-[#262626] py-12 text-center">
+            <CalendarDays className="h-8 w-8 text-[#525252]" />
+            <p className="mt-2 text-sm text-[#A3A3A3]">No events scheduled</p>
+            <button type="button" onClick={() => createEventAt(selectedDate)} className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-[#14B8A6]/40 bg-[#14B8A6]/10 px-3 py-1.5 text-xs font-medium text-[#14B8A6] hover:bg-[#14B8A6]/15"><Plus className="h-3.5 w-3.5" />Add event</button>
           </div>
         ) : (
-          <>
-            {allDaySelectedEvents.length > 0 && (
-              <div className="calendar-all-day-list">
-                {allDaySelectedEvents.map((event) => <CalendarEventChip key={event.id} event={event} />)}
-              </div>
-            )}
-            <div className="calendar-day-agenda">
-              {timedSelectedEvents.map((event) => (
-                <button key={event.id} type="button" className="calendar-agenda-event" onClick={() => loadEvent(event)}>
-                  <span className="technical">{eventTimeLabel(event)}</span>
-                  <strong>{event.title}</strong>
-                  <small>{event.sourceModule}{event.recurrence ? ` / ${event.recurrence}` : ""}</small>
-                </button>
-              ))}
-            </div>
-          </>
+          <div className="mt-2 space-y-2">
+            {sortedSelectedEvents.map((event) => (
+              <button key={event.id} type="button" onClick={() => loadEvent(event)} className={`flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors ${selectedEventId === event.id ? "border-[#14B8A6]/50 bg-[#14B8A6]/[0.06]" : "border-[#1f1f1f] hover:border-[#14B8A6]/40"}`}>
+                <span className="w-16 shrink-0 font-mono text-xs text-[#14B8A6]">{event.allDay ? "all-day" : event.startTime || "—"}</span>
+                <span className="h-8 w-px shrink-0 rounded-full" style={{ background: event.reminderLevel === "urgent" ? "#EF4444" : event.reminderLevel === "normal" ? "#F59E0B" : ACCENT_CAL }} />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium text-[#F5F5F5]">{event.title}</span>
+                  <span className="block font-mono text-[10px] text-[#525252]">{eventTimeLabel(event)} · {event.sourceModule}{event.recurrence ? ` · ${event.recurrence}` : ""}</span>
+                </span>
+              </button>
+            ))}
+          </div>
         )}
-        <div className="calendar-day-slots">
-          {calendarHours.map((hour) => (
-            <button key={hour} type="button" onClick={() => createEventAt(selectedDate, hour)}>
-              <span className="technical">{formatHour(hour)}</span>
-              <span>Add event</span>
-            </button>
-          ))}
-        </div>
       </GlassCard>
     );
   }
@@ -14838,8 +14477,8 @@ function CalendarView({
               </button>
             ))}
           </div>
-          <button type="button" onClick={goToToday}>Today</button>
-          <button type="button" onClick={() => {
+          <button type="button" className="rounded-lg border border-[#262626] px-3 py-1.5 text-xs font-medium text-[#A3A3A3] hover:border-[#14B8A6]/40 hover:text-[#F5F5F5]" onClick={goToToday}>Today</button>
+          <button type="button" className="rounded-lg border border-[#262626] px-3 py-1.5 text-xs font-medium text-[#A3A3A3] hover:border-[#14B8A6]/40 hover:text-[#F5F5F5]" onClick={() => {
             if (viewMode === "month") {
               shiftMonth(-1);
               return;
@@ -14847,7 +14486,7 @@ function CalendarView({
             const next = addCalendarDays(parseLocalDateInput(selectedDate), viewMode === "day" ? -1 : -7);
             selectCalendarDate(toLocalDateInputValue(next));
           }}>Prev</button>
-          <button type="button" onClick={() => {
+          <button type="button" className="rounded-lg border border-[#262626] px-3 py-1.5 text-xs font-medium text-[#A3A3A3] hover:border-[#14B8A6]/40 hover:text-[#F5F5F5]" onClick={() => {
             if (viewMode === "month") {
               shiftMonth(1);
               return;
@@ -14882,12 +14521,20 @@ function CalendarView({
 
           <GlassCard hover={false}>
             <SectionTitle action={<Bell className="h-3.5 w-3.5 text-[#14B8A6]" />}>Reminders &amp; nudges</SectionTitle>
-            {calReminders.length === 0 ? <p className="text-xs text-[#525252]">No nudges scheduled.</p> : (
+            {nudgeList.length === 0 ? <p className="text-xs text-[#525252]">No nudges scheduled.</p> : (
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {calReminders.map((r) => (
-                  <div key={r.id} className="glass-card flex items-center gap-2.5 p-2.5">
-                    <span className="h-7 w-px shrink-0 rounded-full" style={{ background: nudgeColor(r.priority) }} />
-                    <div className="min-w-0 flex-1"><p className="truncate text-xs text-[#F5F5F5]" title={r.message}>{r.title}</p><p className="font-mono text-[10px] text-[#525252]">{formatLocalDate(r.date)} / {r.sourceModule}{r.sourceModule === "finance" && r.sourceProfileName ? ` / ${r.sourceProfileName}` : ""}</p></div>
+                {nudgeList.map((r) => (
+                  <div key={r.id} className="glass-card p-2.5">
+                    <div className="flex items-center gap-2.5">
+                      <span className="h-7 w-px shrink-0 rounded-full" style={{ background: nudgeColor(r.priority) }} />
+                      <div className="min-w-0 flex-1"><p className="truncate text-xs text-[#F5F5F5]" title={r.message}>{r.title}</p><p className="font-mono text-[10px] text-[#525252]">{formatLocalDate(r.date)} / {r.sourceModule}{r.sourceModule === "finance" && r.sourceProfileName ? ` / ${r.sourceProfileName}` : ""}</p></div>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      <button type="button" onClick={() => void runNudgeAction("calendar.nudge.open_source", r)} className="min-h-0 rounded-md border border-[#262626] bg-transparent px-2 py-0.5 text-[10px] text-[#A3A3A3] hover:border-[#14B8A6]/40 hover:text-[#14B8A6]">Open</button>
+                      <button type="button" onClick={() => void runNudgeAction("calendar.nudge.snooze", r, { snoozeMinutes: 60 })} className="min-h-0 rounded-md border border-[#262626] bg-transparent px-2 py-0.5 text-[10px] text-[#A3A3A3] hover:border-[#F59E0B]/40 hover:text-[#F59E0B]">Snooze</button>
+                      <button type="button" onClick={() => void runNudgeAction("calendar.nudge.complete", r)} className="min-h-0 rounded-md border border-[#262626] bg-transparent px-2 py-0.5 text-[10px] text-[#A3A3A3] hover:border-[#22C55E]/40 hover:text-[#22C55E]">Done</button>
+                      <button type="button" onClick={() => void runNudgeAction("calendar.nudge.dismiss", r)} className="min-h-0 rounded-md border border-[#262626] bg-transparent px-2 py-0.5 text-[10px] text-[#A3A3A3] hover:border-[#EF4444]/40 hover:text-[#EF4444]">Dismiss</button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -14926,7 +14573,7 @@ function CalendarView({
                 {selectedEvent.notes && <p>{selectedEvent.notes}</p>}
                 <p className="technical">{selectedEvent.id}</p>
                 <div className="button-row">
-                  <button type="button" onClick={() => loadEvent(selectedEvent)}>Edit</button>
+                  <button type="button" onClick={() => { loadEvent(selectedEvent); setShowEventModal(true); }}>Edit</button>
                   <button type="button" className="danger-button" onClick={() => void deleteEvent(selectedEvent)}>Delete</button>
                 </div>
               </div>
@@ -14962,58 +14609,35 @@ function CalendarView({
         </div>
       </div>
 
-      {/* Advanced: create/edit event, selected day, full nudges + settings */}
-      <details className="rounded-lg border border-[#1a1a1a] bg-[#080808]">
-        <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] text-[#525252] hover:text-[#A3A3A3]">advanced · create event, selected day, nudges &amp; settings</summary>
-        <div className="space-y-4 border-t border-[#1a1a1a] p-3">
-          <Panel title={editingId ? "Edit Event" : "Create Event"}>
-            <VoiceInput targetLabel="Calendar event" speechState={speechState} onSpeechStateChanged={onSpeechStateChange} onAction={onAction} onBeforeDictation={() => calendarTitleRef.current?.focus()} onTranscript={(text) => setTitle((current) => `${current}${current ? " " : ""}${text}`)} />
-            <div className="registry-controls">
-              <label>Title<input ref={calendarTitleRef} value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Birthday, meeting, call" /></label>
-              <label>Date<input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
-              <label>Start<input type="time" value={startTime} onChange={(event) => setStartTime(event.target.value)} disabled={allDay} /></label>
-              <label>End<input type="time" value={endTime} onChange={(event) => setEndTime(event.target.value)} disabled={allDay} /></label>
-              <label>Reminder<select value={reminderLevel} onChange={(event) => setReminderLevel(event.target.value as "soft" | "normal" | "urgent")}><option value="soft">soft</option><option value="normal">normal</option><option value="urgent">urgent</option></select></label>
-              <label>Recurrence<input value={recurrence} onChange={(event) => setRecurrence(event.target.value)} placeholder="yearly placeholder" /></label>
+      {showEventModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={editingId ? "Edit event" : "Create event"}>
+          <div className="w-full max-w-lg overflow-y-auto rounded-2xl border p-5 shadow-2xl" style={{ borderColor: "var(--border)", background: "var(--surface)", maxHeight: "90vh" }}>
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs uppercase tracking-[0.16em]" style={{ color: ACCENT_CAL }}>{editingId ? "Edit" : "New"}</p>
+                <h2 className="text-xl font-semibold text-[#F5F5F5]">{editingId ? "Edit event" : "Create event"}</h2>
+              </div>
+              <button type="button" aria-label="Close" onClick={() => { setShowEventModal(false); resetForm(); }} className="text-[#A3A3A3] hover:text-[#F5F5F5]">✕</button>
             </div>
-            <label className="checkbox-row"><input type="checkbox" checked={allDay} onChange={(event) => setAllDay(event.target.checked)} /> All-day event or birthday</label>
-            <textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Notes" />
-            <div className="button-row">
-              <button type="button" onClick={() => void saveEvent()}>{editingId ? "Update event" : "Create event"}</button>
-              <button type="button" onClick={resetForm}>Reset</button>
+            <div className="mb-3"><VoiceInput targetLabel="Calendar event" speechState={speechState} onSpeechStateChanged={onSpeechStateChange} onAction={onAction} onBeforeDictation={() => calendarTitleRef.current?.focus()} onTranscript={(text) => setTitle((current) => `${current}${current ? " " : ""}${text}`)} /></div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <label className="text-xs text-[#A3A3A3] sm:col-span-2">Title<input ref={calendarTitleRef} className="mt-1 w-full" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Birthday, meeting, call" /></label>
+              <label className="text-xs text-[#A3A3A3]">Date<input type="date" className="technical mt-1 w-full" value={date} onChange={(event) => setDate(event.target.value)} /></label>
+              <label className="text-xs text-[#A3A3A3]">Reminder<select className="mt-1 w-full" value={reminderLevel} onChange={(event) => setReminderLevel(event.target.value as "soft" | "normal" | "urgent")}><option value="soft">soft</option><option value="normal">normal</option><option value="urgent">urgent</option></select></label>
+              <label className="text-xs text-[#A3A3A3]">Start<input type="time" className="technical mt-1 w-full" value={startTime} onChange={(event) => setStartTime(event.target.value)} disabled={allDay} /></label>
+              <label className="text-xs text-[#A3A3A3]">End<input type="time" className="technical mt-1 w-full" value={endTime} onChange={(event) => setEndTime(event.target.value)} disabled={allDay} /></label>
+              <label className="text-xs text-[#A3A3A3] sm:col-span-2">Recurrence<input className="mt-1 w-full" value={recurrence} onChange={(event) => setRecurrence(event.target.value)} placeholder="e.g. yearly" /></label>
             </div>
-            {status && <p>{status}</p>}
-          </Panel>
-
-          <div className="dashboard-grid">
-            <Panel title={`Selected Day: ${formatLocalDate(selectedDate)}`}>
-              <div className="action-list action-list--compact">{selectedDateEvents.length === 0 ? <p>No events on this day.</p> : selectedDateEvents.map(renderEvent)}</div>
-            </Panel>
-            <Panel title="Upcoming events">
-              <div className="action-list action-list--compact">{calendarState.upcomingEvents.length === 0 ? <p>No upcoming events.</p> : calendarState.upcomingEvents.map(renderEvent)}</div>
-            </Panel>
+            <label className="mt-3 flex items-center gap-2 text-xs text-[#A3A3A3]"><input type="checkbox" checked={allDay} onChange={(event) => setAllDay(event.target.checked)} /> All-day event or birthday</label>
+            <label className="mt-3 block text-xs text-[#A3A3A3]">Notes<textarea className="mt-1 w-full" value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Notes" /></label>
+            <div className="button-row mt-4">
+              <button type="button" className="button-primary" disabled={!title.trim()} onClick={() => void saveEvent()}>{editingId ? "Update event" : "Create event"}</button>
+              <button type="button" onClick={() => { setShowEventModal(false); resetForm(); }}>Cancel</button>
+            </div>
+            {status && <p className="mt-2 text-xs text-[#A3A3A3]">{status}</p>}
           </div>
-
-          <div className="dashboard-grid">
-            <Panel title="Today Nudges"><div className="action-list action-list--compact">{calendarState.todayNudges.length === 0 ? <EmptyState>No nudges due today.</EmptyState> : calendarState.todayNudges.map(renderNudge)}</div></Panel>
-            <Panel title="Upcoming Nudges"><div className="action-list action-list--compact">{calendarState.upcomingNudges.length === 0 ? <EmptyState>No upcoming nudges.</EmptyState> : calendarState.upcomingNudges.map(renderNudge)}</div></Panel>
-          </div>
-
-          <Panel title="Nudge Settings">
-            <div className="registry-controls">
-              <label className="checkbox-row"><input type="checkbox" checked={nudgeSettingsForm.enabled} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, enabled: event.target.checked }))} /><span>Enable nudges</span></label>
-              <label>Vault expiry days<input value={nudgeSettingsForm.vaultExpiryReminderDays} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, vaultExpiryReminderDays: event.target.value }))} placeholder="90, 30, 7" /></label>
-              <label>Return reminder days<input value={nudgeSettingsForm.returnReminderDays} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, returnReminderDays: event.target.value }))} placeholder="7, 3, 1" /></label>
-              <label>Backup reminder after days<input type="number" min="1" value={nudgeSettingsForm.backupReminderAfterDays} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, backupReminderAfterDays: event.target.value }))} /></label>
-            </div>
-            <label className="checkbox-row"><input type="checkbox" checked={nudgeSettingsForm.dailyJournalReminderEnabled} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, dailyJournalReminderEnabled: event.target.checked }))} /><span>Daily Journal reminder</span></label>
-            <div className="button-row">
-              <button type="button" onClick={() => void saveNudgeSettings()}>Save nudge settings</button>
-              <button type="button" onClick={() => void refreshNudgeList()}>Refresh nudges</button>
-            </div>
-          </Panel>
         </div>
-      </details>
+      )}
     </div>
   );
 
@@ -15062,6 +14686,7 @@ function FinderView({
   const [moveLocation, setMoveLocation] = useState("");
   const [moveRoom, setMoveRoom] = useState("");
   const [moveContainer, setMoveContainer] = useState("");
+  const [showMove, setShowMove] = useState(false);
   const [toast, setToast] = useState<{ message: string; tone: "success" | "error" } | null>(null);
 
   const visibleItems = finderState.items.filter((item) => {
@@ -15169,6 +14794,14 @@ function FinderView({
     await simpleItemAction("finder.mark_lent_out", item, { lentTo });
   }
 
+  function openMove(item: FinderItem): void {
+    setMoveItemId(item.id);
+    setMoveLocation(item.location);
+    setMoveRoom(item.room ?? "");
+    setMoveContainer(item.container ?? "");
+    setShowMove(true);
+  }
+
   async function markMoved(): Promise<void> {
     const item = finderState.items.find((entry) => entry.id === moveItemId);
     if (!item) {
@@ -15186,6 +14819,7 @@ function FinderView({
       setMoveLocation("");
       setMoveRoom("");
       setMoveContainer("");
+      setShowMove(false);
     }
     showToast(result.ok ? "Finder item moved." : result.error ?? "Move failed.", result.ok ? "success" : "error");
     await onRefresh();
@@ -15199,38 +14833,6 @@ function FinderView({
   async function runReverseLookupAudit(): Promise<void> {
     const result = await onAction("finder.reverse_lookup", "module_ui", { query: reverseQuery });
     showToast(result.ok ? "Reverse lookup logged." : result.error ?? "Reverse lookup failed.", result.ok ? "success" : "error");
-  }
-
-  function renderItemCard(item: FinderItem) {
-    return (
-      <CollapsibleListItem
-        accentClass="accent-finder"
-        key={item.id}
-        title={item.itemName}
-        meta={`${item.location}${item.room ? ` / ${item.room}` : ""}${item.container ? ` / ${item.container}` : ""} / ${item.status}`}
-        actions={(
-          <>
-          <PinButton input={{ type: "item", module: "finder", entityId: item.id, title: item.itemName, subtitle: "Finder item" }} />
-          <button type="button" onClick={() => loadItem(item)}>Edit</button>
-          <button type="button" onClick={() => {
-            setMoveItemId(item.id);
-            setMoveLocation(item.location);
-            setMoveRoom(item.room ?? "");
-            setMoveContainer(item.container ?? "");
-          }}>Mark moved</button>
-          <button type="button" onClick={() => void markLentOut(item)}>Mark lent out</button>
-          <button type="button" onClick={() => void simpleItemAction("finder.mark_returned", item)}>Mark returned</button>
-          <button type="button" onClick={() => void simpleItemAction("finder.archive_item", item)}>Archive</button>
-          <button className="danger-button" type="button" onClick={() => void deleteItem(item)}>Delete</button>
-          </>
-        )}
-      >
-        <p>{item.tags.length ? item.tags.join(", ") : "No tags"}{item.lentTo ? ` / lent to ${item.lentTo}` : ""}</p>
-        {item.notes && <p>{item.notes}</p>}
-        <p>Updated {formatLocalDateTime(item.updatedAt)}</p>
-        <p className="technical">{item.id}</p>
-      </CollapsibleListItem>
-    );
   }
 
   const finderAgo = (iso: string): string => {
@@ -15300,6 +14902,7 @@ function FinderView({
                   </div>
                   <div className="flex flex-wrap gap-1.5 border-t border-[#1a1a1a] pt-1.5">
                     <button type="button" onClick={() => loadItem(item)} className="rounded-md border border-[#262626] px-2 py-0.5 text-[10px] text-[#A3A3A3] hover:text-[#F5F5F5]">Edit</button>
+                    <button type="button" onClick={() => openMove(item)} className="rounded-md border border-[#262626] px-2 py-0.5 text-[10px] text-[#A3A3A3] hover:text-[#84CC16]">Move</button>
                     {item.status === "lent_out"
                       ? <button type="button" onClick={() => void simpleItemAction("finder.mark_returned", item)} className="rounded-md border border-[#262626] px-2 py-0.5 text-[10px] text-[#A3A3A3] hover:text-[#F5F5F5]">Returned</button>
                       : <button type="button" onClick={() => void markLentOut(item)} className="rounded-md border border-[#262626] px-2 py-0.5 text-[10px] text-[#A3A3A3] hover:text-[#F5F5F5]">Lend</button>}
@@ -15376,44 +14979,54 @@ function FinderView({
               ))}
             </div>
           </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle action={<Search className="h-3.5 w-3.5 text-[#84CC16]" />}>Reverse lookup</SectionTitle>
+            <p className="mb-2 text-[11px] text-[#525252]">What's in a place? Search by container or location.</p>
+            <div className="flex items-center gap-2 rounded-lg border border-[#262626] bg-[#0d0d0d] px-3 py-2 transition-colors focus-within:border-[#84CC16]/40">
+              <MapPin className="h-3.5 w-3.5 text-[#525252]" />
+              <input value={reverseQuery} onChange={(event) => setReverseQuery(event.target.value)} onBlur={() => { if (reverseQuery.trim()) void runReverseLookupAudit(); }} placeholder="black drawer, suitcase…" className="flex-1 bg-transparent text-xs text-[#F5F5F5] placeholder:text-[#525252] focus:outline-none" />
+            </div>
+            {reverseQuery.trim() && (
+              <div className="mt-2 space-y-1.5">
+                {reverseItems.length === 0 ? <p className="text-xs text-[#525252]">No matching items.</p> : reverseItems.map((item) => (
+                  <div key={item.id} className="flex items-center gap-2.5 rounded-lg px-1.5 py-1">
+                    <Box className="h-3.5 w-3.5 shrink-0 text-[#84CC16]" />
+                    <span className="min-w-0 flex-1 truncate text-xs text-[#F5F5F5]">{item.itemName}</span>
+                    <span className="truncate font-mono text-[10px] text-[#525252]">{item.location}{item.container ? ` · ${item.container}` : ""}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </GlassCard>
         </div>
       </div>
 
-      {/* Advanced (full item library + move + reverse lookup + lent + settings) */}
-      <details className="rounded-lg border border-[#1a1a1a] bg-[#080808]">
-        <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] text-[#525252] hover:text-[#A3A3A3]">advanced · full library, move, reverse lookup, lent out</summary>
-        <div className="space-y-4 border-t border-[#1a1a1a] p-3">
-          <div className="dashboard-grid">
-            <Panel title="I moved it">
-              <div className="project-form">
-                <label>Item<select value={moveItemId} onChange={(event) => setMoveItemId(event.target.value)}><option value="">Choose item</option>{finderState.items.map((item) => <option value={item.id} key={item.id}>{item.itemName}</option>)}</select></label>
-                <label>New location<input value={moveLocation} onChange={(event) => setMoveLocation(event.target.value)} placeholder="suitcase" /></label>
-                <label>Room<input value={moveRoom} onChange={(event) => setMoveRoom(event.target.value)} /></label>
-                <label>Container<input value={moveContainer} onChange={(event) => setMoveContainer(event.target.value)} /></label>
+      {showMove && (() => {
+        const moveItem = finderState.items.find((entry) => entry.id === moveItemId);
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="Move item">
+            <div className="w-full max-w-md rounded-2xl border p-5 shadow-2xl" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
+              <div className="mb-4 flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.16em]" style={{ color: ACCENT_FINDER }}>I moved it</p>
+                  <h2 className="text-xl font-semibold text-[#F5F5F5]">{moveItem?.itemName ?? "Move item"}</h2>
+                </div>
+                <button type="button" aria-label="Close" onClick={() => { setShowMove(false); }} className="text-[#A3A3A3] hover:text-[#F5F5F5]">✕</button>
               </div>
-              <button type="button" onClick={() => void markMoved()}>Save move</button>
-            </Panel>
-            <Panel title="Reverse Lookup">
-              <label>Container or location<input value={reverseQuery} onChange={(event) => setReverseQuery(event.target.value)} placeholder="black drawer" /></label>
-              <button type="button" onClick={() => void runReverseLookupAudit()}>Log reverse lookup</button>
-              <div className="action-list action-list--compact">
-                {reverseItems.length === 0 ? <p>No matching items yet.</p> : reverseItems.map((item) => (
-                  <article className="data-item data-item--stacked accent-finder" key={item.id}><strong>{item.itemName}</strong><span>{item.location}{item.container ? ` / ${item.container}` : ""}</span></article>
-                ))}
+              <div className="space-y-3">
+                <label className="block text-xs text-[#A3A3A3]">New location<input className="mt-1 w-full" value={moveLocation} onChange={(event) => setMoveLocation(event.target.value)} placeholder="suitcase" /></label>
+                <label className="block text-xs text-[#A3A3A3]">Room<input className="mt-1 w-full" value={moveRoom} onChange={(event) => setMoveRoom(event.target.value)} placeholder="Bedroom" /></label>
+                <label className="block text-xs text-[#A3A3A3]">Container<input className="mt-1 w-full" value={moveContainer} onChange={(event) => setMoveContainer(event.target.value)} placeholder="black drawer" /></label>
               </div>
-            </Panel>
-          </div>
-          <Panel title="Item Library">
-            <div className="action-list">
-              {finderState.items.length === 0 ? <p>No Finder items yet.</p> : finderState.items.map(renderItemCard)}
+              <div className="button-row mt-4">
+                <button type="button" className="button-primary" disabled={!moveLocation.trim()} onClick={() => void markMoved()}>Save move</button>
+                <button type="button" onClick={() => setShowMove(false)}>Cancel</button>
+              </div>
             </div>
-          </Panel>
-          <Panel title="Settings">
-            <p className="technical">{finderState.itemsPath}</p>
-            <p>{finderState.statusCounts.at_home} at home / {finderState.statusCounts.lent_out} lent out / {finderState.statusCounts.missing} missing / {finderState.statusCounts.archived} archived</p>
-          </Panel>
-        </div>
-      </details>
+          </div>
+        );
+      })()}
 
       {toast && <ToastStack toasts={[{ id: toast.message, message: toast.message, tone: toast.tone }]} />}
     </div>
@@ -15466,6 +15079,19 @@ function FinanceView({
   const [transactionForm, setTransactionForm] = useState(emptyFinanceTransactionForm);
   const [recurringForm, setRecurringForm] = useState(emptyFinanceRecurringForm);
   const [toast, setToast] = useState<{ message: string; tone: "success" | "error" } | null>(null);
+  // Add/Edit happens in a modal baked into the main UI (no advanced section).
+  const [showAdd, setShowAdd] = useState(false);
+  const [addMode, setAddMode] = useState<"expense" | "recurring">("expense");
+  function startAddTransaction(): void {
+    setTransactionForm(emptyFinanceTransactionForm);
+    setAddMode("expense");
+    setShowAdd(true);
+  }
+  function startAddRecurring(): void {
+    setRecurringForm(emptyFinanceRecurringForm);
+    setAddMode("recurring");
+    setShowAdd(true);
+  }
   const [showArchivedProfiles, setShowArchivedProfiles] = useState(false);
 
   function showToast(message: string, tone: "success" | "error" = "success"): void {
@@ -15508,6 +15134,8 @@ function FinanceView({
       returnDeadline: transaction.returnDeadline ?? "",
       warrantyUntil: transaction.warrantyUntil ?? ""
     });
+    setAddMode("expense");
+    setShowAdd(true);
   }
 
   async function saveTransaction(): Promise<void> {
@@ -15515,6 +15143,7 @@ function FinanceView({
     showToast(result.ok ? "Finance expense saved." : result.error ?? "Expense save failed.", result.ok ? "success" : "error");
     if (result.ok) {
       setTransactionForm(emptyFinanceTransactionForm);
+      setShowAdd(false);
       await onRefresh();
     }
   }
@@ -15525,6 +15154,7 @@ function FinanceView({
     }
     const result = await onAction("finance.delete_transaction", "module_ui", { transactionId: transaction.id, confirmedDangerous: true });
     showToast(result.ok ? "Finance transaction deleted." : result.error ?? "Delete failed.", result.ok ? "success" : "error");
+    if (result.ok) { setShowAdd(false); setTransactionForm(emptyFinanceTransactionForm); }
     await onRefresh();
   }
 
@@ -15547,6 +15177,8 @@ function FinanceView({
       notes: recurring.notes ?? "",
       active: recurring.active
     });
+    setAddMode("recurring");
+    setShowAdd(true);
   }
 
   async function saveRecurring(): Promise<void> {
@@ -15554,6 +15186,7 @@ function FinanceView({
     showToast(result.ok ? "Recurring expense saved." : result.error ?? "Recurring save failed.", result.ok ? "success" : "error");
     if (result.ok) {
       setRecurringForm(emptyFinanceRecurringForm);
+      setShowAdd(false);
       await onRefresh();
     }
   }
@@ -15564,6 +15197,7 @@ function FinanceView({
     }
     const result = await onAction("finance.delete_recurring", "module_ui", { recurringId: recurring.id, confirmedDangerous: true });
     showToast(result.ok ? "Recurring expense deleted." : result.error ?? "Delete failed.", result.ok ? "success" : "error");
+    if (result.ok) { setShowAdd(false); setRecurringForm(emptyFinanceRecurringForm); }
     await onRefresh();
   }
 
@@ -15603,7 +15237,7 @@ function FinanceView({
           <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_FIN}40`, background: `${ACCENT_FIN}14`, color: ACCENT_FIN }}><Wallet className="h-5 w-5" /></div>
           <div><h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Finance</h1><p className="text-sm text-[#A3A3A3]">{finSummary.currentMonth} · spending, receipts &amp; warranties</p></div>
         </div>
-        <ActionButton accent={ACCENT_FIN} icon={Plus} onClick={() => setTransactionForm(emptyFinanceTransactionForm)}>Add</ActionButton>
+        <ActionButton accent={ACCENT_FIN} icon={Plus} onClick={() => startAddTransaction()}>Add</ActionButton>
       </div>
 
       {(() => {
@@ -15704,10 +15338,15 @@ function FinanceView({
           </GlassCard>
 
           <GlassCard accent="#3B82F6" hover={false}>
-            <SectionTitle action={<Repeat className="h-3.5 w-3.5 text-[#3B82F6]" />}>Recurring</SectionTitle>
+            <SectionTitle action={<button type="button" onClick={() => startAddRecurring()} className="min-h-0 rounded-md border border-[#262626] bg-transparent px-2 py-0.5 text-[10px] text-[#A3A3A3] hover:border-[#3B82F6]/40 hover:text-[#3B82F6]">+ Add</button>}>Recurring</SectionTitle>
             {financeState.recurring.length === 0 ? <p className="text-xs text-[#525252]">No recurring expenses.</p> : (
-              <div className="space-y-1.5">
-                {financeState.recurring.slice(0, 6).map((r) => <div key={r.id} className="flex items-center justify-between text-sm"><span className="truncate text-[#F5F5F5]">{r.name}</span><span className="font-mono text-[#A3A3A3]">{money(r.amount, r.currency)} · {r.frequency}</span></div>)}
+              <div className="space-y-1">
+                {financeState.recurring.slice(0, 8).map((r) => (
+                  <button key={r.id} type="button" onClick={() => loadRecurring(r)} className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-[#0f0f0f]">
+                    <span className="truncate text-[#F5F5F5]">{r.name}{r.active ? "" : " · inactive"}</span>
+                    <span className="font-mono text-xs text-[#A3A3A3]">{money(r.amount, r.currency)} · {r.frequency}</span>
+                  </button>
+                ))}
               </div>
             )}
           </GlassCard>
@@ -15723,80 +15362,66 @@ function FinanceView({
         </div>
       </div>
 
-      {/* Advanced: add/edit expense, recurring, full lists, settings */}
-      <details className="rounded-lg border border-[#1a1a1a] bg-[#080808]">
-        <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] text-[#525252] hover:text-[#A3A3A3]">advanced · add expense, recurring, all transactions, settings</summary>
-        <div className="space-y-4 border-t border-[#1a1a1a] p-3">
-          <div className="dashboard-grid">
-            <Panel title={transactionForm.id ? "Edit expense" : "Add expense"}>
-              <div className="project-form">
-                <label>Date<input type="date" value={transactionForm.date} onChange={(event) => setTransactionForm({ ...transactionForm, date: event.target.value })} /></label>
-                <label>Store<input value={transactionForm.store} onChange={(event) => setTransactionForm({ ...transactionForm, store: event.target.value })} placeholder="Store / payee" /></label>
-                <label>Amount<input value={transactionForm.amount} onChange={(event) => setTransactionForm({ ...transactionForm, amount: event.target.value })} placeholder="0.00" /></label>
-                <label>Category<input value={transactionForm.category} onChange={(event) => setTransactionForm({ ...transactionForm, category: event.target.value })} placeholder="Food, Rent…" /></label>
-                <label>Payment<select value={transactionForm.paymentType} onChange={(event) => setTransactionForm({ ...transactionForm, paymentType: event.target.value as FinancePaymentType })}><option value="credit">credit</option><option value="debit">debit</option><option value="cash">cash</option><option value="bank">bank</option></select></label>
-                <label>Card name<input value={transactionForm.cardName} onChange={(event) => setTransactionForm({ ...transactionForm, cardName: event.target.value })} /></label>
-                <label>Tags<input value={transactionForm.tags} onChange={(event) => setTransactionForm({ ...transactionForm, tags: event.target.value })} /></label>
-                <label>Return deadline<input type="date" value={transactionForm.returnDeadline} onChange={(event) => setTransactionForm({ ...transactionForm, returnDeadline: event.target.value })} /></label>
-                <label>Warranty until<input type="date" value={transactionForm.warrantyUntil} onChange={(event) => setTransactionForm({ ...transactionForm, warrantyUntil: event.target.value })} /></label>
-                <label>Notes<textarea value={transactionForm.notes} onChange={(event) => setTransactionForm({ ...transactionForm, notes: event.target.value })} /></label>
+      {showAdd && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="Add finance entry">
+          <div className="w-full max-w-2xl overflow-y-auto rounded-2xl border p-5 shadow-2xl" style={{ borderColor: "var(--border)", background: "var(--surface)", maxHeight: "90vh" }}>
+            <div className="mb-4 flex items-center justify-between gap-4">
+              <div className="inline-flex rounded-lg border border-[#262626] p-0.5">
+                <button type="button" onClick={() => setAddMode("expense")} className={`min-h-0 rounded-md border-0 px-3 py-1 text-xs font-medium ${addMode === "expense" ? "bg-[#22C55E]/15 text-[#22C55E]" : "bg-transparent text-[#A3A3A3]"}`}>Expense</button>
+                <button type="button" onClick={() => setAddMode("recurring")} className={`min-h-0 rounded-md border-0 px-3 py-1 text-xs font-medium ${addMode === "recurring" ? "bg-[#3B82F6]/15 text-[#3B82F6]" : "bg-transparent text-[#A3A3A3]"}`}>Recurring</button>
               </div>
-              <div className="button-row">
-                <button type="button" onClick={() => void chooseReceipt()}>{transactionForm.receiptPath ? "Receipt ✓" : "Attach receipt"}</button>
-                <button type="button" className="button-primary" onClick={() => void saveTransaction()}>{transactionForm.id ? "Update" : "Save"}</button>
-                <button type="button" onClick={() => setTransactionForm(emptyFinanceTransactionForm)}>Reset</button>
-              </div>
-            </Panel>
-            <Panel title={recurringForm.id ? "Edit recurring" : "Add recurring"}>
-              <div className="project-form">
-                <label>Name<input value={recurringForm.name} onChange={(event) => setRecurringForm({ ...recurringForm, name: event.target.value })} placeholder="Rent, Spotify…" /></label>
-                <label>Amount<input value={recurringForm.amount} onChange={(event) => setRecurringForm({ ...recurringForm, amount: event.target.value })} /></label>
-                <label>Frequency<select value={recurringForm.frequency} onChange={(event) => setRecurringForm({ ...recurringForm, frequency: event.target.value as FinanceRecurringFrequency })}><option value="monthly">monthly</option><option value="weekly">weekly</option><option value="yearly">yearly</option></select></label>
-                <label>Next due<input type="date" value={recurringForm.nextDueDate} onChange={(event) => setRecurringForm({ ...recurringForm, nextDueDate: event.target.value })} /></label>
-                <label>Category<input value={recurringForm.category} onChange={(event) => setRecurringForm({ ...recurringForm, category: event.target.value })} /></label>
-              </div>
-              <div className="button-row">
-                <button type="button" className="button-primary" onClick={() => void saveRecurring()}>{recurringForm.id ? "Update" : "Save"}</button>
-                <button type="button" onClick={() => setRecurringForm(emptyFinanceRecurringForm)}>Reset</button>
-              </div>
-            </Panel>
+              <button type="button" aria-label="Close" onClick={() => setShowAdd(false)} className="min-h-0 border-0 bg-transparent text-[#A3A3A3] hover:text-[#F5F5F5]">✕</button>
+            </div>
+            {addMode === "expense" ? (
+              <>
+                <h2 className="mb-3 text-xl font-semibold text-[#F5F5F5]">{transactionForm.id ? "Edit expense" : "Add expense"}</h2>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <label className="text-xs text-[#A3A3A3]">Date<input type="date" className="technical mt-1 w-full" value={transactionForm.date} onChange={(event) => setTransactionForm({ ...transactionForm, date: event.target.value })} /></label>
+                  <label className="text-xs text-[#A3A3A3]">Store<input className="mt-1 w-full" value={transactionForm.store} onChange={(event) => setTransactionForm({ ...transactionForm, store: event.target.value })} placeholder="Store / payee" /></label>
+                  <label className="text-xs text-[#A3A3A3]">Amount<input className="mt-1 w-full" value={transactionForm.amount} onChange={(event) => setTransactionForm({ ...transactionForm, amount: event.target.value })} placeholder="0.00" /></label>
+                  <label className="text-xs text-[#A3A3A3]">Category<input className="mt-1 w-full" value={transactionForm.category} onChange={(event) => setTransactionForm({ ...transactionForm, category: event.target.value })} placeholder="Food, Rent…" /></label>
+                  <label className="text-xs text-[#A3A3A3]">Payment<select className="mt-1 w-full" value={transactionForm.paymentType} onChange={(event) => setTransactionForm({ ...transactionForm, paymentType: event.target.value as FinancePaymentType })}><option value="credit">credit</option><option value="debit">debit</option><option value="cash">cash</option><option value="bank">bank</option></select></label>
+                  <label className="text-xs text-[#A3A3A3]">Card name<input className="mt-1 w-full" value={transactionForm.cardName} onChange={(event) => setTransactionForm({ ...transactionForm, cardName: event.target.value })} /></label>
+                  <label className="text-xs text-[#A3A3A3]">Tags<input className="mt-1 w-full" value={transactionForm.tags} onChange={(event) => setTransactionForm({ ...transactionForm, tags: event.target.value })} placeholder="comma, separated" /></label>
+                  <label className="text-xs text-[#A3A3A3]">Return deadline<input type="date" className="technical mt-1 w-full" value={transactionForm.returnDeadline} onChange={(event) => setTransactionForm({ ...transactionForm, returnDeadline: event.target.value })} /></label>
+                  <label className="text-xs text-[#A3A3A3]">Warranty until<input type="date" className="technical mt-1 w-full" value={transactionForm.warrantyUntil} onChange={(event) => setTransactionForm({ ...transactionForm, warrantyUntil: event.target.value })} /></label>
+                </div>
+                <label className="mt-3 block text-xs text-[#A3A3A3]">Notes<textarea className="mt-1 w-full" value={transactionForm.notes} onChange={(event) => setTransactionForm({ ...transactionForm, notes: event.target.value })} /></label>
+                <div className="button-row mt-4">
+                  <button type="button" onClick={() => void chooseReceipt()}>{transactionForm.receiptPath ? "Receipt ✓" : "Attach receipt"}</button>
+                  <button type="button" className="button-primary" disabled={!transactionForm.store.trim()} onClick={() => void saveTransaction()}>{transactionForm.id ? "Update" : "Save"}</button>
+                  {transactionForm.id && (() => {
+                    const editTx = financeState.transactions.find((t) => t.id === transactionForm.id);
+                    return editTx?.receiptFilePath ? (<>
+                      <button type="button" onClick={() => void openReceipt(editTx)}>Open receipt</button>
+                      <button type="button" onClick={() => void transactionAction("finance.send_receipt_to_drop", editTx, "Receipt sent to phone.")}>Send receipt</button>
+                      <button type="button" onClick={() => void transactionAction("finance.save_receipt_to_vault", editTx, "Receipt saved to Vault.")}>To Vault</button>
+                    </>) : null;
+                  })()}
+                  {transactionForm.id && <button type="button" className="danger-button" onClick={() => { const t = financeState.transactions.find((x) => x.id === transactionForm.id); if (t) void deleteTransaction(t); }}>Delete</button>}
+                  <button type="button" onClick={() => setShowAdd(false)}>Cancel</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <h2 className="mb-3 text-xl font-semibold text-[#F5F5F5]">{recurringForm.id ? "Edit recurring" : "Add recurring"}</h2>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <label className="text-xs text-[#A3A3A3]">Name<input className="mt-1 w-full" value={recurringForm.name} onChange={(event) => setRecurringForm({ ...recurringForm, name: event.target.value })} placeholder="Rent, Spotify…" /></label>
+                  <label className="text-xs text-[#A3A3A3]">Amount<input className="mt-1 w-full" value={recurringForm.amount} onChange={(event) => setRecurringForm({ ...recurringForm, amount: event.target.value })} placeholder="0.00" /></label>
+                  <label className="text-xs text-[#A3A3A3]">Frequency<select className="mt-1 w-full" value={recurringForm.frequency} onChange={(event) => setRecurringForm({ ...recurringForm, frequency: event.target.value as FinanceRecurringFrequency })}><option value="monthly">monthly</option><option value="weekly">weekly</option><option value="yearly">yearly</option></select></label>
+                  <label className="text-xs text-[#A3A3A3]">Next due<input type="date" className="technical mt-1 w-full" value={recurringForm.nextDueDate} onChange={(event) => setRecurringForm({ ...recurringForm, nextDueDate: event.target.value })} /></label>
+                  <label className="text-xs text-[#A3A3A3]">Category<input className="mt-1 w-full" value={recurringForm.category} onChange={(event) => setRecurringForm({ ...recurringForm, category: event.target.value })} placeholder="Other" /></label>
+                </div>
+                <div className="button-row mt-4">
+                  <button type="button" className="button-primary" disabled={!recurringForm.name.trim()} onClick={() => void saveRecurring()}>{recurringForm.id ? "Update" : "Save"}</button>
+                  {recurringForm.id && <button type="button" className="danger-button" onClick={() => { const r = financeState.recurring.find((x) => x.id === recurringForm.id); if (r) void deleteRecurring(r); }}>Delete</button>}
+                  <button type="button" onClick={() => setShowAdd(false)}>Cancel</button>
+                </div>
+              </>
+            )}
           </div>
-
-          <Panel title="All transactions">
-            <div className="action-list">
-              {financeState.transactions.length === 0 ? <p>No Finance transactions yet.</p> : <LimitedList items={financeState.transactions} step={50}>{(transaction) => (
-                <CollapsibleListItem accentClass="accent-finance" key={transaction.id} title={`${transaction.store} / ${money(transaction.amount, transaction.currency)}`} meta={`${formatLocalDate(transaction.date)} / ${transaction.category} / ${transaction.paymentType}${transaction.receiptFilePath ? " / receipt" : ""}`}
-                  actions={(<>
-                    <button type="button" onClick={() => loadTransaction(transaction)}>Edit</button>
-                    {transaction.receiptFilePath && <button type="button" onClick={() => void openReceipt(transaction)}>Open receipt</button>}
-                    {transaction.receiptFilePath && <button type="button" onClick={() => void transactionAction("finance.send_receipt_to_drop", transaction, "Receipt sent to phone.")}>Send receipt</button>}
-                    {transaction.receiptFilePath && <button type="button" onClick={() => void transactionAction("finance.save_receipt_to_vault", transaction, "Receipt saved to Vault.")}>To Vault</button>}
-                    <button className="danger-button" type="button" onClick={() => void deleteTransaction(transaction)}>Delete</button>
-                  </>)}>
-                  <p>{transaction.cardName ? `${transaction.cardName} / ` : ""}{transaction.tags.length ? transaction.tags.join(", ") : "No tags"}</p>
-                  {transaction.notes && <p>{transaction.notes}</p>}
-                </CollapsibleListItem>
-              )}</LimitedList>}
-            </div>
-          </Panel>
-
-          <Panel title="Recurring expenses">
-            <div className="action-list action-list--compact">
-              {financeState.recurring.length === 0 ? <p>No recurring expenses.</p> : financeState.recurring.map((r) => (
-                <article className="data-item data-item--stacked accent-finance" key={r.id}>
-                  <div className="section-heading section-heading--row"><strong>{r.name}</strong><div className="button-row"><button type="button" onClick={() => loadRecurring(r)}>Edit</button><button className="danger-button" type="button" onClick={() => void deleteRecurring(r)}>Delete</button></div></div>
-                  <span>{money(r.amount, r.currency)} · {r.frequency} · next {formatLocalDate(r.nextDueDate)}{r.active ? "" : " · inactive"}</span>
-                </article>
-              ))}
-            </div>
-          </Panel>
-
-          <Panel title="Settings">
-            <div className="settings-row"><span>Transactions</span><strong className="technical">{financeState.transactionsPath}</strong></div>
-            <div className="settings-row"><span>Receipts</span><strong className="technical">{financeState.receiptsPath}</strong></div>
-          </Panel>
         </div>
-      </details>
+      )}
     </div>
   );
 
@@ -15839,31 +15464,13 @@ function HeatmapView({
   }>;
   onRefresh: () => Promise<void>;
 }) {
-  const [trackingEnabled, setTrackingEnabled] = useState(heatmapState.settings.enabled);
-  const [sampleIntervalSeconds, setSampleIntervalSeconds] = useState(String(heatmapState.settings.sampleIntervalSeconds));
-  const [aggregationIntervalHours, setAggregationIntervalHours] = useState(String(heatmapState.settings.aggregationIntervalHours));
-  const [pauseDuringFullscreen, setPauseDuringFullscreen] = useState(heatmapState.settings.pauseDuringFullscreen);
-  const [privateApps, setPrivateApps] = useState(heatmapState.settings.privateApps.join("\n"));
-  const [privateTitleKeywords, setPrivateTitleKeywords] = useState(heatmapState.settings.privateTitleKeywords.join("\n"));
   const [goalForm, setGoalForm] = useState({ id: "", name: "", targetHoursPerWeek: "5", keyword: "", active: true });
+  const [showGoalModal, setShowGoalModal] = useState(false);
   const [toast, setToast] = useState<{ message: string; tone: "success" | "error" } | null>(null);
-
-  useEffect(() => {
-    setTrackingEnabled(heatmapState.settings.enabled);
-    setSampleIntervalSeconds(String(heatmapState.settings.sampleIntervalSeconds));
-    setAggregationIntervalHours(String(heatmapState.settings.aggregationIntervalHours));
-    setPauseDuringFullscreen(heatmapState.settings.pauseDuringFullscreen);
-    setPrivateApps(heatmapState.settings.privateApps.join("\n"));
-    setPrivateTitleKeywords(heatmapState.settings.privateTitleKeywords.join("\n"));
-  }, [heatmapState.settings]);
 
   function showToast(message: string, tone: "success" | "error" = "success"): void {
     setToast({ message, tone });
     window.setTimeout(() => setToast(null), 3000);
-  }
-
-  function listFromLines(value: string): string[] {
-    return value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean);
   }
 
   async function heatmapAction(actionId: string, params: Record<string, unknown> = {}, successMessage = "Heatmap updated."): Promise<void> {
@@ -15872,36 +15479,9 @@ function HeatmapView({
     await onRefresh();
   }
 
-  async function startTracking(): Promise<void> {
-    await heatmapAction("heatmap.start", {
-      sampleIntervalSeconds: Number(sampleIntervalSeconds),
-      aggregationIntervalHours: Number(aggregationIntervalHours),
-      pauseDuringFullscreen,
-      privateApps: listFromLines(privateApps),
-      privateTitleKeywords: listFromLines(privateTitleKeywords)
-    }, "Heatmap tracking started.");
-  }
-
-  async function saveSettings(): Promise<void> {
-    if (trackingEnabled) {
-      await startTracking();
-      return;
-    }
-
-    await heatmapAction("heatmap.pause", { enabled: false }, "Heatmap settings saved and tracking disabled.");
-  }
-
-  async function logCurrentApp(): Promise<void> {
-    const result = await onAction("heatmap.log_current_app", "module_ui", {});
-    showToast(result.ok ? "Logged current app." : result.error ?? "Active window detection failed; placeholder sample logged.", result.ok ? "success" : "error");
-    await onRefresh();
-  }
-
-  async function clearData(): Promise<void> {
-    if (!window.confirm("Clear all Heatmap samples?")) {
-      return;
-    }
-    await heatmapAction("heatmap.clear_data", { confirmedDangerous: true }, "Heatmap data cleared.");
+  function startAddGoal(): void {
+    setGoalForm({ id: "", name: "", targetHoursPerWeek: "5", keyword: "", active: true });
+    setShowGoalModal(true);
   }
 
   function editGoal(goal: HeatmapGoal): void {
@@ -15912,11 +15492,13 @@ function HeatmapView({
       keyword: goal.keyword,
       active: goal.active
     });
+    setShowGoalModal(true);
   }
 
   async function saveGoal(): Promise<void> {
     await heatmapAction(goalForm.id ? "heatmap.update_goal" : "heatmap.create_goal", goalForm, "Heatmap goal saved.");
     setGoalForm({ id: "", name: "", targetHoursPerWeek: "5", keyword: "", active: true });
+    setShowGoalModal(false);
   }
 
   async function deleteGoal(goal: HeatmapGoal): Promise<void> {
@@ -15932,8 +15514,42 @@ function HeatmapView({
   const topApps = heatmapState.summary.todayByApp.slice(0, 5);
   const topMax = Math.max(1, ...topApps.map((a) => a.seconds));
   const appColors = ["#3B82F6", "#22C55E", "#A855F7", "#EC4899", "#F59E0B"];
-  const tracking = heatmapState.settings.enabled && /running|active/i.test(heatmapState.trackingStatus);
   const heatPaused = /performance/i.test(heatmapState.trackingStatus);
+  const tracking = !heatPaused; // tracking is always-on unless Performance Mode pauses it
+
+  // Derived analytics from raw samples.
+  const weekdayLabels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const { weekGrid, weekMax, focusBlocks, contextSwitches } = useMemo(() => {
+    const grid: number[][] = Array.from({ length: 7 }, () => Array.from({ length: 24 }, () => 0));
+    const todayKey = getLocalTodayDateString();
+    const todayEvents = heatmapState.events
+      .filter((event) => event.timestamp.slice(0, 10) === todayKey)
+      .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+    let blocks = 0;
+    let switches = 0;
+    let prevActive = false;
+    let prevApp = "";
+    for (const event of todayEvents) {
+      if (event.active && !prevActive) { blocks += 1; }
+      if (event.active && prevApp && event.appName !== prevApp) { switches += 1; }
+      prevActive = event.active;
+      if (event.active) { prevApp = event.appName; }
+    }
+    for (const event of heatmapState.events) {
+      if (!event.active) { continue; }
+      const date = new Date(event.timestamp);
+      const weekday = (date.getDay() + 6) % 7; // Mon=0 … Sun=6
+      const hour = date.getHours();
+      grid[weekday][hour] += event.durationSeconds || 0;
+    }
+    const max = Math.max(1, ...grid.flat());
+    return { weekGrid: grid, weekMax: max, focusBlocks: blocks, contextSwitches: switches };
+  }, [heatmapState.events]);
+  const heatCellColor = (seconds: number): string => {
+    if (seconds <= 0) { return "#141414"; }
+    const intensity = Math.min(1, seconds / weekMax);
+    return `rgba(239, 68, 68, ${0.18 + intensity * 0.82})`;
+  };
 
   return (
     <div className="space-y-6">
@@ -15949,9 +15565,9 @@ function HeatmapView({
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {[
           { label: "Active today", value: formatDuration(heatmapState.summary.activeSecondsToday), c: "#EF4444" },
-          { label: "Idle today", value: formatDuration(heatmapState.summary.idleSecondsToday), c: "#22C55E" },
-          { label: "Top app", value: heatmapState.summary.topAppToday || "—", c: "#3B82F6" },
-          { label: "Samples", value: String(heatmapState.events.length), c: "#F59E0B" }
+          { label: "Focus blocks", value: String(focusBlocks), c: "#22C55E" },
+          { label: "Context switches", value: String(contextSwitches), c: "#F59E0B" },
+          { label: "Top app", value: heatmapState.summary.topAppToday || "—", c: "#3B82F6" }
         ].map((s) => (
           <GlassCard key={s.label} accent={s.c} className="flex flex-col gap-1">
             <p className="text-[10px] uppercase tracking-wider text-[#525252]">{s.label}</p>
@@ -15973,20 +15589,22 @@ function HeatmapView({
           </GlassCard>
 
           <GlassCard hover={false}>
-            <SectionTitle>This week · by app</SectionTitle>
-            {heatmapState.summary.weekByApp.length === 0 ? <p className="text-xs text-[#525252]">No weekly data yet.</p> : (
-              <div className="space-y-2.5">
-                {heatmapState.summary.weekByApp.slice(0, 6).map((a, i) => {
-                  const max = Math.max(1, heatmapState.summary.weekByApp[0]?.seconds ?? 1);
-                  return (
-                    <div key={a.name}>
-                      <div className="mb-1 flex items-center justify-between text-xs"><span className="truncate text-[#F5F5F5]">{a.name}</span><span className="font-mono text-[#A3A3A3]">{formatDuration(a.seconds)}</span></div>
-                      <div className="h-1.5 overflow-hidden rounded-full bg-[#1f1f1f]"><div className="h-full rounded-full" style={{ width: `${(a.seconds / max) * 100}%`, background: appColors[i % appColors.length] }} /></div>
-                    </div>
-                  );
-                })}
+            <SectionTitle action={<span className="flex items-center gap-1.5 font-mono text-[10px] text-[#525252]">less<span className="flex gap-0.5">{[0.2, 0.45, 0.7, 1].map((t) => <span key={t} className="h-2.5 w-2.5 rounded-[2px]" style={{ background: `rgba(239,68,68,${t})` }} />)}</span>more</span>}>Weekly heatmap</SectionTitle>
+            <div className="space-y-[3px] overflow-x-auto pt-1">
+              <div className="flex gap-[3px] pl-8">
+                {["0", "", "", "3", "", "", "6", "", "", "9", "", "", "12", "", "", "15", "", "", "18", "", "", "21", "", ""].map((h, i) => (
+                  <span key={i} className="w-[14px] text-center font-mono text-[8px] text-[#525252]">{h}</span>
+                ))}
               </div>
-            )}
+              {weekGrid.map((row, day) => (
+                <div key={day} className="flex items-center gap-[3px]">
+                  <span className="w-7 font-mono text-[10px] text-[#525252]">{weekdayLabels[day]}</span>
+                  {row.map((seconds, hour) => (
+                    <span key={hour} className="h-[14px] w-[14px] rounded-[2px]" style={{ background: heatCellColor(seconds) }} title={`${weekdayLabels[day]} ${hour}:00 · ${formatDuration(seconds)}`} />
+                  ))}
+                </div>
+              ))}
+            </div>
           </GlassCard>
         </div>
 
@@ -16006,11 +15624,24 @@ function HeatmapView({
           </GlassCard>
 
           <GlassCard accent="#22C55E" hover={false}>
-            <SectionTitle action={<Target className="h-3.5 w-3.5 text-[#22C55E]" />}>Goals</SectionTitle>
+            <SectionTitle action={<button type="button" onClick={() => startAddGoal()} className="min-h-0 rounded-md border border-[#262626] bg-transparent px-2 py-0.5 text-[10px] text-[#22C55E] hover:border-[#22C55E]/40">+ New</button>}>Goals</SectionTitle>
             {heatmapState.goalProgress.length === 0 ? <p className="text-xs text-[#525252]">No goals yet.</p> : (
-              <div className="space-y-2 text-sm">
+              <div className="space-y-2.5">
                 {heatmapState.goalProgress.map((goal) => (
-                  <div key={goal.id} className="flex items-center justify-between gap-2"><span className="truncate text-[#F5F5F5]">{goal.name}</span><StatusChip tone={goal.percent >= 100 ? "ok" : goal.percent >= 60 ? "info" : "warn"}>{goal.percent}%</StatusChip></div>
+                  <div key={goal.id}>
+                    <div className="mb-1 flex items-center justify-between gap-2 text-xs">
+                      <span className="truncate text-[#F5F5F5]">{goal.name}</span>
+                      <StatusChip tone={goal.percent >= 100 ? "ok" : goal.percent >= 60 ? "info" : "warn"}>{goal.percent}%</StatusChip>
+                    </div>
+                    <div className="h-1.5 overflow-hidden rounded-full bg-[#1f1f1f]"><div className="h-full rounded-full" style={{ width: `${Math.min(100, goal.percent)}%`, background: "#22C55E" }} /></div>
+                    <div className="mt-1 flex items-center justify-between">
+                      <span className="font-mono text-[10px] text-[#525252]">{formatDuration(goal.progressSeconds)} of {formatDuration(goal.targetSeconds)}</span>
+                      <span className="flex gap-1">
+                        <button type="button" onClick={() => editGoal(goal)} className="min-h-0 rounded-md border border-[#262626] bg-transparent px-1.5 py-0.5 text-[10px] text-[#A3A3A3] hover:text-[#F5F5F5]">Edit</button>
+                        <button type="button" onClick={() => void deleteGoal(goal)} className="min-h-0 rounded-md border border-[#262626] bg-transparent px-1.5 py-0.5 text-[10px] text-[#A3A3A3] hover:text-[#EF4444]">Delete</button>
+                      </span>
+                    </div>
+                  </div>
                 ))}
               </div>
             )}
@@ -16026,65 +15657,26 @@ function HeatmapView({
         </div>
       </div>
 
-      {/* Advanced: controls, settings, goals, raw lists */}
-      <details className="rounded-lg border border-[#1a1a1a] bg-[#080808]">
-        <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] text-[#525252] hover:text-[#A3A3A3]">advanced · controls, settings, goals, samples</summary>
-        <div className="space-y-4 border-t border-[#1a1a1a] p-3">
-          <Panel title="Controls">
-            <div className="button-row">
-              <button type="button" onClick={() => void startTracking()}>Start tracking</button>
-              <button type="button" onClick={() => void heatmapAction("heatmap.pause", {}, "Heatmap tracking paused.")}>Pause tracking</button>
-              <button type="button" onClick={() => void logCurrentApp()}>Log current app once</button>
-              <button type="button" onClick={() => void heatmapAction("heatmap.aggregate_now", {}, "Heatmap aggregated.")}>Aggregate now</button>
-              <button className="danger-button" type="button" onClick={() => void clearData()}>Clear data</button>
+      {showGoalModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={goalForm.id ? "Edit goal" : "New goal"}>
+          <div className="w-full max-w-md rounded-2xl border p-5 shadow-2xl" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div><p className="text-xs uppercase tracking-[0.16em]" style={{ color: "#22C55E" }}>{goalForm.id ? "Edit" : "New"}</p><h2 className="text-xl font-semibold text-[#F5F5F5]">{goalForm.id ? "Edit goal" : "New goal"}</h2></div>
+              <button type="button" aria-label="Close" onClick={() => { setShowGoalModal(false); }} className="min-h-0 border-0 bg-transparent text-[#A3A3A3] hover:text-[#F5F5F5]">✕</button>
             </div>
-            <p>{heatmapState.detectionNote}</p>
-          </Panel>
-          <div className="dashboard-grid">
-            <Panel title="Settings">
-              <div className="project-form">
-                <label>Tracking enabled<select value={trackingEnabled ? "true" : "false"} onChange={(event) => setTrackingEnabled(event.target.value === "true")}><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
-                <label>Sample interval seconds<input type="number" min="60" value={sampleIntervalSeconds} onChange={(event) => setSampleIntervalSeconds(event.target.value)} /></label>
-                <label>Aggregation interval hours<input type="number" min="3" value={aggregationIntervalHours} onChange={(event) => setAggregationIntervalHours(event.target.value)} /></label>
-                <label>Pause during fullscreen<select value={pauseDuringFullscreen ? "true" : "false"} onChange={(event) => setPauseDuringFullscreen(event.target.value === "true")}><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
-                <label>Private app exclusions<textarea value={privateApps} onChange={(event) => setPrivateApps(event.target.value)} /></label>
-                <label>Private title keyword exclusions<textarea value={privateTitleKeywords} onChange={(event) => setPrivateTitleKeywords(event.target.value)} /></label>
-              </div>
-              <div className="button-row"><button type="button" onClick={() => void saveSettings()}>Save settings</button></div>
-            </Panel>
-            <Panel title="Goals">
-              <div className="project-form">
-                <label>Name<input value={goalForm.name} onChange={(event) => setGoalForm({ ...goalForm, name: event.target.value })} placeholder="Deep work" /></label>
-                <label>Target hours/week<input type="number" min="0.25" step="0.25" value={goalForm.targetHoursPerWeek} onChange={(event) => setGoalForm({ ...goalForm, targetHoursPerWeek: event.target.value })} /></label>
-                <label>App/project keyword<input value={goalForm.keyword} onChange={(event) => setGoalForm({ ...goalForm, keyword: event.target.value })} placeholder="Code, VS Code" /></label>
-                <label>Active<select value={goalForm.active ? "true" : "false"} onChange={(event) => setGoalForm({ ...goalForm, active: event.target.value === "true" })}><option value="true">Active</option><option value="false">Inactive</option></select></label>
-              </div>
-              <div className="button-row">
-                <button type="button" onClick={() => void saveGoal()}>{goalForm.id ? "Update goal" : "Create goal"}</button>
-                <button type="button" onClick={() => setGoalForm({ id: "", name: "", targetHoursPerWeek: "5", keyword: "", active: true })}>Reset</button>
-              </div>
-              <div className="action-list action-list--compact">
-                {heatmapState.goalProgress.map((goal) => (
-                  <article className="data-item data-item--stacked accent-heatmap" key={goal.id}>
-                    <strong>{goal.name} / {goal.percent}%</strong>
-                    <span>{formatDuration(goal.progressSeconds)} of {formatDuration(goal.targetSeconds)} / {goal.keyword || "all samples"}</span>
-                    <div className="button-row"><button type="button" onClick={() => editGoal(goal)}>Edit</button><button className="danger-button" type="button" onClick={() => void deleteGoal(goal)}>Delete</button></div>
-                  </article>
-                ))}
-              </div>
-            </Panel>
+            <div className="space-y-3">
+              <label className="block text-xs text-[#A3A3A3]">Name<input className="mt-1 w-full" value={goalForm.name} onChange={(event) => setGoalForm({ ...goalForm, name: event.target.value })} placeholder="Deep work" /></label>
+              <label className="block text-xs text-[#A3A3A3]">Target hours / week<input type="number" min="0.25" step="0.25" className="mt-1 w-full" value={goalForm.targetHoursPerWeek} onChange={(event) => setGoalForm({ ...goalForm, targetHoursPerWeek: event.target.value })} /></label>
+              <label className="block text-xs text-[#A3A3A3]">App / project keyword<input className="mt-1 w-full" value={goalForm.keyword} onChange={(event) => setGoalForm({ ...goalForm, keyword: event.target.value })} placeholder="Code, VS Code" /></label>
+              <label className="block text-xs text-[#A3A3A3]">Active<select className="mt-1 w-full" value={goalForm.active ? "true" : "false"} onChange={(event) => setGoalForm({ ...goalForm, active: event.target.value === "true" })}><option value="true">Active</option><option value="false">Inactive</option></select></label>
+            </div>
+            <div className="button-row mt-4">
+              <button type="button" className="button-primary" disabled={!goalForm.name.trim()} onClick={() => void saveGoal()}>{goalForm.id ? "Update goal" : "Create goal"}</button>
+              <button type="button" onClick={() => setShowGoalModal(false)}>Cancel</button>
+            </div>
           </div>
-          <Panel title="Recent samples">
-            <div className="action-list action-list--compact">
-              {heatmapState.events.length === 0 ? <p>No samples yet.</p> : heatmapState.events.slice(0, 10).map((event) => (
-                <CollapsibleListItem accentClass="accent-heatmap" key={event.id} title={event.appName} meta={`${formatLocalDateTime(event.timestamp)} / ${event.active ? "active" : "idle"} / ${formatDuration(event.durationSeconds)}`}>
-                  <p>{event.windowTitle}</p>
-                </CollapsibleListItem>
-              ))}
-            </div>
-          </Panel>
         </div>
-      </details>
+      )}
     </div>
   );
 
@@ -16195,34 +15787,6 @@ function CaptureView({
     await onRefresh();
   }
 
-  function renderCaptureItem(item: CaptureItem) {
-    return (
-      <CollapsibleListItem
-        accentClass="accent-capture"
-        key={item.id}
-        title={`${item.title} / ${item.type}`}
-        meta={`${formatLocalDateTime(item.createdAt)} / ${item.status}${item.filePath ? " / file" : ""}`}
-        actions={(
-          <>
-            <button type="button" onClick={() => void routeCapture("capture.route_to_journal", item, "Sent to Journal.")}>Send to Journal</button>
-            <button type="button" onClick={() => void routeCapture("capture.route_to_calendar", item, "Calendar event created.")}>Create Calendar event</button>
-            <button type="button" disabled={!item.filePath} onClick={() => void routeCapture("capture.route_to_vault", item, "Saved to Vault.")}>Save to Vault</button>
-            <button type="button" onClick={() => void routeCapture("capture.route_to_finance", item, "Added to Finance.")}>Add to Finance</button>
-            <button type="button" onClick={() => void routeCapture("capture.route_to_finder", item, "Added to Finder.")}>Add to Finder</button>
-            <button type="button" onClick={() => void routeCapture("capture.route_to_drop", item, "Sent to Drop.")}>Send to Drop</button>
-            {item.status !== "archived" && <button type="button" onClick={() => void archiveCapture(item)}>Archive</button>}
-            <button className="danger-button" type="button" onClick={() => void deleteCapture(item)}>Delete</button>
-          </>
-        )}
-      >
-        <p>{previewForUi(item.text || item.url || "No text")}</p>
-        {item.tags.length > 0 && <p>{item.tags.join(", ")}</p>}
-        {item.filePath && <p className="technical">{item.filePath}</p>}
-        <p className="technical">{item.id}</p>
-      </CollapsibleListItem>
-    );
-  }
-
   const ACCENT_CAPTURE = "#EC4899";
   const captureAgo = (iso: string): string => {
     const diff = Date.now() - new Date(iso).getTime();
@@ -16271,10 +15835,28 @@ function CaptureView({
             </div>
             <div className="rounded-xl border border-[#1f1f1f] bg-[#0A0A0A] transition-colors focus-within:border-[#EC4899]/50">
               <textarea value={form.text} onChange={(event) => setForm({ ...form, text: event.target.value })} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") void saveCapture(); }} rows={3} placeholder="Type or dictate anything…" className="w-full resize-none border-none bg-transparent px-3.5 py-3 text-sm text-[#F5F5F5] placeholder:text-[#525252] focus:outline-none" />
+              {/* Details — type / title / link / tags, baked in (no advanced section). */}
+              <div className="grid grid-cols-1 gap-2 border-t border-[#161616] px-3 py-2.5 sm:grid-cols-2">
+                <label className="text-[11px] text-[#A3A3A3]">Type<select className="mt-1 w-full" value={form.type} onChange={(event) => setForm({ ...form, type: event.target.value as CaptureItemType })}><option value="note">note</option><option value="link">link</option><option value="task">task</option><option value="expense">expense</option><option value="file">file</option><option value="image">image</option><option value="document">document</option><option value="other">other</option></select></label>
+                <label className="text-[11px] text-[#A3A3A3]">Title<input className="mt-1 w-full" value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} placeholder="Quick title" /></label>
+                <label className="text-[11px] text-[#A3A3A3]">Link<input className="mt-1 w-full" value={form.url} onChange={(event) => setForm({ ...form, url: event.target.value })} placeholder="Optional URL" /></label>
+                <label className="text-[11px] text-[#A3A3A3]">Tags<input className="mt-1 w-full" value={form.tags} onChange={(event) => setForm({ ...form, tags: event.target.value })} placeholder="inbox, later" /></label>
+              </div>
               <div className="flex items-center justify-between border-t border-[#161616] px-3 py-2">
-                <button type="button" onClick={() => void onStartVoiceCapture("module_ui")} disabled={speechState.performancePaused} className="flex h-8 w-8 items-center justify-center rounded-lg text-[#06B6D4] transition-colors hover:bg-[#06B6D4]/10 disabled:opacity-40" title="Dictate"><Mic className="h-4 w-4" /></button>
+                <div className="flex items-center gap-1">
+                  {voiceWorkflow.mode === "capture_note" ? (
+                    <>
+                      <button type="button" onClick={() => void onSaveVoiceCapture()} className="rounded-md border border-[#262626] px-2.5 py-1.5 text-xs text-[#22C55E] hover:bg-[#22C55E]/10">Save voice</button>
+                      <button type="button" onClick={onStopVoiceCapture} className="rounded-md border border-[#262626] px-2.5 py-1.5 text-xs text-[#A3A3A3] hover:text-[#F5F5F5]">Stop</button>
+                      <button type="button" onClick={onCancelVoiceCapture} className="rounded-md border border-[#262626] px-2.5 py-1.5 text-xs text-[#A3A3A3] hover:text-[#EF4444]">Cancel</button>
+                    </>
+                  ) : (
+                    <button type="button" onClick={() => void onStartVoiceCapture("module_ui")} disabled={speechState.performancePaused} className="flex h-8 w-8 items-center justify-center rounded-lg text-[#06B6D4] transition-colors hover:bg-[#06B6D4]/10 disabled:opacity-40" title="Dictate"><Mic className="h-4 w-4" /></button>
+                  )}
+                </div>
                 <div className="flex items-center gap-2">
                   <button type="button" onClick={() => void chooseFile()} className="rounded-md border border-[#262626] px-2.5 py-1.5 text-xs text-[#A3A3A3] hover:text-[#F5F5F5]">{form.filePath ? "File ✓" : "Attach"}</button>
+                  {form.text || form.title || form.url || form.tags || form.filePath ? <button type="button" onClick={() => setForm(emptyCaptureForm)} className="rounded-md border border-[#262626] px-2.5 py-1.5 text-xs text-[#A3A3A3] hover:text-[#F5F5F5]">Reset</button> : null}
                   <button type="button" onClick={() => void saveCapture()} disabled={!form.text.trim() && !form.filePath} className="inline-flex items-center gap-1.5 rounded-lg bg-[#EC4899] px-4 py-2 text-sm font-semibold text-white transition-all hover:brightness-110 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40">Capture <ArrowUpRight className="h-4 w-4" /></button>
                 </div>
               </div>
@@ -16313,8 +15895,8 @@ function CaptureView({
                         </div>
                         <div className="flex shrink-0 items-center gap-1">
                           <PinButton input={{ type: "item", module: "capture", entityId: item.id, title: item.title || `Capture ${m.label}`, subtitle: "Capture" }} />
-                          {item.status !== "archived" && <button type="button" onClick={() => void archiveCapture(item)} title="Archive" className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#161616] hover:text-[#F5F5F5]"><Archive className="h-3.5 w-3.5" /></button>}
-                          <button type="button" onClick={() => void deleteCapture(item)} title="Delete" className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#EF4444]/10 hover:text-[#EF4444]"><Trash2 className="h-3.5 w-3.5" /></button>
+                          {item.status !== "archived" && <button type="button" onClick={() => void archiveCapture(item)} title="Archive this capture" className="inline-flex items-center gap-1 rounded-md border border-[#262626] px-2 py-1 text-[10px] text-[#A3A3A3] hover:text-[#F5F5F5]"><Archive className="h-3 w-3" />Archive</button>}
+                          <button type="button" onClick={() => void deleteCapture(item)} title="Delete this capture" className="inline-flex items-center gap-1 rounded-md border border-[#262626] px-2 py-1 text-[10px] text-[#A3A3A3] hover:border-[#EF4444]/40 hover:text-[#EF4444]"><Trash2 className="h-3 w-3" />Delete</button>
                         </div>
                       </div>
                       <div className="mt-3 flex flex-wrap items-center gap-1.5 border-t border-[#161616] pt-3">
@@ -16378,59 +15960,17 @@ function CaptureView({
               })}
             </div>
           </GlassCard>
+
+          <GlassCard hover={false}>
+            <SectionTitle action={<Mic className="h-3.5 w-3.5 text-[#06B6D4]" />}>Voice options</SectionTitle>
+            <div className="space-y-2">
+              <label className="flex items-center gap-2 text-xs text-[#A3A3A3]"><input type="checkbox" checked={voiceWorkflowSettings.autoSaveCaptureVoiceNotes} onChange={(event) => void onVoiceWorkflowSettingsChange({ autoSaveCaptureVoiceNotes: event.target.checked })} />Auto-save voice notes</label>
+              <label className="flex items-center gap-2 text-xs text-[#A3A3A3]"><input type="checkbox" checked={voiceWorkflowSettings.continueCaptureMode} onChange={(event) => void onVoiceWorkflowSettingsChange({ continueCaptureMode: event.target.checked })} />Continue listening after saving</label>
+              <label className="flex items-center gap-2 text-xs text-[#A3A3A3]"><input type="checkbox" checked={voiceWorkflowSettings.confirmSensitiveCapture} onChange={(event) => void onVoiceWorkflowSettingsChange({ confirmSensitiveCapture: event.target.checked })} />Require review for sensitive text</label>
+            </div>
+          </GlassCard>
         </div>
       </div>
-
-      {/* Advanced (voice capture controls, full form, routed/archived, settings) */}
-      <details className="rounded-lg border border-[#1a1a1a] bg-[#080808]">
-        <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] text-[#525252] hover:text-[#A3A3A3]">advanced · voice capture, full form, routed &amp; archived, settings</summary>
-        <div className="space-y-4 border-t border-[#1a1a1a] p-3">
-          <Panel title="Voice Capture">
-            <div className="button-row">
-              <button type="button" className="button-primary" disabled={speechState.performancePaused || (voiceWorkflow.mode === "capture_note" && voiceWorkflow.status === "listening")} onClick={() => void onStartVoiceCapture("module_ui")}>Start Voice Capture</button>
-              <button type="button" disabled={voiceWorkflow.mode !== "capture_note"} onClick={() => void onSaveVoiceCapture()}>Save</button>
-              <button type="button" disabled={voiceWorkflow.mode !== "capture_note"} onClick={onStopVoiceCapture}>Stop</button>
-              <button type="button" className="danger-button" disabled={voiceWorkflow.mode !== "capture_note"} onClick={onCancelVoiceCapture}>Cancel</button>
-            </div>
-            <div className="settings-list">
-              <label className="assistant__check"><input type="checkbox" checked={voiceWorkflowSettings.autoSaveCaptureVoiceNotes} onChange={(event) => void onVoiceWorkflowSettingsChange({ autoSaveCaptureVoiceNotes: event.target.checked })} /><span>Auto-save Capture voice notes</span></label>
-              <label className="assistant__check"><input type="checkbox" checked={voiceWorkflowSettings.continueCaptureMode} onChange={(event) => void onVoiceWorkflowSettingsChange({ continueCaptureMode: event.target.checked })} /><span>Continue listening after saving</span></label>
-              <label className="assistant__check"><input type="checkbox" checked={voiceWorkflowSettings.confirmSensitiveCapture} onChange={(event) => void onVoiceWorkflowSettingsChange({ confirmSensitiveCapture: event.target.checked })} /><span>Require review for sensitive capture text</span></label>
-            </div>
-          </Panel>
-          <Panel title="Full form">
-            <div className="project-form">
-              <label>Type<select value={form.type} onChange={(event) => setForm({ ...form, type: event.target.value as CaptureItemType })}><option value="note">note</option><option value="link">link</option><option value="task">task</option><option value="expense">expense</option><option value="file">file</option><option value="image">image</option><option value="document">document</option><option value="other">other</option></select></label>
-              <label>Title<input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} placeholder="Quick title" /></label>
-              <label>URL<input value={form.url} onChange={(event) => setForm({ ...form, url: event.target.value })} placeholder="Optional link" /></label>
-              <label>Tags<input value={form.tags} onChange={(event) => setForm({ ...form, tags: event.target.value })} placeholder="inbox, later" /></label>
-            </div>
-            <div className="button-row">
-              <button type="button" onClick={() => void saveCapture()}>Save to inbox</button>
-              <button type="button" onClick={() => setForm(emptyCaptureForm)}>Reset</button>
-            </div>
-            {form.filePath && <p className="technical">{form.filePath}</p>}
-          </Panel>
-          <div className="dashboard-grid">
-            <Panel title={`Routed Items (${captureState.routed.length})`}>
-              <div className="action-list action-list--compact">
-                {captureState.routed.length === 0 ? <p>No routed items yet.</p> : <LimitedList items={captureState.routed} step={50}>{renderCaptureItem}</LimitedList>}
-              </div>
-            </Panel>
-            <Panel title={`Archived (${captureState.archived.length})`}>
-              <div className="action-list action-list--compact">
-                {captureState.archived.length === 0 ? <p>No archived captures.</p> : <LimitedList items={captureState.archived} step={50}>{renderCaptureItem}</LimitedList>}
-              </div>
-            </Panel>
-          </div>
-          <Panel title="Settings">
-            <div className="settings-list">
-              <div className="settings-row"><span>Capture items</span><strong>{captureState.itemsPath}</strong></div>
-              <div className="settings-row"><span>Capture files</span><strong>{captureState.capturesPath}</strong></div>
-            </div>
-          </Panel>
-        </div>
-      </details>
 
       {toast && <ToastStack toasts={[{ id: toast.message, message: toast.message, tone: toast.tone }]} />}
     </div>
@@ -16524,6 +16064,7 @@ function SearchView({
   const [smartStatus, setSmartStatus] = useState("");
   const [status, setStatus] = useState("");
   const [searching, setSearching] = useState(false);
+  const [rebuilding, setRebuilding] = useState(false);
 
   const currentParams = { query, sourceModule, fileType, dateFrom, dateTo };
   // Memoize so typing in the query box does not re-sort the whole index each keystroke.
@@ -16534,17 +16075,19 @@ function SearchView({
     .slice(0, 6), [searchState.index]);
 
   async function rebuildIndex(): Promise<void> {
-    if (!window.confirm("Rebuild the local DexNest Search index now? This is user-triggered and allowed during Performance Mode.")) {
+    if (rebuilding) {
       return;
     }
-    setStatus("Rebuilding index...");
-    const result = await onAction("search.rebuild_index", "module_ui", currentParams);
-    if (result.ok) {
-      setStatus("Index rebuilt.");
+    // Rebuild quietly in the background with a loading state. It does NOT dump the
+    // whole index into the results list — searching is done via the query box.
+    setRebuilding(true);
+    setStatus("Rebuilding index…");
+    try {
+      const result = await onAction("search.rebuild_index", "module_ui", {});
+      setStatus(result.ok ? "Index rebuilt." : (result.error ?? "Index rebuild failed."));
       await onRefresh();
-      await runQuery();
-    } else {
-      setStatus(result.error ?? "Index rebuild failed.");
+    } finally {
+      setRebuilding(false);
     }
   }
 
@@ -16560,6 +16103,18 @@ function SearchView({
   }
 
   async function runQuery(nextParams = currentParams): Promise<void> {
+    // Don't dump the entire index when there's nothing to search by. Only run when
+    // there's a query or an active filter; otherwise clear results and prompt.
+    const hasCriteria = Boolean(nextParams.query.trim())
+      || nextParams.sourceModule !== "all"
+      || nextParams.fileType !== "all"
+      || Boolean(nextParams.dateFrom)
+      || Boolean(nextParams.dateTo);
+    if (!hasCriteria) {
+      setResults([]);
+      setStatus("Type a search or pick a filter.");
+      return;
+    }
     setSearching(true);
     try {
       const result = await onAction("search.run_query", "module_ui", nextParams);
@@ -16858,10 +16413,10 @@ function SearchView({
                 <label>To<input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} /></label>
               </div>
               <div className="button-row">
-                <button type="button" onClick={() => void rebuildIndex()}>Rebuild index</button>
+                <button type="button" disabled={rebuilding} onClick={() => void rebuildIndex()}>{rebuilding ? "Rebuilding…" : "Rebuild index"}</button>
                 <button type="button" onClick={() => void openIndexFolder()}>Open index folder</button>
                 <button className="danger-button" type="button" onClick={() => void clearIndex()}>Clear index</button>
-                <span className="inline-status">{searchState.index.length} records · {searchState.ocrTextFileCount} OCR</span>
+                <span className="inline-status">{rebuilding ? "rebuilding…" : `${searchState.index.length} records · ${searchState.ocrTextFileCount} OCR · auto-updates`}</span>
               </div>
 
               <div className="section-heading"><p>Secure Vault Admin Search</p></div>
@@ -16966,6 +16521,7 @@ function DeckView({
   const [pinnedOnly, setPinnedOnly] = useState(false);
   const [routineOnly, setRoutineOnly] = useState(false);
   const [routineStatus, setRoutineStatus] = useState("");
+  const [showRoutineBuilder, setShowRoutineBuilder] = useState(false);
   const [deckFilter, setDeckFilter] = useState<"all" | "pinned">("all");
   const [routineForm, setRoutineForm] = useState<{
     id?: string;
@@ -17168,6 +16724,7 @@ function DeckView({
       selectedActionId: routineSelectableActions[0]?.id ?? ""
     });
     setRoutineStatus(`Editing ${routine.name}`);
+    setShowRoutineBuilder(true);
   }
 
   function addRoutineStep(): void {
@@ -17235,6 +16792,7 @@ function DeckView({
     showDeckToast(result.ok ? "Routine saved." : result.error ?? "Routine save failed.", result.ok ? "success" : "error");
     if (result.ok) {
       resetRoutineForm();
+      setShowRoutineBuilder(false);
       await onRefresh();
     }
   }
@@ -17437,14 +16995,20 @@ function DeckView({
           </GlassCard>
 
           <GlassCard hover={false}>
-            <SectionTitle action={<button type="button" onClick={resetRoutineForm} className="text-[10px] text-[#A855F7]">+ new</button>}>Routines</SectionTitle>
+            <SectionTitle action={<button type="button" onClick={() => { resetRoutineForm(); setShowRoutineBuilder(true); }} className="min-h-0 rounded-md border border-[#262626] bg-transparent px-2 py-0.5 text-[10px] text-[#A855F7] hover:border-[#A855F7]/40">+ New</button>}>Routines</SectionTitle>
             {routinesState.routines.length === 0 ? <p className="text-xs text-[#525252]">No routines yet.</p> : (
               <div className="space-y-2">
                 {routinesState.routines.map((routine) => (
-                  <div key={routine.id} className="glass-card flex items-center gap-3 p-2.5">
-                    <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{routine.name}</p><p className="font-mono text-[10px] text-[#525252]">{routine.steps.length} steps · {routine.lastRunAt ? formatLocalDateTime(routine.lastRunAt) : "never run"}</p></div>
-                    <PinButton input={{ type: "routine", module: "deck", entityId: routine.id, title: routine.name, subtitle: "Deck routine" }} />
-                    <ActionButton accent={ACCENT_DECK} icon={Play} className="text-xs" onClick={() => void runRoutine(routine)}>Run</ActionButton>
+                  <div key={routine.id} className="glass-card p-2.5">
+                    <div className="flex items-center gap-3">
+                      <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{routine.name}</p><p className="font-mono text-[10px] text-[#525252]">{routine.steps.length} steps · {routine.lastRunAt ? formatLocalDateTime(routine.lastRunAt) : "never run"}</p></div>
+                      <PinButton input={{ type: "routine", module: "deck", entityId: routine.id, title: routine.name, subtitle: "Deck routine" }} />
+                      <ActionButton accent={ACCENT_DECK} icon={Play} className="text-xs" onClick={() => void runRoutine(routine)}>Run</ActionButton>
+                    </div>
+                    <div className="mt-2 flex gap-1">
+                      <button type="button" onClick={() => editRoutine(routine)} className="min-h-0 rounded-md border border-[#262626] bg-transparent px-2 py-0.5 text-[10px] text-[#A3A3A3] hover:border-[#A855F7]/40 hover:text-[#F5F5F5]">Edit</button>
+                      <button type="button" onClick={() => void deleteRoutine(routine)} className="min-h-0 rounded-md border border-[#262626] bg-transparent px-2 py-0.5 text-[10px] text-[#A3A3A3] hover:border-[#EF4444]/40 hover:text-[#EF4444]">Delete</button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -17454,83 +17018,41 @@ function DeckView({
         </div>
       </div>
 
-      {/* Advanced: action browser, routine builder, dev project actions, endpoint */}
-      <details className="rounded-lg border border-[#1a1a1a] bg-[#080808]">
-        <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] text-[#525252] hover:text-[#A3A3A3]">advanced · action browser, routine builder, project actions, endpoint</summary>
-        <div className="space-y-4 border-t border-[#1a1a1a] p-3">
-          <Panel title="Deck endpoint">
-            <div className="settings-grid">
-              <article><span>Status</span><strong>{endpoint ? "running" : "loading"}</strong><p>Stream Deck control layer.</p></article>
-              <article><span>Security</span><strong>{lanOn ? "LAN enabled" : "local only"}</strong><p>PIN/token {tokenOn ? "enabled" : "disabled"}.</p></article>
-              <article><span>Base URL</span><strong className="technical">{endpoint ?? "Loading"}</strong><p>Use localhost by default.</p></article>
+      {showRoutineBuilder && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={routineForm.id ? "Edit routine" : "New routine"}>
+          <div className="w-full max-w-xl overflow-y-auto rounded-2xl border p-5 shadow-2xl" style={{ borderColor: "var(--border)", background: "var(--surface)", maxHeight: "90vh" }}>
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div><p className="text-xs uppercase tracking-[0.16em]" style={{ color: ACCENT_DECK }}>{routineForm.id ? "Edit" : "New"}</p><h2 className="text-xl font-semibold text-[#F5F5F5]">{routineForm.id ? "Edit routine" : "New routine"}</h2></div>
+              <button type="button" aria-label="Close" onClick={() => { resetRoutineForm(); setShowRoutineBuilder(false); }} className="min-h-0 border-0 bg-transparent text-[#A3A3A3] hover:text-[#F5F5F5]">✕</button>
             </div>
-            <div className="deck-endpoint-strip">
-              <PathText>{endpoint ? `${endpoint}/health` : "Loading endpoint"}</PathText>
-              <button type="button" onClick={() => void testControlEndpoint("/health")}>Test /health</button>
-              <button type="button" onClick={() => void copyText(controlEndpoint("/actions"), "Actions endpoint copied.")}>Copy /actions</button>
-              <button type="button" onClick={() => void copyText(controlEndpoint("/actions/pinned"), "Pinned endpoint copied.")}>Copy pinned</button>
-              <button type="button" onClick={() => void copyText(controlEndpoint("/routines"), "Routines endpoint copied.")}>Copy routines</button>
-              <button type="button" onClick={() => void runEndpointAction("deck.test_endpoint")}>Run test action</button>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <label className="text-xs text-[#A3A3A3]">Name<input className="mt-1 w-full" value={routineForm.name} onChange={(event) => setRoutineForm((current) => ({ ...current, name: event.target.value }))} placeholder="Morning Review" /></label>
+              <label className="text-xs text-[#A3A3A3]">Enabled<select className="mt-1 w-full" value={routineForm.enabled ? "true" : "false"} onChange={(event) => setRoutineForm((current) => ({ ...current, enabled: event.target.value === "true" }))}><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
+              <label className="text-xs text-[#A3A3A3] sm:col-span-2">Description<input className="mt-1 w-full" value={routineForm.description} onChange={(event) => setRoutineForm((current) => ({ ...current, description: event.target.value }))} /></label>
             </div>
-            {lastResponse && <p className="technical technical--truncate">Last response: {lastResponse}</p>}
-          </Panel>
-
-          <Panel title="Routine builder">
-            <div className="deck-compact-form">
-              <label>Name<input value={routineForm.name} onChange={(event) => setRoutineForm((current) => ({ ...current, name: event.target.value }))} placeholder="Morning Review" /></label>
-              <label>Enabled<select value={routineForm.enabled ? "true" : "false"} onChange={(event) => setRoutineForm((current) => ({ ...current, enabled: event.target.value === "true" }))}><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
-              <label className="field-span-2">Description<input value={routineForm.description} onChange={(event) => setRoutineForm((current) => ({ ...current, description: event.target.value }))} /></label>
-              <label className="field-span-2">Add step<select value={routineForm.selectedActionId} onChange={(event) => setRoutineForm((current) => ({ ...current, selectedActionId: event.target.value }))}>{routineSelectableActions.map((action) => <option value={action.id} key={action.id}>{action.id}</option>)}</select></label>
+            <div className="mt-3 flex items-end gap-2">
+              <label className="min-w-0 flex-1 text-xs text-[#A3A3A3]">Add step<select className="mt-1 w-full" value={routineForm.selectedActionId} onChange={(event) => setRoutineForm((current) => ({ ...current, selectedActionId: event.target.value }))}>{routineSelectableActions.map((action) => <option value={action.id} key={action.id}>{action.id}</option>)}</select></label>
+              <button type="button" onClick={addRoutineStep} className="min-h-0 rounded-lg border border-[#262626] bg-transparent px-3 py-1.5 text-xs text-[#A3A3A3] hover:border-[#A855F7]/40 hover:text-[#F5F5F5]">Add step</button>
             </div>
-            <div className="button-row">
-              <button type="button" onClick={addRoutineStep}>Add step</button>
-              <button type="button" onClick={() => void saveRoutine()}>{routineForm.id ? "Update routine" : "Create routine"}</button>
-              <button type="button" onClick={resetRoutineForm}>Reset</button>
-            </div>
-            <div className="deck-mini-list">
-              {routineForm.steps.map((step, index) => (
-                <article className="deck-step-row" key={step.id}><span>{index + 1}</span><strong>{actionTitle(step.actionId)}</strong><div className="button-row"><button type="button" onClick={() => moveRoutineStep(index, -1)}>Up</button><button type="button" onClick={() => moveRoutineStep(index, 1)}>Down</button><button type="button" onClick={() => removeRoutineStep(index)}>Remove</button></div></article>
+            <div className="mt-3 space-y-1.5">
+              {routineForm.steps.length === 0 ? <p className="text-xs text-[#525252]">No steps yet — add actions above.</p> : routineForm.steps.map((step, index) => (
+                <div key={step.id} className="flex items-center gap-2 rounded-lg border border-[#1f1f1f] px-2.5 py-1.5">
+                  <span className="font-mono text-[10px] text-[#525252]">{index + 1}</span>
+                  <span className="min-w-0 flex-1 truncate text-xs text-[#F5F5F5]">{actionTitle(step.actionId)}</span>
+                  <button type="button" title="Move up" onClick={() => moveRoutineStep(index, -1)} className="min-h-0 border-0 bg-transparent px-1 text-[#A3A3A3] hover:text-[#F5F5F5]">↑</button>
+                  <button type="button" title="Move down" onClick={() => moveRoutineStep(index, 1)} className="min-h-0 border-0 bg-transparent px-1 text-[#A3A3A3] hover:text-[#F5F5F5]">↓</button>
+                  <button type="button" title="Remove" onClick={() => removeRoutineStep(index)} className="min-h-0 border-0 bg-transparent px-1 text-[#A3A3A3] hover:text-[#EF4444]">✕</button>
+                </div>
               ))}
             </div>
-            <div className="deck-mini-list">
-              {routinesState.routines.map((routine) => (
-                <article className="deck-step-row accent-deck" key={routine.id}>
-                  <strong>{routine.name}</strong><span>{routine.steps.length} steps</span>
-                  <div className="button-row"><button type="button" onClick={() => void runRoutine(routine)}>Run</button><button type="button" onClick={() => editRoutine(routine)}>Edit</button><button className="danger-button" type="button" onClick={() => void deleteRoutine(routine)}>Delete</button></div>
-                </article>
-              ))}
+            <div className="button-row mt-4">
+              <button type="button" className="button-primary" disabled={!routineForm.name.trim() || routineForm.steps.length === 0} onClick={() => void saveRoutine()}>{routineForm.id ? "Update routine" : "Create routine"}</button>
+              <button type="button" onClick={() => { resetRoutineForm(); setShowRoutineBuilder(false); }}>Cancel</button>
             </div>
-          </Panel>
-
-          <Panel title="Curated Stream Deck Action Browser">
-            <div className="deck-filter-grid">
-              <label>Search<input value={actionSearch} onChange={(event) => setActionSearch(event.target.value)} placeholder="Action title or ID" /></label>
-              <label>Module<select value={moduleFilter} onChange={(event) => setModuleFilter(event.target.value)}><option value="all">All modules</option>{moduleOptions.map((module) => <option value={module} key={module}>{module}</option>)}</select></label>
-              <label>Danger<select value={dangerFilter} onChange={(event) => setDangerFilter(event.target.value)}><option value="all">All levels</option>{dangerOptions.map((danger) => <option value={danger} key={danger}>{danger}</option>)}</select></label>
-              <label className="checkbox-row"><input type="checkbox" checked={pinnedOnly} onChange={(event) => setPinnedOnly(event.target.checked)} /><span>Pinned only</span></label>
-            </div>
-            <div className="deck-panel-scroll">
-              {curatedBrowserActions.length === 0 ? <EmptyState>No matching Stream Deck catalog actions.</EmptyState> : curatedBrowserActions.map((action) => renderDeckActionRow(action))}
-            </div>
-          </Panel>
-
-          <Panel title="Dev Stream Deck Actions">
-            <div className="deck-panel-scroll">
-              {streamDeckCatalogGroups.find((group) => group.id === "dev")?.items.filter((item) => item.actionId).length === 0 ? <EmptyState>No configured Dev Stream Deck actions.</EmptyState> : (
-                <section className="deck-project-group">
-                  <div className="deck-project-group__header"><strong>Dev</strong><span>Export pack actions only</span></div>
-                  <div className="deck-action-table">
-                    {streamDeckCatalogGroups.find((group) => group.id === "dev")?.items.map((item) => {
-                      const action = item.actionId ? actions.find((candidate) => candidate.id === item.actionId) : undefined;
-                      return action ? renderDeckActionRow(action, "accent-dev") : null;
-                    })}
-                  </div>
-                </section>
-              )}
-            </div>
-          </Panel>
+            {routineStatus && <p className="mt-2 text-xs text-[#A3A3A3]">{routineStatus}</p>}
+          </div>
         </div>
-      </details>
+      )}
     </div>
   );
 
@@ -17953,7 +17475,16 @@ function AppHealthView({
               <div key={check.id} className="flex items-center gap-3 rounded-lg border border-[#161616] bg-[#0a0a0a] px-3 py-2">
                 {statusIcon(check.status)}
                 <span className="flex-1 text-sm text-[#F5F5F5]">{check.label}: {check.detail}</span>
-                {check.suggestion && <span className="text-[11px] text-[#A3A3A3]">{check.suggestion}</span>}
+                {check.suggestion && <span className="hidden text-[11px] text-[#A3A3A3] sm:inline">{check.suggestion}</span>}
+                {check.actionId && (
+                  <button
+                    type="button"
+                    onClick={() => void onAction(check.actionId as string, "module_ui", {})}
+                    className="shrink-0 rounded-md border border-[#262626] px-2.5 py-1 text-[11px] font-medium text-[#A3A3A3] transition-colors hover:border-[#34D399]/40 hover:text-[#F5F5F5]"
+                  >
+                    {check.actionLabel ?? "Open"}
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -18020,6 +17551,9 @@ function SettingsView({
   onUserNameChange,
   appInfo,
   backupState,
+  toolsState,
+  vaultState,
+  heatmapState,
   calendarState,
   weatherState,
   newsState,
@@ -18046,6 +17580,9 @@ function SettingsView({
   onUserNameChange: (name: string) => void;
   appInfo: AppInfo | null;
   backupState: BackupState;
+  toolsState: ToolsState;
+  vaultState: VaultState;
+  heatmapState: HeatmapState;
   calendarState: CalendarState;
   weatherState: WeatherState;
   newsState: NewsState;
@@ -18098,6 +17635,9 @@ function SettingsView({
     { id: "nudges", label: "Reminders & Nudges", icon: Bell, accent: "#14B8A6" },
     { id: "weather", label: "Weather", icon: CloudSun, accent: "var(--accent-weather)" },
     { id: "news", label: "News", icon: Newspaper, accent: "var(--accent-news)" },
+    { id: "tools", label: "Tools & Dependencies", icon: Wrench, accent: "#F97316" },
+    { id: "vault", label: "Vault & OCR", icon: KeyRound, accent: "#10B981" },
+    { id: "heatmap", label: "Heatmap", icon: Activity, accent: "#EF4444" },
     { id: "data", label: "Data Management", icon: Trash2, accent: "#FB4D6A" },
     { id: "diagnostics", label: "Diagnostics", icon: Wrench, accent: "#3B82F6" }
   ];
@@ -18105,6 +17645,94 @@ function SettingsView({
   const [restorePath, setRestorePath] = useState("");
   const [restorePreview, setRestorePreview] = useState<BackupPreview | null>(null);
   const [backupMessage, setBackupMessage] = useState("");
+  const [toolFfmpegPath, setToolFfmpegPath] = useState(toolsState.ffmpegPath ?? "");
+  const [toolLibreOfficePath, setToolLibreOfficePath] = useState(toolsState.libreOfficePath ?? "");
+  const [toolTesseractPath, setToolTesseractPath] = useState(toolsState.tesseractPath ?? "");
+  const [toolPythonPath, setToolPythonPath] = useState(toolsState.pythonPath ?? "");
+  const [toolOcrEngine, setToolOcrEngine] = useState(toolsState.ocrEngine ?? "paddleocr");
+  const [toolOcrDevice, setToolOcrDevice] = useState(toolsState.ocrDevice ?? "gpu");
+  const [toolOcrLanguage, setToolOcrLanguage] = useState(toolsState.ocrLanguage ?? "eng");
+  const [toolsSettingsStatus, setToolsSettingsStatus] = useState("");
+  useEffect(() => {
+    setToolFfmpegPath(toolsState.ffmpegPath ?? "");
+    setToolLibreOfficePath(toolsState.libreOfficePath ?? "");
+    setToolTesseractPath(toolsState.tesseractPath ?? "");
+    setToolPythonPath(toolsState.pythonPath ?? "");
+    setToolOcrEngine(toolsState.ocrEngine ?? "paddleocr");
+    setToolOcrDevice(toolsState.ocrDevice ?? "gpu");
+    setToolOcrLanguage(toolsState.ocrLanguage ?? "eng");
+  }, [toolsState.ffmpegPath, toolsState.libreOfficePath, toolsState.tesseractPath, toolsState.pythonPath, toolsState.ocrEngine, toolsState.ocrDevice, toolsState.ocrLanguage]);
+  async function saveToolsDependencySettings(): Promise<void> {
+    try {
+      await getBridge().saveToolsSettings({
+        ffmpegPath: toolFfmpegPath, libreOfficePath: toolLibreOfficePath, tesseractPath: toolTesseractPath,
+        pythonPath: toolPythonPath, ocrEngine: toolOcrEngine, ocrDevice: toolOcrDevice, ocrLanguage: toolOcrLanguage
+      });
+      setToolsSettingsStatus("Tools dependency settings saved.");
+      await onRefresh();
+    } catch (error) {
+      setToolsSettingsStatus(error instanceof Error ? error.message : "Tools settings save failed.");
+    }
+  }
+  async function chooseToolsOutputFolder(): Promise<void> {
+    const result = await getBridge().chooseToolsOutputFolder();
+    setToolsSettingsStatus(result.ok ? "Output folder changed." : (result.error ?? "Output folder change cancelled."));
+    if (result.ok) { await onRefresh(); }
+  }
+  async function resetToolsOutputFolder(): Promise<void> {
+    const result = await getBridge().resetToolsOutputFolder();
+    setToolsSettingsStatus(result.ok ? "Output folder reset." : "Output folder reset failed.");
+    await onRefresh();
+  }
+  const [heatSample, setHeatSample] = useState(String(heatmapState.settings.sampleIntervalSeconds));
+  const [heatAgg, setHeatAgg] = useState(String(heatmapState.settings.aggregationIntervalHours));
+  const [heatFullscreen, setHeatFullscreen] = useState(heatmapState.settings.pauseDuringFullscreen);
+  const [heatApps, setHeatApps] = useState(heatmapState.settings.privateApps.join("\n"));
+  const [heatKeywords, setHeatKeywords] = useState(heatmapState.settings.privateTitleKeywords.join("\n"));
+  const [heatStatus, setHeatStatus] = useState("");
+  useEffect(() => {
+    setHeatSample(String(heatmapState.settings.sampleIntervalSeconds));
+    setHeatAgg(String(heatmapState.settings.aggregationIntervalHours));
+    setHeatFullscreen(heatmapState.settings.pauseDuringFullscreen);
+    setHeatApps(heatmapState.settings.privateApps.join("\n"));
+    setHeatKeywords(heatmapState.settings.privateTitleKeywords.join("\n"));
+  }, [heatmapState.settings]);
+  async function saveHeatmapPrefs(): Promise<void> {
+    const linesOf = (value: string): string[] => value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean);
+    // Always-on tracking: persist prefs and (re)start the sampler via heatmap.start.
+    const result = await onAction("heatmap.start", "module_ui", {
+      sampleIntervalSeconds: Number(heatSample) || 60,
+      aggregationIntervalHours: Number(heatAgg) || 3,
+      pauseDuringFullscreen: heatFullscreen,
+      privateApps: linesOf(heatApps),
+      privateTitleKeywords: linesOf(heatKeywords)
+    }) as { ok?: boolean; error?: string };
+    setHeatStatus(result?.ok ? "Heatmap settings saved." : (result?.error ?? "Save failed."));
+    await onRefresh();
+  }
+  async function clearHeatmapData(): Promise<void> {
+    if (!window.confirm("Clear all Heatmap samples?")) { return; }
+    const result = await onAction("heatmap.clear_data", "module_ui", { confirmedDangerous: true }) as { ok?: boolean; error?: string };
+    setHeatStatus(result?.ok ? "Heatmap data cleared." : (result?.error ?? "Clear failed."));
+    await onRefresh();
+  }
+  const [vaultAutoOcr, setVaultAutoOcr] = useState(vaultState.ocrSettings.autoOcrOnImport);
+  const [vaultOcrPython, setVaultOcrPython] = useState(vaultState.ocrSettings.pythonPath ?? "");
+  const [vaultOcrStatus, setVaultOcrStatus] = useState("");
+  useEffect(() => {
+    setVaultAutoOcr(vaultState.ocrSettings.autoOcrOnImport);
+    setVaultOcrPython(vaultState.ocrSettings.pythonPath ?? "");
+  }, [vaultState.ocrSettings.autoOcrOnImport, vaultState.ocrSettings.pythonPath]);
+  async function runVaultOcr(actionId: string): Promise<void> {
+    const result = await onAction(actionId, "module_ui") as { ok?: boolean; error?: string };
+    setVaultOcrStatus(result?.ok ? "OCR action queued." : (result?.error ?? "OCR action failed."));
+    await onRefresh();
+  }
+  async function saveVaultOcr(): Promise<void> {
+    const result = await onAction("vault.ocr.update_settings", "module_ui", { autoOcrOnImport: vaultAutoOcr, pythonPath: vaultOcrPython || null }) as { ok?: boolean; error?: string };
+    setVaultOcrStatus(result?.ok ? "Vault OCR settings saved." : (result?.error ?? "Save failed."));
+    await onRefresh();
+  }
   const [healthState, setHealthState] = useState<AppHealthState | null>(null);
   const [healthStatus, setHealthStatus] = useState("");
   const [voiceValidationResults, setVoiceValidationResults] = useState<VoiceValidationResult[]>([]);
@@ -18877,6 +18505,34 @@ function SettingsView({
       setWeatherStatus("Weather settings saved.");
     } catch (error) {
       setWeatherStatus(error instanceof Error ? error.message : "Weather settings failed to save.");
+    } finally {
+      setWeatherBusy(false);
+    }
+  }
+
+  // Resolve the typed location name → real coordinates (Open-Meteo geocoding),
+  // fill the form, save, and refresh — so users don't have to look up lat/long.
+  async function findWeatherCoordinates(): Promise<void> {
+    if (!weatherForm.locationName.trim()) {
+      setWeatherStatus("Enter a location name first (e.g. Regina, SK).");
+      return;
+    }
+    setWeatherBusy(true);
+    setWeatherStatus("Looking up location…");
+    try {
+      const res = await onAction("weather.geocode", "module_ui", { name: weatherForm.locationName }) as { ok?: boolean; latitude?: number; longitude?: number; locationName?: string; error?: string };
+      if (res?.ok && typeof res.latitude === "number" && typeof res.longitude === "number") {
+        const resolved = { ...weatherForm, latitude: res.latitude, longitude: res.longitude, locationName: res.locationName ?? weatherForm.locationName };
+        setWeatherForm(resolved);
+        await onAction("weather.update_settings", "module_ui", resolved);
+        await onAction("weather.refresh", "module_ui", { refreshReason: "manual" });
+        await onRefresh();
+        setWeatherStatus(`Set location to ${resolved.locationName} (${res.latitude.toFixed(4)}, ${res.longitude.toFixed(4)}).`);
+      } else {
+        setWeatherStatus(res?.error ?? "Could not find that location.");
+      }
+    } catch (error) {
+      setWeatherStatus(error instanceof Error ? error.message : "Location lookup failed.");
     } finally {
       setWeatherBusy(false);
     }
@@ -20049,11 +19705,15 @@ function SettingsView({
           </label>
           <label>
             Location name
-            <input
-              value={weatherForm.locationName}
-              onChange={(event) => setWeatherForm((current) => ({ ...current, locationName: event.target.value }))}
-              placeholder="Regina, SK"
-            />
+            <div style={{ display: "flex", gap: 6 }}>
+              <input
+                style={{ flex: 1 }}
+                value={weatherForm.locationName}
+                onChange={(event) => setWeatherForm((current) => ({ ...current, locationName: event.target.value }))}
+                placeholder="Regina, SK"
+              />
+              <button type="button" onClick={() => void findWeatherCoordinates()} disabled={weatherBusy}>Find coordinates</button>
+            </div>
           </label>
           <label>
             Latitude
@@ -20127,6 +19787,100 @@ function SettingsView({
             <NewsSettingsPanel newsState={newsState} onAction={onAction} onRefresh={onRefresh} />
           )}
 
+          {settingsSection === "tools" && (
+            <div className="space-y-4">
+              <GlassCard hover={false}>
+                <SectionTitle>Local dependency paths</SectionTitle>
+                <p className="mb-3 text-xs text-[#A3A3A3]">Optional paths to local engines used by the Tools workstation. Leave blank to auto-detect from PATH. Everything runs on-device.</p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <label className="text-xs text-[#A3A3A3]">ffmpeg path<input className="technical mt-1 w-full" value={toolFfmpegPath} onChange={(event) => setToolFfmpegPath(event.target.value)} placeholder="auto-detect" /></label>
+                  <label className="text-xs text-[#A3A3A3]">LibreOffice path<input className="technical mt-1 w-full" value={toolLibreOfficePath} onChange={(event) => setToolLibreOfficePath(event.target.value)} placeholder={toolsState.detectedLibreOfficePath ?? "auto-detect"} /></label>
+                  <label className="text-xs text-[#A3A3A3]">Tesseract path<input className="technical mt-1 w-full" value={toolTesseractPath} onChange={(event) => setToolTesseractPath(event.target.value)} placeholder="auto-detect" /></label>
+                  <label className="text-xs text-[#A3A3A3]">Python path<input className="technical mt-1 w-full" value={toolPythonPath} onChange={(event) => setToolPythonPath(event.target.value)} placeholder="auto-detect" /></label>
+                </div>
+              </GlassCard>
+              <GlassCard hover={false}>
+                <SectionTitle>OCR defaults</SectionTitle>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <label className="text-xs text-[#A3A3A3]">OCR engine<select className="mt-1 w-full" value={toolOcrEngine} onChange={(event) => setToolOcrEngine(event.target.value as typeof toolOcrEngine)}><option value="paddleocr">paddleocr</option><option value="tesseract">tesseract</option><option value="easyocr_placeholder">easyocr (placeholder)</option></select></label>
+                  <label className="text-xs text-[#A3A3A3]">OCR device<select className="mt-1 w-full" value={toolOcrDevice} onChange={(event) => setToolOcrDevice(event.target.value as typeof toolOcrDevice)}><option value="gpu">gpu</option><option value="cpu">cpu</option></select></label>
+                  <label className="text-xs text-[#A3A3A3]">OCR language<input className="technical mt-1 w-full" value={toolOcrLanguage} onChange={(event) => setToolOcrLanguage(event.target.value)} placeholder="eng" /></label>
+                </div>
+                <div className="button-row mt-3">
+                  <button type="button" className="button-primary" onClick={() => void saveToolsDependencySettings()}>Save settings</button>
+                </div>
+              </GlassCard>
+              <GlassCard hover={false}>
+                <SectionTitle>Output folder</SectionTitle>
+                <p className="technical mb-3 break-all">{toolsState.outputFolderPath}</p>
+                <div className="button-row">
+                  <button type="button" onClick={() => void chooseToolsOutputFolder()}>Change output folder</button>
+                  <button type="button" onClick={() => void resetToolsOutputFolder()}>Reset to default</button>
+                </div>
+              </GlassCard>
+              {toolsSettingsStatus && <p className="text-xs text-[#22D3EE]">{toolsSettingsStatus}</p>}
+            </div>
+          )}
+
+          {settingsSection === "vault" && (
+            <div className="space-y-4">
+              <GlassCard hover={false}>
+                <SectionTitle>Vault storage</SectionTitle>
+                <div className="space-y-1 text-xs text-[#A3A3A3]">
+                  <p className="technical break-all">{vaultState.documentsPath}</p>
+                  <p className="technical break-all">{vaultState.ocrOutputPath}</p>
+                  <p>{vaultState.documentCount} documents · {formatBytes(vaultState.totalSizeBytes)}</p>
+                  <p>Secure Vault is encrypted separately. Document OCR is local PaddleOCR GPU only.</p>
+                </div>
+              </GlassCard>
+              <GlassCard hover={false}>
+                <SectionTitle action={<StatusChip tone={vaultState.paddleGpuStatus.ok ? "ok" : "warn"}>{vaultState.paddleGpuStatus.ok ? "GPU ready" : "needs setup"}</StatusChip>}>GPU OCR Queue</SectionTitle>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <div className="rounded-lg border border-[#1f1f1f] p-3"><p className="text-[10px] uppercase tracking-wide text-[#525252]">Queue</p><p className="text-sm text-[#F5F5F5]">{vaultState.ocrQueueRunning ? "Running" : vaultState.ocrQueuePaused ? "Paused" : "Idle"}</p><p className="text-[11px] text-[#A3A3A3]">{vaultState.ocrJobs.filter((job) => job.status === "queued").length} queued / {vaultState.ocrJobs.filter((job) => job.status === "failed").length} failed</p></div>
+                  <div className="rounded-lg border border-[#1f1f1f] p-3"><p className="text-[10px] uppercase tracking-wide text-[#525252]">PaddleOCR GPU</p><p className="text-sm text-[#F5F5F5]">{vaultState.paddleGpuStatus.ok ? "Ready" : "Needs setup"}</p><p className="text-[11px] text-[#A3A3A3]">{vaultState.paddleGpuStatus.message}</p></div>
+                  <div className="rounded-lg border border-[#1f1f1f] p-3"><p className="text-[10px] uppercase tracking-wide text-[#525252]">Runtime</p><p className="text-sm text-[#F5F5F5]">{vaultState.paddleGpuStatus.paddleVersion ?? "unknown"}</p><p className="technical text-[11px] break-all text-[#A3A3A3]">{vaultState.paddleGpuStatus.pythonPath ?? "No Python path"}</p></div>
+                </div>
+                <div className="mt-3 space-y-3">
+                  <label className="flex items-center gap-2 text-xs text-[#A3A3A3]"><input type="checkbox" checked={vaultAutoOcr} onChange={(event) => setVaultAutoOcr(event.target.checked)} />Auto-OCR supported Vault imports</label>
+                  <label className="block text-xs text-[#A3A3A3]">Python path<input className="technical mt-1 w-full" value={vaultOcrPython} onChange={(event) => setVaultOcrPython(event.target.value)} placeholder="Use detected Tools Python if empty" /></label>
+                </div>
+                <div className="button-row mt-3">
+                  <button type="button" onClick={() => void runVaultOcr("vault.ocr.run_queue")}>Run OCR queue now</button>
+                  <button type="button" onClick={() => void runVaultOcr("vault.ocr.pause_queue")}>Pause OCR queue</button>
+                  <button type="button" onClick={() => void runVaultOcr("vault.ocr.retry_failed")}>Retry failed OCR</button>
+                  <button type="button" className="button-primary" onClick={() => void saveVaultOcr()}>Save OCR settings</button>
+                </div>
+              </GlassCard>
+              {vaultOcrStatus && <p className="text-xs text-[#22D3EE]">{vaultOcrStatus}</p>}
+            </div>
+          )}
+
+          {settingsSection === "heatmap" && (
+            <div className="space-y-4">
+              <GlassCard hover={false}>
+                <SectionTitle action={<StatusChip tone="ok">always on</StatusChip>}>Heatmap tracking</SectionTitle>
+                <p className="mb-3 text-xs text-[#A3A3A3]">App-usage tracking runs automatically while DexNest is open (metadata only — no keystrokes, screenshots, or content). It samples lightly at the interval below.</p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <label className="text-xs text-[#A3A3A3]">Sample interval (seconds)<input type="number" min="60" className="mt-1 w-full" value={heatSample} onChange={(event) => setHeatSample(event.target.value)} /></label>
+                  <label className="text-xs text-[#A3A3A3]">Aggregation interval (hours)<input type="number" min="1" className="mt-1 w-full" value={heatAgg} onChange={(event) => setHeatAgg(event.target.value)} /></label>
+                  <label className="text-xs text-[#A3A3A3] sm:col-span-2 flex items-center gap-2"><input type="checkbox" checked={heatFullscreen} onChange={(event) => setHeatFullscreen(event.target.checked)} />Pause sampling during fullscreen apps (privacy)</label>
+                </div>
+              </GlassCard>
+              <GlassCard hover={false}>
+                <SectionTitle action={<EyeOff className="h-3.5 w-3.5 text-[#A3A3A3]" />}>Privacy exclusions</SectionTitle>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <label className="text-xs text-[#A3A3A3]">Excluded apps (one per line)<textarea className="technical mt-1 w-full" value={heatApps} onChange={(event) => setHeatApps(event.target.value)} placeholder="1Password&#10;Banking app" /></label>
+                  <label className="text-xs text-[#A3A3A3]">Excluded title keywords (one per line)<textarea className="technical mt-1 w-full" value={heatKeywords} onChange={(event) => setHeatKeywords(event.target.value)} placeholder="password&#10;private" /></label>
+                </div>
+                <div className="button-row mt-3">
+                  <button type="button" className="button-primary" onClick={() => void saveHeatmapPrefs()}>Save settings</button>
+                  <button type="button" onClick={() => void onAction("heatmap.aggregate_now", "module_ui").then(() => onRefresh())}>Aggregate now</button>
+                  <button type="button" className="danger-button" onClick={() => void clearHeatmapData()}>Clear data</button>
+                </div>
+                {heatStatus && <p className="mt-2 text-xs text-[#22D3EE]">{heatStatus}</p>}
+              </GlassCard>
+            </div>
+          )}
 
           {settingsSection === "data" && (
             <div className="space-y-4">

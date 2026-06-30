@@ -420,6 +420,7 @@ export const seededActions = [
   ...[
     ["clipboard.delete_history_item", "Delete Clipboard History Item", "Remove one item from DexNest Clipboard history.", "clipboard", "caution", false],
     ["tools.delete_output", "Remove Tools Output", "Remove a Tools output from the DexNest list (keeps the file on disk).", "tools", "caution", false],
+    ["tools.clear_outputs", "Clear Tools Outputs", "Clear the Tools output list (keeps the files on disk).", "tools", "caution", false],
     ["tools.delete_output_file", "Delete Tools Output File", "Delete a Tools output file from disk.", "tools", "critical", true],
     ["drop.remove_incoming_item", "Remove Incoming Drop Item", "Remove one incoming item from the DexNest Drop list (keeps the file on disk).", "drop", "caution", false],
     ["drop.delete_incoming_file", "Delete Incoming Drop File", "Delete a received Drop file from disk.", "drop", "critical", true],
@@ -2330,7 +2331,8 @@ export const seededActions = [
     ["utilities.stopwatch.pause", "Pause Stopwatch", "Pause the local Utilities stopwatch.", "utilities.stopwatch", "caution", false, "utilities.stopwatch.pause"],
     ["utilities.stopwatch.reset", "Reset Stopwatch", "Reset the local Utilities stopwatch.", "utilities.stopwatch", "caution", false, "utilities.stopwatch.reset"],
     ["utilities.world_clock.add", "Add World Clock", "Add a manually configured local world clock.", "utilities.world_clock", "caution", false, "utilities.world_clock.add"],
-    ["utilities.world_clock.remove", "Remove World Clock", "Remove a local Utilities world clock.", "utilities.world_clock", "caution", false, "utilities.world_clock.remove"]
+    ["utilities.world_clock.remove", "Remove World Clock", "Remove a local Utilities world clock.", "utilities.world_clock", "caution", false, "utilities.world_clock.remove"],
+    ["utilities.clear_history", "Clear Utilities History", "Clear local Utilities recent results, timers, or stopwatch history.", "utilities.output", "caution", false, "utilities.clear_history"]
   ].map(([id, title, description, category, dangerLevel, requiresConfirmation, handlerRef]): DexNestActionDefinition => ({
     id: id as string,
     title: title as string,
@@ -2352,7 +2354,8 @@ export const seededActions = [
   ...[
     ["weather.refresh", "Refresh Weather", "Fetch the latest optional DexNest Weather data from Open-Meteo when Weather is enabled.", "weather.refresh", "safe", false, "weather.refresh"],
     ["weather.update_settings", "Update Weather Settings", "Update optional DexNest Weather settings.", "weather.settings", "caution", false, "weather.update_settings"],
-    ["weather.toggle_enabled", "Toggle Weather", "Enable or disable optional DexNest Weather.", "weather.settings", "caution", false, "weather.toggle_enabled"]
+    ["weather.toggle_enabled", "Toggle Weather", "Enable or disable optional DexNest Weather.", "weather.settings", "caution", false, "weather.toggle_enabled"],
+    ["weather.geocode", "Find Weather Location", "Resolve a location name to coordinates via Open-Meteo geocoding.", "weather.settings", "safe", false, "weather.geocode"]
   ].map(([id, title, description, category, dangerLevel, requiresConfirmation, handlerRef]) => ({
     id: id as string,
     title: title as string,

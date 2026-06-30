@@ -634,6 +634,12 @@ interface SpeechTranscriptionResult {
   error?: string;
 }
 
+interface VaultKeyField {
+  id: string;
+  label: string;
+  value: string;
+}
+
 interface VaultDocumentRecord {
   id: string;
   title: string;
@@ -645,6 +651,9 @@ interface VaultDocumentRecord {
   category: string;
   tags: string[];
   notes: string;
+  // User-entered structured fields (e.g. "Work Permit Number" → "272829"). These
+  // are the reliable source for Smart Lookup — independent of OCR quality.
+  keyFields?: VaultKeyField[];
   sourceModule: string;
   expiryDate?: string | null;
   createdAt: string;
@@ -690,6 +699,7 @@ interface VaultImportInput {
   sourceModule?: string;
   title?: string;
   versionOfId?: string;
+  keyFields?: Array<{ id?: string; label?: string; value?: string }>;
 }
 
 interface VaultState {
@@ -1126,6 +1136,7 @@ interface UtilitiesInput {
   label?: string;
   city?: string;
   timeZone?: string;
+  scope?: string;
 }
 
 type WeatherUnits = "metric" | "imperial";
@@ -1555,6 +1566,9 @@ interface HealthCheckResult {
   status: HealthStatus;
   detail: string;
   suggestion?: string;
+  // Optional one-click action for the check (e.g. open Audit, open Backup).
+  actionId?: string;
+  actionLabel?: string;
 }
 
 interface HealthGroup {
@@ -1827,8 +1841,8 @@ function gitignoreHasLocalData(): boolean {
   }
 }
 
-function check(id: string, label: string, status: HealthStatus, detail: string, suggestion?: string): HealthCheckResult {
-  return { id, label, status, detail, suggestion };
+function check(id: string, label: string, status: HealthStatus, detail: string, suggestion?: string, actionId?: string, actionLabel?: string): HealthCheckResult {
+  return { id, label, status, detail, suggestion, actionId, actionLabel };
 }
 
 function appHealthState(source: DexNestActionTrigger = "module_ui", writeAudit = false): AppHealthState {
@@ -1864,6 +1878,7 @@ function appHealthState(source: DexNestActionTrigger = "module_ui", writeAudit =
   const searchIndexStatus = loadSearchIndexStatus();
   const externalDevices = externalDevicesState();
   const ambient = ambientVoiceState();
+  const wakeEng = wakeEngineState();
   const speech = speechServiceState();
   const ocrQueuedCount = loadVaultOcrJobs().filter((job) => job.status === "queued").length;
   const localDataExists = existsSync(localDataRoot);
@@ -1909,7 +1924,7 @@ function appHealthState(source: DexNestActionTrigger = "module_ui", writeAudit =
         check("action-count", "Total action count", "pass", `${actions.length} registered actions.`),
         check("duplicate-actions", "No duplicate action IDs", duplicateActionIds.length === 0 ? "pass" : "fail", duplicateActionIds.length === 0 ? "No duplicates found." : duplicateActionIds.join(", "), "Action IDs must be stable and unique."),
         check("danger-levels", "All actions define danger level", missingDangerLevel.length === 0 ? "pass" : "fail", missingDangerLevel.length === 0 ? "All actions have dangerLevel." : `${missingDangerLevel.length} missing dangerLevel.`, "Set safe/caution/danger/critical."),
-        check("danger-confirmation", "Danger actions require confirmation", unsafeWithoutConfirmation.length === 0 ? "pass" : "fail", unsafeWithoutConfirmation.length === 0 ? "Danger/critical actions require confirmation." : `${unsafeWithoutConfirmation.length} unsafe action(s) lack confirmation.`, "Set requiresConfirmation for danger/critical actions."),
+        check("danger-confirmation", "Danger actions require confirmation", unsafeWithoutConfirmation.length === 0 ? "pass" : "fail", unsafeWithoutConfirmation.length === 0 ? "Danger/critical actions require confirmation." : `${unsafeWithoutConfirmation.length} unsafe action(s) lack confirmation: ${unsafeWithoutConfirmation.map((action) => action.id).join(", ")}.`, "Set requiresConfirmation for these danger/critical action IDs."),
         check("disabled-actions", "Disabled actions count", disabledActionCount === 0 ? "pass" : "warn", `${disabledActionCount} disabled action(s).`)
       ]
     },
@@ -1918,7 +1933,7 @@ function appHealthState(source: DexNestActionTrigger = "module_ui", writeAudit =
       title: "Event Log",
       checks: [
         check("recent-events", "Recent event count", "pass", `${recentEvents.length} recent event(s) loaded.`),
-        check("failed-today", "Failed events today", failedToday.length === 0 ? "pass" : "warn", `${failedToday.length} failed event(s) today.`, failedToday.length ? "Review Audit for failed actions." : undefined),
+        check("failed-today", "Failed events today", failedToday.length === 0 ? "pass" : "warn", failedToday.length === 0 ? "No failed events today." : `${failedToday.length} failed event(s) today: ${[...new Set(failedToday.map((event) => event.actionId).filter(Boolean))].slice(0, 6).join(", ") || "see Audit"}.`, failedToday.length ? "Open Audit to review failed actions." : undefined, failedToday.length ? "audit.open_history" : undefined, failedToday.length ? "Open Audit" : undefined),
         check("audit-private-content", "Audit private-content safety", "pass", "Audit should store summaries and metadata only, not full secrets, clipboard text, or document contents."),
         check("event-log-path", "Event log database path", existsSync(localDb.dbPath) ? "pass" : "warn", localDb.dbPath, "Database is created after DexNest initializes.")
       ]
@@ -1927,12 +1942,13 @@ function appHealthState(source: DexNestActionTrigger = "module_ui", writeAudit =
       id: "security",
       title: "Security",
       checks: [
-        check("secure-vault-setup", "Secure Vault setup", secureState.isSetup ? "pass" : "warn", secureState.isSetup ? "Secure Vault is set up." : "Secure Vault is not set up yet."),
-        check("secure-vault-lock", "Secure Vault lock state", secureState.isSetup && !secureState.isUnlocked ? "pass" : secureState.isSetup ? "warn" : "warn", secureState.isSetup ? `${secureState.isUnlocked ? "Unlocked" : "Locked"} · lock mode: ${secureState.lockMode === "timer" ? `timer (${secureState.autoLockMinutes} min)` : "stays unlocked until app exit"}.` : "Not configured.", secureState.isUnlocked && secureState.lockMode === "timer" ? "Timer mode auto-locks after inactivity." : undefined),
-        check("secure-vault-file", "Secure Vault encrypted file", !secureState.isSetup || existsSync(secureVaultPath) ? "pass" : "fail", secureVaultPath, "Secure Vault setup should create this encrypted file."),
-        check("clipboard-secret-protection", "Clipboard secret protection", "warn", "Secret exclusion from Clipboard history is currently policy/placeholder based.", "Do not save secrets into normal Clipboard history."),
+        // Secure Vault is optional — "not set up" is a valid state, not a warning.
+        check("secure-vault-setup", "Secure Vault setup", "pass", secureState.isSetup ? "Secure Vault is set up." : "Secure Vault is optional and not set up.", secureState.isSetup ? undefined : "Set up Secure Vault from the Vault module to store secrets locally.", secureState.isSetup ? undefined : "vault.open", secureState.isSetup ? undefined : "Open Vault"),
+        check("secure-vault-lock", "Secure Vault lock state", "pass", secureState.isSetup ? `${secureState.isUnlocked ? "Unlocked this session" : "Locked"} · lock mode: ${secureState.lockMode === "timer" ? `timer (${secureState.autoLockMinutes} min)` : "stays unlocked until app exit"}.` : "Not set up.", secureState.isSetup && secureState.isUnlocked && secureState.lockMode === "timer" ? "Timer mode auto-locks after inactivity." : undefined),
+        check("secure-vault-file", "Secure Vault encrypted file", !secureState.isSetup || existsSync(secureVaultPath) ? "pass" : "fail", secureState.isSetup ? secureVaultPath : "No encrypted file (Secure Vault not set up).", "Secure Vault setup should create this encrypted file."),
+        check("clipboard-secret-protection", "Clipboard secret protection", "warn", "Secret exclusion from Clipboard history is heuristic (masking likely-sensitive values), not guaranteed.", "Avoid copying secrets into normal Clipboard history; use Secure Vault for credentials."),
         check("clipboard-multicopy-hotkey", "Clipboard multi-copy hotkey", !clipboardSettings.multiCopyHotkeyEnabled ? "warn" : clipboardSettings.multiCopyHotkeyStatus === "active" ? "pass" : "warn", `${clipboardSettings.multiCopyHotkey} / ${clipboardSettings.multiCopyHotkeyStatus}${clipboardSettings.multiCopyHotkeyLastError ? ` / ${clipboardSettings.multiCopyHotkeyLastError}` : ""}`, clipboardSettings.multiCopyHotkeyStatus === "failed" ? "Switch Clipboard fallback hotkey to Ctrl+Alt+C or Ctrl+Shift+X." : undefined),
-        check("drop-pin-placeholder", "Drop PIN", "warn", "Drop PIN is a placeholder and is not enforced yet.", "Use Drop only on trusted local Wi-Fi.")
+        check("drop-access", "Drop access", streamDeckSettings.lanEnabled ? "warn" : "pass", streamDeckSettings.lanEnabled ? "Drop/endpoint LAN exposure is enabled. A PIN is optional hardening and not yet implemented." : "Drop serves on localhost (127.0.0.1) only by default. A PIN is optional hardening, not required for local use.", "Enable LAN exposure only on trusted networks; keep it off otherwise.")
       ]
     },
     {
@@ -1944,7 +1960,26 @@ function appHealthState(source: DexNestActionTrigger = "module_ui", writeAudit =
         check("command-shortcut", "Command global shortcut", !commandSettings.globalShortcutEnabled ? "warn" : commandSettings.globalShortcutStatus === "active" ? "pass" : "warn", `${commandSettings.globalShortcut} / ${commandSettings.globalShortcutStatus}${commandSettings.globalShortcutLastError ? ` / ${commandSettings.globalShortcutLastError}` : ""}`, commandSettings.globalShortcutStatus === "failed" ? "Switch DexNest Command shortcut to Ctrl+Alt+Space or Ctrl+Shift+Space." : undefined),
         check("keyboard-shortcuts", "Keyboard shortcuts", !keyboardSettings.enabled ? "warn" : keyboardSettings.mappings.some((mapping) => mapping.status === "active") ? "pass" : "warn", `${keyboardSettings.mappings.filter((mapping) => mapping.status === "active").length} active shortcut(s).`, shortcutConflictDetails(keyboardSettings).join(" ") || undefined),
         check("tray-status", "Tray status", tray && commandSettings.trayStatus === "active" ? "pass" : "warn", tray && commandSettings.trayStatus === "active" ? "DexNest tray is active." : "DexNest tray is not active.", "Restart DexNest if the tray icon is missing."),
-        check("ambient-voice", "Ambient Voice", ambient.settings.ambientVoiceEnabled ? "warn" : "pass", `${ambient.currentState}; push-to-talk ${ambient.settings.pushToTalkShortcutStatus}; wake word ${ambient.wakeWordStatus}.`, ambient.pausedByPerformanceMode ? "Ambient Voice is paused by Performance Mode." : "Ambient Voice is off by default; wake word is placeholder-only."),
+        (() => {
+          const wakeEnabled = ambient.settings.wakeWordEnabled;
+          const wakeDesc = !wakeEnabled
+            ? "wake word off"
+            : wakeEng.status === "paused_by_performance_mode" ? "wake word paused by Performance Mode"
+              : wakeEng.status === "listening_for_nest" ? `wake word listening (${ambient.settings.wakePhraseMode === "hey_jarvis" ? "Hey Jarvis" : ambient.settings.wakePhraseMode === "alexa" ? "Alexa" : "Nest"})`
+                : wakeEng.status === "starting" ? "wake word starting"
+                  : wakeEng.status === "wake_detected" || wakeEng.status === "recording_command" ? "wake word active"
+                    : wakeEng.status === "engine_missing" ? `wake engine unavailable (${wakeEng.installStatus === "missing_model" ? "model missing" : wakeEng.installStatus === "missing_dependencies" ? "Python deps missing" : "engine unavailable"})`
+                      : wakeEng.status === "error" ? "wake engine error"
+                        : "wake word idle";
+          const wakeProblem = wakeEnabled && (wakeEng.status === "engine_missing" || wakeEng.status === "error");
+          return check(
+            "ambient-voice",
+            "Ambient Voice / Wake word",
+            wakeProblem ? "warn" : "pass",
+            `${ambient.currentState}; push-to-talk ${ambient.settings.pushToTalkShortcutStatus}; ${wakeDesc}.`,
+            wakeProblem ? (wakeEng.lastError || "Open Settings → Ambient Voice and run Check wake engine.") : undefined
+          );
+        })(),
         check("speech-service", "Speech service", speech.performancePaused ? "warn" : "pass", `${speech.settings.speechEngine} / ${speech.settings.modelName} / ${speech.modelStatus.message}`, speech.performancePaused ? "Speech capture is paused by Performance Mode." : "Run Check local model in Settings when changing speech engine."),
         check("heatmap-state", "Heatmap status", performanceModePauses("heatmap") ? "warn" : heatmap.settings.enabled && !heatmap.settings.paused ? "warn" : "pass", heatmap.trackingStatus, performanceModePauses("heatmap") ? "Heatmap sampling is paused until Performance Mode turns off." : heatmap.settings.enabled && !heatmap.settings.paused ? "Heatmap samples only at configured interval." : undefined),
         check("ocr-queue-paused", "OCR queue", performanceModePauses("ocr") && ocrQueuedCount > 0 ? "warn" : "pass", performanceModePauses("ocr") ? `${ocrQueuedCount} queued OCR job(s); queue paused by Performance Mode.` : `${ocrQueuedCount} queued OCR job(s).`),
@@ -1981,7 +2016,7 @@ function appHealthState(source: DexNestActionTrigger = "module_ui", writeAudit =
         check("govee-provider", "Govee provider", externalDevices.providerStatus === "ready" || externalDevices.providerStatus === "disabled" ? "pass" : "warn", externalDevices.providerMessage, "Unlock Secure Vault and save a Govee API key to enable device control."),
         check("govee-cache", "Govee device cache", externalDevices.devices.length > 0 ? "pass" : "warn", `${externalDevices.devices.length} cached Govee device(s).`, "Refresh devices after saving a Govee API key."),
         check("search-index", "Search index", search.index.length > 0 ? "pass" : "warn", `${search.index.length} indexed record(s).`, "Run Search rebuild when you want local metadata search."),
-        check("latest-backup", "Latest backup", latestBackup ? "pass" : "warn", latestBackup ? `${latestBackup.fileName} / ${formatLocalDateTime(latestBackup.createdAt)}` : "No backup found.", "Create a local backup from Settings.")
+        check("latest-backup", "Latest backup", latestBackup ? "pass" : "warn", latestBackup ? `${latestBackup.fileName} / ${formatLocalDateTime(latestBackup.createdAt)}` : "No backup found.", latestBackup ? undefined : "Create a local backup, then re-run checks.", latestBackup ? undefined : "backup.open", latestBackup ? undefined : "Open Backup")
       ]
     }
   ];
@@ -2692,7 +2727,9 @@ function loadVaultDocuments(): VaultDocumentRecord[] {
 
 function saveVaultDocuments(documents: VaultDocumentRecord[]): VaultDocumentRecord[] {
   ensureVaultRoot();
-  return writeJsonFile(vaultDocumentsPath, documents);
+  const saved = writeJsonFile(vaultDocumentsPath, documents);
+  scheduleSearchReindex();
+  return saved;
 }
 
 function defaultVaultOcrSettings(): VaultOcrSettings {
@@ -4355,6 +4392,9 @@ function setPerformanceModeEnabled(enabled: boolean, reason: PerformanceModeReas
     void processVaultOcrQueue("system");
   }
   registerAmbientVoiceShortcut();
+  // Pause the wake-word sidecar when Performance Mode turns on (and resume it when
+  // it turns off), honoring pauseWakeWordInPerformanceMode.
+  reconcileWakeEngine();
   createDexNestTray();
   localDb.appendActionEvent({
     module: "DexNest System",
@@ -5369,6 +5409,9 @@ function loadClipboardHistory(): ClipboardHistoryItem[] {
 }
 
 function saveClipboardHistory(items: ClipboardHistoryItem[]): ClipboardHistoryItem[] {
+  // NOTE: no auto-reindex here — the clipboard listener writes on every copy, so
+  // reindexing each time would be wasteful. Clipboard snippets (deliberate) and
+  // the other content modules drive the Search index instead.
   return writeJsonFile(clipboardHistoryPath, items.slice(0, 100));
 }
 
@@ -5377,7 +5420,9 @@ function loadClipboardSnippets(): ClipboardSnippet[] {
 }
 
 function saveClipboardSnippets(items: ClipboardSnippet[]): ClipboardSnippet[] {
-  return writeJsonFile(clipboardSnippetsPath, items);
+  const saved = writeJsonFile(clipboardSnippetsPath, items);
+  scheduleSearchReindex();
+  return saved;
 }
 
 function defaultClipboardSettings(): ClipboardSettings {
@@ -6806,7 +6851,9 @@ function loadDropShelf(): DropShelfItem[] {
 
 function saveDropShelf(items: DropShelfItem[]): DropShelfItem[] {
   ensureDropRoot();
-  return writeJsonFile(dropShelfPath, items.slice(0, 100));
+  const saved = writeJsonFile(dropShelfPath, items.slice(0, 100));
+  scheduleSearchReindex();
+  return saved;
 }
 
 function loadDropIncoming(): DropShelfItem[] {
@@ -6819,7 +6866,9 @@ function loadDropIncoming(): DropShelfItem[] {
 
 function saveDropIncoming(items: DropShelfItem[]): DropShelfItem[] {
   ensureDropRoot();
-  return writeJsonFile(dropIncomingPath, items.slice(0, 100));
+  const saved = writeJsonFile(dropIncomingPath, items.slice(0, 100));
+  scheduleSearchReindex();
+  return saved;
 }
 
 function loadDropSettings(): DropSettings {
@@ -6847,7 +6896,9 @@ function loadToolsOutputs(): ToolsOutputItem[] {
 
 function saveToolsOutputs(items: ToolsOutputItem[]): ToolsOutputItem[] {
   ensureToolsRoot();
-  return writeJsonFile(toolsOutputsPath, items.slice(0, 100));
+  const saved = writeJsonFile(toolsOutputsPath, items.slice(0, 100));
+  scheduleSearchReindex();
+  return saved;
 }
 
 function loadSearchIndex(): SearchIndexRecord[] {
@@ -6887,7 +6938,9 @@ function loadJournalEntries(): JournalEntry[] {
 }
 
 function saveJournalEntries(items: JournalEntry[]): JournalEntry[] {
-  return writeJsonFile(journalEntriesPath, items);
+  const saved = writeJsonFile(journalEntriesPath, items);
+  scheduleSearchReindex();
+  return saved;
 }
 
 function loadCalendarEvents(): CalendarEvent[] {
@@ -6895,7 +6948,9 @@ function loadCalendarEvents(): CalendarEvent[] {
 }
 
 function saveCalendarEvents(items: CalendarEvent[]): CalendarEvent[] {
-  return writeJsonFile(calendarEventsPath, items);
+  const saved = writeJsonFile(calendarEventsPath, items);
+  scheduleSearchReindex();
+  return saved;
 }
 
 const timetableDays: TimetableDay[] = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
@@ -7003,14 +7058,19 @@ function computedUtilityTimer(timer: UtilityTimer, nowMs = Date.now()): UtilityT
   if (timer.status !== "running" || !timer.startedAt) {
     return timer;
   }
-  const elapsed = Math.max(0, Math.floor((nowMs - new Date(timer.startedAt).getTime()) / 1000));
+  const elapsedMs = Math.max(0, nowMs - new Date(timer.startedAt).getTime());
+  const elapsed = Math.floor(elapsedMs / 1000);
   const remainingSeconds = Math.max(0, timer.remainingSeconds - elapsed);
+  const done = remainingSeconds === 0;
   return {
     ...timer,
     remainingSeconds,
-    status: remainingSeconds === 0 ? "done" : "running",
-    completedAt: remainingSeconds === 0 ? new Date(nowMs).toISOString() : timer.completedAt,
-    startedAt: remainingSeconds === 0 ? null : timer.startedAt
+    status: done ? "done" : "running",
+    completedAt: done ? new Date(nowMs).toISOString() : timer.completedAt,
+    // Advance the baseline by the whole seconds we just consumed (keep the
+    // sub-second remainder so the countdown stays accurate and does not
+    // double-subtract on the next recompute/persist).
+    startedAt: done ? null : new Date(new Date(timer.startedAt).getTime() + elapsed * 1000).toISOString()
   };
 }
 
@@ -7223,8 +7283,13 @@ async function refreshWeather(source: DexNestActionTrigger | "system", reason: "
     scheduleWeatherAutoRefresh();
     return { ok: false, actionId: "weather.refresh", status: "paused", message: "Weather auto-refresh is paused by Performance Mode.", weatherState: weatherState() };
   }
-  if (settings.latitude === null || settings.longitude === null || !Number.isFinite(settings.latitude) || !Number.isFinite(settings.longitude)) {
-    const message = "Set latitude and longitude in Weather settings first.";
+  // Treat null/NaN AND (0,0) "Null Island" as not-configured — a saved location
+  // name without real coordinates otherwise fetches equatorial-Atlantic weather.
+  const hasCoords = settings.latitude !== null && settings.longitude !== null
+    && Number.isFinite(settings.latitude) && Number.isFinite(settings.longitude)
+    && !(settings.latitude === 0 && settings.longitude === 0);
+  if (!hasCoords) {
+    const message = "Set your Weather location (use Find coordinates in Settings).";
     logWeatherEvent("weather.refresh", "failed", source, message, { provider: settings.provider, reason }, startedAt, message);
     return { ok: false, actionId: "weather.refresh", status: "missing_location", error: message, message, weatherState: weatherState() };
   }
@@ -7330,6 +7395,28 @@ async function runWeatherAction(action: DexNestActionDefinition, source: DexNest
       const saved = saveWeatherSettings({ weatherEnabled: enabled });
       logWeatherEvent(action.id, "success", source, enabled ? "Enabled DexNest Weather." : "Disabled DexNest Weather.", { provider: saved.provider, weatherEnabled: saved.weatherEnabled }, startedAt);
       return { ok: true, actionId: action.id, message: enabled ? "Weather enabled." : "Weather disabled.", weatherState: weatherState() };
+    }
+    if (action.id === "weather.geocode") {
+      // Resolve a place name → coordinates via Open-Meteo's free geocoding API
+      // (same provider, only when the user asks). Fixes "Regina shows wrong temp"
+      // when a location name was saved without real coordinates.
+      const name = String((input as { name?: unknown }).name ?? loadWeatherSettings().locationName ?? "").trim();
+      if (!name) {
+        return { ok: false, actionId: action.id, error: "Enter a location name to look up." };
+      }
+      // Open-Meteo geocoding matches a city name, not "City, Region" — search the
+      // part before the first comma (e.g. "Regina" from "Regina, SK").
+      const query = name.split(",")[0].trim() || name;
+      const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(query)}&count=1&language=en&format=json`;
+      const data = await getJsonUrl(url) as { results?: Array<{ latitude: number; longitude: number; name: string; admin1?: string; country_code?: string }> };
+      const top = data.results?.[0];
+      if (!top || !Number.isFinite(top.latitude) || !Number.isFinite(top.longitude)) {
+        logWeatherEvent(action.id, "failed", source, "Weather location lookup found no match.", { hasName: Boolean(name) }, startedAt, "No match");
+        return { ok: false, actionId: action.id, error: `No location found for "${name}".` };
+      }
+      const locationName = [top.name, top.admin1, top.country_code].filter(Boolean).join(", ");
+      logWeatherEvent(action.id, "success", source, "Resolved Weather location coordinates.", { hasCoords: true }, startedAt);
+      return { ok: true, actionId: action.id, latitude: top.latitude, longitude: top.longitude, locationName, message: `Found ${locationName}.` };
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "DexNest Weather action failed.";
@@ -7709,7 +7796,9 @@ function loadFinderItems(): FinderItem[] {
 }
 
 function saveFinderItems(items: FinderItem[]): FinderItem[] {
-  return writeJsonFile(finderItemsPath, items);
+  const saved = writeJsonFile(finderItemsPath, items);
+  scheduleSearchReindex();
+  return saved;
 }
 
 // --- Finance profiles (Finance-module-only; not global app profiles) ----------
@@ -7765,7 +7854,9 @@ function loadFinanceTransactions(): FinanceTransaction[] {
 
 function saveFinanceTransactions(items: FinanceTransaction[]): FinanceTransaction[] {
   ensureFinanceRoot();
-  return writeJsonFile(financeTransactionsPath, items);
+  const saved = writeJsonFile(financeTransactionsPath, items);
+  scheduleSearchReindex();
+  return saved;
 }
 
 function loadFinanceRecurring(): FinanceRecurringExpense[] {
@@ -7776,7 +7867,9 @@ function loadFinanceRecurring(): FinanceRecurringExpense[] {
 
 function saveFinanceRecurring(items: FinanceRecurringExpense[]): FinanceRecurringExpense[] {
   ensureFinanceRoot();
-  return writeJsonFile(financeRecurringPath, items);
+  const saved = writeJsonFile(financeRecurringPath, items);
+  scheduleSearchReindex();
+  return saved;
 }
 
 function loadFinanceSettings(): FinanceSettings {
@@ -7800,7 +7893,9 @@ function loadCaptureItems(): CaptureItem[] {
 
 function saveCaptureItems(items: CaptureItem[]): CaptureItem[] {
   ensureCaptureRoot();
-  return writeJsonFile(captureItemsPath, items);
+  const saved = writeJsonFile(captureItemsPath, items);
+  scheduleSearchReindex();
+  return saved;
 }
 
 function seedRoutines(): DexNestRoutine[] {
@@ -7870,8 +7965,8 @@ function saveRoutines(routines: DexNestRoutine[]): DexNestRoutine[] {
 
 function defaultHeatmapSettings(): HeatmapSettings {
   return {
-    enabled: false,
-    paused: true,
+    enabled: true,
+    paused: false,
     sampleIntervalSeconds: 60,
     aggregationIntervalHours: 3,
     pauseDuringFullscreen: true,
@@ -8124,6 +8219,17 @@ function stopHeatmapTimer(): void {
   if (heatmapSampleTimer) {
     clearInterval(heatmapSampleTimer);
     heatmapSampleTimer = null;
+  }
+}
+
+// Heatmap tracking is always-on: it starts with the app and runs in the
+// background. Existing installs (default off) are migrated to on at boot. The
+// only things that pause it are Performance Mode and the optional fullscreen
+// privacy guard — there is no manual pause.
+function ensureHeatmapAlwaysOn(): void {
+  const settings = loadHeatmapSettings();
+  if (!settings.enabled || settings.paused) {
+    saveHeatmapSettings({ ...settings, enabled: true, paused: false });
   }
 }
 
@@ -8821,8 +8927,9 @@ function wakeEngineState(): WakeEngineState {
   let status = wakeEngineRuntime.status;
   if (!settings.wakeWordEnabled) {
     status = "disabled";
+  } else if (wakeEnginePausedByPerformanceMode(settings)) {
+    status = "paused_by_performance_mode";
   }
-  // Wake word is intentionally NOT paused by Performance Mode.
   return { ...wakeEngineRuntime, status };
 }
 
@@ -8981,9 +9088,16 @@ function stopWakeEngine(): void {
 }
 
 // Pause/restart the wake engine to match enabled + Performance Mode.
+function wakeEnginePausedByPerformanceMode(settings = loadAmbientVoiceSettings()): boolean {
+  return (settings.pauseWakeWordInPerformanceMode ?? true) && loadPerformanceModeSettings().performanceModeEnabled;
+}
+
 function reconcileWakeEngine(): void {
   const settings = loadAmbientVoiceSettings();
-  if (settings.wakeWordEnabled) {
+  // Run the openWakeWord sidecar only when wake word is enabled AND not paused by
+  // Performance Mode. The sidecar is lightweight and does NOT run Whisper; speech
+  // transcription is invoked on-demand only after a wake event.
+  if (settings.wakeWordEnabled && !wakeEnginePausedByPerformanceMode(settings)) {
     startWakeEngine();
   } else {
     stopWakeEngine();
@@ -10679,12 +10793,15 @@ function buildSearchIndexRecords(): SearchIndexRecord[] {
     // so both Search and Smart Lookup can use it like notes text.
     const expiryPhrase = document.expiryDate ? `expiry date: ${document.expiryDate}` : "";
     const documentTypePhrase = document.fileType ? `document type ${document.fileType}` : "";
+    // Key fields ("Work Permit Number: 272829") feed Search + Smart Lookup.
+    const keyFieldsPhrase = (document.keyFields ?? []).map((field) => `${field.label}: ${field.value}`).join(". ");
     const vaultMetadataText = textBucket(
       document.title,
       document.originalFileName,
       document.category,
       document.tags.join(" "),
       document.notes,
+      keyFieldsPhrase,
       expiryPhrase,
       documentTypePhrase
     );
@@ -10913,6 +11030,47 @@ function buildSearchIndexRecords(): SearchIndexRecord[] {
     });
   }
 
+  for (const entry of loadJournalEntries()) {
+    const body = entry.cleanedText || entry.rawText || "";
+    records.push({
+      id: `journal-${entry.id}`,
+      sourceModule: "journal",
+      entityType: "journal_entry",
+      entityId: entry.id,
+      title: entry.title || `Journal — ${entry.date}`,
+      filePath: null,
+      fileType: "metadata",
+      sizeBytes: null,
+      textPreview: previewText(textBucket(entry.title ?? "", body, entry.tags.join(" "))),
+      searchableText: normalizeSearchText(textBucket(entry.title ?? "", entry.date, body, entry.tags.join(" "), entry.peopleTags.join(" "), entry.mood ?? "", entry.productivity ?? "")),
+      tags: [...entry.tags, ...entry.peopleTags, entry.mood ?? "", entry.productivity ?? ""].filter(Boolean),
+      category: "journal",
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt,
+      indexedAt
+    });
+  }
+
+  for (const event of loadCalendarEvents()) {
+    records.push({
+      id: `calendar-${event.id}`,
+      sourceModule: "calendar",
+      entityType: "calendar_event",
+      entityId: event.id,
+      title: event.title,
+      filePath: null,
+      fileType: "metadata",
+      sizeBytes: null,
+      textPreview: previewText(textBucket(event.title, event.date, event.notes ?? "")),
+      searchableText: normalizeSearchText(textBucket(event.title, event.date, event.startTime ?? "", event.endTime ?? "", event.notes ?? "", `reminder ${event.reminderLevel}`, event.allDay ? "all day" : "")),
+      tags: [event.sourceModule, event.reminderLevel, event.allDay ? "all-day" : "timed"].filter(Boolean),
+      category: "calendar",
+      createdAt: event.createdAt,
+      updatedAt: event.updatedAt,
+      indexedAt
+    });
+  }
+
   return records;
 }
 
@@ -10931,6 +11089,22 @@ function reindexSearchIndex(reason = "auto"): SearchIndexRecord[] {
     console.error("DexNest: search reindex after Vault change failed.", error);
     return loadSearchIndex();
   }
+}
+
+// Debounced background reindex. Called from the save functions of indexed modules
+// so adding/editing/deleting anything (Vault, Journal, Calendar, Finance, Finder,
+// Capture, Tools, Drop, Clipboard) keeps Search current automatically — the user
+// never has to click Rebuild. Bursts (bulk import, demo seed) coalesce into one
+// pass, and Performance Mode is respected by reindexSearchIndex itself.
+let searchReindexTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleSearchReindex(): void {
+  if (searchReindexTimer) {
+    clearTimeout(searchReindexTimer);
+  }
+  searchReindexTimer = setTimeout(() => {
+    searchReindexTimer = null;
+    try { reindexSearchIndex("auto"); } catch { /* ignore */ }
+  }, 1200);
 }
 
 function searchMatchScore(record: SearchIndexRecord, query: string): { score: number; reason: string } {
@@ -11185,6 +11359,45 @@ function runSmartLookup(input: SearchQueryInput): SmartLookupResult[] {
   const seen = new Set<string>();
 
   for (const record of records) {
+    // 1) Direct, reliable answers from user-entered Vault key fields. These do
+    // not depend on OCR quality or label/value layout, so they win on score.
+    const vaultDoc = record.sourceModule === "vault" ? findVaultDocument(record.entityId) : null;
+    for (const fieldType of fields) {
+      const hint = smartFieldLabelHints[fieldType];
+      if (!hint) {
+        continue;
+      }
+      for (const keyField of vaultDoc?.keyFields ?? []) {
+        if (!keyField.value.trim() || !hint.test(keyField.label)) {
+          continue;
+        }
+        const answer = keyField.value.trim();
+        const key = `${fieldType}:${record.id}:kf:${answer.toLowerCase()}`;
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        results.push({
+          id: createId("smart-lookup"),
+          fieldType,
+          answer,
+          maskedAnswer: maskSmartAnswer(answer, fieldType),
+          sensitive: sensitiveSmartFields.has(fieldType),
+          confidence: "high",
+          sourceRecordId: record.id,
+          sourceModule: record.sourceModule,
+          sourceType: "Vault key field",
+          sourceDocumentTitle: record.title,
+          sourceFilePath: record.filePath ?? null,
+          ocrTextPath: null,
+          preview: `${keyField.label}: ${answer}`,
+          score: 130,
+          autoRevealed: sensitiveSmartFields.has(fieldType) ? allowAutoReveal : true
+        });
+      }
+    }
+
+    // 2) Heuristic extraction from OCR text / notes (fallback).
     const { text, ocrTextPath, sourceType } = smartLookupTextForRecord(record);
     if (!text.trim()) {
       continue;
@@ -12322,6 +12535,40 @@ function logVaultEvent(
   });
 }
 
+// Normalize user-entered key fields: trim, drop empties, cap counts/lengths so
+// the Vault record stays small and safe (these are metadata, not document bodies).
+function normalizeVaultKeyFields(input: unknown): VaultKeyField[] {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+  return input
+    .map((raw) => {
+      const item = (typeof raw === "object" && raw !== null ? raw : {}) as { id?: unknown; label?: unknown; value?: unknown };
+      return {
+        id: typeof item.id === "string" && item.id ? item.id : createId("vault-field"),
+        label: String(item.label ?? "").replace(/\s+/g, " ").trim().slice(0, 60),
+        value: String(item.value ?? "").replace(/\s+/g, " ").trim().slice(0, 200)
+      };
+    })
+    .filter((field) => field.label && field.value)
+    .slice(0, 20);
+}
+
+// Maps a Smart Lookup field type to label keywords, so a key field labelled
+// "Work Permit Number" answers "what is my work permit number" directly.
+const smartFieldLabelHints: Record<string, RegExp> = {
+  sin: /\bsin\b|social insurance/i,
+  passport_number: /passport/i,
+  permit_number: /work permit|permit|document\s*(?:no|number|#)|application/i,
+  uci: /\buci\b|client id|unique client/i,
+  expiry_date: /expir|valid until|valid to|valid thru/i,
+  issue_date: /issue|issued|date of issue/i,
+  health_card: /health card|health\s*(?:no|number)|ohip|phn/i,
+  email: /e-?mail/i,
+  phone: /phone|mobile|cell|telephone/i,
+  address: /address/i
+};
+
 function createVaultDocumentFromFile(filePath: string, input: VaultImportInput, versionBase?: VaultDocumentRecord): VaultDocumentRecord {
   if (!filePath || !existsSync(filePath)) {
     throw new Error("Vault import file not found.");
@@ -12352,6 +12599,7 @@ function createVaultDocumentFromFile(filePath: string, input: VaultImportInput, 
     category: vaultCategories.includes(String(input.category ?? "")) ? String(input.category) : "Other",
     tags: normalizeTags(input.tags),
     notes: String(input.notes ?? ""),
+    keyFields: normalizeVaultKeyFields(input.keyFields),
     sourceModule: String(input.sourceModule ?? "DexNest Vault"),
     expiryDate: input.expiryDate ? String(input.expiryDate) : null,
     createdAt: now,
@@ -12631,6 +12879,7 @@ function runVaultAction(action: DexNestActionDefinition, source: DexNestActionTr
         category: vaultCategories.includes(String(params.category ?? "")) ? String(params.category) : existing.category,
         tags: normalizeTags(params.tags as string[] | string | undefined).length ? normalizeTags(params.tags as string[] | string | undefined) : existing.tags,
         notes: typeof params.notes === "string" ? params.notes : existing.notes,
+        keyFields: params.keyFields !== undefined ? normalizeVaultKeyFields(params.keyFields) : (existing.keyFields ?? []),
         expiryDate: params.expiryDate ? String(params.expiryDate) : null,
         updatedAt: new Date().toISOString()
       };
@@ -15422,9 +15671,9 @@ function safeCalculateExpression(expression: string): number {
 }
 
 const conversionFactors: Record<Exclude<UtilityConversionCategory, "temperature">, Record<string, number>> = {
-  length: { m: 1, meter: 1, meters: 1, km: 1000, kilometer: 1000, kilometers: 1000, cm: 0.01, centimeter: 0.01, centimeters: 0.01, mm: 0.001, inch: 0.0254, inches: 0.0254, ft: 0.3048, foot: 0.3048, feet: 0.3048, mile: 1609.344, miles: 1609.344 },
+  length: { m: 1, meter: 1, meters: 1, km: 1000, kilometer: 1000, kilometers: 1000, cm: 0.01, centimeter: 0.01, centimeters: 0.01, mm: 0.001, in: 0.0254, inch: 0.0254, inches: 0.0254, ft: 0.3048, foot: 0.3048, feet: 0.3048, yd: 0.9144, yard: 0.9144, yards: 0.9144, mi: 1609.344, mile: 1609.344, miles: 1609.344 },
   weight: { g: 1, gram: 1, grams: 1, kg: 1000, kilogram: 1000, kilograms: 1000, lb: 453.59237, lbs: 453.59237, pound: 453.59237, pounds: 453.59237, oz: 28.349523125, ounce: 28.349523125, ounces: 28.349523125 },
-  volume: { l: 1, liter: 1, liters: 1, ml: 0.001, milliliter: 0.001, milliliters: 0.001, cup: 0.2365882365, cups: 0.2365882365, gallon: 3.785411784, gallons: 3.785411784 },
+  volume: { l: 1, liter: 1, liters: 1, ml: 0.001, milliliter: 0.001, milliliters: 0.001, cup: 0.2365882365, cups: 0.2365882365, gal: 3.785411784, gallon: 3.785411784, gallons: 3.785411784 },
   time: { second: 1, seconds: 1, sec: 1, minute: 60, minutes: 60, min: 60, hour: 3600, hours: 3600, day: 86400, days: 86400 },
   data: { b: 1, byte: 1, bytes: 1, kb: 1024, mb: 1048576, gb: 1073741824, tb: 1099511627776 }
 };
@@ -15501,6 +15750,21 @@ function runUtilitiesAction(action: DexNestActionDefinition, source: DexNestActi
       clipboard.writeText(latest.result);
       logUtilitiesEvent(action.id, "success", source, "Copied Utilities result.", { resultType: latest.type, resultLength: latest.result.length }, startedAt);
       return { ok: true, actionId: action.id, message: "Copied result.", utilitiesState: utilitiesState() };
+    }
+
+    if (action.id === "utilities.clear_history") {
+      // scope: all | calculation | conversion | date | timers | stopwatch
+      const scope = String(input.scope ?? "all");
+      const isResultType = scope === "calculation" || scope === "conversion" || scope === "date";
+      const next: UtilitiesFile = {
+        ...file,
+        recentResults: scope === "all" ? [] : isResultType ? file.recentResults.filter((item) => item.type !== scope) : file.recentResults,
+        timers: scope === "all" || scope === "timers" ? [] : file.timers,
+        stopwatch: scope === "all" || scope === "stopwatch" ? { ...file.stopwatch, history: [], laps: scope === "stopwatch" ? file.stopwatch.laps : [] } : file.stopwatch
+      };
+      saveUtilitiesFile(next);
+      logUtilitiesEvent(action.id, "success", source, "Cleared Utilities history.", { scope }, startedAt);
+      return { ok: true, actionId: action.id, message: scope === "all" ? "Cleared Utilities history." : `Cleared ${scope} history.`, utilitiesState: utilitiesState() };
     }
 
     if (action.id === "utilities.convert_units") {
@@ -17583,6 +17847,13 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
     saveToolsOutputs(outputs.filter((item) => item.id !== id));
     logActionEvent(action, exists ? "success" : "skipped", source, exists ? "Removed a Tools output from the list (file kept)." : "Tools output not found.", { found: exists });
     return { ok: exists, actionId, message: exists ? "Removed from list." : "Output not found." };
+  }
+
+  if (action.id === "tools.clear_outputs") {
+    const count = loadToolsOutputs().length;
+    saveToolsOutputs([]);
+    logActionEvent(action, "success", source, "Cleared the Tools output list (files on disk kept).", { cleared: count });
+    return { ok: true, actionId, message: `Cleared ${count} output${count === 1 ? "" : "s"} from the list.`, toolsState: toolsState() };
   }
 
   if (action.id === "tools.delete_output_file") {
@@ -19729,6 +20000,7 @@ app.whenReady().then(() => {
   cleanupClipboardHistory(false, "system");
   startActionEndpoint();
   refreshNudges("system", false);
+  ensureHeatmapAlwaysOn();
   startHeatmapTimer();
   scheduleWeatherAutoRefresh();
   scheduleNewsAutoRefresh();
@@ -19741,6 +20013,10 @@ app.whenReady().then(() => {
     registerCommandShortcut();
     registerKeyboardShortcuts();
     createDexNestTray();
+  // Start the wake-word sidecar on launch if wake word is enabled (and not paused
+  // by Performance Mode). Previously this only happened on a settings change or a
+  // renderer request, so launching with wake already enabled left it dead.
+  reconcileWakeEngine();
   if (shouldStartHiddenToTray()) {
     trayModeActive = true;
   }
