@@ -18,6 +18,11 @@ import { createLocalDb } from "@dexnest/local-db";
 import type { MessageBoxOptions, MessageBoxSyncOptions, OpenDialogOptions, OpenDialogSyncOptions } from "electron";
 import type { DexNestActionDefinition, DexNestActionTrigger, DexNestEventStatus, DexNestPin, DexNestPinType } from "@dexnest/shared-types";
 import { formatLocalDateTime, getLocalTodayDateString, parseLocalDateInput, resolveRelativeLocalDate, toLocalDateInputValue } from "@dexnest/shared-types";
+// Design tokens are embedded into the bundle at build time (Vite ?raw) so the
+// Drop phone page is fully self-contained. Never read repo source files (e.g.
+// packages/shared-ui/src/tokens.css) at runtime — that path does not exist in
+// the packaged/installed app.
+import sharedTokensCssRaw from "../../../../packages/shared-ui/src/tokens.css?raw";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(currentDir, "../../../..");
@@ -41,6 +46,40 @@ function appAssetPath(name: string): string {
     ? join(process.resourcesPath, name)
     : resolve(currentDir, "..", "..", "build", name);
 }
+
+// --- Sidecar (speech/wake Python) path resolution --------------------------
+// Sidecar *scripts* are bundled into the installed app (resources/sidecars via
+// electron-builder extraResources); the Python *venv* and wake *models* stay
+// external (never bundled). Each asset is resolved across candidate roots in a
+// fixed priority so dev, portable-folder, and installed builds all work:
+//   1. DEXNEST_SIDECAR_ROOT (explicit override)
+//   2. <app resources>/sidecars   (bundled scripts in the installed app)
+//   3. D:\DeskNest\sidecars        (canonical external location — venv/models)
+//   4. <repoRoot>/sidecars         (dev)
+function sidecarRoots(): string[] {
+  const roots: string[] = [];
+  const env = process.env.DEXNEST_SIDECAR_ROOT && process.env.DEXNEST_SIDECAR_ROOT.trim();
+  if (env) roots.push(resolve(env));
+  if (process.resourcesPath) roots.push(join(process.resourcesPath, "sidecars"));
+  roots.push(resolve("D:/DeskNest/sidecars"));
+  roots.push(resolve(repoRoot, "sidecars"));
+  return [...new Set(roots)];
+}
+// Return the first candidate path that exists; otherwise the path under the
+// first root (well-defined so diagnostics can report the expected location).
+function resolveSidecarPath(...parts: string[]): string {
+  const roots = sidecarRoots();
+  for (const root of roots) {
+    const candidate = join(root, ...parts);
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return join(roots[0] ?? resolve(repoRoot, "sidecars"), ...parts);
+}
+function speechVenvPythonPath(): string { return resolveSidecarPath("speech", ".venv", "Scripts", "python.exe"); }
+function wakeSidecarScriptPath(): string { return resolveSidecarPath("wake-word", "wake_word_sidecar.py"); }
+function wakeModelsDir(): string { return resolveSidecarPath("wake-word", "models"); }
 const settingsRoot = join(localDataRoot, "settings");
 const dropFilesRoot = join(localDataRoot, "files", "drop");
 const dropIncomingRoot = join(dropFilesRoot, "incoming");
@@ -60,7 +99,6 @@ const vaultOcrRoot = join(vaultFilesRoot, "ocr");
 const speechModelsRoot = join(localDataRoot, "models", "speech");
 const speechTempRoot = join(localDataRoot, "files", "speech", "temp");
 const speechDebugAudioRoot = join(localDataRoot, "debug", "audio");
-const speechSidecarPythonPath = join(repoRoot, "sidecars", "speech", ".venv", "Scripts", "python.exe");
 const receiptsRoot = join(localDataRoot, "files", "receipts");
 const capturesRoot = join(localDataRoot, "files", "captures");
 const projectsConfigPath = join(settingsRoot, "projects.json");
@@ -278,6 +316,7 @@ interface AmbientVoiceSettings {
   // Phase 23.8 wake-word MVP settings.
   wakeWordEngine?: "placeholder" | "openwakeword" | "porcupine_optional" | "custom";
   wakeWordSensitivity?: number;
+  wakeInputGain?: "auto" | "1x" | "2x" | "4x" | "8x" | "12x";
   listenAfterWakeMs?: number;
   wakeCooldownMs?: number;
   pauseWakeWordInPerformanceMode?: boolean;
@@ -1910,7 +1949,7 @@ function appHealthState(source: DexNestActionTrigger = "module_ui", writeAudit =
       title: "Data Safety",
       checks: [
         check("local-data-exists", "local-data folder exists", localDataExists ? "pass" : "fail", localDataExists ? localDataRoot : "Missing local-data folder.", "Run DexNest once to create local-data."),
-        check("local-data-gitignored", "local-data is gitignored", gitignoreHasLocalData() ? "pass" : "fail", gitignoreHasLocalData() ? ".gitignore protects local-data/." : ".gitignore does not include local-data/.", "Add local-data/ to .gitignore."),
+        check("local-data-gitignored", "local-data is gitignored", app.isPackaged ? "pass" : gitignoreHasLocalData() ? "pass" : "fail", app.isPackaged ? "Source-repo git check is not applicable in the installed build." : gitignoreHasLocalData() ? ".gitignore protects local-data/." : ".gitignore does not include local-data/.", app.isPackaged ? undefined : "Add local-data/ to .gitignore."),
         check("sqlite-under-local-data", "SQLite path is under local-data", sqliteUnderLocalData ? "pass" : "fail", localDb.dbPath, "Move database storage under ./local-data."),
         check("vault-under-local-data", "Vault files path is under local-data", vaultUnderLocalData ? "pass" : "fail", vaultDocumentsRoot, "Keep Vault documents under ./local-data/files/vault."),
         check("drop-folders-exist", "Drop incoming/outgoing folders exist", existsSync(dropIncomingRoot) && existsSync(dropOutgoingRoot) ? "pass" : "fail", `${dropIncomingRoot} / ${dropOutgoingRoot}`, "Open Drop or restart DexNest to recreate Drop folders."),
@@ -1929,12 +1968,16 @@ function appHealthState(source: DexNestActionTrigger = "module_ui", writeAudit =
     {
       id: "git-safety",
       title: "Git Safety",
-      checks: [
-        check("current-branch", "Current branch", branch === "main" ? "warn" : "pass", branch, branch === "main" ? "Use dev for active DexNest work." : undefined),
-        check("local-data-tracked", "local-data is not tracked", trackedLocalData.length === 0 ? "pass" : "fail", trackedLocalData.length === 0 ? "No tracked local-data files." : `${trackedLocalData.length} local-data file(s) tracked.`, "Remove local-data from Git tracking."),
-        check("env-tracked", ".env files are not tracked", trackedEnv.length === 0 ? "pass" : "warn", trackedEnv.length === 0 ? "No tracked .env files." : `${trackedEnv.length} env file(s) tracked.`, "Remove env files from Git tracking."),
-        check("build-output-tracked", "Build outputs are not tracked", trackedBuildOutputs.length === 0 ? "pass" : "warn", trackedBuildOutputs.length === 0 ? "No tracked build output folders." : `${trackedBuildOutputs.length} build output file(s) tracked.`, "Keep dist/out/build/release ignored.")
-      ]
+      // Source-repo hygiene checks only make sense in the dev checkout. The
+      // installed build has no git repo, so run them only when not packaged.
+      checks: app.isPackaged
+        ? [check("git-safety-na", "Source repository checks", "pass", "Not applicable in the installed build (no source repository).")]
+        : [
+          check("current-branch", "Current branch", branch === "main" ? "warn" : "pass", branch, branch === "main" ? "Use dev for active DexNest work." : undefined),
+          check("local-data-tracked", "local-data is not tracked", trackedLocalData.length === 0 ? "pass" : "fail", trackedLocalData.length === 0 ? "No tracked local-data files." : `${trackedLocalData.length} local-data file(s) tracked.`, "Remove local-data from Git tracking."),
+          check("env-tracked", ".env files are not tracked", trackedEnv.length === 0 ? "pass" : "warn", trackedEnv.length === 0 ? "No tracked .env files." : `${trackedEnv.length} env file(s) tracked.`, "Remove env files from Git tracking."),
+          check("build-output-tracked", "Build outputs are not tracked", trackedBuildOutputs.length === 0 ? "pass" : "warn", trackedBuildOutputs.length === 0 ? "No tracked build output folders." : `${trackedBuildOutputs.length} build output file(s) tracked.`, "Keep dist/out/build/release ignored.")
+        ]
     },
     {
       id: "action-registry",
@@ -2000,7 +2043,7 @@ function appHealthState(source: DexNestActionTrigger = "module_ui", writeAudit =
           );
         })(),
         check("speech-service", "Speech service", speech.performancePaused ? "warn" : "pass", `${speech.settings.speechEngine} / ${speech.settings.modelName} / ${speech.modelStatus.message}`, speech.performancePaused ? "Speech capture is paused by Performance Mode." : "Run Check local model in Settings when changing speech engine."),
-        check("heatmap-state", "Heatmap status", performanceModePauses("heatmap") ? "warn" : heatmap.settings.enabled && !heatmap.settings.paused ? "warn" : "pass", heatmap.trackingStatus, performanceModePauses("heatmap") ? "Heatmap sampling is paused until Performance Mode turns off." : heatmap.settings.enabled && !heatmap.settings.paused ? "Heatmap samples only at configured interval." : undefined),
+        check("heatmap-state", "Heatmap status", performanceModePauses("heatmap") ? "warn" : "pass", heatmap.trackingStatus, performanceModePauses("heatmap") ? "Heatmap sampling is paused until Performance Mode turns off." : undefined),
         check("ocr-queue-paused", "OCR queue", performanceModePauses("ocr") && ocrQueuedCount > 0 ? "warn" : "pass", performanceModePauses("ocr") ? `${ocrQueuedCount} queued OCR job(s); queue paused by Performance Mode.` : `${ocrQueuedCount} queued OCR job(s).`),
         check("search-index-stale", "Search index stale", searchIndexStatus.staleDueToPerformanceMode ? "warn" : "pass", searchIndexStatus.staleDueToPerformanceMode ? `Stale since ${searchIndexStatus.staleSince ?? "unknown"}: ${searchIndexStatus.staleReason ?? "performance mode"}` : "Search index is not marked stale by Performance Mode.", "Run manual Search rebuild when Performance Mode is off."),
         check("backups-skipped", "Scheduled backups", performance.enabled && performanceSettings.pauseBackups ? "warn" : "pass", performance.enabled && performanceSettings.pauseBackups ? "Scheduled backups are paused. Manual backup remains available." : "Scheduled backups not paused."),
@@ -2032,10 +2075,12 @@ function appHealthState(source: DexNestActionTrigger = "module_ui", writeAudit =
         check("python-paddleocr", "Python/PaddleOCR", tools.detectedPythonPath || tools.pythonPath ? "pass" : "warn", tools.pythonPath || tools.detectedPythonPath || "Python missing.", "Use Python 3.12 for PaddleOCR, then run: py -3.12 -m pip install paddleocr paddlepaddle, or switch OCR engine to Tesseract."),
         check("speech-model-root", "Speech model root", existsSync(speechModelsRoot) ? "pass" : "warn", speechModelsRoot, "Open Settings > Speech / Voice Engine to create/check the model folder."),
         check("external-devices-settings", "External Devices settings", existsSync(externalDevicesSettingsPath) || !externalDevices.settings.goveeEnabled ? "pass" : "warn", externalDevices.settingsPath, "Save External Devices settings from Settings."),
-        check("govee-provider", "Govee provider", externalDevices.providerStatus === "ready" || externalDevices.providerStatus === "disabled" ? "pass" : "warn", externalDevices.providerMessage, "Unlock Secure Vault and save a Govee API key to enable device control."),
+        check("govee-provider", "Govee provider", externalDevices.providerStatus === "ready" || externalDevices.providerStatus === "disabled" ? "pass" : "warn", externalDevices.providerMessage, externalDevices.providerStatus === "ready" || externalDevices.providerStatus === "disabled" ? undefined : "Save a Govee API key in Settings → External Devices (stored in the local Integration Keychain — no Secure Vault unlock needed)."),
         check("govee-cache", "Govee device cache", externalDevices.devices.length > 0 ? "pass" : "warn", `${externalDevices.devices.length} cached Govee device(s).`, "Refresh devices after saving a Govee API key."),
-        check("search-index", "Search index", search.index.length > 0 ? "pass" : "warn", `${search.index.length} indexed record(s).`, "Run Search rebuild when you want local metadata search."),
-        check("latest-backup", "Latest backup", latestBackup ? "pass" : "warn", latestBackup ? `${latestBackup.fileName} / ${formatLocalDateTime(latestBackup.createdAt)}` : "No backup found.", latestBackup ? undefined : "Create a local backup, then re-run checks.", latestBackup ? undefined : "backup.open", latestBackup ? undefined : "Open Backup")
+        // Empty index is a normal fresh state (it auto-populates as you add content), not a problem.
+        check("search-index", "Search index", "pass", search.index.length > 0 ? `${search.index.length} indexed record(s).` : "0 records — the index fills in automatically as you add content.", search.index.length > 0 ? undefined : "Add content (or run Search rebuild) to populate local metadata search."),
+        // Backups are optional; no backup yet is a gentle reminder, not a failure.
+        check("latest-backup", "Latest backup", "pass", latestBackup ? `${latestBackup.fileName} / ${formatLocalDateTime(latestBackup.createdAt)}` : "No backup yet (optional).", latestBackup ? undefined : "Create a local backup from Settings → Backup when you want a snapshot.", latestBackup ? undefined : "backup.open", latestBackup ? undefined : "Open Backup")
       ]
     }
   ];
@@ -3786,6 +3831,7 @@ function defaultAmbientVoiceSettings(): AmbientVoiceSettings {
     wakeWord: "Nest",
     wakeWordEngine: "placeholder",
     wakeWordSensitivity: 0.5,
+    wakeInputGain: "auto",
     listenAfterWakeMs: 8000,
     wakeCooldownMs: 1500,
     // Wake word stays ON even in Performance Mode — it is the always-available entry point.
@@ -3848,6 +3894,23 @@ let ambientVoiceRuntime: Omit<AmbientVoiceState, "settings" | "settingsPath" | "
   lastChangedAt: new Date().toISOString()
 };
 
+// Normalize the wake threshold to a usable range. openWakeWord scores peak
+// well below 1.0, so a saved threshold of 1.00 (the old slider max) made
+// detection impossible — migrate that specific legacy value to 0.50. Otherwise
+// clamp to a safe [0.20, 0.95] window.
+function clampWakeThreshold(value: unknown, fallback = 0.5): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  if (n >= 0.999) return 0.5; // migrate impossible legacy 1.00 → sensible default
+  return Math.min(0.95, Math.max(0.2, n));
+}
+
+const WAKE_INPUT_GAIN_OPTIONS = ["auto", "1x", "2x", "4x", "8x", "12x"] as const;
+type WakeInputGain = (typeof WAKE_INPUT_GAIN_OPTIONS)[number];
+function normalizeWakeInputGain(value: unknown, fallback: WakeInputGain = "auto"): WakeInputGain {
+  return (WAKE_INPUT_GAIN_OPTIONS as readonly string[]).includes(String(value)) ? (value as WakeInputGain) : fallback;
+}
+
 function loadAmbientVoiceSettings(): AmbientVoiceSettings {
   const defaults = defaultAmbientVoiceSettings();
   const saved = readJsonFile<Partial<AmbientVoiceSettings>>(ambientVoiceSettingsPath, defaults);
@@ -3855,6 +3918,8 @@ function loadAmbientVoiceSettings(): AmbientVoiceSettings {
     ...defaults,
     ...saved,
     wakeWord: typeof saved.wakeWord === "string" && saved.wakeWord.trim() ? saved.wakeWord.trim() : defaults.wakeWord,
+    wakeWordSensitivity: clampWakeThreshold(saved.wakeWordSensitivity, defaults.wakeWordSensitivity ?? 0.5),
+    wakeInputGain: normalizeWakeInputGain(saved.wakeInputGain, defaults.wakeInputGain ?? "auto"),
     pushToTalkShortcut: normalizeAmbientShortcut(saved.pushToTalkShortcut),
     maxListeningSeconds: Math.min(30, Math.max(3, Number(saved.maxListeningSeconds) || defaults.maxListeningSeconds)),
     commandCooldownMs: Math.min(10000, Math.max(500, Number(saved.commandCooldownMs) || defaults.commandCooldownMs))
@@ -3886,7 +3951,8 @@ function saveAmbientVoiceSettings(input: Partial<AmbientVoiceSettings>, source: 
     wakeWordEnabled: typeof input.wakeWordEnabled === "boolean" ? input.wakeWordEnabled : current.wakeWordEnabled,
     wakeWord: typeof input.wakeWord === "string" && input.wakeWord.trim() ? input.wakeWord.trim() : current.wakeWord,
     wakeWordEngine: input.wakeWordEngine ?? current.wakeWordEngine ?? "placeholder",
-    wakeWordSensitivity: Math.min(1, Math.max(0, Number(input.wakeWordSensitivity ?? current.wakeWordSensitivity ?? 0.5))),
+    wakeWordSensitivity: clampWakeThreshold(input.wakeWordSensitivity ?? current.wakeWordSensitivity, 0.5),
+    wakeInputGain: normalizeWakeInputGain(input.wakeInputGain ?? current.wakeInputGain, "auto"),
     listenAfterWakeMs: Math.min(20000, Math.max(2000, Number(input.listenAfterWakeMs ?? current.listenAfterWakeMs ?? 8000))),
     wakeCooldownMs: Math.min(10000, Math.max(0, Number(input.wakeCooldownMs ?? current.wakeCooldownMs ?? 1500))),
     pauseWakeWordInPerformanceMode: typeof input.pauseWakeWordInPerformanceMode === "boolean" ? input.pauseWakeWordInPerformanceMode : (current.pauseWakeWordInPerformanceMode ?? true),
@@ -8534,8 +8600,9 @@ function speechPythonPath(settings = loadSpeechSettings()): string | null {
   if (configured && existsSync(configured)) {
     return configured;
   }
-  if (existsSync(speechSidecarPythonPath)) {
-    return speechSidecarPythonPath;
+  const venvPython = speechVenvPythonPath();
+  if (existsSync(venvPython)) {
+    return venvPython;
   }
   return resolvePythonPath();
 }
@@ -8723,6 +8790,37 @@ function speechWorkerScriptPath(): string {
   return scriptPath;
 }
 
+// --- Child-worker pipe safety (speech + wake) ------------------------------
+// Local Python sidecars may be missing or crash in packaged/installer builds.
+// Writing to a broken stdin raises an ASYNCHRONOUS EPIPE on the stream; without
+// an 'error' listener Node turns it into a fatal "A JavaScript error occurred in
+// the main process" popup. These helpers make every worker write guarded and
+// non-fatal, and attach 'error' listeners so a closed/destroyed pipe (EPIPE,
+// ECONNRESET, ERR_STREAM_DESTROYED) only logs a warning and degrades gracefully.
+function attachWorkerStreamGuards(child: ReturnType<typeof spawn>, label: string): void {
+  const onStreamError = (error: NodeJS.ErrnoException) => {
+    console.warn(`DexNest: ${label} pipe closed (non-fatal): ${error?.code ?? error?.message ?? "error"}`);
+  };
+  child.stdin?.on("error", onStreamError);
+  child.stdout?.on("error", onStreamError);
+  child.stderr?.on("error", onStreamError);
+}
+
+// Write one JSON line to a worker's stdin. Returns false (never throws) if the
+// pipe is missing/closed/destroyed, so shutdown writes to a dead worker are safe.
+function writeWorkerLine(worker: ReturnType<typeof spawn> | null, payload: Record<string, unknown>): boolean {
+  const stdin = worker?.stdin;
+  if (!worker || worker.killed || !stdin || stdin.destroyed || !stdin.writable) {
+    return false;
+  }
+  try {
+    stdin.write(`${JSON.stringify(payload)}\n`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function handleSpeechWorkerMessage(message: Record<string, unknown>, onReady: (result: { ok: boolean; error?: string }) => void): void {
   const type = String(message.type ?? "");
   if (type === "ready") {
@@ -8754,11 +8852,14 @@ function handleSpeechWorkerMessage(message: Record<string, unknown>, onReady: (r
 }
 
 function stopSpeechWorker(): void {
-  if (speechWorker) {
-    try { speechWorker.stdin?.write(`${JSON.stringify({ type: "shutdown" })}\n`); } catch { /* ignore */ }
-    try { speechWorker.kill(); } catch { /* ignore */ }
-  }
+  // Null the reference first so this is idempotent and re-entrant-safe (a message
+  // handler may call stopSpeechWorker while we're already stopping).
+  const worker = speechWorker;
   speechWorker = null;
+  if (worker) {
+    writeWorkerLine(worker, { type: "shutdown" }); // guarded — never throws on a dead pipe
+    try { worker.kill(); } catch { /* ignore */ }
+  }
   speechWorkerReady = false;
   speechWorkerStarting = null;
   speechWorkerStdout = "";
@@ -8812,6 +8913,7 @@ function startSpeechWorker(settings = loadSpeechSettings()): Promise<{ ok: boole
     try {
       const child = spawn(pythonPath, [scriptPath, JSON.stringify(config)], { cwd: speechTempRoot, windowsHide: true });
       speechWorker = child;
+      attachWorkerStreamGuards(child, "speech worker");
       speechEngineStateValue = "warming";
       child.stdout.setEncoding("utf8");
       child.stdout.on("data", (chunk: string) => {
@@ -8885,12 +8987,10 @@ async function transcribeWithWarmWorker(audioPath: string, language: string, vad
         resolvePromise({ ok: false, error: "Speech transcription timed out." });
       }, 120000);
       speechWorkerPending.set(id, { resolve: resolvePromise, reject: (error) => resolvePromise({ ok: false, error: error.message }), timer });
-      try {
-        speechWorker!.stdin?.write(`${JSON.stringify({ type: "transcribe", id, audio: audioPath, language, vad })}\n`);
-      } catch (error) {
+      if (!writeWorkerLine(speechWorker, { type: "transcribe", id, audio: audioPath, language, vad })) {
         clearTimeout(timer);
         speechWorkerPending.delete(id);
-        resolvePromise({ ok: false, error: error instanceof Error ? error.message : "Failed to send transcription request." });
+        resolvePromise({ ok: false, error: "Speech worker pipe is unavailable." });
       }
     });
   };
@@ -8916,8 +9016,6 @@ async function transcribeWithWarmWorker(audioPath: string, language: string, vad
 // Spawns the openWakeWord sidecar (sidecars/wake-word). When dependencies or a
 // local "Nest" model are missing it reports an honest engine_missing status with
 // the exact blocker; it never fakes detection with continuous Whisper.
-const wakeWordSidecarScriptPath = join(repoRoot, "sidecars", "wake-word", "wake_word_sidecar.py");
-const wakeWordModelsDir = join(repoRoot, "sidecars", "wake-word", "models");
 
 type WakeEngineRuntimeStatus =
   | "disabled"
@@ -8936,6 +9034,31 @@ interface WakeEngineState {
   detectionsCount: number;
   lastDetectedAt: number | null;
   scriptPath: string;
+  // Live diagnostics (surfaced in Settings → Ambient Voice).
+  pythonPath: string;
+  phrase: string;
+  deviceId: string;
+  pid: number | null;
+  lastStdout: string;
+  lastStderr: string;
+  audioActive: boolean;
+  pausedByPerformanceMode: boolean;
+  // Live audio/score diagnostics (from the sidecar's periodic "audio" events).
+  deviceName: string;
+  sampleRate: number | null;
+  audioRms: number | null;      // processed RMS (what the model hears)
+  rawRms: number | null;        // raw RMS before gain
+  peak: number | null;
+  audioSilent: boolean;
+  audioChunks: number;
+  channels: number | null;      // input channels opened
+  channel: number | null;       // loudest channel selected
+  gainMode: string;             // "auto" | "1x" | ...
+  gainApplied: number | null;
+  currentScore: number | null;
+  maxScore10s: number | null;
+  threshold: number | null;
+  lastAudioAt: number | null;
 }
 
 let wakeWorker: ReturnType<typeof spawn> | null = null;
@@ -8946,7 +9069,30 @@ let wakeEngineRuntime: WakeEngineState = {
   lastError: "",
   detectionsCount: 0,
   lastDetectedAt: null,
-  scriptPath: wakeWordSidecarScriptPath
+  scriptPath: wakeSidecarScriptPath(),
+  pythonPath: "",
+  phrase: "",
+  deviceId: "",
+  pid: null,
+  lastStdout: "",
+  lastStderr: "",
+  audioActive: false,
+  pausedByPerformanceMode: false,
+  deviceName: "",
+  sampleRate: null,
+  audioRms: null,
+  rawRms: null,
+  peak: null,
+  audioSilent: false,
+  audioChunks: 0,
+  channels: null,
+  channel: null,
+  gainMode: "auto",
+  gainApplied: null,
+  currentScore: null,
+  maxScore10s: null,
+  threshold: null,
+  lastAudioAt: null
 };
 
 function wakeEngineState(): WakeEngineState {
@@ -8957,7 +9103,18 @@ function wakeEngineState(): WakeEngineState {
   } else if (wakeEnginePausedByPerformanceMode(settings)) {
     status = "paused_by_performance_mode";
   }
-  return { ...wakeEngineRuntime, status };
+  // Always report the freshly-resolved paths + selected settings so diagnostics
+  // reflect dev vs installed (resources/sidecars) vs external (D:\DeskNest\sidecars).
+  return {
+    ...wakeEngineRuntime,
+    status,
+    scriptPath: wakeSidecarScriptPath(),
+    pythonPath: speechPythonPath() ?? "",
+    phrase: settings.wakePhraseMode ?? "hey_jarvis",
+    deviceId: settings.selectedWakeMicDeviceId ?? "",
+    audioActive: status === "listening_for_nest" || status === "wake_detected" || status === "recording_command",
+    pausedByPerformanceMode: wakeEnginePausedByPerformanceMode(settings)
+  };
 }
 
 function logWakeEngineMeta(eventType: string, status: DexNestEventStatus, summary: string, metadata: Record<string, unknown> = {}, errorMessage: string | null = null): void {
@@ -8980,7 +9137,7 @@ async function checkWakeEngine(): Promise<{ ok: boolean; report: Record<string, 
     wakeEngineRuntime.lastError = "Python with the wake sidecar is not available.";
     return { ok: false, report: {}, error: wakeEngineRuntime.lastError };
   }
-  if (!existsSync(wakeWordSidecarScriptPath)) {
+  if (!existsSync(wakeSidecarScriptPath())) {
     wakeEngineRuntime.installStatus = "missing_dependencies";
     wakeEngineRuntime.lastError = "Wake-word sidecar script is missing.";
     return { ok: false, report: {}, error: wakeEngineRuntime.lastError };
@@ -8988,11 +9145,11 @@ async function checkWakeEngine(): Promise<{ ok: boolean; report: Record<string, 
   try {
     const settings = loadAmbientVoiceSettings();
     const { stdout } = await execFileAsync(pythonPath, [
-      wakeWordSidecarScriptPath,
+      wakeSidecarScriptPath(),
       "--check",
       "--phrase", settings.wakePhraseMode ?? "hey_jarvis",
       "--model-path", settings.wakeCustomModelPath ?? "",
-      "--models-dir", wakeWordModelsDir
+      "--models-dir", wakeModelsDir()
     ], repoRoot, 20000);
     const line = stdout.trim().split(/\r?\n/).filter(Boolean).at(-1) ?? "{}";
     const report = JSON.parse(line) as Record<string, unknown>;
@@ -9020,7 +9177,31 @@ function handleWakeWorkerLine(line: string): void {
     wakeEngineRuntime.status = "listening_for_nest";
     wakeEngineRuntime.installStatus = "ready";
     wakeEngineRuntime.lastError = "";
+    if (typeof message.deviceName === "string") wakeEngineRuntime.deviceName = message.deviceName;
+    if (typeof message.sampleRate === "number") wakeEngineRuntime.sampleRate = message.sampleRate;
+    if (typeof message.threshold === "number") wakeEngineRuntime.threshold = message.threshold;
+    if (typeof message.channelsOpen === "number") wakeEngineRuntime.channels = message.channelsOpen;
+    if (typeof message.gainMode === "string") wakeEngineRuntime.gainMode = message.gainMode;
     logWakeEngineMeta("wake_engine_started", "success", "Wake engine is listening for the wake word.", { model: message.model ?? null });
+    return;
+  }
+  if (type === "audio") {
+    // Periodic mic-level + score diagnostics (metadata only, no audio content).
+    if (typeof message.rms === "number") wakeEngineRuntime.audioRms = message.rms;
+    if (typeof message.rawRms === "number") wakeEngineRuntime.rawRms = message.rawRms;
+    if (typeof message.peak === "number") wakeEngineRuntime.peak = message.peak;
+    wakeEngineRuntime.audioSilent = message.silent === true;
+    if (typeof message.chunks === "number") wakeEngineRuntime.audioChunks = message.chunks;
+    if (typeof message.channels === "number") wakeEngineRuntime.channels = message.channels;
+    if (typeof message.channel === "number") wakeEngineRuntime.channel = message.channel;
+    if (typeof message.gainMode === "string") wakeEngineRuntime.gainMode = message.gainMode;
+    if (typeof message.gainApplied === "number") wakeEngineRuntime.gainApplied = message.gainApplied;
+    if (typeof message.sampleRate === "number") wakeEngineRuntime.sampleRate = message.sampleRate;
+    if (typeof message.deviceName === "string") wakeEngineRuntime.deviceName = message.deviceName;
+    if (typeof message.score === "number") wakeEngineRuntime.currentScore = message.score;
+    if (typeof message.maxScore10s === "number") wakeEngineRuntime.maxScore10s = message.maxScore10s;
+    if (typeof message.threshold === "number") wakeEngineRuntime.threshold = message.threshold;
+    wakeEngineRuntime.lastAudioAt = Date.now();
     return;
   }
   if (type === "fatal") {
@@ -9053,7 +9234,7 @@ function startWakeEngine(): { ok: boolean; status: WakeEngineRuntimeStatus; erro
     return { ok: true, status: wakeEngineRuntime.status };
   }
   const pythonPath = speechPythonPath();
-  if (!pythonPath || !existsSync(wakeWordSidecarScriptPath)) {
+  if (!pythonPath || !existsSync(wakeSidecarScriptPath())) {
     wakeEngineRuntime.status = "engine_missing";
     wakeEngineRuntime.installStatus = "missing_dependencies";
     wakeEngineRuntime.lastError = "Wake engine sidecar/python is unavailable.";
@@ -9061,17 +9242,38 @@ function startWakeEngine(): { ok: boolean; status: WakeEngineRuntimeStatus; erro
   }
   wakeEngineRuntime.status = "starting";
   wakeWorkerStdout = "";
+  wakeEngineRuntime.lastStdout = "";
+  wakeEngineRuntime.lastStderr = "";
+  wakeEngineRuntime.audioRms = null;
+  wakeEngineRuntime.rawRms = null;
+  wakeEngineRuntime.peak = null;
+  wakeEngineRuntime.audioSilent = false;
+  wakeEngineRuntime.audioChunks = 0;
+  wakeEngineRuntime.channels = null;
+  wakeEngineRuntime.channel = null;
+  wakeEngineRuntime.gainApplied = null;
+  wakeEngineRuntime.currentScore = null;
+  wakeEngineRuntime.maxScore10s = null;
+  wakeEngineRuntime.lastAudioAt = null;
+  wakeEngineRuntime.deviceName = "";
+  wakeEngineRuntime.sampleRate = null;
+  ensureSpeechRoot();
   const deviceId = settings.selectedWakeMicDeviceId ?? "";
+  // Run from a writable directory (never the read-only install dir) so the
+  // openWakeWord model cache / any temp writes succeed in packaged builds.
   const child = spawn(pythonPath, [
-    wakeWordSidecarScriptPath,
+    wakeSidecarScriptPath(),
     "--phrase", settings.wakePhraseMode ?? "hey_jarvis",
     "--model-path", settings.wakeCustomModelPath ?? "",
-    "--sensitivity", String(settings.wakeWordSensitivity ?? 0.5),
-    "--models-dir", wakeWordModelsDir,
+    "--sensitivity", String(clampWakeThreshold(settings.wakeWordSensitivity, 0.5)),
+    "--gain", normalizeWakeInputGain(settings.wakeInputGain, "auto"),
+    "--models-dir", wakeModelsDir(),
     "--cooldown-ms", String(settings.wakeCooldownMs ?? 1500),
     ...(deviceId ? ["--device", deviceId] : [])
-  ], { cwd: repoRoot, windowsHide: true });
+  ], { cwd: speechTempRoot, windowsHide: true });
   wakeWorker = child;
+  wakeEngineRuntime.pid = child.pid ?? null;
+  attachWorkerStreamGuards(child, "wake worker");
   child.stdout.setEncoding("utf8");
   child.stdout.on("data", (chunk: string) => {
     wakeWorkerStdout += chunk;
@@ -9080,10 +9282,22 @@ function startWakeEngine(): { ok: boolean; status: WakeEngineRuntimeStatus; erro
       const line = wakeWorkerStdout.slice(0, index).trim();
       wakeWorkerStdout = wakeWorkerStdout.slice(index + 1);
       if (line) {
+        wakeEngineRuntime.lastStdout = line;
         handleWakeWorkerLine(line);
       }
       index = wakeWorkerStdout.indexOf("\n");
     }
+  });
+  // Capture stderr so real runtime failures (audio device, model cache, etc.)
+  // are visible in diagnostics instead of an opaque exit.
+  child.stderr?.setEncoding("utf8");
+  child.stderr?.on("data", (chunk: string) => {
+    const line = String(chunk).trim().split(/\r?\n/).filter(Boolean).at(-1);
+    if (!line) return;
+    // The tflite-runtime import warning is benign: openWakeWord falls back to
+    // onnxruntime automatically. Never surface it as a blocker/stderr line.
+    if (/tflite runtime|switching to onnxruntime/i.test(line)) return;
+    wakeEngineRuntime.lastStderr = line;
   });
   child.on("error", (error: Error) => {
     wakeEngineRuntime.status = "engine_missing";
@@ -9093,8 +9307,13 @@ function startWakeEngine(): { ok: boolean; status: WakeEngineRuntimeStatus; erro
   child.on("exit", () => {
     if (wakeWorker === child) {
       wakeWorker = null;
+      wakeEngineRuntime.pid = null;
       if (wakeEngineRuntime.status !== "disabled" && wakeEngineRuntime.status !== "engine_missing") {
         wakeEngineRuntime.status = loadAmbientVoiceSettings().wakeWordEnabled ? "error" : "disabled";
+        // Surface the real reason (e.g. audio/model error) if we have nothing else.
+        if (!wakeEngineRuntime.lastError && wakeEngineRuntime.lastStderr) {
+          wakeEngineRuntime.lastError = wakeEngineRuntime.lastStderr;
+        }
       }
     }
   });
@@ -9102,11 +9321,13 @@ function startWakeEngine(): { ok: boolean; status: WakeEngineRuntimeStatus; erro
 }
 
 function stopWakeEngine(): void {
-  if (wakeWorker) {
-    try { wakeWorker.stdin?.write(`${JSON.stringify({ type: "shutdown" })}\n`); } catch { /* ignore */ }
-    try { wakeWorker.kill(); } catch { /* ignore */ }
-  }
+  // Null first so repeated calls / message-handler re-entry are safe.
+  const worker = wakeWorker;
   wakeWorker = null;
+  if (worker) {
+    writeWorkerLine(worker, { type: "shutdown" }); // guarded — never throws on a dead pipe
+    try { worker.kill(); } catch { /* ignore */ }
+  }
   wakeWorkerStdout = "";
   if (wakeEngineRuntime.status !== "engine_missing") {
     wakeEngineRuntime.status = "disabled";
@@ -14979,8 +15200,9 @@ function dropPublicState() {
 }
 
 function sharedDesignTokensCss(): string {
-  const tokensPath = resolve(repoRoot, "packages", "shared-ui", "src", "tokens.css");
-  return readFileSync(tokensPath, "utf8");
+  // Embedded at build time (see the ?raw import above) — no runtime file read,
+  // so this works identically in dev and in the packaged/installed app.
+  return sharedTokensCssRaw;
 }
 
 function designTokenValue(tokenName: string): string {
@@ -15382,11 +15604,24 @@ function renderDropPhonePage(): string {
 </html>`;
 }
 
+// Self-contained fallback page (inline styles, no design-token dependency) so a
+// phone always gets a friendly Drop page, never a raw JSON error.
+function renderDropFallbackPage(detail: string): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="color-scheme" content="dark" /><title>DexNest Drop</title></head>
+<body style="margin:0;background:#000;color:#f5f5f5;font-family:system-ui,-apple-system,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;text-align:center;padding:24px;box-sizing:border-box">
+<div style="max-width:360px"><h1 style="color:#38BDF8;font-size:20px;margin:0 0 8px">DexNest Drop</h1><p style="color:#a3a3a3;font-size:14px;line-height:1.5;margin:0 0 12px">Drop couldn't load. Make sure DexNest is open on your PC, then refresh this page.</p><p style="color:#525252;font-size:11px;font-family:ui-monospace,monospace;word-break:break-word;margin:0">${escapeHtml(detail)}</p></div></body></html>`;
+}
+
 async function handleDropRoutes(request: IncomingMessage, response: ServerResponse): Promise<boolean> {
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
 
   if (request.method === "GET" && url.pathname === "/drop") {
-    sendHtml(response, 200, renderDropPhonePage());
+    try {
+      sendHtml(response, 200, renderDropPhonePage());
+    } catch (error) {
+      // Never surface a raw JSON/ENOENT error to the phone.
+      sendHtml(response, 500, renderDropFallbackPage(error instanceof Error ? error.message : "Drop page failed to render."));
+    }
     return true;
   }
 

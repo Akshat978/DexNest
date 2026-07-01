@@ -14,7 +14,30 @@ export const defaultWakeEngineState: WakeEngineState = {
   lastError: "",
   detectionsCount: 0,
   lastDetectedAt: null,
-  scriptPath: ""
+  scriptPath: "",
+  pythonPath: "",
+  phrase: "",
+  deviceId: "",
+  pid: null,
+  lastStdout: "",
+  lastStderr: "",
+  audioActive: false,
+  pausedByPerformanceMode: false,
+  deviceName: "",
+  sampleRate: null,
+  audioRms: null,
+  rawRms: null,
+  peak: null,
+  audioSilent: false,
+  audioChunks: 0,
+  channels: null,
+  channel: null,
+  gainMode: "auto",
+  gainApplied: null,
+  currentScore: null,
+  maxScore10s: null,
+  threshold: null,
+  lastAudioAt: null
 };
 
 export const emptyCommandStats: CommandStats = {

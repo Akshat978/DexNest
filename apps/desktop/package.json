@@ -38,6 +38,17 @@
       {
         "from": "build/tray.ico",
         "to": "tray.ico"
+      },
+      {
+        "from": "../../sidecars",
+        "to": "sidecars",
+        "filter": [
+          "**/*.py",
+          "wake-word/models/**",
+          "!**/.venv/**",
+          "!**/__pycache__/**",
+          "!**/*.pyc"
+        ]
       }
     ],
     "win": {

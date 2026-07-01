@@ -208,6 +208,7 @@ export interface AmbientVoiceSettings {
   wakeWord: string;
   wakeWordEngine?: "placeholder" | "openwakeword" | "porcupine_optional" | "custom";
   wakeWordSensitivity?: number;
+  wakeInputGain?: "auto" | "1x" | "2x" | "4x" | "8x" | "12x";
   listenAfterWakeMs?: number;
   wakeCooldownMs?: number;
   pauseWakeWordInPerformanceMode?: boolean;
@@ -3480,6 +3481,52 @@ export interface WakeEngineState {
   detectionsCount: number;
   lastDetectedAt: number | null;
   scriptPath: string;
+  pythonPath: string;
+  phrase: string;
+  deviceId: string;
+  pid: number | null;
+  lastStdout: string;
+  lastStderr: string;
+  audioActive: boolean;
+  pausedByPerformanceMode: boolean;
+  deviceName: string;
+  sampleRate: number | null;
+  audioRms: number | null;
+  rawRms: number | null;
+  peak: number | null;
+  audioSilent: boolean;
+  audioChunks: number;
+  channels: number | null;
+  channel: number | null;
+  gainMode: string;
+  gainApplied: number | null;
+  currentScore: number | null;
+  maxScore10s: number | null;
+  threshold: number | null;
+  lastAudioAt: number | null;
+}
+
+// Phrase-aware friendly label for the wake engine status. The internal status
+// value "listening_for_nest" is historical; never show the raw "nest" wording
+// for a built-in phrase like Hey Jarvis.
+function wakeEngineStatusLabel(state: WakeEngineState): string {
+  const phraseName =
+    state.phrase === "hey_jarvis" ? "Hey Jarvis"
+      : state.phrase === "alexa" ? "Alexa"
+        : state.phrase === "custom_path" ? "custom model"
+          : state.phrase === "custom_nest" ? "Nest"
+            : (state.phrase || "wake word");
+  switch (state.status) {
+    case "listening_for_nest": return `listening for ${phraseName}`;
+    case "wake_detected": return "wake detected";
+    case "recording_command": return "recording command";
+    case "starting": return "starting";
+    case "paused_by_performance_mode": return "paused by Performance Mode";
+    case "engine_missing": return "engine unavailable";
+    case "error": return "error";
+    case "disabled": return "disabled";
+    default: return state.status;
+  }
 }
 
 
@@ -16059,15 +16106,61 @@ function SettingsView({
           <div className="section-heading">
             <p>Local wake phrase “{ambientForm.wakePhraseMode === "hey_jarvis" ? "Hey Jarvis" : ambientForm.wakePhraseMode === "alexa" ? "Alexa" : ambientForm.wakePhraseMode === "custom_path" ? "Custom model" : (ambientForm.wakeWord || "Nest")}” (openWakeWord). Wake phrase is local and visible. Whisper only starts after wake.</p>
             <p className="technical">
-              engine: {wakeEngineState.status} · install: {wakeEngineState.installStatus} · detections: {wakeEngineState.detectionsCount}
+              engine: {wakeEngineStatusLabel(wakeEngineState)} · install: {wakeEngineState.installStatus} · detections: {wakeEngineState.detectionsCount}
               {wakeEngineState.lastDetectedAt ? ` · last ${formatLocalDateTime(new Date(wakeEngineState.lastDetectedAt).toISOString())}` : ""}
               {wakeWordState.metrics.totalWakeToActionMs ? ` · wake→done ${wakeWordState.metrics.totalWakeToActionMs}ms` : ""}
             </p>
+            <p className="technical">
+              phrase: {wakeEngineState.phrase || (ambientForm.wakePhraseMode ?? "hey_jarvis")} · mic: {wakeEngineState.deviceName || wakeEngineState.deviceId || "default"} · audio: {wakeEngineState.audioActive ? "active" : "idle"} · pid: {wakeEngineState.pid ?? "—"}{wakeEngineState.pausedByPerformanceMode ? " · paused by Performance Mode" : ""}
+            </p>
+            {(wakeEngineState.audioRms !== null || wakeEngineState.currentScore !== null) && (
+              <>
+                <p className="technical">
+                  raw RMS: {wakeEngineState.rawRms !== null ? wakeEngineState.rawRms.toFixed(4) : "—"}
+                  {` · processed RMS: ${wakeEngineState.audioRms !== null ? wakeEngineState.audioRms.toFixed(4) : "—"}`}
+                  {wakeEngineState.peak !== null ? ` · peak: ${wakeEngineState.peak.toFixed(4)}` : ""}
+                  {wakeEngineState.sampleRate ? ` @ ${wakeEngineState.sampleRate}Hz` : ""}
+                  {wakeEngineState.gainApplied !== null ? ` · gain: ${wakeEngineState.gainMode}→${wakeEngineState.gainApplied.toFixed(1)}×` : ` · gain: ${wakeEngineState.gainMode}`}
+                </p>
+                <p className="technical">
+                  {`score: ${wakeEngineState.currentScore !== null ? wakeEngineState.currentScore.toFixed(3) : "—"}`}
+                  {` · max 10s: ${wakeEngineState.maxScore10s !== null ? wakeEngineState.maxScore10s.toFixed(3) : "—"}`}
+                  {` · threshold: ${wakeEngineState.threshold !== null ? wakeEngineState.threshold.toFixed(2) : "—"}`}
+                  {wakeEngineState.channels !== null ? ` · channels: ${wakeEngineState.channels}${wakeEngineState.channel !== null ? ` (using #${wakeEngineState.channel})` : ""}` : ""}
+                  {wakeEngineState.audioChunks ? ` · chunks: ${wakeEngineState.audioChunks}` : ""}
+                </p>
+              </>
+            )}
+            {wakeEngineState.audioActive && wakeEngineState.audioSilent && (
+              <p className="technical" style={{ color: "var(--warn, #F59E0B)" }}>
+                DexNest is receiving very low raw audio from this microphone. Browser apps may use auto gain.
+                Try Auto Gain (or a higher multiplier below), a different channel, or increase the Windows input level for this mic.
+              </p>
+            )}
+            <p className="technical technical--truncate">python: {wakeEngineState.pythonPath || "not resolved"}</p>
+            <p className="technical technical--truncate">script: {wakeEngineState.scriptPath || "not resolved"}</p>
+            {wakeEngineState.lastStdout && <p className="technical technical--truncate">sidecar stdout: {wakeEngineState.lastStdout}</p>}
+            {wakeEngineState.lastStderr && <p className="technical technical--truncate">sidecar stderr: {wakeEngineState.lastStderr}</p>}
             {wakeEngineState.lastError && wakeEngineState.status !== "listening_for_nest" && (
               <p className="technical">blocker: {wakeEngineState.lastError}</p>
             )}
             {wakeEngineState.installStatus === "missing_dependencies" && (
-              <p className="technical">Install: <span className="technical">{`"${wakeEngineState.scriptPath ? "sidecars/speech/.venv/Scripts/python.exe" : "python"}" -m pip install openwakeword sounddevice numpy`}</span>, then add a “Nest” model at sidecars/wake-word/models/nest.onnx.</p>
+              <p className="technical">Install packages: <span className="technical">{`"sidecars\\speech\\.venv\\Scripts\\python.exe" -m pip install openwakeword sounddevice numpy`}</span>
+                {ambientForm.wakePhraseMode === "custom_nest"
+                  ? " — then add a “Nest” model at sidecars/wake-word/models/nest.onnx."
+                  : ambientForm.wakePhraseMode === "custom_path"
+                    ? " — then set the custom model path below."
+                    : " — the selected wake phrase uses a built-in model (no model file needed)."}
+              </p>
+            )}
+            {wakeEngineState.installStatus === "missing_model" && (
+              <p className="technical">
+                {ambientForm.wakePhraseMode === "custom_nest"
+                  ? "Add a “Nest” model at sidecars/wake-word/models/nest.onnx (or switch to Hey Jarvis, which uses a built-in model)."
+                  : ambientForm.wakePhraseMode === "custom_path"
+                    ? "Set a valid custom .onnx model path below."
+                    : "The selected wake phrase uses a built-in openWakeWord model — no extra model file is required."}
+              </p>
             )}
           </div>
           <label>
@@ -16087,12 +16180,28 @@ function SettingsView({
           )}
           <label className="checkbox-row">
             <input type="checkbox" checked={ambientForm.wakeWordEnabled} onChange={(event) => updateAmbientOption("wakeWordEnabled", event.target.checked)} />
-            <span>Enable wake word (off by default). Uses the local openWakeWord engine; Test trigger always works.</span>
+            <span>Enable wake word (off by default). Uses the local openWakeWord engine; the simulated action-handoff test always works.</span>
           </label>
           <label>
-            Wake sensitivity ({(ambientForm.wakeWordSensitivity ?? 0.5).toFixed(2)})
-            <input type="range" min="0" max="1" step="0.05" value={ambientForm.wakeWordSensitivity ?? 0.5} onChange={(event) => updateAmbientOption("wakeWordSensitivity", Number(event.target.value))} />
+            Wake threshold ({(ambientForm.wakeWordSensitivity ?? 0.5).toFixed(2)})
+            <input type="range" min="0.2" max="0.95" step="0.05" value={ambientForm.wakeWordSensitivity ?? 0.5} onChange={(event) => updateAmbientOption("wakeWordSensitivity", Number(event.target.value))} />
           </label>
+          <p className="technical">Lower threshold = more sensitive (triggers easier). Higher threshold = less sensitive. Try 0.45–0.60 for Hey Jarvis.</p>
+          {(ambientForm.wakeWordSensitivity ?? 0.5) > 0.9 && (
+            <p className="technical" style={{ color: "var(--warn, #F59E0B)" }}>Wake threshold is too high. Try 0.45–0.60.</p>
+          )}
+          <label>
+            Wake input gain
+            <select value={ambientForm.wakeInputGain ?? "auto"} onChange={(event) => updateAmbientOption("wakeInputGain", event.target.value as "auto" | "1x" | "2x" | "4x" | "8x" | "12x")}>
+              <option value="auto">Auto (normalize quiet mics)</option>
+              <option value="1x">1× (no gain)</option>
+              <option value="2x">2×</option>
+              <option value="4x">4×</option>
+              <option value="8x">8×</option>
+              <option value="12x">12×</option>
+            </select>
+          </label>
+          <p className="technical">Quiet mics (e.g. DJI MIC MINI over its dongle) send low raw levels. Auto normalizes them safely before openWakeWord; increase manually if raw RMS stays low while you speak.</p>
           <label className="checkbox-row">
             <input type="checkbox" checked={ambientForm.allowWakeWordDeviceControl ?? true} onChange={(event) => updateAmbientOption("allowWakeWordDeviceControl", event.target.checked)} />
             <span>Allow wake-word device control (lights)</span>
@@ -16108,10 +16217,14 @@ function SettingsView({
           </label>
           <div className="button-row">
             <button type="button" onClick={() => void onCheckWake()}>Check wake engine</button>
-            <button type="button" onClick={() => onTestWake()}>Test wake trigger</button>
-            <button type="button" onClick={() => onStartWake()}>Start wake service</button>
+            <button type="button" onClick={() => onTestWake()}>Test action handoff (simulated)</button>
+            <button type="button" onClick={() => onStartWake()}>Start real wake test</button>
             <button type="button" onClick={() => onStopWake()}>Stop wake service</button>
           </div>
+          <p className="technical">
+            “Test action handoff” fakes a detection to verify command capture/routing — it does not use the mic.
+            “Start real wake test” runs the actual openWakeWord sidecar: watch raw/processed RMS and score above while you say “{ambientForm.wakePhraseMode === "hey_jarvis" ? "Hey Jarvis" : ambientForm.wakePhraseMode === "alexa" ? "Alexa" : "the wake phrase"}”. Detection fires when score ≥ threshold.
+          </p>
         </div>
 
         <div className="registry-controls">
