@@ -32,12 +32,33 @@ import { ActionButton } from "./components/ui/ActionButton";
 import { AssistantOrb } from "./components/ui/AssistantOrb";
 import { VoiceWaveform } from "./components/ui/VoiceWaveform";
 import { ModuleLoadingOverlay, InlineLoadingState, LoadingStatusCard } from "./components/ui/ModuleLoading";
+import { previewForUi, formatBytes, formatDate, formatDuration } from "./lib/format";
+import { MODULE_META } from "./lib/moduleMeta";
+import { getPerfStats, subscribePerf, recordModuleSwitch, recordModuleDataLoaded } from "./lib/perf";
+import {
+  emptyCommandStats, defaultPerformanceModeSettings, defaultPerformanceModeState, defaultExternalDevicesState,
+  defaultAmbientVoiceSettings, defaultAmbientVoiceState, defaultSpeechSettings, defaultSpeechState,
+  defaultVoiceWorkflowSettings, defaultAppLifecycleSettings, defaultKeyboardShortcutSettings, defaultStreamDeckSettings,
+  TIMETABLE_DAYS, defaultTimetableTemplate, defaultTimetableState, defaultUtilitiesState, defaultWeatherState,
+  NEWS_CATEGORIES, defaultNewsState, defaultWakeEngineState, getBridge
+} from "./lib/bridge";
+import { Panel, CollapsibleListItem, PageHeader, EmptyState, LimitedList, PathText, StatusBadge, ToastStack, Spinner } from "./components/shared";
+import { HeatmapView } from "./views/HeatmapView";
+import { AppHealthView } from "./views/AppHealthView";
+import { ToolsView } from "./views/ToolsView";
+import { DropView } from "./views/DropView";
+import { PinButton, PinsContext, setActivePinContext, activePinContext, pinModuleToView, computePinId } from "./components/pins";
+import type { PinInput, PinsContextValue } from "./components/pins";
+import { ClipboardView } from "./views/ClipboardView";
+import { AuditView } from "./views/AuditView";
+import { BackupView } from "./views/BackupView";
+import { ExternalDevicesView } from "./views/ExternalDevicesView";
 import logoUrl from "./logo.png";
 import "@dexnest/shared-ui/tokens.css";
 import "./styles.css";
 import "./theme.css";
 
-type ViewId = "command" | "dev" | "deck" | "clipboard" | "drop" | "tools" | "vault" | "search" | "capture" | "journal" | "calendar" | "timetable" | "utilities" | "news" | "finder" | "finance" | "heatmap" | "devices" | "backup" | "health" | "audit" | "settings";
+export type ViewId = "command" | "dev" | "deck" | "clipboard" | "drop" | "tools" | "vault" | "search" | "capture" | "journal" | "calendar" | "timetable" | "utilities" | "news" | "finder" | "finance" | "heatmap" | "devices" | "backup" | "health" | "audit" | "settings";
 type ActionStatus = "success" | "failed" | "skipped" | "cancelled" | "pending";
 type ToastTone = "success" | "error";
 type AppCloseBehavior = "minimize_to_tray" | "ask" | "exit";
@@ -47,7 +68,7 @@ type SpeechDevice = "auto" | "cuda" | "cpu";
 type SpeechComputeType = "auto" | "int8" | "float16";
 type SpeechStatus = "success" | "failed" | "cancelled";
 
-interface ToastMessage {
+export interface ToastMessage {
   id: string;
   message: string;
   tone: ToastTone;
@@ -181,7 +202,7 @@ interface ExternalDevicesSettings {
   updatedAt: string | null;
 }
 
-interface AmbientVoiceSettings {
+export interface AmbientVoiceSettings {
   ambientVoiceEnabled: boolean;
   wakeWordEnabled: boolean;
   wakeWord: string;
@@ -234,7 +255,7 @@ interface AmbientVoiceSettings {
   updatedAt: string;
 }
 
-interface AmbientVoiceState {
+export interface AmbientVoiceState {
   settingsPath: string;
   settings: AmbientVoiceSettings;
   currentState: AmbientVoiceStatus;
@@ -246,7 +267,7 @@ interface AmbientVoiceState {
   wakeWordStatus: "placeholder" | "disabled";
 }
 
-interface SpeechSettings {
+export interface SpeechSettings {
   speechEngine: SpeechEngine;
   fallbackToWindows: boolean;
   modelName: string;
@@ -285,7 +306,7 @@ interface SpeechSettings {
   updatedAt: string | null;
 }
 
-interface VoiceWorkflowSettings {
+export interface VoiceWorkflowSettings {
   continueCaptureMode: boolean;
   autoSaveCaptureVoiceNotes: boolean;
   confirmBeforeSavingCapture: boolean;
@@ -347,56 +368,6 @@ interface VadLiveMeter {
 }
 
 // --- Lightweight renderer performance instrumentation (Phase 23.12) ---------
-// Records the most recent module-switch render time (to first paint) so it can
-// be shown in Settings diagnostics. Module-level + subscribe so it never causes
-// the whole App to re-render on every measurement.
-interface PerfStats {
-  lastModule: string;
-  lastModuleSwitchMs: number | null;
-  worstModuleSwitchMs: number | null;
-  lastDataLoadModule: string;
-  lastDataLoadMs: number | null;
-  lastTotalReadyMs: number | null;
-  slowModuleWarning: string | null;
-}
-let perfStats: PerfStats = {
-  lastModule: "",
-  lastModuleSwitchMs: null,
-  worstModuleSwitchMs: null,
-  lastDataLoadModule: "",
-  lastDataLoadMs: null,
-  lastTotalReadyMs: null,
-  slowModuleWarning: null
-};
-const perfListeners = new Set<() => void>();
-function getPerfStats(): PerfStats { return perfStats; }
-function subscribePerf(listener: () => void): () => void { perfListeners.add(listener); return () => perfListeners.delete(listener); }
-function emitPerf(): void { for (const listener of perfListeners) { listener(); } }
-// firstPaintMs is approximated by the module-switch time (request → painted frame).
-function recordModuleSwitch(view: string, ms: number): void {
-  const rounded = Math.round(ms);
-  perfStats = {
-    ...perfStats,
-    lastModule: view,
-    lastModuleSwitchMs: rounded,
-    worstModuleSwitchMs: Math.max(rounded, perfStats.worstModuleSwitchMs ?? 0)
-  };
-  emitPerf();
-}
-// Records how long a module's heavy data took to load (off the first-paint path)
-// and the total ready time; warns if a module took over 1000ms end-to-end.
-function recordModuleDataLoaded(view: string, dataMs: number, totalMs: number): void {
-  const data = Math.round(dataMs);
-  const total = Math.round(totalMs);
-  perfStats = {
-    ...perfStats,
-    lastDataLoadModule: view,
-    lastDataLoadMs: data,
-    lastTotalReadyMs: total,
-    slowModuleWarning: total > 1000 ? `${view} took ${total}ms to load` : perfStats.slowModuleWarning
-  };
-  emitPerf();
-}
 
 let vadLiveMeter: VadLiveMeter = { level: 0, noiseFloor: 0, speechThreshold: 0.03, state: "idle" };
 const vadMeterListeners = new Set<() => void>();
@@ -613,7 +584,7 @@ interface SpeechWorkerDiagnostics {
   lastError: string | null;
 }
 
-interface SpeechServiceState {
+export interface SpeechServiceState {
   settingsPath: string;
   modelRoot: string;
   debugAudioRoot: string;
@@ -637,7 +608,7 @@ interface SpeechTranscriptionResult {
   speechState?: SpeechServiceState;
 }
 
-interface ExternalDeviceCacheItem {
+export interface ExternalDeviceCacheItem {
   provider: "govee";
   deviceId: string;
   deviceName: string;
@@ -661,7 +632,7 @@ interface ExternalDeviceGroup {
   updatedAt: string;
 }
 
-interface ExternalDevicesState {
+export interface ExternalDevicesState {
   settingsPath: string;
   cachePath: string;
   groupsPath: string;
@@ -679,7 +650,7 @@ interface ExternalDevicesState {
   groups: ExternalDeviceGroup[];
 }
 
-interface EventEntry {
+export interface EventEntry {
   id: string;
   type: string;
   source: string;
@@ -693,7 +664,7 @@ interface EventEntry {
   summary: string;
 }
 
-interface DexNestProject {
+export interface DexNestProject {
   id: string;
   name: string;
   path: string;
@@ -755,7 +726,7 @@ interface ProjectCommandResult {
   errorMessage?: string | null;
 }
 
-interface ClipboardHistoryItem {
+export interface ClipboardHistoryItem {
   id: string;
   text: string;
   preview: string;
@@ -764,7 +735,7 @@ interface ClipboardHistoryItem {
   source?: "manual" | "listener" | "multi_copy" | "slot" | "snippet";
 }
 
-interface ClipboardSnippet {
+export interface ClipboardSnippet {
   id: string;
   title: string;
   text: string;
@@ -772,7 +743,7 @@ interface ClipboardSnippet {
   updatedAt: string;
 }
 
-interface ClipboardState {
+export interface ClipboardState {
   history: ClipboardHistoryItem[];
   snippets: ClipboardSnippet[];
   settings: {
@@ -852,7 +823,7 @@ interface DropShelfItem {
   expiresAt: string | null;
 }
 
-interface DropState {
+export interface DropState {
   shelf: DropShelfItem[];
   outgoing: DropShelfItem[];
   outgoingText: DropShelfItem[];
@@ -870,14 +841,14 @@ interface DropState {
   lanIp: string | null;
 }
 
-interface ToolsSelectedFile {
+export interface ToolsSelectedFile {
   path: string;
   name: string;
   byteLength: number;
   extension: string;
 }
 
-interface ToolsOutputItem {
+export interface ToolsOutputItem {
   id: string;
   fileName: string;
   path: string;
@@ -886,7 +857,7 @@ interface ToolsOutputItem {
   createdAt: string;
 }
 
-interface ToolsState {
+export interface ToolsState {
   selectedFiles: ToolsSelectedFile[];
   outputs: ToolsOutputItem[];
   inputFolderPath: string;
@@ -1124,7 +1095,7 @@ interface AssistantSecurityState {
   secureVaultSetup: boolean;
 }
 
-interface AppLifecycleSettings {
+export interface AppLifecycleSettings {
   closeBehavior: AppCloseBehavior;
   showTrayCloseNotice: boolean;
   minimizeToTrayOnStartup: boolean;
@@ -1150,13 +1121,13 @@ interface KeyboardShortcutMapping {
   lastError: string | null;
 }
 
-interface KeyboardShortcutSettings {
+export interface KeyboardShortcutSettings {
   enabled: boolean;
   mappings: KeyboardShortcutMapping[];
   updatedAt: string;
 }
 
-interface StreamDeckSettings {
+export interface StreamDeckSettings {
   localOnly: boolean;
   lanEnabled: boolean;
   tokenEnabled: boolean;
@@ -1166,7 +1137,7 @@ interface StreamDeckSettings {
 
 type PerformanceModeReason = "manual" | "fullscreen" | "game-detected" | "scheduled" | "unknown";
 
-interface PerformanceModeSettings {
+export interface PerformanceModeSettings {
   performanceModeEnabled: boolean;
   pauseHeatmap: boolean;
   pauseOcrJobs: boolean;
@@ -1180,7 +1151,7 @@ interface PerformanceModeSettings {
   showTrayStatus: boolean;
 }
 
-interface PerformanceModeState {
+export interface PerformanceModeState {
   enabled: boolean;
   reason: PerformanceModeReason;
   enabledAt: string | null;
@@ -1326,7 +1297,7 @@ interface CalendarState {
   nudgeSettings: NudgeSettings;
 }
 
-type TimetableDay = "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
+export type TimetableDay = "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
 type TimetableBlockStatus = "planned" | "done" | "skipped" | "moved";
 
 interface TimetableBlock {
@@ -1343,7 +1314,7 @@ interface TimetableBlock {
   updatedAt: string;
 }
 
-interface TimetableTemplate {
+export interface TimetableTemplate {
   id: string;
   name: string;
   blocks: TimetableBlock[];
@@ -1357,7 +1328,7 @@ interface TimetableFile {
   updatedAt: string;
 }
 
-interface TimetableState {
+export interface TimetableState {
   file: TimetableFile;
   activeTemplate: TimetableTemplate;
   templates: TimetableTemplate[];
@@ -1425,7 +1396,7 @@ interface UtilityWorldClock {
   createdAt: string;
 }
 
-interface UtilitiesState {
+export interface UtilitiesState {
   recentResults: UtilityRecentResult[];
   conversionPresets: UtilityConversionPreset[];
   timers: UtilityTimer[];
@@ -1474,7 +1445,7 @@ interface WeatherCache {
   error: string | null;
 }
 
-interface WeatherState {
+export interface WeatherState {
   settings: WeatherSettings;
   cache: WeatherCache;
   settingsPath: string;
@@ -1485,7 +1456,7 @@ interface WeatherState {
   autoRefreshActive: boolean;
 }
 
-type NewsCategory = "Top" | "Canada" | "India" | "World" | "Tech" | "AI" | "Finance" | "Sports" | "Health" | "Science" | "Business";
+export type NewsCategory = "Top" | "Canada" | "India" | "World" | "Tech" | "AI" | "Finance" | "Sports" | "Health" | "Science" | "Business";
 type NewsRefreshMode = "manual" | "every_1_hour" | "every_3_hours" | "every_6_hours" | "daily_morning";
 type NewsCacheStatus = "empty" | "fresh" | "stale" | "offline" | "error";
 
@@ -1536,7 +1507,7 @@ interface NewsCache {
   categoryCounts: Record<string, number>;
 }
 
-interface NewsState {
+export interface NewsState {
   settings: NewsSettings;
   cache: NewsCache;
   settingsPath: string;
@@ -1702,7 +1673,7 @@ interface HeatmapEvent {
   createdAt: string;
 }
 
-interface HeatmapGoal {
+export interface HeatmapGoal {
   id: string;
   name: string;
   targetHoursPerWeek: number;
@@ -1728,7 +1699,7 @@ interface HeatmapSummary {
   topAppToday: string;
 }
 
-interface HeatmapState {
+export interface HeatmapState {
   settings: HeatmapSettings;
   events: HeatmapEvent[];
   goals: HeatmapGoal[];
@@ -1741,7 +1712,7 @@ interface HeatmapState {
   detectionNote: string;
 }
 
-interface CommandStats {
+export interface CommandStats {
   journalEntriesThisWeek: number;
   calendarUpcoming: number;
   todayNudges: number;
@@ -1788,36 +1759,14 @@ interface RoutinesState {
   routinesPath: string;
 }
 
-const emptyCommandStats: CommandStats = {
-  journalEntriesThisWeek: 0,
-  calendarUpcoming: 0,
-  todayNudges: 0,
-  urgentNudges: 0,
-  activeNudges: 0,
-  transactionsThisMonth: 0,
-  receiptsThisMonth: 0,
-  vaultDocuments: 0,
-  dropIncoming: 0,
-  dropOutgoing: 0,
-  capturesInbox: 0,
-  finderItems: 0,
-  devProjects: 0,
-  actionsRunToday: 0,
-  failedActionsToday: 0,
-  routinesRunToday: 0,
-  heatmapActiveSecondsToday: 0,
-  heatmapTopAppToday: "none",
-  heatmapStatus: "disabled",
-  updatedAt: new Date().toISOString()
-};
 
-interface PdfInfoItem {
+export interface PdfInfoItem {
   fileName: string;
   byteLength: number;
   pageCount: number | null;
 }
 
-interface BackupOptions {
+export interface BackupOptions {
   includeSettings: boolean;
   includeFiles: boolean;
   includeVaultDocuments: boolean;
@@ -1834,7 +1783,7 @@ interface BackupFileSummary {
   createdAt: string;
 }
 
-interface BackupPreview {
+export interface BackupPreview {
   ok: boolean;
   path: string;
   sizeBytes: number;
@@ -1843,14 +1792,14 @@ interface BackupPreview {
   error?: string;
 }
 
-interface BackupState {
+export interface BackupState {
   backupFolderPath: string;
   restoreStagingPath: string;
   defaultOptions: BackupOptions;
   backups: BackupFileSummary[];
 }
 
-type HealthStatus = "pass" | "warn" | "fail";
+export type HealthStatus = "pass" | "warn" | "fail";
 
 interface HealthCheckResult {
   id: string;
@@ -1868,7 +1817,7 @@ interface HealthGroup {
   checks: HealthCheckResult[];
 }
 
-interface AppHealthState {
+export interface AppHealthState {
   overallStatus: HealthStatus;
   checkedAt: string;
   summary: {
@@ -1944,7 +1893,7 @@ interface DataManagementDeleteResult {
   lastDeletion: DataManagementLastDeletion;
 }
 
-interface DexNestBridge {
+export interface DexNestBridge {
   getAppInfo: () => Promise<AppInfo>;
   listActions: () => Promise<ActionDefinition[]>;
   listProjects: () => Promise<DexNestProject[]>;
@@ -2090,724 +2039,6 @@ declare global {
   }
 }
 
-const defaultPerformanceModeSettings: PerformanceModeSettings = {
-  performanceModeEnabled: false,
-  pauseHeatmap: true,
-  pauseOcrJobs: true,
-  pauseSearchAutoIndex: true,
-  pauseBackups: true,
-  suppressNonUrgentNudges: true,
-  allowDropWhenOpen: true,
-  allowUserTriggeredAssistant: true,
-  autoEnableWhenFullscreen: false,
-  autoEnableWhenGameDetected: false,
-  showTrayStatus: true
-};
-
-const defaultPerformanceModeState: PerformanceModeState = {
-  enabled: false,
-  reason: "unknown",
-  enabledAt: null,
-  pausedWorkers: [],
-  lastChangedAt: new Date().toISOString()
-};
-
-const defaultExternalDevicesState: ExternalDevicesState = {
-  settingsPath: "./local-data/settings/external-devices-settings.json",
-  cachePath: "./local-data/settings/external-devices-cache.json",
-  groupsPath: "./local-data/settings/external-devices-groups.json",
-  settings: {
-    goveeEnabled: false,
-    goveeApiKeySecretId: null,
-    defaultDeviceAlias: null,
-    allowVoiceControl: true,
-    allowStreamDeckControl: true,
-    allowKeyboardShortcutControl: true,
-    requireConfirmationForPowerOff: false,
-    requireConfirmationForBrightnessBelow10: false,
-    requireConfirmationForScenes: false,
-    updatedAt: null
-  },
-  secureVaultSetup: false,
-  secureVaultUnlocked: false,
-  apiKeyStored: false,
-  providerStatus: "disabled",
-  providerMessage: "Govee provider is disabled.",
-  devices: [],
-  groups: []
-};
-
-const defaultAmbientVoiceSettings: AmbientVoiceSettings = {
-  ambientVoiceEnabled: false,
-  wakeWordEnabled: false,
-  wakeWord: "Nest",
-  pushToTalkEnabled: true,
-  pushToTalkShortcut: "CommandOrControl+Alt+N",
-  pushToTalkShortcutStatus: "disabled",
-  pushToTalkShortcutLastError: null,
-  visibleListeningIndicator: true,
-  playStartSound: true,
-  playStopSound: true,
-  autoSendAfterSpeech: true,
-  stopListeningAfterCommand: true,
-  pauseInPerformanceMode: true,
-  allowDeviceControl: true,
-  allowClipboardActions: true,
-  allowDevActions: true,
-  allowSensitiveLookups: true,
-  speakResponses: true,
-  speakSensitiveAnswers: false,
-  speakErrors: true,
-  speakConfirmations: true,
-  speakWorkflowStatus: true,
-  wakeChimeEnabled: true,
-  wakeChimeVolume: 0.35,
-  voiceOverlayEnabled: true,
-  voiceOverlayScreen: "primary",
-  voiceOverlayPosition: "bottom_center",
-  voiceOverlaySize: "compact",
-  voiceOverlayAnimations: true,
-  voiceName: null,
-  voiceRate: 1,
-  voiceVolume: 1,
-  shortResponsesOnly: true,
-  muteInPerformanceMode: true,
-  maxListeningSeconds: 8,
-  commandCooldownMs: 1200,
-  updatedAt: new Date().toISOString()
-};
-
-const defaultAmbientVoiceState: AmbientVoiceState = {
-  settingsPath: "./local-data/settings/ambient-voice-settings.json",
-  settings: defaultAmbientVoiceSettings,
-  currentState: "idle",
-  lastRecognizedCommand: "",
-  lastActionResult: "",
-  lastSource: "system",
-  lastChangedAt: new Date().toISOString(),
-  pausedByPerformanceMode: false,
-  wakeWordStatus: "disabled"
-};
-
-const defaultSpeechSettings: SpeechSettings = {
-  speechEngine: "faster_whisper",
-  fallbackToWindows: true,
-  modelName: "base.en",
-  modelSizeOptions: ["tiny.en", "base.en", "small.en"],
-  device: "cpu",
-  computeType: "int8",
-  maxRecordingSeconds: 8,
-  silenceStopEnabled: true,
-  vadEnabled: true,
-  keepAudioForDebug: false,
-  pauseInPerformanceMode: true,
-  autoSendAfterSpeech: true,
-  showTranscriptBeforeSend: false,
-  useSharedSpeechEverywhere: true,
-  pythonPath: null,
-  updatedAt: null
-};
-
-const defaultSpeechState: SpeechServiceState = {
-  settingsPath: "./local-data/settings/speech-settings.json",
-  modelRoot: "./local-data/models/speech",
-  debugAudioRoot: "./local-data/debug/audio",
-  settings: defaultSpeechSettings,
-  modelStatus: {
-    ok: false,
-    installed: false,
-    message: "Run Check local model for current status.",
-    engine: "faster_whisper",
-    model: "base.en",
-    modelPath: "./local-data/models/speech/base.en",
-    pythonPath: null,
-    deviceDetected: "unknown",
-    fasterWhisperAvailable: false,
-    lastLatencyMs: null,
-    lastError: null
-  },
-  windowsFallbackAvailable: false,
-  performancePaused: false
-};
-
-const defaultVoiceWorkflowSettings: VoiceWorkflowSettings = {
-  continueCaptureMode: false,
-  autoSaveCaptureVoiceNotes: true,
-  confirmBeforeSavingCapture: false,
-  confirmSensitiveCapture: true,
-  autoCreateHighConfidenceCalendarVoiceEvents: false,
-  defaultMeetingDurationMinutes: 30,
-  defaultReminderTime: "09:00",
-  askBeforeRecurringEvents: true,
-  updatedAt: new Date().toISOString()
-};
-
-const defaultAppLifecycleSettings: AppLifecycleSettings = {
-  closeBehavior: "ask",
-  showTrayCloseNotice: true,
-  minimizeToTrayOnStartup: false,
-  startDexNestWithWindows: false,
-  startMinimizedToTray: true,
-  loginItemStatus: "disabled",
-  loginItemLastError: null,
-  updatedAt: new Date().toISOString(),
-  trayAvailable: false,
-  trayModeActive: false
-};
-
-const defaultKeyboardShortcutSettings: KeyboardShortcutSettings = {
-  enabled: true,
-  updatedAt: new Date().toISOString(),
-  mappings: []
-};
-
-const defaultStreamDeckSettings: StreamDeckSettings = {
-  localOnly: true,
-  lanEnabled: false,
-  tokenEnabled: false,
-  token: "",
-  updatedAt: new Date().toISOString()
-};
-
-const TIMETABLE_DAYS: TimetableDay[] = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
-const defaultTimetableTemplate: TimetableTemplate = {
-  id: "default-week",
-  name: "Default Week",
-  blocks: [],
-  createdAt: new Date().toISOString(),
-  updatedAt: new Date().toISOString()
-};
-const defaultTimetableState: TimetableState = {
-  file: { activeTemplateId: "default-week", templates: [defaultTimetableTemplate], updatedAt: new Date().toISOString() },
-  activeTemplate: defaultTimetableTemplate,
-  templates: [defaultTimetableTemplate],
-  activeTemplateId: "default-week",
-  today: "monday",
-  selectedDay: "monday",
-  currentBlock: null,
-  nextBlock: null,
-  stats: { plannedHours: 0, done: 0, skipped: 0, remaining: 0 },
-  calendarConflicts: [],
-  timetablePath: "./local-data/settings/timetable.json"
-};
-
-const defaultUtilitiesState: UtilitiesState = {
-  recentResults: [],
-  conversionPresets: [],
-  timers: [],
-  stopwatch: { status: "idle", elapsedMs: 0, startedAt: null, laps: [], history: [], updatedAt: new Date().toISOString() },
-  worldClocks: [],
-  settings: { defaultTimerMinutes: 25, speakTimerDone: false },
-  updatedAt: new Date().toISOString(),
-  activeTimer: null,
-  utilitiesPath: "./local-data/settings/utilities.json"
-};
-
-const defaultWeatherState: WeatherState = {
-  settings: {
-    weatherEnabled: false,
-    locationName: "",
-    latitude: null,
-    longitude: null,
-    units: "metric",
-    showWeatherOnCommand: true,
-    refreshMode: "manual",
-    refreshOnCommandOpen: false,
-    provider: "open_meteo",
-    lastRefreshAt: null,
-    lastAutoRefreshAt: null
-  },
-  cache: {
-    provider: "open_meteo",
-    locationName: "",
-    latitude: null,
-    longitude: null,
-    units: "metric",
-    temperature: null,
-    feelsLike: null,
-    condition: "",
-    weatherCode: null,
-    high: null,
-    low: null,
-    precipitationChance: null,
-    windSpeed: null,
-    fetchedAt: null,
-    sourceStatus: "cached",
-    error: null
-  },
-  settingsPath: "./local-data/settings/weather-settings.json",
-  cachePath: "./local-data/settings/weather-cache.json",
-  status: "empty",
-  cacheTtlMinutes: null,
-  nextRefreshAt: null,
-  autoRefreshActive: false
-};
-
-const NEWS_CATEGORIES: NewsCategory[] = ["Top", "Canada", "India", "World", "Tech", "AI", "Finance", "Sports", "Health", "Science", "Business"];
-
-const defaultNewsState: NewsState = {
-  settings: {
-    newsEnabled: false,
-    selectedCategories: [],
-    refreshMode: "manual",
-    maxItemsPerCategory: 10,
-    readMorningBriefingCategories: [],
-    showNewsOnCommand: true,
-    provider: "rss",
-    sources: [],
-    lastRefreshAt: null,
-    lastAutoRefreshAt: null
-  },
-  cache: {
-    provider: "rss",
-    headlines: [],
-    fetchedAt: null,
-    sourceStatus: "cached",
-    error: null,
-    categoryCounts: {}
-  },
-  settingsPath: "./local-data/settings/news-settings.json",
-  cachePath: "./local-data/settings/news-cache.json",
-  status: "empty",
-  nextRefreshAt: null,
-  autoRefreshActive: false
-};
-
-const fallbackBridge: DexNestBridge = {
-  getAppInfo: async () => ({
-    appName: "DexNest",
-    dataRoot: "./local-data",
-    dbPath: "./local-data/data/dexnest.sqlite",
-    actionEndpoint: "http://127.0.0.1:43217",
-    projectsConfigPath: "./local-data/settings/projects.json",
-    commandSettingsPath: "./local-data/settings/command-settings.json",
-    keyboardShortcutsPath: "./local-data/settings/keyboard-shortcuts.json",
-    keyboardShortcutSettings: defaultKeyboardShortcutSettings,
-    keyboardShortcutConflicts: [],
-    streamDeckSettingsPath: "./local-data/settings/stream-deck-settings.json",
-    streamDeckSettings: defaultStreamDeckSettings,
-    commandShortcutEnabled: true,
-    commandShortcut: "CommandOrControl+Space",
-    commandShortcutStatus: "disabled",
-    commandShortcutLastError: null,
-    trayStatus: "failed",
-    commandResultsPath: "./local-data/settings/project-command-results.json",
-    pinnedActionsPath: "./local-data/settings/pinned-actions.json",
-    clipboardHistoryPath: "./local-data/settings/clipboard-history.json",
-    clipboardSnippetsPath: "./local-data/settings/clipboard-snippets.json",
-    clipboardSettingsPath: "./local-data/settings/clipboard-settings.json",
-    clipboardMultiGroupsPath: "./local-data/settings/clipboard-multi-groups.json",
-    clipboardActiveMultiCopyPath: "./local-data/settings/clipboard-active-multicopy.json",
-    clipboardSlotsPath: "./local-data/settings/clipboard-slots.json",
-    dropShelfPath: "./local-data/settings/drop-shelf.json",
-    dropIncomingPath: "./local-data/settings/drop-incoming.json",
-    dropReceiveFolderPath: "./local-data/files/drop/incoming",
-    defaultReceiveFolderPath: "./local-data/files/drop/incoming",
-    customReceiveFolderPath: null,
-    dropOutgoingFolderPath: "./local-data/files/drop/outgoing",
-    dropTempFolderPath: "./local-data/files/drop/temp",
-    toolsInputFolderPath: "./local-data/files/tools/input",
-    toolsOutputFolderPath: "./local-data/files/tools/output",
-    toolsDefaultOutputFolderPath: "./local-data/files/tools/output",
-    toolsTempFolderPath: "./local-data/files/tools/temp",
-    toolsOutputsPath: "./local-data/settings/tools-outputs.json",
-    vaultDocumentsPath: "./local-data/files/vault/documents",
-    vaultImportsPath: "./local-data/files/vault/imports",
-    vaultVersionsPath: "./local-data/files/vault/versions",
-    vaultOcrOutputPath: "./local-data/files/vault/ocr",
-    vaultOcrJobsPath: "./local-data/settings/vault-ocr-jobs.json",
-    vaultOcrSettingsPath: "./local-data/settings/vault-ocr-settings.json",
-    vaultMetadataPath: "./local-data/settings/vault-documents.json",
-    searchIndexPath: "./local-data/index/search-index.json",
-    searchIndexFolderPath: "./local-data/index",
-    savedSearchesPath: "./local-data/settings/saved-searches.json",
-    journalEntriesPath: "./local-data/settings/journal-entries.json",
-    calendarEventsPath: "./local-data/settings/calendar-events.json",
-    timetablePath: "./local-data/settings/timetable.json",
-    utilitiesPath: "./local-data/settings/utilities.json",
-    weatherSettingsPath: "./local-data/settings/weather-settings.json",
-    weatherCachePath: "./local-data/settings/weather-cache.json",
-    newsSettingsPath: "./local-data/settings/news-settings.json",
-    newsCachePath: "./local-data/settings/news-cache.json",
-    nudgesPath: "./local-data/settings/nudges.json",
-    nudgeSettingsPath: "./local-data/settings/nudge-settings.json",
-    finderItemsPath: "./local-data/settings/finder-items.json",
-    financeTransactionsPath: "./local-data/settings/finance-transactions.json",
-    financeRecurringPath: "./local-data/settings/finance-recurring.json",
-    financeSettingsPath: "./local-data/settings/finance-settings.json",
-    receiptsPath: "./local-data/files/receipts",
-    captureItemsPath: "./local-data/settings/capture-items.json",
-    capturesPath: "./local-data/files/captures",
-    routinesPath: "./local-data/settings/routines.json",
-    heatmapEventsPath: "./local-data/settings/heatmap-events.json",
-    heatmapSettingsPath: "./local-data/settings/heatmap-settings.json",
-    heatmapGoalsPath: "./local-data/settings/heatmap-goals.json",
-    speechSettingsPath: "./local-data/settings/speech-settings.json",
-    voiceWorkflowSettingsPath: "./local-data/settings/voice-workflow-settings.json",
-    voiceWorkflowSettings: defaultVoiceWorkflowSettings,
-    speechModelsRoot: "./local-data/models/speech",
-    speechDebugAudioRoot: "./local-data/debug/audio",
-    speechState: defaultSpeechState,
-    ambientVoiceSettingsPath: "./local-data/settings/ambient-voice-settings.json",
-    ambientVoiceState: defaultAmbientVoiceState,
-    externalDevicesSettingsPath: "./local-data/settings/external-devices-settings.json",
-    externalDevicesCachePath: "./local-data/settings/external-devices-cache.json",
-    externalDevicesGroupsPath: "./local-data/settings/external-devices-groups.json",
-    externalDevicesState: defaultExternalDevicesState,
-    performanceModeSettingsPath: "./local-data/settings/performance-mode-settings.json",
-    appLifecycleSettingsPath: "./local-data/settings/app-lifecycle-settings.json",
-    appLifecycleSettings: defaultAppLifecycleSettings,
-    performanceModeState: defaultPerformanceModeState,
-    performanceModeSettings: defaultPerformanceModeSettings,
-    backupFolderPath: "./local-data/backups",
-    restoreStagingPath: "./local-data/backups/restore-staging",
-    packageMode: "development",
-    currentBranch: "unknown",
-    localTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-    localDateTimePreview: formatLocalDateTime(new Date()),
-    localToday: getLocalTodayDateString(),
-    dropLocalUrl: "http://127.0.0.1:43217/drop",
-    dropPhoneUrl: "http://127.0.0.1:43217/drop",
-    lanIp: null,
-    projectCount: 0,
-    performanceMode: "Bridge unavailable"
-  }),
-  listActions: async () => [],
-  listProjects: async () => [],
-  listCommandResults: async () => ({}),
-  clearCommandResult: async () => undefined,
-  listPinnedActions: async () => ["command.open_home", "dev.open_dashboard", "deck.test_endpoint"],
-  savePinnedActions: async (actionIds) => actionIds,
-  getPins: async () => ({ pins: [], pinsPath: "" }),
-  getDemoState: async () => ({ seededAt: null, moduleCount: 0, defaultOptions: { replaceExisting: true, clipboard: true, vault: true, finance: true, journalCalendar: true, captureFinder: true, timetable: true, news: true, devDeck: true, secureVault: false } }),
-  togglePin: async () => ({ ok: true, pinned: false, pins: [] }),
-  setPin: async () => ({ ok: true, pinned: false, pins: [] }),
-  unpinById: async () => ({ ok: true, pins: [] }),
-  getClipboardState: async () => ({
-    history: [],
-    snippets: [],
-    settings: {
-      listenerEnabled: false,
-      listenerIntervalMs: 2000,
-      historyRetentionDays: 1,
-      lastHistoryCleanupAt: null,
-      multiCopyHotkeyEnabled: true,
-      multiCopyHotkey: "CommandOrControl+Shift+C",
-      multiCopyHotkeyStatus: "disabled",
-      multiCopyHotkeyLastError: null,
-      multiCopyHotkeyRegistered: false,
-      multiCopyAutoClearMinutes: 15,
-      multiCopyLastHotkeyAt: null,
-      multiCopyLastHotkeyStatus: "idle",
-      multiCopyLastHotkeyMessage: "",
-      lastCaptureAt: null,
-      lastCapturedPreview: "",
-      lastReadAt: null,
-      lastReadPreview: "",
-      lastReadError: null,
-      combinedSeparator: "\n\n",
-      activeMultiCopySession: null,
-      appExclusionRules: [],
-      secretProtectionEnabled: true,
-      slotSequenceEnabled: false,
-      slotSequenceStatus: "disabled",
-      slotSequenceLastError: null,
-      slotSequenceWindowMs: 700
-    },
-    multiGroups: [],
-    slots: Array.from({ length: 5 }, (_item, index) => ({ slot: index + 1, text: "", preview: "", byteLength: 0, updatedAt: "" })),
-    snippetsPath: "./local-data/settings/clipboard-snippets.json",
-    historyPath: "./local-data/settings/clipboard-history.json",
-    settingsPath: "./local-data/settings/clipboard-settings.json",
-    multiGroupsPath: "./local-data/settings/clipboard-multi-groups.json",
-    activeMultiCopyPath: "./local-data/settings/clipboard-active-multicopy.json",
-    slotsPath: "./local-data/settings/clipboard-slots.json"
-  }),
-  getDropState: async () => ({
-    shelf: [],
-    outgoing: [],
-    outgoingText: [],
-    outgoingFiles: [],
-    incoming: [],
-    shelfPath: "./local-data/settings/drop-shelf.json",
-    incomingPath: "./local-data/settings/drop-incoming.json",
-    receiveFolderPath: "./local-data/files/drop/incoming",
-    defaultReceiveFolderPath: "./local-data/files/drop/incoming",
-    customReceiveFolderPath: null,
-    outgoingFolderPath: "./local-data/files/drop/outgoing",
-    tempFolderPath: "./local-data/files/drop/temp",
-    localUrl: "http://127.0.0.1:43217/drop",
-    phoneUrl: "http://127.0.0.1:43217/drop",
-    lanIp: null
-  }),
-  getToolsState: async () => ({
-    selectedFiles: [],
-    outputs: [],
-    inputFolderPath: "./local-data/files/tools/input",
-    outputFolderPath: "./local-data/files/tools/output",
-    defaultOutputFolderPath: "./local-data/files/tools/output",
-    customOutputFolderPath: null,
-    ffmpegPath: null,
-    detectedFfmpegPath: null,
-    libreOfficePath: null,
-    detectedLibreOfficePath: null,
-    tesseractPath: null,
-    detectedTesseractPath: null,
-    pythonPath: null,
-    detectedPythonPath: null,
-    ocrEngine: "paddleocr",
-    ocrDevice: "gpu",
-    ocrLanguage: "eng",
-    tempFolderPath: "./local-data/files/tools/temp",
-    outputsPath: "./local-data/settings/tools-outputs.json"
-  }),
-  getVaultState: async () => ({
-    documents: [],
-    categories: ["Immigration", "University", "Jobs", "Startup", "Tax", "Finance", "Medical", "Research", "Receipts", "Personal", "Other"],
-    documentsPath: "./local-data/files/vault/documents",
-    importsPath: "./local-data/files/vault/imports",
-    versionsPath: "./local-data/files/vault/versions",
-    tempPath: "./local-data/files/vault/temp",
-    metadataPath: "./local-data/settings/vault-documents.json",
-    documentCount: 0,
-    totalSizeBytes: 0,
-    ocrJobs: [],
-    ocrSettings: { autoOcrOnImport: true, engine: "paddleocr", device: "gpu", pythonPath: null },
-    ocrOutputPath: "./local-data/files/vault/ocr",
-    ocrJobsPath: "./local-data/settings/vault-ocr-jobs.json",
-    ocrQueueRunning: false,
-    ocrQueuePaused: false,
-    paddleGpuStatus: { ok: false, message: "Bridge unavailable.", pythonPath: null, paddleVersion: null, deviceCount: 0 },
-    secure: {
-      isSetup: false,
-      isUnlocked: false,
-      filePath: "./local-data/files/vault/secure/secure-vault.json",
-      autoLockMinutes: 5,
-      itemTypes: ["password", "api_key", "token", "recovery_code", "private_note", "server", "other"],
-      items: []
-    }
-  }),
-  getSearchState: async () => ({
-    index: [],
-    savedSearches: [],
-    indexPath: "./local-data/index/search-index.json",
-    indexFolderPath: "./local-data/index",
-    indexStatusPath: "./local-data/settings/search-index-status.json",
-    indexStatus: { staleDueToPerformanceMode: false, staleReason: null, staleSince: null, lastSkippedAutoIndexAt: null },
-    savedSearchesPath: "./local-data/settings/saved-searches.json",
-    resultCount: 0,
-    ocrTextFileCount: 0,
-    sources: [],
-    fileTypes: []
-  }),
-  getJournalState: async () => ({
-    entries: [],
-    todayEntry: null,
-    entriesPath: "./local-data/settings/journal-entries.json",
-    today: getLocalTodayDateString()
-  }),
-  getCalendarState: async () => ({
-    events: [],
-    today: getLocalTodayDateString(),
-    todayEvents: [],
-    upcomingEvents: [],
-    eventsPath: "./local-data/settings/calendar-events.json",
-    nudges: [],
-    todayNudges: [],
-    upcomingNudges: [],
-    urgentNudges: [],
-    nudgesPath: "./local-data/settings/nudges.json",
-    nudgeSettingsPath: "./local-data/settings/nudge-settings.json",
-    nudgeSettings: {
-      enabled: true,
-      vaultExpiryReminderDays: [90, 30, 7],
-      returnReminderDays: [7, 3, 1],
-      dailyJournalReminderEnabled: true,
-      backupReminderAfterDays: 7
-    }
-  }),
-  getTimetableState: async () => defaultTimetableState,
-  getUtilitiesState: async () => defaultUtilitiesState,
-  getWeatherState: async () => defaultWeatherState,
-  getNewsState: async () => defaultNewsState,
-  getFinderState: async () => ({
-    items: [],
-    itemsPath: "./local-data/settings/finder-items.json",
-    statusCounts: { at_home: 0, lent_out: 0, missing: 0, archived: 0 }
-  }),
-  getFinanceState: async () => ({
-    transactions: [],
-    recurring: [],
-    settings: { defaultCurrency: "CAD", receiptsPath: "./local-data/files/receipts" },
-    profiles: [],
-    activeProfileId: "",
-    profilesPath: "./local-data/settings/finance-profiles.json",
-    transactionsPath: "./local-data/settings/finance-transactions.json",
-    recurringPath: "./local-data/settings/finance-recurring.json",
-    settingsPath: "./local-data/settings/finance-settings.json",
-    receiptsPath: "./local-data/files/receipts",
-    summary: {
-      currentMonth: getLocalTodayDateString().slice(0, 7),
-      previousMonth: "",
-      currentMonthTotal: 0,
-      previousMonthTotal: 0,
-      categoryTotals: {},
-      paymentTypeTotals: {},
-      cashTotal: 0,
-      cardTotal: 0,
-      transactionCount: 0
-    },
-    deadlines: { returns7: [], returns30: [], warranties90: [], expiredReturns: [] }
-  }),
-  getCaptureState: async () => ({
-    items: [],
-    inbox: [],
-    routed: [],
-    archived: [],
-    itemsPath: "./local-data/settings/capture-items.json",
-    capturesPath: "./local-data/files/captures"
-  }),
-  getHeatmapState: async () => ({
-    settings: {
-      enabled: false,
-      paused: true,
-      sampleIntervalSeconds: 60,
-      aggregationIntervalHours: 3,
-      pauseDuringFullscreen: true,
-      privateApps: [],
-      privateTitleKeywords: [],
-      lastAggregatedAt: null
-    },
-    events: [],
-    goals: [],
-    goalProgress: [],
-    summary: {
-      todayByApp: [],
-      weekByApp: [],
-      activeHours: [],
-      projectUsage: [],
-      activeSecondsToday: 0,
-      idleSecondsToday: 0,
-      topAppToday: "none"
-    },
-    eventsPath: "./local-data/settings/heatmap-events.json",
-    settingsPath: "./local-data/settings/heatmap-settings.json",
-    goalsPath: "./local-data/settings/heatmap-goals.json",
-    trackingStatus: "disabled",
-    detectionNote: "Bridge unavailable."
-  }),
-  getRoutinesState: async () => ({ routines: [], routinesPath: "./local-data/settings/routines.json" }),
-  getBackupState: async () => ({
-    backupFolderPath: "./local-data/backups",
-    restoreStagingPath: "./local-data/backups/restore-staging",
-    defaultOptions: {
-      includeSettings: true,
-      includeFiles: true,
-      includeVaultDocuments: true,
-      includeSecureVault: true,
-      includeReceipts: true,
-      includeDropFiles: true,
-      includeIndex: false
-    },
-    backups: []
-  }),
-  getExternalDevicesState: async () => defaultExternalDevicesState,
-  getDataManagementState: async () => ({
-    categories: [],
-    lastDeletion: { lastDeletionAt: null, status: null, categoriesCleared: [], backupCreated: false, backupFileName: null }
-  }),
-  getAppHealth: async () => ({
-    overallStatus: "warn",
-    checkedAt: new Date().toISOString(),
-    summary: { pass: 0, warn: 1, fail: 0 },
-    groups: [
-      {
-        id: "bridge",
-        title: "Bridge",
-        checks: [
-          {
-            id: "bridge-unavailable",
-            label: "DexNest desktop bridge",
-            status: "warn",
-            detail: "DexNest preload bridge is unavailable.",
-            suggestion: "Run DexNest through the Electron desktop app."
-          }
-        ]
-      }
-    ]
-  }),
-  getCommandStats: async () => emptyCommandStats,
-  getPerformanceModeState: async () => defaultPerformanceModeState,
-  getPerformanceModeSettings: async () => defaultPerformanceModeSettings,
-  savePerformanceModeSettings: async (payload) => ({
-    settings: { ...defaultPerformanceModeSettings, ...payload },
-    state: { ...defaultPerformanceModeState, enabled: Boolean(payload.performanceModeEnabled), pausedWorkers: Boolean(payload.performanceModeEnabled) ? ["bridge_unavailable"] : [] }
-  }),
-  setPerformanceModeEnabled: async (payload) => ({
-    settings: { ...defaultPerformanceModeSettings, performanceModeEnabled: payload.enabled },
-    state: { ...defaultPerformanceModeState, enabled: payload.enabled, reason: payload.reason ?? "manual", pausedWorkers: payload.enabled ? ["bridge_unavailable"] : [] }
-  }),
-  selectBackupZip: async () => null,
-  selectToolsFiles: async () => [],
-  selectVaultFiles: async () => [],
-  selectFinanceReceipt: async () => [],
-  selectCaptureFile: async () => [],
-  getPdfInfo: async () => [],
-  chooseToolsOutputFolder: async () => ({ ok: false, error: "Bridge unavailable" }),
-  resetToolsOutputFolder: async () => ({ ok: true, path: "./local-data/files/tools/output" }),
-  saveToolsSettings: async () => fallbackBridge.getToolsState(),
-  openToolsFile: async () => ({ ok: false, error: "Bridge unavailable" }),
-  getAssistantState: async () => ({ settings: { localIntentEngineEnabled: false, ollamaUrl: "http://127.0.0.1:11434", ollamaModel: "qwen2.5:3b", fallbackToRules: true } }),
-  saveAssistantSettings: async () => ({ localIntentEngineEnabled: false, ollamaUrl: "http://127.0.0.1:11434", ollamaModel: "qwen2.5:3b", fallbackToRules: true }),
-  testOllama: async () => ({ ok: false, error: "Bridge unavailable" }),
-  assistantLlmIntent: async () => ({ ok: false, error: "Bridge unavailable" }),
-  getAmbientVoiceState: async () => defaultAmbientVoiceState,
-  saveAmbientVoiceSettings: async () => ({ settings: defaultAmbientVoiceSettings, state: defaultAmbientVoiceState }),
-  updateAmbientVoiceState: async () => defaultAmbientVoiceState,
-  startAmbientListening: async () => defaultAmbientVoiceState,
-  getSpeechState: async () => defaultSpeechState,
-  getVoiceWorkflowSettings: async () => defaultVoiceWorkflowSettings,
-  saveVoiceWorkflowSettings: async (payload) => ({ ...defaultVoiceWorkflowSettings, ...payload, updatedAt: new Date().toISOString() }),
-  saveSpeechSettings: async (payload) => ({ settings: { ...defaultSpeechSettings, ...payload }, speechState: defaultSpeechState }),
-  checkSpeechModel: async () => ({ ok: false, status: defaultSpeechState.modelStatus, speechState: defaultSpeechState }),
-  installSpeechModel: async () => ({ ok: false, status: defaultSpeechState.modelStatus, speechState: defaultSpeechState }),
-  warmSpeechEngine: async () => ({ ok: false, error: "Bridge unavailable", speechState: defaultSpeechState }),
-  getWakeEngineState: async () => defaultWakeEngineState,
-  checkWakeEngine: async () => ({ ok: false, report: {}, error: "Bridge unavailable", state: defaultWakeEngineState }),
-  startWakeEngine: async () => ({ ok: false, status: "engine_missing", error: "Bridge unavailable", state: defaultWakeEngineState }),
-  stopWakeEngine: async () => ({ ok: true, state: defaultWakeEngineState }),
-  voiceOverlay: () => undefined,
-  onWakeDetected: () => () => undefined,
-  onRunAssistantCommand: () => () => undefined,
-  openSpeechModelFolder: async () => ({ ok: false, error: "Bridge unavailable" }),
-  transcribeSpeech: async () => ({ transcript: "", engine: "faster_whisper", model: "base.en", language: "en", durationMs: 0, status: "failed", error: "Bridge unavailable", speechState: defaultSpeechState }),
-  getAssistantSecurityState: async () => ({
-    settings: { trustedSessionEnabled: true, autoRevealWhileUnlocked: true, sessionTimeoutMinutes: 10, speakSensitiveAnswers: false, lockOnAppClose: true },
-    sessionUnlocked: false,
-    sessionExpiresAt: null,
-    secureVaultUnlocked: false,
-    secureVaultSetup: false
-  }),
-  saveAssistantSecuritySettings: async () => fallbackBridge.getAssistantSecurityState(),
-  unlockTrustedSession: async () => ({ ok: false, error: "Bridge unavailable", state: await fallbackBridge.getAssistantSecurityState() }),
-  lockTrustedSession: async () => fallbackBridge.getAssistantSecurityState(),
-  copyDropIncomingText: async () => ({ ok: true }),
-  chooseDropReceiveFolder: async () => ({ ok: false, error: "Bridge unavailable" }),
-  resetDropReceiveFolder: async () => ({ ok: true, path: "./local-data/files/drop/incoming" }),
-  logDropAutoRefresh: async () => undefined,
-  startWindowsDictation: async () => ({ ok: false, error: "Windows dictation bridge unavailable" }),
-  saveProject: async (payload) => payload as DexNestProject,
-  deleteProject: async () => undefined,
-  listEvents: async () => [],
-  runAction: async () => ({ ok: true }),
-  logActionResult: async () => undefined,
-  logUiEvent: async () => undefined,
-  rendererReady: () => undefined
-};
-
-function getBridge(): DexNestBridge {
-  return window.dexNest ?? fallbackBridge;
-}
 
 const views: Array<{ id: ViewId; label: string; accentClass: string; actionId: string }> = [
   { id: "command", label: "Command", accentClass: "accent-command", actionId: "command.open_home" },
@@ -2833,33 +2064,6 @@ const views: Array<{ id: ViewId; label: string; accentClass: string; actionId: s
   { id: "settings", label: "Settings", accentClass: "accent-command", actionId: "settings.open" },
   { id: "audit", label: "Audit", accentClass: "accent-command", actionId: "audit.open_history" }
 ];
-
-// Per-module sidebar icon + accent (ported from reference-ui modules.js).
-const MODULE_META: Record<string, { icon: LucideIcon; accent: string }> = {
-  command: { icon: Command, accent: "#22D3EE" },
-  dev: { icon: Code2, accent: "#3B82F6" },
-  deck: { icon: LayoutGrid, accent: "#A855F7" },
-  clipboard: { icon: ClipboardList, accent: "#8B5CF6" },
-  drop: { icon: Share2, accent: "#38BDF8" },
-  tools: { icon: Wrench, accent: "#F97316" },
-  vault: { icon: Vault, accent: "#10B981" },
-  search: { icon: Sparkles, accent: "#6366F1" },
-  capture: { icon: Inbox, accent: "#EC4899" },
-  journal: { icon: NotebookPen, accent: "#F59E0B" },
-  calendar: { icon: CalendarDays, accent: "#14B8A6" },
-  timetable: { icon: CalendarClock, accent: "var(--accent-timetable)" },
-  utilities: { icon: Calculator, accent: "var(--accent-utilities)" },
-  weather: { icon: CloudSun, accent: "var(--accent-weather)" },
-  news: { icon: Newspaper, accent: "var(--accent-news)" },
-  finder: { icon: PackageSearch, accent: "#84CC16" },
-  finance: { icon: Wallet, accent: "#22C55E" },
-  heatmap: { icon: Activity, accent: "#EF4444" },
-  devices: { icon: Lightbulb, accent: "#FB923C" },
-  backup: { icon: HardDriveDownload, accent: "#0EA5E9" },
-  health: { icon: Stethoscope, accent: "#34D399" },
-  audit: { icon: ScrollText, accent: "#34D399" },
-  settings: { icon: SettingsIcon, accent: "#A3A3A3" }
-};
 
 const moduleCards = [
   ["command", "Command", "Action hub and dashboard.", "available"],
@@ -4269,7 +3473,7 @@ interface WakeWordServiceState {
 }
 
 // Real main-process wake engine state (Phase 23.9).
-interface WakeEngineState {
+export interface WakeEngineState {
   status: "disabled" | "starting" | "listening_for_nest" | "wake_detected" | "recording_command" | "paused_by_performance_mode" | "engine_missing" | "error";
   installStatus: "unknown" | "ready" | "missing_dependencies" | "missing_model";
   lastError: string;
@@ -4278,14 +3482,6 @@ interface WakeEngineState {
   scriptPath: string;
 }
 
-const defaultWakeEngineState: WakeEngineState = {
-  status: "disabled",
-  installStatus: "unknown",
-  lastError: "",
-  detectionsCount: 0,
-  lastDetectedAt: null,
-  scriptPath: ""
-};
 
 type WakeListener = (source: string) => void;
 
@@ -4984,72 +4180,6 @@ function assistantNeedsConfirm(route: VoiceRouteResult, actions: ActionDefinitio
     return true;
   }
   return false;
-}
-
-// --- Universal pin/unpin -----------------------------------------------------
-// A shared React context lets any module card drop in <PinButton> without
-// threading props through the whole tree. computePinId mirrors the main process
-// pinKey() so pinned state resolves consistently across surfaces.
-interface PinInput {
-  type: DexNestPin["type"];
-  module: string;
-  entityId?: string;
-  title: string;
-  subtitle?: string;
-  actionId?: string;
-}
-
-function computePinId(input: PinInput): string {
-  const base = input.type === "action" && input.actionId ? input.actionId : `${input.module}:${input.entityId ?? ""}`;
-  return `${input.type}:${base}`.toLowerCase().replace(/\s+/g, "-");
-}
-
-function pinModuleToView(module: string): ViewId {
-  const map: Record<string, ViewId> = {
-    command: "command", clipboard: "clipboard", drop: "drop", tools: "tools", vault: "vault",
-    search: "search", capture: "capture", journal: "journal", calendar: "calendar", finder: "finder",
-    finance: "finance", dev: "dev", deck: "deck", heatmap: "heatmap", backup: "backup",
-    external_devices: "devices", timetable: "timetable", utilities: "utilities", news: "news"
-  };
-  return map[module] ?? "command";
-}
-
-interface PinsContextValue {
-  pins: DexNestPin[];
-  isPinned: (id: string) => boolean;
-  toggle: (input: PinInput) => void;
-}
-
-const PinsContext = React.createContext<PinsContextValue>({ pins: [], isPinned: () => false, toggle: () => undefined });
-
-// One consistent pin control across the app: outline when unpinned, filled accent
-// when pinned, with a hover state (styled in styles.css via .pin-btn).
-function PinButton({ input, size = 14, className = "" }: { input: PinInput; size?: number; className?: string }) {
-  const ctx = React.useContext(PinsContext);
-  const pinned = ctx.isPinned(computePinId(input));
-  return (
-    <button
-      type="button"
-      className={`pin-btn${pinned ? " pin-btn--on" : ""} ${className}`.trim()}
-      title={pinned ? "Unpin" : "Pin"}
-      aria-label={pinned ? "Unpin" : "Pin"}
-      aria-pressed={pinned}
-      onClick={(event) => {
-        event.stopPropagation();
-        event.preventDefault();
-        ctx.toggle(input);
-      }}
-    >
-      <Pin size={size} fill={pinned ? "currentColor" : "none"} strokeWidth={2} />
-    </button>
-  );
-}
-
-// Module-level handle to the current voice/Ask pin context (the focused or active
-// pinnable item). "pin this" / "unpin this" only act when this is set.
-let activePinContext: PinInput | null = null;
-function setActivePinContext(input: PinInput | null): void {
-  activePinContext = input;
 }
 
 function DexNestApp() {
@@ -6627,12 +5757,12 @@ function DexNestApp() {
         <div className={`flex items-center border-b border-[#161616] py-4 ${sidebarCollapsed ? "justify-center px-2.5" : "gap-2.5 px-4"}`}>
           <button
             type="button"
-            className="sidebar-logo-toggle group relative flex h-10 w-10 shrink-0 items-center justify-center rounded-lg outline-none transition-transform duration-150 hover:scale-[1.06] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent-command)]"
+            className="sidebar-logo-toggle group relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg outline-none transition-transform duration-150 hover:scale-[1.06] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent-command)]"
             onClick={() => { if (sidebarCollapsed) { setSidebarCollapsed(false); } }}
             title={sidebarCollapsed ? "Expand sidebar" : "DexNest"}
             aria-label={sidebarCollapsed ? "Expand sidebar" : "DexNest"}
           >
-            <img src={logoUrl} alt="DexNest" className="h-full w-full rounded-lg object-contain" />
+            <img src={logoUrl} alt="DexNest" className="h-full w-full scale-[1.4] object-cover" />
             {sidebarCollapsed && (
               <span className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-lg bg-black/65 text-[var(--accent-command)] opacity-0 backdrop-blur-sm transition-opacity duration-150 group-hover:opacity-100">
                 <PanelLeft className="h-[18px] w-[18px]" />
@@ -10035,865 +9165,6 @@ function DevView({
 
 }
 
-const emptySnippetForm = {
-  id: "",
-  title: "",
-  text: ""
-};
-
-function ClipboardView({
-  clipboardState,
-  onAction,
-  onRefresh
-}: {
-  clipboardState: ClipboardState;
-  onAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>;
-  onRefresh: () => Promise<void>;
-}) {
-  const [activeTab, setActiveTab] = useState<"history" | "multi" | "slots" | "snippets" | "settings">("history");
-  const [snippetForm, setSnippetForm] = useState(emptySnippetForm);
-  const [historyQuery, setHistoryQuery] = useState("");
-  const [historySource, setHistorySource] = useState("all");
-  const [groupName, setGroupName] = useState("");
-  const [separatorMode, setSeparatorMode] = useState<"blank" | "newline" | "comma" | "custom">("blank");
-  const [customSeparator, setCustomSeparator] = useState("");
-  const [autoClearMinutes, setAutoClearMinutes] = useState(String(clipboardState.settings.multiCopyAutoClearMinutes));
-  const [status, setStatus] = useState<{ tone: "success" | "error"; message: string } | null>(null);
-  const [selectedHistoryId, setSelectedHistoryId] = useState("");
-
-  useEffect(() => {
-    if (!clipboardState.settings.listenerEnabled) {
-      return;
-    }
-
-    const refreshTimer = window.setInterval(() => {
-      void onRefresh();
-    }, Math.max(1000, clipboardState.settings.listenerIntervalMs));
-
-    return () => window.clearInterval(refreshTimer);
-  }, [clipboardState.settings.listenerEnabled, clipboardState.settings.listenerIntervalMs, onRefresh]);
-
-  useEffect(() => {
-    const unsubscribe = window.dexNest?.onClipboardHotkeyResult?.((payload) => {
-      showStatus(payload.message, payload.tone);
-      void onRefresh();
-    });
-
-    return () => {
-      unsubscribe?.();
-    };
-  }, [onRefresh]);
-
-  useEffect(() => {
-    const separator = clipboardState.settings.combinedSeparator;
-    if (separator === "\n\n") {
-      setSeparatorMode("blank");
-      setCustomSeparator("");
-    } else if (separator === "\n") {
-      setSeparatorMode("newline");
-      setCustomSeparator("");
-    } else if (separator === ", ") {
-      setSeparatorMode("comma");
-      setCustomSeparator("");
-    } else {
-      setSeparatorMode("custom");
-      setCustomSeparator(separator);
-    }
-    setAutoClearMinutes(String(clipboardState.settings.multiCopyAutoClearMinutes));
-  }, [clipboardState.settings.combinedSeparator, clipboardState.settings.multiCopyAutoClearMinutes]);
-
-  function showStatus(message: string, tone: "success" | "error" = "success"): void {
-    setStatus({ tone, message });
-    window.setTimeout(() => setStatus((current) => current?.message === message ? null : current), 3000);
-  }
-
-  async function saveCurrentClipboard(): Promise<void> {
-    const result = await onAction("clipboard.save_current") as { ok?: boolean; error?: string };
-    showStatus(result.ok ? "Clipboard saved." : result.error ?? "Clipboard save failed.", result.ok ? "success" : "error");
-    await onRefresh();
-  }
-
-  async function pasteAsPlainText(): Promise<void> {
-    const result = await onAction("clipboard.copy_plain_text") as { ok?: boolean; error?: string };
-    showStatus(result.ok ? "Clipboard normalized as plain text." : result.error ?? "Plain text copy failed.", result.ok ? "success" : "error");
-    await onRefresh();
-  }
-
-  async function saveSnippet(): Promise<void> {
-    const result = await onAction("clipboard.create_snippet", "module_ui", snippetForm) as { ok?: boolean; error?: string };
-    showStatus(result.ok ? "Snippet saved." : result.error ?? "Snippet save failed.", result.ok ? "success" : "error");
-    if (result.ok) {
-      setSnippetForm(emptySnippetForm);
-      await onRefresh();
-    }
-  }
-
-  async function deleteSnippet(snippetId: string): Promise<void> {
-    const confirmed = window.confirm("Delete this DexNest Clipboard snippet?");
-    if (!confirmed) {
-      return;
-    }
-
-    const result = await onAction("clipboard.delete_snippet", "module_ui", { id: snippetId, confirmedDangerous: true }) as { ok?: boolean; error?: string };
-    showStatus(result.ok ? "Snippet deleted." : result.error ?? "Snippet delete failed.", result.ok ? "success" : "error");
-    await onRefresh();
-  }
-
-  async function toggleListener(): Promise<void> {
-    const enabled = !clipboardState.settings.listenerEnabled;
-    const result = await onAction("clipboard.toggle_listener", "module_ui", { enabled }) as { ok?: boolean; error?: string };
-    showStatus(result.ok ? `Clipboard listener ${enabled ? "enabled" : "disabled"}.` : result.error ?? "Listener toggle failed.", result.ok ? "success" : "error");
-    await onRefresh();
-  }
-
-  async function testReadClipboard(): Promise<void> {
-    const result = await onAction("clipboard.test_read_current", "module_ui", {}) as { ok?: boolean; error?: string; preview?: string; byteLength?: number };
-    showStatus(result.ok ? `Current clipboard: ${result.preview || "empty"} (${formatBytes(result.byteLength ?? 0)})` : result.error ?? "Clipboard read failed.", result.ok ? "success" : "error");
-    await onRefresh();
-  }
-
-  async function startMultiCopy(): Promise<void> {
-    const result = await onAction("clipboard.start_multi_copy", "module_ui", {}) as { ok?: boolean; error?: string };
-    showStatus(result.ok ? "Multi-copy started." : result.error ?? "Multi-copy start failed.", result.ok ? "success" : "error");
-    await onRefresh();
-  }
-
-  async function stopMultiCopy(): Promise<void> {
-    const result = await onAction("clipboard.stop_multi_copy", "module_ui", { name: groupName }) as { ok?: boolean; error?: string };
-    showStatus(result.ok ? "Multi-copy stopped." : result.error ?? "Multi-copy stop failed.", result.ok ? "success" : "error");
-    await onRefresh();
-  }
-
-  async function saveMultiCopyGroup(): Promise<void> {
-    const result = await onAction("clipboard.save_multi_copy_group", "module_ui", { name: groupName }) as { ok?: boolean; error?: string };
-    showStatus(result.ok ? "Multi-copy group saved." : result.error ?? "Multi-copy save failed.", result.ok ? "success" : "error");
-    if (result.ok) {
-      setGroupName("");
-    }
-    await onRefresh();
-  }
-
-  async function clearMultiCopySession(): Promise<void> {
-    if (!window.confirm("Clear the active multi-copy session?")) {
-      return;
-    }
-    const result = await onAction("clipboard.clear_multi_copy_session", "module_ui", { confirmedDangerous: true }) as { ok?: boolean; error?: string };
-    showStatus(result.ok ? "Multi-copy session cleared." : result.error ?? "Multi-copy clear failed.", result.ok ? "success" : "error");
-    await onRefresh();
-  }
-
-  async function copyCombinedGroup(groupId?: string): Promise<void> {
-    const result = await onAction("clipboard.copy_combined_group", "module_ui", { groupId }) as { ok?: boolean; error?: string; itemCount?: number };
-    showStatus(result.ok ? `Combined ${result.itemCount ?? 0} items onto Clipboard.` : result.error ?? "Combined copy failed.", result.ok ? "success" : "error");
-    await onRefresh();
-  }
-
-  async function deleteMultiCopyGroup(groupId: string): Promise<void> {
-    if (!window.confirm("Delete this saved multi-copy group?")) {
-      return;
-    }
-    const result = await onAction("clipboard.delete_multi_copy_group", "module_ui", { groupId, confirmedDangerous: true }) as { ok?: boolean; error?: string };
-    showStatus(result.ok ? "Multi-copy group deleted." : result.error ?? "Multi-copy group delete failed.", result.ok ? "success" : "error");
-    await onRefresh();
-  }
-
-  async function copyHistoryItem(itemId: string): Promise<void> {
-    const result = await onAction("clipboard.copy_history_item", "module_ui", { id: itemId }) as { ok?: boolean; error?: string };
-    showStatus(result.ok ? "Copied item to clipboard." : result.error ?? "Copy failed.", result.ok ? "success" : "error");
-    await onRefresh();
-  }
-
-  async function assignSlot(slot: number): Promise<void> {
-    const actionId = slot >= 1 && slot <= 3 ? `clipboard.slot${slot}.save_current` : "clipboard.assign_slot";
-    let result = await onAction(actionId, "module_ui", { slot }) as { ok?: boolean; status?: string; error?: string };
-    if (!result.ok && result.status === "sensitive_confirmation_required") {
-      const confirmed = window.confirm("This clipboard text looks sensitive. Save it to this DexNest slot anyway?");
-      if (confirmed) {
-        result = await onAction(actionId, "module_ui", { slot, confirmedSensitive: true }) as { ok?: boolean; error?: string };
-      }
-    }
-    showStatus(result.ok ? `Saved to Slot ${slot}.` : result.error ?? "Slot assignment failed.", result.ok ? "success" : "error");
-    await onRefresh();
-  }
-
-  async function copySlot(slot: number): Promise<void> {
-    const actionId = slot >= 1 && slot <= 3 ? `clipboard.slot${slot}.paste` : "clipboard.copy_slot";
-    const result = await onAction(actionId, "module_ui", { slot }) as { ok?: boolean; error?: string; pasteMode?: string };
-    showStatus(result.ok ? `Slot ${slot} copied. Press Ctrl+V.` : result.error ?? "Slot copy failed.", result.ok ? "success" : "error");
-    await onRefresh();
-  }
-
-  async function clearSlot(slot: number): Promise<void> {
-    if (!window.confirm(`Clear DexNest Clipboard Slot ${slot}?`)) {
-      return;
-    }
-    const result = await onAction("clipboard.clear_slot", "module_ui", { slot }) as { ok?: boolean; error?: string };
-    showStatus(result.ok ? `Cleared Slot ${slot}.` : result.error ?? "Slot clear failed.", result.ok ? "success" : "error");
-    await onRefresh();
-  }
-
-  async function clearHistory(): Promise<void> {
-    if (!window.confirm("Clear DexNest Clipboard history? Snippets, slots, and multi-copy groups stay.")) {
-      return;
-    }
-    const result = await onAction("clipboard.clear_history", "module_ui", { confirmedDangerous: true }) as { ok?: boolean; error?: string };
-    showStatus(result.ok ? "Clipboard history cleared." : result.error ?? "Clear history failed.", result.ok ? "success" : "error");
-    await onRefresh();
-  }
-
-  async function deleteHistoryItem(itemId: string): Promise<void> {
-    const result = await onAction("clipboard.delete_history_item", "module_ui", { id: itemId }) as { ok?: boolean; error?: string };
-    showStatus(result.ok ? "History item removed." : result.error ?? "Could not remove item.", result.ok ? "success" : "error");
-    await onRefresh();
-  }
-
-  async function cleanupHistoryNow(): Promise<void> {
-    const result = await onAction("clipboard.cleanup_history", "module_ui", { force: true }) as { ok?: boolean; error?: string; removedCount?: number };
-    showStatus(result.ok ? `Clipboard cleanup removed ${result.removedCount ?? 0} item${result.removedCount === 1 ? "" : "s"}.` : result.error ?? "Clipboard cleanup failed.", result.ok ? "success" : "error");
-    await onRefresh();
-  }
-
-  async function updateClipboardSettings(params: Record<string, unknown>, successMessage: string): Promise<void> {
-    const result = await onAction("clipboard.update_settings", "module_ui", params) as { ok?: boolean; error?: string };
-    showStatus(result.ok ? successMessage : result.error ?? "Clipboard settings update failed.", result.ok ? "success" : "error");
-    await onRefresh();
-  }
-
-  function separatorFromMode(mode: typeof separatorMode, customValue = customSeparator): string {
-    if (mode === "newline") {
-      return "\n";
-    }
-    if (mode === "comma") {
-      return ", ";
-    }
-    if (mode === "custom") {
-      return customValue;
-    }
-    return "\n\n";
-  }
-
-  const activeSession = clipboardState.settings.activeMultiCopySession;
-  const activeCombinedPreview = activeSession ? activeSession.items.map((item) => item.preview).join(" / ") : "";
-  const activeArmedForPaste = Boolean(activeSession?.items.length && activeSession.armedForPasteAt);
-  const activeTimeoutAt = activeSession
-    ? new Date(new Date(activeSession.updatedAt).getTime() + clipboardState.settings.multiCopyAutoClearMinutes * 60 * 1000)
-    : null;
-  const normalizedHistoryQuery = historyQuery.trim().toLowerCase();
-  const filteredHistory = clipboardState.history.filter((item) => {
-    const matchesQuery = !normalizedHistoryQuery || item.preview.toLowerCase().includes(normalizedHistoryQuery) || item.id.toLowerCase().includes(normalizedHistoryQuery);
-    const matchesSource = historySource === "all" || (item.source ?? "manual") === historySource;
-    return matchesQuery && matchesSource;
-  });
-  const quickSlots = clipboardState.slots.filter((slot) => slot.slot >= 1 && slot.slot <= 3);
-  const extendedSlots = clipboardState.slots.filter((slot) => slot.slot > 3);
-  const quickSlotShortcutText = (slot: number) => `Save: Ctrl+Shift+${slot} / Paste: Ctrl+Alt+${slot}`;
-
-  const ACCENT_CLIP = "#8B5CF6";
-  const clipAgo = (iso: string): string => {
-    const diff = Date.now() - new Date(iso).getTime();
-    const day = Math.floor(diff / 86400000);
-    if (day > 0) return `${day}d`;
-    const hr = Math.floor(diff / 3600000);
-    if (hr > 0) return `${hr}h`;
-    return `${Math.max(1, Math.floor(diff / 60000))}m`;
-  };
-  const clipType = (item: ClipboardHistoryItem): { c: string; label: string } => {
-    if (/^https?:\/\//i.test(item.text)) return { c: "#38BDF8", label: "link" };
-    if (/[{}();=]|\s-\s|\.\w+$|\//.test(item.text) && item.text.length < 80) return { c: "#22D3EE", label: "code" };
-    return { c: "#A3A3A3", label: "text" };
-  };
-  const selectedClip = filteredHistory.find((item) => item.id === selectedHistoryId) ?? filteredHistory[0] ?? null;
-  const multiActive = Boolean(activeSession);
-  async function insertSnippet(text: string, name: string): Promise<void> {
-    try { await navigator.clipboard.writeText(text); showStatus(`Inserted "${name}"`); } catch { showStatus("Copy failed", "error"); }
-  }
-
-  return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_CLIP}40`, background: `${ACCENT_CLIP}14`, color: ACCENT_CLIP }}>
-            <ClipboardList className="h-5 w-5" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Clipboard</h1>
-            <p className="text-sm text-[#A3A3A3]">Persistent history, quick slots &amp; snippets — sensitive entries auto-protected</p>
-          </div>
-        </div>
-        <StatusChip tone={multiActive ? "running" : "info"} pulse={multiActive}>{multiActive ? "Multi-copy active" : "Single copy"}</StatusChip>
-      </div>
-
-      {/* Quick slots */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        {quickSlots.map((slot) => {
-          const filled = Boolean(slot.value || slot.text);
-          return (
-            <GlassCard key={slot.slot} accent={ACCENT_CLIP} hover={false} className="flex flex-col">
-              <div className="mb-2 flex items-center justify-between">
-                <span className="font-mono text-xs font-semibold tracking-wider" style={{ color: ACCENT_CLIP }}>SLOT {slot.slot}</span>
-                <span className="text-[10px]" style={{ color: filled ? "#22C55E" : "#525252" }}>{filled ? "filled" : "empty"}</span>
-              </div>
-              <p className="mb-3 line-clamp-2 min-h-[32px] font-mono text-xs text-[#A3A3A3]">{slot.preview || "empty memory pad"}</p>
-              <div className="mt-auto space-y-2">
-                <div className="flex gap-2">
-                  <ActionButton accent={ACCENT_CLIP} icon={Save} className="flex-1 justify-center text-xs" onClick={() => void assignSlot(slot.slot)}>Save</ActionButton>
-                  <ActionButton accent={ACCENT_CLIP} variant="ghost" icon={ClipIcon} className="flex-1 justify-center text-xs" onClick={() => void copySlot(slot.slot)}>Paste</ActionButton>
-                </div>
-                <div className="flex items-center justify-between font-mono text-[9px] text-[#525252]"><span>Ctrl+Shift+{slot.slot}</span><span>Ctrl+Alt+{slot.slot}</span></div>
-              </div>
-            </GlassCard>
-          );
-        })}
-      </div>
-
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
-        {/* History */}
-        <div className="lg:col-span-7">
-          <SectionTitle action={<span className="font-mono text-[10px] text-[#525252]">retention {clipboardState.settings.historyRetentionDays === "never" ? "∞" : `${clipboardState.settings.historyRetentionDays}d`} · {filteredHistory.length} items</span>}>History</SectionTitle>
-          <div className="mb-2 flex items-center gap-2 rounded-lg border border-[#262626] bg-[#0d0d0d] px-3 py-1.5 focus-within:border-[#8B5CF6]/40">
-            <Search className="h-3.5 w-3.5 text-[#525252]" />
-            <input value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} placeholder="Filter history…" className="flex-1 bg-transparent text-xs text-[#F5F5F5] placeholder:text-[#525252] focus:outline-none" />
-          </div>
-          <div className="space-y-1.5">
-            {filteredHistory.length === 0 ? (
-              <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-[#262626] py-12 text-center"><ClipboardList className="h-7 w-7 text-[#525252]" /><p className="mt-2 text-sm text-[#A3A3A3]">No clipboard history matches.</p></div>
-            ) : (
-              <LimitedList items={filteredHistory} step={50}>
-                {(item) => {
-                  const tm = clipType(item);
-                  const active = selectedClip?.id === item.id;
-                  return (
-                    <button key={item.id} type="button" onClick={() => setSelectedHistoryId(item.id)} className={`glass-card flex w-full items-center gap-3 p-3 text-left transition-colors ${active ? "border-[#8B5CF6]/40 bg-[#8B5CF6]/[0.06]" : ""}`}>
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ background: `${tm.c}14`, color: tm.c }}><FileCode className="h-4 w-4" /></div>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm text-[#F5F5F5]">{item.preview || "Clipboard item"}</p>
-                        <p className="font-mono text-[10px] text-[#525252]">{clipAgo(item.createdAt)} ago · {formatBytes(item.byteLength)}</p>
-                      </div>
-                      <span className="shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium" style={{ color: tm.c, borderColor: `${tm.c}33`, background: `${tm.c}10` }}>{tm.label}</span>
-                    </button>
-                  );
-                }}
-              </LimitedList>
-            )}
-          </div>
-        </div>
-
-        {/* Preview + protection + snippets */}
-        <div className="space-y-5 lg:col-span-5">
-          <GlassCard accent={ACCENT_CLIP} hover={false}>
-            <SectionTitle action={<StatusChip tone="ready">Plain</StatusChip>}>Preview</SectionTitle>
-            {selectedClip ? (
-              <>
-                <pre className="max-h-40 overflow-auto rounded-lg border border-[#1f1f1f] bg-[#0a0a0a] p-3 font-mono text-xs text-[#F5F5F5] whitespace-pre-wrap">{selectedClip.preview || selectedClip.text}</pre>
-                <p className="mt-2 font-mono text-[10px] text-[#525252]">{clipType(selectedClip).label} · captured {clipAgo(selectedClip.createdAt)} ago · {selectedClip.source ?? "clipboard"}</p>
-                <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-                  <ActionButton accent={ACCENT_CLIP} icon={ClipIcon} className="justify-center text-xs" onClick={() => void copyHistoryItem(selectedClip.id)}>Copy</ActionButton>
-                  <ActionButton accent="#38BDF8" icon={Share2} className="justify-center text-xs" onClick={() => { void copyHistoryItem(selectedClip.id).then(() => onAction("drop.send_clipboard_to_drop")); }}>To Drop</ActionButton>
-                  <ActionButton accent="#EF4444" variant="ghost" icon={Trash2} className="justify-center text-xs" onClick={() => void deleteHistoryItem(selectedClip.id)}>Delete</ActionButton>
-                  <ActionButton accent="#EF4444" variant="ghost" icon={Trash2} className="justify-center text-xs" onClick={() => void clearHistory()}>Clear all</ActionButton>
-                </div>
-              </>
-            ) : <p className="text-xs text-[#525252]">Select a history item to preview it.</p>}
-          </GlassCard>
-
-          <GlassCard hover={false}>
-            <SectionTitle>Protection</SectionTitle>
-            <div className="divide-y divide-[#141414]">
-              <div className="flex items-center justify-between py-3 first:pt-0">
-                <div className="pr-4"><p className="text-sm text-[#F5F5F5]">Multi-copy session</p><p className="text-xs text-[#525252]">Stack several copies into one buffer</p></div>
-                <button type="button" role="switch" aria-checked={multiActive} onClick={() => void (multiActive ? stopMultiCopy() : startMultiCopy())} className="relative h-5 w-9 rounded-full transition-colors" style={{ background: multiActive ? ACCENT_CLIP : "#262626" }}>
-                  <span className="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" style={{ left: multiActive ? "1.125rem" : "0.125rem" }} />
-                </button>
-              </div>
-              <div className="flex items-center justify-between py-3 last:pb-0">
-                <div className="pr-4"><p className="text-sm text-[#F5F5F5]">Sensitive protection</p><p className="text-xs text-[#525252]">Auto-mask tokens, keys &amp; ID numbers</p></div>
-                <button type="button" role="switch" aria-checked={clipboardState.settings.secretProtectionEnabled} onClick={() => void updateClipboardSettings({ secretProtectionEnabled: !clipboardState.settings.secretProtectionEnabled }, "Sensitive protection updated.")} className="relative h-5 w-9 rounded-full transition-colors" style={{ background: clipboardState.settings.secretProtectionEnabled ? ACCENT_CLIP : "#262626" }}>
-                  <span className="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" style={{ left: clipboardState.settings.secretProtectionEnabled ? "1.125rem" : "0.125rem" }} />
-                </button>
-              </div>
-              <div className="flex items-center justify-between py-3">
-                <div className="pr-4"><p className="text-sm text-[#F5F5F5]">Clipboard listener</p><p className="text-xs text-[#525252]">Auto-capture new copies to history</p></div>
-                <button type="button" role="switch" aria-checked={clipboardState.settings.listenerEnabled} onClick={() => void toggleListener()} className="relative h-5 w-9 rounded-full transition-colors" style={{ background: clipboardState.settings.listenerEnabled ? ACCENT_CLIP : "#262626" }}>
-                  <span className="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" style={{ left: clipboardState.settings.listenerEnabled ? "1.125rem" : "0.125rem" }} />
-                </button>
-              </div>
-              <div className="flex items-center justify-between py-3 last:pb-0">
-                <div className="pr-4">
-                  <p className="text-sm text-[#F5F5F5]">Slot shortcut sequences</p>
-                  <p className="text-xs text-[#525252]">Hold Ctrl, tap 1/2/3, then C to save or V to paste that slot. Normal Ctrl+C/V and browser tabs keep working.{clipboardState.settings.slotSequenceStatus === "failed" && clipboardState.settings.slotSequenceLastError ? ` · ${clipboardState.settings.slotSequenceLastError}` : clipboardState.settings.slotSequenceEnabled ? ` · ${clipboardState.settings.slotSequenceStatus}` : ""}</p>
-                </div>
-                <button type="button" role="switch" aria-checked={clipboardState.settings.slotSequenceEnabled} onClick={() => void updateClipboardSettings({ slotSequenceEnabled: !clipboardState.settings.slotSequenceEnabled }, clipboardState.settings.slotSequenceEnabled ? "Slot sequences disabled." : "Slot sequences enabled.")} className="relative h-5 w-9 rounded-full transition-colors" style={{ background: clipboardState.settings.slotSequenceEnabled ? ACCENT_CLIP : "#262626" }}>
-                  <span className="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" style={{ left: clipboardState.settings.slotSequenceEnabled ? "1.125rem" : "0.125rem" }} />
-                </button>
-              </div>
-            </div>
-          </GlassCard>
-
-          <GlassCard hover={false}>
-            <SectionTitle action={<details className="relative"><summary className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-[#8B5CF6]/30 bg-[#8B5CF6]/10 px-2 py-1 text-[10px] font-medium text-[#8B5CF6]"><Plus className="h-3 w-3" />New</summary><div className="absolute right-0 z-10 mt-1 w-56 space-y-1.5 rounded-lg border border-[#262626] bg-[#0a0a0a] p-2"><input value={snippetForm.title} onChange={(event) => setSnippetForm({ ...snippetForm, title: event.target.value })} placeholder="Snippet title" /><textarea value={snippetForm.text} onChange={(event) => setSnippetForm({ ...snippetForm, text: event.target.value })} placeholder="Snippet text" /><button type="button" onClick={() => void saveSnippet()}>Save snippet</button></div></details>}>Snippets</SectionTitle>
-            <div className="space-y-1.5">
-              {clipboardState.snippets.length === 0 ? <p className="text-xs text-[#525252]">No snippets yet.</p> : clipboardState.snippets.map((s) => (
-                <div key={s.id} className="glass-card flex w-full items-center gap-2 p-2.5">
-                  <button type="button" onClick={() => void insertSnippet(s.text, s.title)} className="min-w-0 flex-1 truncate text-left text-sm text-[#F5F5F5]" title={s.text}>{s.title}</button>
-                  <button type="button" onClick={() => void insertSnippet(s.text, s.title)} title="Copy" className="text-[#525252] hover:text-[#8B5CF6]"><ClipIcon className="h-3.5 w-3.5" /></button>
-                  <PinButton input={{ type: "item", module: "clipboard", entityId: s.id, title: s.title, subtitle: "Snippet" }} />
-                  <button type="button" onClick={() => void deleteSnippet(s.id)} title="Delete" className="min-h-0 border-0 bg-transparent px-1 text-[#A3A3A3] hover:text-[#EF4444]"><Trash2 className="h-3.5 w-3.5" /></button>
-                </div>
-              ))}
-            </div>
-          </GlassCard>
-        </div>
-      </div>
-
-      {/* Advanced (multi-copy groups, settings, slots 4+) */}
-      <details className="rounded-lg border border-[#1a1a1a] bg-[#080808]">
-        <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] text-[#525252] hover:text-[#A3A3A3]">advanced · multi-copy groups, settings, extra slots</summary>
-        <div className="space-y-4 border-t border-[#1a1a1a] p-3">
-          <Panel title="Multi-copy group">
-            <div className="button-row">
-              <button type="button" disabled={Boolean(activeSession)} onClick={() => void startMultiCopy()}>Start group</button>
-              <input value={groupName} onChange={(event) => setGroupName(event.target.value)} placeholder="Group name" />
-              <button type="button" disabled={!activeSession?.items.length} onClick={() => void copyCombinedGroup()}>Copy combined</button>
-              <button type="button" disabled={!activeSession?.items.length} onClick={() => void saveMultiCopyGroup()}>Save group</button>
-              <button className="danger-button" type="button" disabled={!activeSession?.items.length} onClick={() => void clearMultiCopySession()}>Clear</button>
-              <button type="button" disabled={!activeSession} onClick={() => void stopMultiCopy()}>Stop</button>
-            </div>
-            <p className="technical">Select text anywhere and press {shortcutLabel(clipboardState.settings.multiCopyHotkey)}.</p>
-            {activeSession?.items.length ? (
-              <div className="action-list action-list--compact">
-                {activeSession.items.map((item) => (
-                  <article className="data-item data-item--compact accent-clipboard" key={item.id}><strong>{item.preview || "Item"}</strong><span>{formatBytes(item.byteLength)}</span></article>
-                ))}
-              </div>
-            ) : null}
-          </Panel>
-          {clipboardState.multiGroups.length > 0 && (
-            <Panel title="Saved multi-copy groups">
-              <div className="action-list action-list--compact">
-                {clipboardState.multiGroups.map((group) => (
-                  <article className="data-item data-item--stacked accent-clipboard" key={group.id}>
-                    <div className="section-heading section-heading--row">
-                      <strong>{group.name}</strong>
-                      <div className="button-row">
-                        <button type="button" onClick={() => void copyCombinedGroup(group.id)}>Copy combined</button>
-                        <button className="danger-button" type="button" onClick={() => void deleteMultiCopyGroup(group.id)}>Delete</button>
-                      </div>
-                    </div>
-                    <span>{group.items.length} items</span>
-                  </article>
-                ))}
-              </div>
-            </Panel>
-          )}
-          {extendedSlots.length > 0 && (
-            <Panel title="Extra slots">
-              <div className="action-list action-list--compact">
-                {extendedSlots.map((slot) => (
-                  <article className="data-item data-item--stacked accent-clipboard" key={slot.slot}>
-                    <strong>Slot {slot.slot}</strong>
-                    <span className="clipboard-slot-preview">{slot.preview || "Empty slot"}</span>
-                    <div className="button-row">
-                      <button type="button" onClick={() => void assignSlot(slot.slot)}>Save current</button>
-                      <button type="button" disabled={!(slot.value || slot.text)} onClick={() => void copySlot(slot.slot)}>Copy</button>
-                      <button className="danger-button" type="button" disabled={!(slot.value || slot.text)} onClick={() => void clearSlot(slot.slot)}>Clear</button>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            </Panel>
-          )}
-          <Panel title="History &amp; settings">
-            <div className="button-row">
-              <button type="button" onClick={() => void saveCurrentClipboard()}>Save current</button>
-              <button type="button" onClick={() => void pasteAsPlainText()}>Copy as plain text</button>
-              <button type="button" onClick={() => void testReadClipboard()}>Test read</button>
-              <button type="button" onClick={() => void cleanupHistoryNow()}>Cleanup now</button>
-              <button className="danger-button" type="button" onClick={() => void clearHistory()}>Clear history</button>
-            </div>
-            <div className="registry-controls">
-              <label>Separator
-                <select value={separatorMode} onChange={(event) => { const m = event.target.value as typeof separatorMode; setSeparatorMode(m); void updateClipboardSettings({ combinedSeparator: separatorFromMode(m) }, "Separator updated."); }}>
-                  <option value="blank">Blank line</option><option value="newline">Single newline</option><option value="comma">Comma</option><option value="custom">Custom</option>
-                </select>
-              </label>
-              {separatorMode === "custom" && <label>Custom<input value={customSeparator} onChange={(event) => setCustomSeparator(event.target.value)} onBlur={() => void updateClipboardSettings({ combinedSeparator: customSeparator }, "Custom separator saved.")} /></label>}
-              <label>Auto-clear minutes<input type="number" min="1" max="240" value={autoClearMinutes} onChange={(event) => setAutoClearMinutes(event.target.value)} onBlur={() => void updateClipboardSettings({ multiCopyAutoClearMinutes: Number(autoClearMinutes) || 5 }, "Auto-clear updated.")} /></label>
-            </div>
-            <p className="technical">{clipboardState.historyPath}</p>
-          </Panel>
-        </div>
-      </details>
-
-      {status && <ToastStack toasts={[{ id: status.message, message: status.message, tone: status.tone }]} />}
-    </div>
-  );
-
-}
-
-function ToolsView({
-  toolsState,
-  onAction,
-  onRefresh
-}: {
-  toolsState: ToolsState;
-  onAction: (actionId: string, source?: string, params?: unknown) => Promise<{
-    ok: boolean;
-    error?: string;
-    outputs?: ToolsOutputItem[];
-    output?: string | ToolsOutputItem;
-    info?: PdfInfoItem[];
-    ocrPreview?: string;
-    ocrMetadata?: { engine: string; averageConfidence: number | null };
-  }>;
-  onRefresh: () => Promise<void>;
-}) {
-  const [selectedFiles, setSelectedFiles] = useState<ToolsSelectedFile[]>([]);
-  const [pdfInfo, setPdfInfo] = useState<PdfInfoItem[]>([]);
-  const [pageRange, setPageRange] = useState("1");
-  const [imageFormat, setImageFormat] = useState("jpg");
-  const [imageQuality, setImageQuality] = useState("80");
-  const [audioFormat, setAudioFormat] = useState("mp3");
-  const [resizeWidth, setResizeWidth] = useState("");
-  const [resizeHeight, setResizeHeight] = useState("");
-  const [activeTab, setActiveTab] = useState<"pdf" | "images" | "ocr" | "media" | "office" | "outputs" | "settings">("pdf");
-  const [ocrEngine, setOcrEngine] = useState<"tesseract" | "paddleocr" | "easyocr_placeholder">(toolsState.ocrEngine ?? "paddleocr");
-  const [ocrDevice, setOcrDevice] = useState<"gpu" | "cpu">(toolsState.ocrDevice ?? "gpu");
-  const [ocrLanguage, setOcrLanguage] = useState(toolsState.ocrLanguage ?? "eng");
-  const [ocrPreview, setOcrPreview] = useState("");
-  const [ocrMetadata, setOcrMetadata] = useState<{ engine: string; averageConfidence: number | null } | null>(null);
-  const [ocrUpscale, setOcrUpscale] = useState(true);
-  const [ocrThreshold, setOcrThreshold] = useState(false);
-  const [scanGrayscale, setScanGrayscale] = useState(true);
-  const [scanSharpen, setScanSharpen] = useState(true);
-  const [scanContrast, setScanContrast] = useState("0.28");
-  const [scanRotate, setScanRotate] = useState("0");
-  const [status, setStatus] = useState<{ tone: "success" | "error"; message: string } | null>(null);
-  const [runningActionId, setRunningActionId] = useState<string | null>(null);
-  const [draggedFileIndex, setDraggedFileIndex] = useState<number | null>(null);
-  const [selectedToolId, setSelectedToolId] = useState("tools.ocr_image");
-
-  const selectedPaths = selectedFiles.map((file) => file.path);
-
-  useEffect(() => {
-    setOcrEngine(toolsState.ocrEngine ?? "paddleocr");
-    setOcrDevice(toolsState.ocrDevice ?? "gpu");
-    setOcrLanguage(toolsState.ocrLanguage ?? "eng");
-  }, [toolsState.ocrEngine, toolsState.ocrDevice, toolsState.ocrLanguage]);
-
-  function showStatus(message: string, tone: "success" | "error" = "success"): void {
-    setStatus({ tone, message });
-    window.setTimeout(() => {
-      setStatus((current) => current?.message === message ? null : current);
-    }, 3000);
-  }
-
-  async function selectFiles(kind: "pdf" | "image" | "any"): Promise<void> {
-    const files = await getBridge().selectToolsFiles(kind);
-    setSelectedFiles(files);
-    if (kind === "pdf" || files.some((file) => file.extension === ".pdf")) {
-      setPdfInfo(await getBridge().getPdfInfo(files.filter((file) => file.extension === ".pdf").map((file) => file.path)));
-    } else {
-      setPdfInfo([]);
-    }
-  }
-
-  function onDrop(event: React.DragEvent<HTMLElement>): void {
-    event.preventDefault();
-    if (draggedFileIndex !== null || event.dataTransfer.types.includes("application/x-dexnest-tools-reorder")) {
-      return;
-    }
-    if (event.dataTransfer.files.length === 0) {
-      return;
-    }
-
-    const files = Array.from(event.dataTransfer.files).map((file) => ({
-      path: (file as File & { path?: string }).path ?? "",
-      name: file.name,
-      byteLength: file.size,
-      extension: `.${file.name.split(".").pop()?.toLowerCase() ?? ""}`
-    })).filter((file) => file.path);
-    setSelectedFiles(files);
-    void getBridge().getPdfInfo(files.filter((file) => file.extension === ".pdf").map((file) => file.path)).then(setPdfInfo);
-  }
-
-  async function updateFileOrder(files: ToolsSelectedFile[]): Promise<void> {
-    setSelectedFiles(files);
-    setPdfInfo(await getBridge().getPdfInfo(files.filter((file) => file.extension === ".pdf").map((file) => file.path)));
-  }
-
-  function reorderSelectedFile(targetIndex: number): void {
-    if (draggedFileIndex === null || draggedFileIndex === targetIndex) {
-      return;
-    }
-
-    const nextFiles = [...selectedFiles];
-    const [file] = nextFiles.splice(draggedFileIndex, 1);
-    nextFiles.splice(targetIndex, 0, file);
-    setDraggedFileIndex(targetIndex);
-    void updateFileOrder(nextFiles);
-  }
-
-  async function runTool(actionId: string, params: Record<string, unknown> = {}): Promise<void> {
-    setRunningActionId(actionId);
-    try {
-      const result = await onAction(actionId, "module_ui", { paths: selectedPaths, ...params });
-
-      if (result.ok) {
-        const count = result.outputs?.length ?? (result.output ? 1 : 0);
-        if (result.ocrPreview !== undefined) {
-          setOcrPreview(result.ocrPreview || "OCR completed but no preview text was extracted.");
-          setOcrMetadata(result.ocrMetadata ?? null);
-        }
-        showStatus(count ? `Created ${count} output file${count === 1 ? "" : "s"}.` : "Tools action completed.");
-        await onRefresh();
-      } else {
-        showStatus(result.error ?? "Tools action failed.", "error");
-      }
-    } catch (error) {
-      showStatus(error instanceof Error ? error.message : "Tools action failed.", "error");
-    } finally {
-      setRunningActionId(null);
-    }
-  }
-
-  async function sendOutputToDrop(output: ToolsOutputItem): Promise<void> {
-    const result = await onAction("tools.send_output_to_drop", "module_ui", { path: output.path });
-    showStatus(result.ok ? "Output sent to phone." : result.error ?? "Send to phone failed.", result.ok ? "success" : "error");
-  }
-
-  async function saveOutputToVault(output: ToolsOutputItem): Promise<void> {
-    const result = await onAction("tools.save_output_to_vault", "module_ui", {
-      path: output.path,
-      category: "Other",
-      tags: "tools",
-      sourceModule: "DexNest Tools",
-      title: output.fileName
-    });
-    showStatus(result.ok ? "Output saved to Vault." : result.error ?? "Save to Vault failed.", result.ok ? "success" : "error");
-    await onRefresh();
-  }
-
-  const ACCENT_TOOLS = "#F97316";
-  const TOOL_CATS: Array<{ label: string; tools: Array<{ id: string; name: string; icon: LucideIcon; desc: string; fmt: string; out: string; kind: "pdf" | "image" | "any" }> }> = [
-    { label: "PDF tools", tools: [
-      { id: "tools.merge_pdfs", name: "Merge PDF", icon: FileStack, desc: "Combine multiple PDFs", fmt: "PDF", out: "PDF", kind: "pdf" },
-      { id: "tools.split_pdf", name: "Split PDF", icon: Scissors, desc: "Extract selected pages", fmt: "PDF", out: "PDF", kind: "pdf" },
-      { id: "tools.pdf_to_text", name: "PDF → text", icon: FileText, desc: "Extract text from a PDF", fmt: "PDF", out: "TXT", kind: "pdf" },
-      { id: "tools.pdf_to_docx_experimental", name: "PDF → DOCX", icon: FileType2, desc: "Convert a PDF to Word", fmt: "PDF", out: "DOCX", kind: "pdf" }
-    ] },
-    { label: "OCR / Scan", tools: [
-      { id: "tools.ocr_image", name: "OCR Image", icon: ScanText, desc: "Extract text locally", fmt: "PNG · JPG", out: "TXT", kind: "image" },
-      { id: "tools.ocr_pdf", name: "OCR PDF", icon: ScanText, desc: "Make scans searchable", fmt: "PDF", out: "PDF", kind: "pdf" },
-      { id: "tools.clean_scan", name: "Clean Scan", icon: Sparkles, desc: "Enhance scanned docs", fmt: "PNG · JPG", out: "IMG", kind: "image" }
-    ] },
-    { label: "Images", tools: [
-      { id: "tools.images_to_pdf", name: "Images → PDF", icon: FileImage, desc: "Bundle images to PDF", fmt: "PNG · JPG", out: "PDF", kind: "image" },
-      { id: "tools.convert_image", name: "Convert image", icon: FileImage, desc: "Change image format", fmt: "PNG · JPG · WEBP", out: "IMG", kind: "image" },
-      { id: "tools.compress_image", name: "Compress image", icon: FileImage, desc: "Shrink image size", fmt: "PNG · JPG", out: "JPG", kind: "image" },
-      { id: "tools.resize_image", name: "Resize image", icon: FileImage, desc: "Resize to width / height", fmt: "PNG · JPG", out: "IMG", kind: "image" }
-    ] },
-    { label: "Media", tools: [
-      { id: "tools.pdf_to_images", name: "PDF → Images", icon: Images, desc: "Export pages as images", fmt: "PDF", out: "PNG", kind: "pdf" },
-      { id: "tools.mp4_to_mp3", name: "MP4 → MP3", icon: FileAudio, desc: "Extract audio track", fmt: "MP4 · MOV", out: "MP3", kind: "any" },
-      { id: "tools.extract_audio", name: "Extract audio", icon: FileAudio, desc: "Audio track from video", fmt: "MP4 · MOV", out: "MP3 · WAV", kind: "any" },
-      { id: "tools.convert_audio", name: "Convert audio", icon: AudioLines, desc: "Change audio format", fmt: "MP3 · WAV · AAC", out: "AUDIO", kind: "any" }
-    ] },
-    { label: "Office", tools: [
-      { id: "tools.docx_to_pdf", name: "DOCX → PDF", icon: FileType2, desc: "Convert office docs", fmt: "DOCX", out: "PDF", kind: "any" },
-      { id: "tools.pptx_to_pdf", name: "PPTX → PDF", icon: FileType2, desc: "Convert slides", fmt: "PPTX", out: "PDF", kind: "any" },
-      { id: "tools.pptx_to_images", name: "PPTX → images", icon: Images, desc: "Slides to images", fmt: "PPTX", out: "PNG", kind: "any" }
-    ] }
-  ];
-  const allTools = TOOL_CATS.flatMap((c) => c.tools);
-  const selectedTool = allTools.find((t) => t.id === selectedToolId) ?? allTools[0];
-  const toolParams = (id: string): Record<string, unknown> => {
-    if (id === "tools.split_pdf") return { range: pageRange };
-    if (id === "tools.ocr_image" || id === "tools.ocr_pdf") return { engine: ocrEngine, device: ocrDevice, language: ocrLanguage, upscale: ocrUpscale, grayscale: scanGrayscale, contrastBoost: true, sharpen: scanSharpen, threshold: ocrThreshold, rotateDegrees: scanRotate };
-    if (id === "tools.clean_scan") return { grayscale: scanGrayscale, sharpen: scanSharpen, contrast: scanContrast, rotateDegrees: scanRotate };
-    if (id === "tools.mp4_to_mp3") return { format: "mp3" };
-    if (id === "tools.convert_image") return { format: imageFormat, quality: imageQuality };
-    if (id === "tools.compress_image") return { format: "jpg", quality: imageQuality };
-    if (id === "tools.resize_image") return { format: imageFormat, quality: imageQuality, width: resizeWidth, height: resizeHeight };
-    if (id === "tools.extract_audio" || id === "tools.convert_audio") return { format: audioFormat };
-    return {};
-  };
-  const latestOutput = toolsState.outputs[0];
-
-  return (
-    <div className="space-y-6">
-      {status && (<ToastStack toasts={[{ id: status.message, message: status.message, tone: status.tone }]} />)}
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_TOOLS}40`, background: `${ACCENT_TOOLS}14`, color: ACCENT_TOOLS }}>
-            <Wrench className="h-5 w-5" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Tools</h1>
-            <p className="text-sm text-[#A3A3A3]">Offline PDF, OCR &amp; media workstation — runs entirely on-device</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <StatusChip tone="ok" dot={false} style={{ color: ACCENT_TOOLS, borderColor: `${ACCENT_TOOLS}33`, background: `${ACCENT_TOOLS}12` }}>PaddleOCR {toolsState.ocrEngine === "paddleocr" ? "ready" : "available"}</StatusChip>
-          <StatusChip tone="info">Tesseract fallback</StatusChip>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
-        {/* Tool grid */}
-        <div className="space-y-4 lg:col-span-7">
-          {TOOL_CATS.map((cat) => (
-            <div key={cat.label}>
-              <SectionTitle>{cat.label}</SectionTitle>
-              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-                {cat.tools.map((t) => {
-                  const Icon = t.icon;
-                  const active = selectedTool.id === t.id;
-                  return (
-                    <button key={t.id} type="button" onClick={() => setSelectedToolId(t.id)} className={`glass-card flex items-start gap-3 p-3 text-left transition-colors ${active ? "border-[#F97316]/40 bg-[#F97316]/[0.06]" : ""}`}>
-                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg" style={{ background: `${ACCENT_TOOLS}16`, color: ACCENT_TOOLS }}><Icon className="h-[18px] w-[18px]" /></div>
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium text-[#F5F5F5]">{t.name}</p>
-                        <p className="truncate text-xs text-[#A3A3A3]">{t.desc}</p>
-                        <p className="mt-0.5 font-mono text-[9px] text-[#525252]">{t.fmt} → {t.out}</p>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {/* Work area + queue */}
-        <div className="space-y-5 lg:col-span-5">
-          <GlassCard accent={ACCENT_TOOLS} hover={false}>
-            <div className="mb-3 flex items-center justify-between">
-              <div className="flex items-center gap-2"><selectedTool.icon className="h-4 w-4" style={{ color: ACCENT_TOOLS }} /><span className="text-sm font-medium text-[#F5F5F5]">{selectedTool.name}</span></div>
-              <span className="inline-flex items-center gap-1 font-mono text-[10px] text-[#A3A3A3]">{selectedTool.fmt} <ArrowRight className="h-3 w-3 text-[#525252]" /> {selectedTool.out}</span>
-            </div>
-            <section className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-[#262626] bg-[#0a0a0a] px-4 py-6 text-center transition-colors hover:border-[#F97316]/50" onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
-              <UploadCloud className="h-7 w-7 text-[#F97316]" />
-              <p className="mt-2 text-sm text-[#F5F5F5]">Drop files for <span className="font-medium">{selectedTool.name}</span></p>
-              <p className="text-[11px] text-[#525252]">accepts {selectedTool.fmt}</p>
-              <button type="button" onClick={() => void selectFiles(selectedTool.kind)} className="tools-action-button tools-action-button--outline mt-2">Choose files</button>
-              {selectedFiles.length > 0 && <p className="mt-2 font-mono text-[10px] text-[#A3A3A3]">{selectedFiles.length} file{selectedFiles.length === 1 ? "" : "s"} selected</p>}
-            </section>
-
-            {/* Selected files — drag to reorder (matters for Merge PDF & Images → PDF). */}
-            {selectedFiles.length > 0 && (
-              <div className="mt-3">
-                <div className="mb-1 flex items-center justify-between">
-                  <span className="text-[11px] text-[#A3A3A3]">Selected files{selectedFiles.length > 1 ? " · drag to reorder" : ""}</span>
-                  <button type="button" onClick={() => setSelectedFiles([])} className="font-mono text-[10px] text-[#525252] hover:text-[#A3A3A3]">clear</button>
-                </div>
-                <div className="file-list">
-                  {selectedFiles.map((file, index) => (
-                    <div className="file-row" data-dragging={draggedFileIndex === index} draggable key={file.path}
-                      onDragStart={(event) => { event.stopPropagation(); setDraggedFileIndex(index); event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("application/x-dexnest-tools-reorder", String(index)); }}
-                      onDragOver={(event) => { event.preventDefault(); reorderSelectedFile(index); }}
-                      onDragEnd={() => setDraggedFileIndex(null)}>
-                      <span><span className="font-mono text-[10px] text-[#525252]">{index + 1}.</span> {file.name}</span>
-                      <span className="flex items-center gap-2">
-                        <strong className="technical">{formatBytes(file.byteLength)}</strong>
-                        <button type="button" title="Remove file" onClick={() => setSelectedFiles((current) => current.filter((_, i) => i !== index))} className="min-h-0 border-0 bg-transparent px-1 text-[#A3A3A3] hover:text-[#EF4444]">✕</button>
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* tool-specific options */}
-            {selectedTool.id === "tools.split_pdf" && (
-              <label className="mt-3 block text-xs text-[#A3A3A3]">Page range<input className="technical mt-1" value={pageRange} onChange={(event) => setPageRange(event.target.value)} placeholder="1-3,5" /></label>
-            )}
-            {(selectedTool.id === "tools.ocr_image" || selectedTool.id === "tools.ocr_pdf") && (
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                <label className="text-xs text-[#A3A3A3]">Engine<select className="mt-1" value={ocrEngine} onChange={(event) => setOcrEngine(event.target.value as typeof ocrEngine)}><option value="paddleocr">paddleocr</option><option value="tesseract">tesseract</option></select></label>
-                <label className="text-xs text-[#A3A3A3]">Device<select className="mt-1" value={ocrDevice} onChange={(event) => setOcrDevice(event.target.value as typeof ocrDevice)}><option value="gpu">gpu</option><option value="cpu">cpu</option></select></label>
-              </div>
-            )}
-            {selectedTool.id === "tools.clean_scan" && (
-              <div className="mt-3 flex flex-wrap gap-3 text-xs text-[#A3A3A3]">
-                <label className="flex items-center gap-1.5"><input type="checkbox" checked={scanGrayscale} onChange={(event) => setScanGrayscale(event.target.checked)} />Grayscale</label>
-                <label className="flex items-center gap-1.5"><input type="checkbox" checked={scanSharpen} onChange={(event) => setScanSharpen(event.target.checked)} />Sharpen</label>
-              </div>
-            )}
-            {(selectedTool.id === "tools.convert_image" || selectedTool.id === "tools.compress_image" || selectedTool.id === "tools.resize_image") && (
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                {selectedTool.id !== "tools.compress_image" && (
-                  <label className="text-xs text-[#A3A3A3]">Format<select className="mt-1" value={imageFormat} onChange={(event) => setImageFormat(event.target.value)}><option value="jpg">jpg</option><option value="png">png</option><option value="webp">webp</option></select></label>
-                )}
-                <label className="text-xs text-[#A3A3A3]">Quality<input className="mt-1" value={imageQuality} onChange={(event) => setImageQuality(event.target.value)} placeholder="80" /></label>
-                {selectedTool.id === "tools.resize_image" && (<>
-                  <label className="text-xs text-[#A3A3A3]">Width<input className="mt-1" value={resizeWidth} onChange={(event) => setResizeWidth(event.target.value)} placeholder="px" /></label>
-                  <label className="text-xs text-[#A3A3A3]">Height<input className="mt-1" value={resizeHeight} onChange={(event) => setResizeHeight(event.target.value)} placeholder="px" /></label>
-                </>)}
-              </div>
-            )}
-            {(selectedTool.id === "tools.extract_audio" || selectedTool.id === "tools.convert_audio") && (
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                <label className="text-xs text-[#A3A3A3]">Audio format<select className="mt-1" value={audioFormat} onChange={(event) => setAudioFormat(event.target.value)}><option value="mp3">mp3</option><option value="wav">wav</option><option value="aac">aac</option></select></label>
-              </div>
-            )}
-
-            <button type="button" disabled={runningActionId === selectedTool.id || selectedFiles.length === 0} onClick={() => void runTool(selectedTool.id, toolParams(selectedTool.id))} className="tools-action-button tools-action-button--primary mt-3 w-full">
-              {runningActionId === selectedTool.id ? <><Spinner size="sm" /> Running…</> : <>Run {selectedTool.name}</>}
-            </button>
-          </GlassCard>
-
-          <GlassCard hover={false}>
-            <SectionTitle action={
-              <span className="flex items-center gap-2">
-                {toolsState.outputs.length > 0 && (
-                  <button type="button" onClick={() => void (async () => { if (!window.confirm("Clear the Tools output list? Files on disk are kept.")) { return; } const r = await onAction("tools.clear_outputs", "module_ui", {}) as { ok?: boolean }; if (r.ok) { await onRefresh(); } })()} className="font-mono text-[10px] text-[#525252] hover:text-[#A3A3A3]">Clear</button>
-                )}
-                <StatusChip tone={runningActionId ? "running" : "ok"}>{runningActionId ? "running" : `${toolsState.outputs.length} outputs`}</StatusChip>
-              </span>
-            }>Job Queue</SectionTitle>
-            <div className="space-y-2">
-              {runningActionId && (
-                <div className="glass-card flex items-center gap-3 p-2.5">
-                  <ProgressRing value={60} size={36} stroke={3} color={ACCENT_TOOLS} label="…" />
-                  <div className="min-w-0 flex-1"><p className="truncate font-mono text-xs text-[#F5F5F5]">{runningActionId.replace("tools.", "")}</p><p className="font-mono text-[10px] text-[#525252]">running…</p></div>
-                  <StatusChip tone="running" />
-                </div>
-              )}
-              {toolsState.outputs.length === 0 && !runningActionId ? (
-                <p className="text-xs text-[#525252]">No outputs yet. Run a tool to see results here.</p>
-              ) : (
-                <LimitedList items={toolsState.outputs} step={20}>
-                  {(output) => (
-                    <div key={output.id} className="glass-card flex items-center gap-2 p-2.5">
-                      <ProgressRing value={100} size={36} stroke={3} color="#22C55E" label="✓" />
-                      <div className="min-w-0 flex-1"><p className="truncate font-mono text-xs text-[#F5F5F5]">{output.operation} · {output.fileName}</p><p className="font-mono text-[10px] text-[#525252]">{formatBytes(output.byteLength)} · {formatDate(output.createdAt)}</p></div>
-                      <button type="button" onClick={() => void getBridge().openToolsFile(output.path)} title="Open the output file" className="inline-flex shrink-0 items-center gap-1 rounded-md border border-[#262626] px-2 py-1 text-[10px] text-[#A3A3A3] hover:border-[#F97316]/40 hover:text-[#F97316]"><FolderOpen className="h-3 w-3" />Open</button>
-                      <button type="button" title="Remove from the list (keeps the file on disk)" onClick={() => void (async () => { const r = await onAction("tools.delete_output", "module_ui", { id: output.id }) as { ok?: boolean }; if (r.ok) { await onRefresh(); } })()} className="inline-flex shrink-0 items-center rounded-md border border-[#262626] px-2 py-1 text-[10px] text-[#A3A3A3] hover:text-[#F5F5F5]">Remove</button>
-                      <button type="button" title="Delete the output file from disk" onClick={() => void (async () => { if (!window.confirm(`Delete ${output.fileName} from disk? This cannot be undone.`)) { return; } const r = await onAction("tools.delete_output_file", "module_ui", { id: output.id, confirmedDangerous: true }) as { ok?: boolean }; if (r.ok) { await onRefresh(); } })()} className="inline-flex shrink-0 items-center gap-1 rounded-md border border-[#262626] px-2 py-1 text-[10px] text-[#A3A3A3] hover:border-[#EF4444]/40 hover:text-[#EF4444]"><Trash2 className="h-3 w-3" />Delete</button>
-                    </div>
-                  )}
-                </LimitedList>
-              )}
-            </div>
-          </GlassCard>
-
-          <div className="grid grid-cols-3 gap-2">
-            <ActionButton accent={ACCENT_TOOLS} variant="ghost" icon={FolderOpen} className="justify-center text-xs" onClick={() => void onAction("tools.open_output_folder")}>Output</ActionButton>
-            <button type="button" disabled={!latestOutput} onClick={() => latestOutput && void saveOutputToVault(latestOutput)} className="tools-action-button tools-action-button--vault"><Vault className="h-4 w-4" />To Vault</button>
-            <button type="button" disabled={!latestOutput} onClick={() => latestOutput && void sendOutputToDrop(latestOutput)} className="tools-action-button tools-action-button--drop"><Share2 className="h-4 w-4" />To Drop</button>
-          </div>
-
-          {ocrPreview && (
-            <GlassCard hover={false}>
-              <SectionTitle action={ocrMetadata ? <span className="font-mono text-[10px] text-[#525252]">{ocrMetadata.engine}{ocrMetadata.averageConfidence != null ? ` · ${Math.round(ocrMetadata.averageConfidence * 100)}%` : ""}</span> : undefined}>OCR preview</SectionTitle>
-              <pre className="max-h-40 overflow-auto rounded-lg border border-[#1f1f1f] bg-[#0a0a0a] p-3 font-mono text-xs text-[#F5F5F5] whitespace-pre-wrap">{ocrPreview}</pre>
-            </GlassCard>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function VaultView({
   vaultState,
@@ -11553,365 +9824,6 @@ function SecureVaultView({
   );
 }
 
-function DropView({
-  dropState,
-  endpoint,
-  onAction,
-  onRefresh
-}: {
-  dropState: DropState;
-  endpoint?: string;
-  onAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>;
-  onRefresh: () => Promise<void>;
-}) {
-  const [dropText, setDropText] = useState("");
-  const [qrDataUrl, setQrDataUrl] = useState("");
-  const [autoRefresh, setAutoRefresh] = useState(true);
-  const [toasts, setToasts] = useState<Array<{ id: string; message: string; tone: "success" | "error" }>>([]);
-
-  useEffect(() => {
-    if (!dropState.phoneUrl) {
-      setQrDataUrl("");
-      return;
-    }
-
-    void QRCode.toDataURL(dropState.phoneUrl, { margin: 1, width: 180 }).then(setQrDataUrl);
-  }, [dropState.phoneUrl]);
-
-  useEffect(() => {
-    if (!autoRefresh) {
-      return;
-    }
-
-    let fallbackTimer: number | null = null;
-    const eventsUrl = dropState.localUrl
-      ? dropState.localUrl.replace(/\/drop$/, "/drop/api/events")
-      : `${endpoint ?? "http://127.0.0.1:43217"}/drop/api/events`;
-    let eventSource: EventSource;
-
-    try {
-      eventSource = new EventSource(eventsUrl);
-    } catch {
-      fallbackTimer = window.setInterval(() => {
-        void onRefresh();
-      }, 3000);
-      return () => {
-        if (fallbackTimer !== null) {
-          window.clearInterval(fallbackTimer);
-        }
-      };
-    }
-
-    eventSource.onmessage = (event) => {
-      let payload: { eventType?: string; message?: string } = {};
-      try {
-        payload = JSON.parse(event.data) as { eventType?: string; message?: string };
-      } catch {
-        return;
-      }
-      void onRefresh();
-      if (payload.eventType && payload.eventType !== "drop.connected" && payload.message) {
-        showToast(payload.message);
-      }
-    };
-
-    eventSource.onerror = () => {
-      if (fallbackTimer === null) {
-        fallbackTimer = window.setInterval(() => {
-          void onRefresh();
-        }, 3000);
-      }
-    };
-
-    return () => {
-      eventSource.close();
-      if (fallbackTimer !== null) {
-        window.clearInterval(fallbackTimer);
-      }
-    };
-  }, [autoRefresh, dropState.localUrl, endpoint, onRefresh]);
-
-  function showToast(message: string, tone: "success" | "error" = "success"): void {
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    setToasts((current) => [...current, { id, message, tone }]);
-    window.setTimeout(() => {
-      setToasts((current) => current.filter((toast) => toast.id !== id));
-    }, 3000);
-  }
-
-  async function toggleAutoRefresh(enabled: boolean): Promise<void> {
-    setAutoRefresh(enabled);
-    await getBridge().logDropAutoRefresh(enabled);
-    showToast(`Auto-refresh ${enabled ? "enabled" : "disabled"}`);
-  }
-
-  async function copyTextToClipboard(value: string, message: string): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(value);
-      showToast(message);
-    } catch {
-      showToast("Copy failed", "error");
-    }
-  }
-
-  async function createTextDrop(): Promise<void> {
-    const result = await onAction("drop.create_text_drop", "module_ui", { text: dropText }) as { ok?: boolean; error?: string };
-    if (result?.ok === false) {
-      showToast(result.error ?? "Text send failed", "error");
-      return;
-    }
-    setDropText("");
-    showToast("Text sent");
-    await onRefresh();
-  }
-
-  async function sendClipboardToDrop(): Promise<void> {
-    const result = await onAction("drop.send_clipboard_to_drop") as { ok?: boolean; error?: string };
-    showToast(result?.ok === false ? result.error ?? "Clipboard send failed" : "Text sent", result?.ok === false ? "error" : "success");
-    await onRefresh();
-  }
-
-  async function addOutgoingFile(): Promise<void> {
-    const result = await onAction("drop.add_outgoing_file") as { ok?: boolean; error?: string };
-    showToast(result?.ok === false ? result.error ?? "File add failed" : "File added", result?.ok === false ? "error" : "success");
-    await onRefresh();
-  }
-
-  async function removeOutgoingFile(fileId: string): Promise<void> {
-    const confirmed = window.confirm("Remove this outgoing Drop file copy?");
-    if (!confirmed) {
-      return;
-    }
-
-    const result = await onAction("drop.remove_outgoing_file", "module_ui", { id: fileId, confirmedDangerous: true }) as { ok?: boolean; error?: string };
-    showToast(result?.ok === false ? result.error ?? "File remove failed" : "File removed", result?.ok === false ? "error" : "success");
-    await onRefresh();
-  }
-
-  async function clearOutgoing(): Promise<void> {
-    const confirmed = window.confirm("Clear outgoing DexNest Drop text and file items?");
-    if (!confirmed) {
-      return;
-    }
-
-    const result = await onAction("drop.clear_outgoing", "module_ui", { confirmedDangerous: true }) as { ok?: boolean; error?: string };
-    showToast(result?.ok === false ? result.error ?? "Clear outgoing failed" : "Outgoing cleared", result?.ok === false ? "error" : "success");
-    await onRefresh();
-  }
-
-  async function clearIncoming(): Promise<void> {
-    const confirmed = window.confirm("Clear incoming DexNest Drop metadata? Received files stay on disk.");
-    if (!confirmed) {
-      return;
-    }
-
-    const result = await onAction("drop.clear_incoming", "module_ui", { confirmedDangerous: true }) as { ok?: boolean; error?: string };
-    showToast(result?.ok === false ? result.error ?? "Clear incoming failed" : "Incoming list cleared", result?.ok === false ? "error" : "success");
-    await onRefresh();
-  }
-
-  async function copyIncomingText(itemId: string): Promise<void> {
-    const result = await getBridge().copyDropIncomingText(itemId);
-    showToast(result.ok ? "Copied incoming text" : result.error ?? "Copy failed", result.ok ? "success" : "error");
-  }
-
-  async function chooseReceiveFolder(): Promise<void> {
-    try {
-      const result = await getBridge().chooseDropReceiveFolder();
-      if (result.ok) {
-        await onRefresh();
-        showToast("Receive folder changed");
-      } else {
-        showToast(result.error ?? "Receive folder change cancelled", "error");
-      }
-    } catch (error) {
-      showToast(error instanceof Error ? error.message : "Receive folder change failed", "error");
-    }
-  }
-
-  async function resetReceiveFolder(): Promise<void> {
-    const result = await getBridge().resetDropReceiveFolder();
-    await onRefresh();
-    showToast(result.ok ? "Receive folder changed" : "Receive folder reset failed", result.ok ? "success" : "error");
-  }
-
-  const outgoingCount = dropState.outgoingText.length + dropState.outgoingFiles.length;
-  const incomingText = dropState.incoming.filter((item) => item.type === "text");
-  const incomingFiles = dropState.incoming.filter((item) => item.type === "file");
-
-  const dropConnected = Boolean(dropState.phoneUrl);
-  const ACCENT_DROP = "#38BDF8";
-  return (
-    <div className="space-y-6">
-      <ToastStack toasts={toasts} />
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_DROP}40`, background: `${ACCENT_DROP}14`, color: ACCENT_DROP }}>
-            <Share2 className="h-5 w-5" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Drop</h1>
-            <p className="text-sm text-[#A3A3A3]">Private local bridge between this PC and your phone — like AirDrop, on your LAN</p>
-          </div>
-        </div>
-        <StatusChip tone={dropConnected ? "ready" : "offline"} pulse={dropConnected}>{dropConnected ? "Connected · LAN" : "Offline"}</StatusChip>
-      </div>
-
-      <div className="flex items-center gap-2 rounded-lg border border-[#10B981]/25 bg-[#10B981]/[0.07] px-3.5 py-2 text-xs text-[#34D399]">
-        <ShieldCheck className="h-3.5 w-3.5 shrink-0" /> Local-only · transfers stay on your network, no relay servers
-      </div>
-
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
-        {/* Pair device */}
-        <GlassCard accent={ACCENT_DROP} hover={false} className="lg:col-span-4">
-          <SectionTitle action={<StatusChip tone={dropConnected ? "ready" : "offline"}>{dropConnected ? "Connected" : "Waiting"}</StatusChip>}>Pair device</SectionTitle>
-          <div className="flex flex-col items-center text-center">
-            <div className="relative my-1 flex h-40 w-40 items-center justify-center rounded-2xl border border-[#262626] bg-[#0a0a0a]">
-              {qrDataUrl ? <img src={qrDataUrl} alt="Drop phone URL QR code" className="h-36 w-36 rounded-lg" /> : <QrCode className="h-28 w-28 text-[#525252]" strokeWidth={1} />}
-              <span className="pointer-events-none absolute inset-0 rounded-2xl" style={{ boxShadow: `inset 0 0 26px ${ACCENT_DROP}1f` }} />
-            </div>
-            <p className="mt-2 text-xs text-[#A3A3A3]">{dropConnected ? "Scan with your phone to connect" : "Scan with phone to connect"}</p>
-          </div>
-          <div className="mt-4 space-y-2">
-            <div className="glass-card flex items-center gap-2.5 p-2.5">
-              <Smartphone className="h-4 w-4 shrink-0 text-[#38BDF8]" />
-              <div className="min-w-0 flex-1"><p className="text-[10px] uppercase tracking-wider text-[#525252]">Phone URL</p><p className="truncate font-mono text-xs text-[#F5F5F5]">{dropState.phoneUrl || "Loading"}</p></div>
-              <button type="button" onClick={() => void copyTextToClipboard(dropState.phoneUrl || "", "Phone URL copied")} title="Copy Phone URL" aria-label="Copy Phone URL" className="drop-url-copy-button"><Copy className="h-4 w-4" /><span className="hidden sm:inline">Copy</span></button>
-            </div>
-            <div className="glass-card flex items-center gap-2.5 p-2.5">
-              <Monitor className="h-4 w-4 shrink-0 text-[#38BDF8]" />
-              <div className="min-w-0 flex-1"><p className="text-[10px] uppercase tracking-wider text-[#525252]">PC URL</p><p className="truncate font-mono text-xs text-[#F5F5F5]">{dropState.localUrl || endpoint || "Loading"}</p></div>
-              <button type="button" onClick={() => void copyTextToClipboard(dropState.localUrl || endpoint || "", "PC URL copied")} title="Copy PC URL" aria-label="Copy PC URL" className="drop-url-copy-button"><Copy className="h-4 w-4" /><span className="hidden sm:inline">Copy</span></button>
-            </div>
-            <p className="font-mono text-[10px] text-[#525252]">LAN IP · {dropState.lanIp ?? "not detected"}</p>
-          </div>
-        </GlassCard>
-
-        {/* Transfer */}
-        <div className="space-y-5 lg:col-span-8">
-          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-            <ActionButton accent={ACCENT_DROP} variant="solid" icon={ClipboardCopy} className="h-10 justify-center" onClick={() => void sendClipboardToDrop()}>Send clipboard</ActionButton>
-            <ActionButton accent={ACCENT_DROP} variant="soft" icon={Upload} className="h-10 justify-center" onClick={() => void addOutgoingFile()}>Add files</ActionButton>
-            <ActionButton accent={ACCENT_DROP} variant="ghost" icon={FolderOpen} className="h-10 justify-center" onClick={() => void chooseReceiveFolder()}>Receive folder</ActionButton>
-          </div>
-
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <GlassCard hover={false}>
-              <SectionTitle action={<button type="button" onClick={() => void clearIncoming()} className="text-[10px] text-[#525252] hover:text-[#A3A3A3]">clear</button>}>Incoming</SectionTitle>
-              <div className="space-y-1.5">
-                {dropState.incoming.length === 0 ? (
-                  <div className="flex flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-[#1f1f1f] py-8 text-center"><Inbox className="h-5 w-5 text-[#525252]" /><p className="text-xs text-[#525252]">No incoming files</p></div>
-                ) : dropState.incoming.slice(0, 30).map((item) => {
-                  const Icon = item.type === "text" ? ClipboardCopy : (item.originalName ?? item.fileName ?? "").match(/\.(png|jpe?g|gif|webp|bmp)$/i) ? ImageIcon : FileText;
-                  return (
-                    <div key={item.id} className="glass-card flex items-center gap-3 p-2.5">
-                      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#38BDF8]/12 text-[#38BDF8]"><Icon className="h-4 w-4" /></div>
-                      <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{item.type === "text" ? (item.preview || "Text") : (item.originalName ?? item.fileName ?? "File")}</p><p className="font-mono text-[10px] text-[#525252]">{formatBytes(item.byteLength)} · from phone · {formatDate(item.createdAt)}</p></div>
-                      <div className="flex shrink-0 items-center gap-1">
-                        {item.type === "text"
-                          ? <button type="button" onClick={() => void copyIncomingText(item.id)} title="Copy" className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#1a1a1a] hover:text-[#38BDF8]"><Copy className="h-4 w-4" /></button>
-                          : <button type="button" onClick={() => void onAction("drop.open_incoming_folder")} title="Open folder" className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#1a1a1a] hover:text-[#38BDF8]"><Download className="h-4 w-4" /></button>}
-                        <button type="button" title="Remove from DexNest list (keeps the file)" onClick={() => void (async () => { const r = await onAction("drop.remove_incoming_item", "module_ui", { id: item.id }) as { ok?: boolean }; if (r.ok) { await onRefresh(); } })()} className="rounded-md px-1.5 py-0.5 font-mono text-[10px] text-[#525252] hover:text-[#A3A3A3]">remove</button>
-                        {item.type === "file" && <button type="button" title="Delete received file from disk" onClick={() => void (async () => { if (!window.confirm("Delete this received file from disk? This cannot be undone.")) { return; } const r = await onAction("drop.delete_incoming_file", "module_ui", { id: item.id, confirmedDangerous: true }) as { ok?: boolean }; if (r.ok) { await onRefresh(); } })()} className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#EF4444]/10 hover:text-[#EF4444]"><Trash2 className="h-3.5 w-3.5" /></button>}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </GlassCard>
-
-            <GlassCard hover={false}>
-              <SectionTitle action={<button type="button" onClick={() => void clearOutgoing()} className="text-[10px] text-[#525252] hover:text-[#A3A3A3]">clear</button>}>Outgoing shelf</SectionTitle>
-              <div className="space-y-1.5">
-                {outgoingCount === 0 ? (
-                  <div className="flex flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-[#1f1f1f] py-8 text-center"><Inbox className="h-5 w-5 text-[#525252]" /><p className="text-xs text-[#525252]">Shelf is empty</p></div>
-                ) : (
-                  <>
-                    {dropState.outgoingText.map((item) => (
-                      <div key={item.id} className="glass-card flex items-center gap-3 p-2.5">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#38BDF8]/12 text-[#38BDF8]"><ClipboardCopy className="h-4 w-4" /></div>
-                        <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{item.preview || "Text drop"}</p><p className="font-mono text-[10px] text-[#525252]">{formatBytes(item.byteLength)} · to phone</p></div>
-                        <button type="button" onClick={() => void copyTextToClipboard(item.id, "Drop ID copied")} title="Copy ID" className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#1a1a1a] hover:text-[#38BDF8]"><Copy className="h-4 w-4" /></button>
-                      </div>
-                    ))}
-                    {dropState.outgoingFiles.map((item) => (
-                      <div key={item.id} className="glass-card flex items-center gap-3 p-2.5">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#38BDF8]/12 text-[#38BDF8]"><FileText className="h-4 w-4" /></div>
-                        <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{item.originalName ?? item.fileName ?? "Outgoing file"}</p><p className="font-mono text-[10px] text-[#525252]">{formatBytes(item.byteLength)} · to phone</p></div>
-                        <button type="button" onClick={() => void removeOutgoingFile(item.id)} title="Remove" className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#1a1a1a] hover:text-[#EF4444]"><Upload className="h-4 w-4" /></button>
-                      </div>
-                    ))}
-                  </>
-                )}
-              </div>
-            </GlassCard>
-          </div>
-
-          <GlassCard hover={false}>
-            <SectionTitle action={<StatusChip tone={autoRefresh ? "ready" : "offline"}>auto-receive {autoRefresh ? "on" : "off"}</StatusChip>}>Receive folder</SectionTitle>
-            <div className="flex items-center gap-3">
-              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#38BDF8]/12 text-[#38BDF8]"><FolderOpen className="h-4 w-4" /></div>
-              <p className="min-w-0 flex-1 truncate font-mono text-xs text-[#A3A3A3]">{dropState.receiveFolderPath}</p>
-              <ActionButton accent={ACCENT_DROP} variant="ghost" icon={RefreshCw} className="text-xs" onClick={() => void chooseReceiveFolder()}>Change</ActionButton>
-              <ActionButton accent={ACCENT_DROP} variant="ghost" icon={FolderOpen} className="text-xs" onClick={() => void onAction("drop.open_incoming_folder")}>Open</ActionButton>
-            </div>
-          </GlassCard>
-
-          {/* Advanced (text drop, reset, auto-refresh) */}
-          <details className="rounded-lg border border-[#1a1a1a] bg-[#080808]">
-            <summary className="cursor-pointer px-3 py-2 font-mono text-[11px] text-[#525252] hover:text-[#A3A3A3]">advanced · send text, reset folder, auto-refresh</summary>
-            <div className="space-y-3 border-t border-[#1a1a1a] p-3">
-              <textarea className="technical" placeholder="Write text to make available on your phone" value={dropText} onChange={(event) => setDropText(event.target.value)} />
-              <div className="button-row">
-                <button type="button" onClick={() => void createTextDrop()}>Send text</button>
-                <button type="button" onClick={() => void resetReceiveFolder()}>Reset receive folder</button>
-                <button type="button" onClick={() => void toggleAutoRefresh(!autoRefresh)}>Auto-refresh {autoRefresh ? "On" : "Off"}</button>
-                <button type="button" onClick={() => void onRefresh().then(() => showToast("Drop refreshed"))}>Refresh</button>
-              </div>
-              <p className="technical">Outgoing: {dropState.outgoingFolderPath}</p>
-              <p className="technical">Default: {dropState.defaultReceiveFolderPath}</p>
-              {dropState.customReceiveFolderPath && <p className="technical">Custom: {dropState.customReceiveFolderPath}</p>}
-            </div>
-          </details>
-        </div>
-      </div>
-    </div>
-  );
-
-}
-
-function previewForUi(value: string): string {
-  return value.replace(/\s+/g, " ").trim().slice(0, 120);
-}
-
-function formatBytes(value: number): string {
-  if (value < 1024) {
-    return `${value} B`;
-  }
-
-  if (value < 1024 * 1024) {
-    return `${(value / 1024).toFixed(1)} KB`;
-  }
-
-  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function formatDate(value: string): string {
-  return formatLocalDateTime(value);
-}
-
-function formatDuration(seconds: number): string {
-  if (seconds < 60) {
-    return `${Math.round(seconds)}s`;
-  }
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.round((seconds % 3600) / 60);
-  if (hours === 0) {
-    return `${minutes}m`;
-  }
-  return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
-}
-
 function weatherTemperatureUnit(units: WeatherUnits): string {
   return units === "imperial" ? "F" : "C";
 }
@@ -11937,130 +9849,7 @@ function weatherStatusTone(status: WeatherCacheStatus): "ok" | "warn" | "info" |
   return "info";
 }
 
-function shortcutLabel(value: string): string {
-  return value
-    .replaceAll("CommandOrControl", "Ctrl")
-    .replaceAll("+", " + ");
-}
 
-function CollapsibleListItem({
-  accentClass,
-  title,
-  meta,
-  children,
-  actions
-}: {
-  accentClass: string;
-  title: React.ReactNode;
-  meta?: React.ReactNode;
-  children: React.ReactNode;
-  actions?: React.ReactNode;
-}) {
-  return (
-    <details className={`library-item ${accentClass}`}>
-      <summary>
-        <span className="library-item__chevron" aria-hidden="true" />
-        <span className="library-item__summary">
-          <strong>{title}</strong>
-          {meta && <span>{meta}</span>}
-        </span>
-      </summary>
-      <div className="library-item__body">
-        <div className="library-item__details">{children}</div>
-        {actions && <div className="library-item__actions">{actions}</div>}
-      </div>
-    </details>
-  );
-}
-
-function PageHeader({
-  eyebrow,
-  title,
-  titleId,
-  actions
-}: {
-  eyebrow: string;
-  title: string;
-  titleId: string;
-  actions?: React.ReactNode;
-}) {
-  return (
-    <div className={`section-heading page-header ${actions ? "section-heading--row" : ""}`}>
-      <div>
-        <p>{eyebrow}</p>
-        <h2 id={titleId}>{title}</h2>
-      </div>
-      {actions && <div className="button-row page-header__actions">{actions}</div>}
-    </div>
-  );
-}
-
-function EmptyState({ children }: { children: React.ReactNode }) {
-  return <p className="empty-state">{children}</p>;
-}
-
-// Renders a long list capped to `step` rows with a "Show more" button, so views
-// like Audit / Clipboard / Finder never paint thousands of DOM nodes at once.
-function LimitedList<T>({
-  items,
-  step = 50,
-  children
-}: {
-  items: T[];
-  step?: number;
-  children: (item: T, index: number) => React.ReactNode;
-}) {
-  const [limit, setLimit] = useState(step);
-  const visible = limit >= items.length ? items : items.slice(0, limit);
-  return (
-    <>
-      {visible.map((item, index) => children(item, index))}
-      {items.length > limit && (
-        <button type="button" className="show-more-row" onClick={() => setLimit((value) => value + step)}>
-          Show {Math.min(step, items.length - limit)} more ({items.length - limit} remaining)
-        </button>
-      )}
-    </>
-  );
-}
-
-function PathText({ children }: { children: React.ReactNode }) {
-  return <span className="technical technical--truncate">{children}</span>;
-}
-
-function StatusBadge({
-  children,
-  tone = "neutral"
-}: {
-  children: React.ReactNode;
-  tone?: "neutral" | "success" | "error" | "warning" | "info";
-}) {
-  return <span className="status-badge" data-tone={tone}>{children}</span>;
-}
-
-function ToastStack({ toasts }: { toasts: ToastMessage[] }) {
-  if (toasts.length === 0) {
-    return null;
-  }
-
-  return (
-    <div className="toast-stack" aria-live="polite">
-      {toasts.map((toast) => (
-        <div className="toast" data-tone={toast.tone} key={toast.id}>{toast.message}</div>
-      ))}
-    </div>
-  );
-}
-
-function Spinner({ size = "md", label }: { size?: "sm" | "md" | "lg"; label?: string }) {
-  return (
-    <span
-      className={`spinner${size === "sm" ? " spinner--sm" : size === "lg" ? " spinner--lg" : ""}`}
-      role="status"
-      aria-label={label ?? "Loading"}
-    />
-  );
-}
 
 let lastSpeechCaptureMetrics: SpeechCaptureMetrics | null = null;
 
@@ -12315,7 +10104,7 @@ async function runSharedSpeechCapture(options: {
   };
 }
 
-function VoiceInput({
+export function VoiceInput({
   targetLabel,
   speechState,
   onTranscript,
@@ -15450,237 +13239,6 @@ function DeadlineList({
   );
 }
 
-function HeatmapView({
-  heatmapState,
-  onAction,
-  onRefresh
-}: {
-  heatmapState: HeatmapState;
-  onAction: (actionId: string, source?: string, params?: unknown) => Promise<{
-    ok: boolean;
-    error?: string;
-    heatmapState?: HeatmapState;
-    snapshot?: { detectionStatus?: string; error?: string };
-  }>;
-  onRefresh: () => Promise<void>;
-}) {
-  const [goalForm, setGoalForm] = useState({ id: "", name: "", targetHoursPerWeek: "5", keyword: "", active: true });
-  const [showGoalModal, setShowGoalModal] = useState(false);
-  const [toast, setToast] = useState<{ message: string; tone: "success" | "error" } | null>(null);
-
-  function showToast(message: string, tone: "success" | "error" = "success"): void {
-    setToast({ message, tone });
-    window.setTimeout(() => setToast(null), 3000);
-  }
-
-  async function heatmapAction(actionId: string, params: Record<string, unknown> = {}, successMessage = "Heatmap updated."): Promise<void> {
-    const result = await onAction(actionId, "module_ui", params);
-    showToast(result.ok ? successMessage : result.error ?? "Heatmap action failed.", result.ok ? "success" : "error");
-    await onRefresh();
-  }
-
-  function startAddGoal(): void {
-    setGoalForm({ id: "", name: "", targetHoursPerWeek: "5", keyword: "", active: true });
-    setShowGoalModal(true);
-  }
-
-  function editGoal(goal: HeatmapGoal): void {
-    setGoalForm({
-      id: goal.id,
-      name: goal.name,
-      targetHoursPerWeek: String(goal.targetHoursPerWeek),
-      keyword: goal.keyword,
-      active: goal.active
-    });
-    setShowGoalModal(true);
-  }
-
-  async function saveGoal(): Promise<void> {
-    await heatmapAction(goalForm.id ? "heatmap.update_goal" : "heatmap.create_goal", goalForm, "Heatmap goal saved.");
-    setGoalForm({ id: "", name: "", targetHoursPerWeek: "5", keyword: "", active: true });
-    setShowGoalModal(false);
-  }
-
-  async function deleteGoal(goal: HeatmapGoal): Promise<void> {
-    if (!window.confirm(`Delete Heatmap goal "${goal.name}"?`)) {
-      return;
-    }
-    await heatmapAction("heatmap.delete_goal", { goalId: goal.id, confirmedDangerous: true }, "Heatmap goal deleted.");
-  }
-
-  const ACCENT_HEAT = "#EF4444";
-  const hourSeconds = Array.from({ length: 24 }, (_, h) => heatmapState.summary.activeHours.find((a) => a.hour === h)?.seconds ?? 0);
-  const hourMax = Math.max(1, ...hourSeconds);
-  const topApps = heatmapState.summary.todayByApp.slice(0, 5);
-  const topMax = Math.max(1, ...topApps.map((a) => a.seconds));
-  const appColors = ["#3B82F6", "#22C55E", "#A855F7", "#EC4899", "#F59E0B"];
-  const heatPaused = /performance/i.test(heatmapState.trackingStatus);
-  const tracking = !heatPaused; // tracking is always-on unless Performance Mode pauses it
-
-  // Derived analytics from raw samples.
-  const weekdayLabels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-  const { weekGrid, weekMax, focusBlocks, contextSwitches } = useMemo(() => {
-    const grid: number[][] = Array.from({ length: 7 }, () => Array.from({ length: 24 }, () => 0));
-    const todayKey = getLocalTodayDateString();
-    const todayEvents = heatmapState.events
-      .filter((event) => event.timestamp.slice(0, 10) === todayKey)
-      .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
-    let blocks = 0;
-    let switches = 0;
-    let prevActive = false;
-    let prevApp = "";
-    for (const event of todayEvents) {
-      if (event.active && !prevActive) { blocks += 1; }
-      if (event.active && prevApp && event.appName !== prevApp) { switches += 1; }
-      prevActive = event.active;
-      if (event.active) { prevApp = event.appName; }
-    }
-    for (const event of heatmapState.events) {
-      if (!event.active) { continue; }
-      const date = new Date(event.timestamp);
-      const weekday = (date.getDay() + 6) % 7; // Mon=0 … Sun=6
-      const hour = date.getHours();
-      grid[weekday][hour] += event.durationSeconds || 0;
-    }
-    const max = Math.max(1, ...grid.flat());
-    return { weekGrid: grid, weekMax: max, focusBlocks: blocks, contextSwitches: switches };
-  }, [heatmapState.events]);
-  const heatCellColor = (seconds: number): string => {
-    if (seconds <= 0) { return "#141414"; }
-    const intensity = Math.min(1, seconds / weekMax);
-    return `rgba(239, 68, 68, ${0.18 + intensity * 0.82})`;
-  };
-
-  return (
-    <div className="space-y-6">
-      {toast && <ToastStack toasts={[{ id: toast.message, message: toast.message, tone: toast.tone }]} />}
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_HEAT}40`, background: `${ACCENT_HEAT}14`, color: ACCENT_HEAT }}><Activity className="h-5 w-5" /></div>
-          <div><h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Heatmap</h1><p className="text-sm text-[#A3A3A3]">App usage analytics · tracked locally</p></div>
-        </div>
-        {heatPaused ? <StatusChip tone="paused"><Cpu className="mr-1 h-2.5 w-2.5" />Paused by Performance</StatusChip> : <StatusChip tone={tracking ? "running" : "info"} pulse={tracking}>{tracking ? "Tracking active" : heatmapState.trackingStatus}</StatusChip>}
-      </div>
-
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        {[
-          { label: "Active today", value: formatDuration(heatmapState.summary.activeSecondsToday), c: "#EF4444" },
-          { label: "Focus blocks", value: String(focusBlocks), c: "#22C55E" },
-          { label: "Context switches", value: String(contextSwitches), c: "#F59E0B" },
-          { label: "Top app", value: heatmapState.summary.topAppToday || "—", c: "#3B82F6" }
-        ].map((s) => (
-          <GlassCard key={s.label} accent={s.c} className="flex flex-col gap-1">
-            <p className="text-[10px] uppercase tracking-wider text-[#525252]">{s.label}</p>
-            <p className="font-mono text-xl font-semibold text-[#F5F5F5]">{s.value}</p>
-          </GlassCard>
-        ))}
-      </div>
-
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
-        <div className="space-y-5 lg:col-span-8">
-          <GlassCard hover={false}>
-            <SectionTitle action={<Clock className="h-3.5 w-3.5 text-[#EF4444]" />}>Hourly activity · today</SectionTitle>
-            <div className="flex h-[150px] items-end gap-[3px] pt-2">
-              {hourSeconds.map((sec, h) => (
-                <div key={h} className="flex-1 rounded-t-[3px] transition-all hover:brightness-125" style={{ height: `${Math.max(3, (sec / hourMax) * 100)}%`, background: ACCENT_HEAT, opacity: 0.3 + (sec / hourMax) * 0.7 }} title={`${h}:00 · ${formatDuration(sec)}`} />
-              ))}
-            </div>
-            <div className="mt-2 flex justify-between font-mono text-[10px] text-[#525252]">{["0", "3", "6", "9", "12", "15", "18", "21", "24"].map((h) => <span key={h}>{h}</span>)}</div>
-          </GlassCard>
-
-          <GlassCard hover={false}>
-            <SectionTitle action={<span className="flex items-center gap-1.5 font-mono text-[10px] text-[#525252]">less<span className="flex gap-0.5">{[0.2, 0.45, 0.7, 1].map((t) => <span key={t} className="h-2.5 w-2.5 rounded-[2px]" style={{ background: `rgba(239,68,68,${t})` }} />)}</span>more</span>}>Weekly heatmap</SectionTitle>
-            <div className="space-y-[3px] overflow-x-auto pt-1">
-              <div className="flex gap-[3px] pl-8">
-                {["0", "", "", "3", "", "", "6", "", "", "9", "", "", "12", "", "", "15", "", "", "18", "", "", "21", "", ""].map((h, i) => (
-                  <span key={i} className="w-[14px] text-center font-mono text-[8px] text-[#525252]">{h}</span>
-                ))}
-              </div>
-              {weekGrid.map((row, day) => (
-                <div key={day} className="flex items-center gap-[3px]">
-                  <span className="w-7 font-mono text-[10px] text-[#525252]">{weekdayLabels[day]}</span>
-                  {row.map((seconds, hour) => (
-                    <span key={hour} className="h-[14px] w-[14px] rounded-[2px]" style={{ background: heatCellColor(seconds) }} title={`${weekdayLabels[day]} ${hour}:00 · ${formatDuration(seconds)}`} />
-                  ))}
-                </div>
-              ))}
-            </div>
-          </GlassCard>
-        </div>
-
-        <div className="space-y-5 lg:col-span-4">
-          <GlassCard hover={false}>
-            <SectionTitle>Top apps · today</SectionTitle>
-            {topApps.length === 0 ? <p className="text-xs text-[#525252]">No samples today.</p> : (
-              <div className="space-y-2.5">
-                {topApps.map((a, i) => (
-                  <div key={a.name}>
-                    <div className="mb-1 flex items-center justify-between text-xs"><span className="truncate text-[#F5F5F5]">{a.name}</span><span className="font-mono text-[#A3A3A3]">{formatDuration(a.seconds)}</span></div>
-                    <div className="h-1.5 overflow-hidden rounded-full bg-[#1f1f1f]"><div className="h-full rounded-full" style={{ width: `${(a.seconds / topMax) * 100}%`, background: appColors[i % appColors.length] }} /></div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </GlassCard>
-
-          <GlassCard accent="#22C55E" hover={false}>
-            <SectionTitle action={<button type="button" onClick={() => startAddGoal()} className="min-h-0 rounded-md border border-[#262626] bg-transparent px-2 py-0.5 text-[10px] text-[#22C55E] hover:border-[#22C55E]/40">+ New</button>}>Goals</SectionTitle>
-            {heatmapState.goalProgress.length === 0 ? <p className="text-xs text-[#525252]">No goals yet.</p> : (
-              <div className="space-y-2.5">
-                {heatmapState.goalProgress.map((goal) => (
-                  <div key={goal.id}>
-                    <div className="mb-1 flex items-center justify-between gap-2 text-xs">
-                      <span className="truncate text-[#F5F5F5]">{goal.name}</span>
-                      <StatusChip tone={goal.percent >= 100 ? "ok" : goal.percent >= 60 ? "info" : "warn"}>{goal.percent}%</StatusChip>
-                    </div>
-                    <div className="h-1.5 overflow-hidden rounded-full bg-[#1f1f1f]"><div className="h-full rounded-full" style={{ width: `${Math.min(100, goal.percent)}%`, background: "#22C55E" }} /></div>
-                    <div className="mt-1 flex items-center justify-between">
-                      <span className="font-mono text-[10px] text-[#525252]">{formatDuration(goal.progressSeconds)} of {formatDuration(goal.targetSeconds)}</span>
-                      <span className="flex gap-1">
-                        <button type="button" onClick={() => editGoal(goal)} className="min-h-0 rounded-md border border-[#262626] bg-transparent px-1.5 py-0.5 text-[10px] text-[#A3A3A3] hover:text-[#F5F5F5]">Edit</button>
-                        <button type="button" onClick={() => void deleteGoal(goal)} className="min-h-0 rounded-md border border-[#262626] bg-transparent px-1.5 py-0.5 text-[10px] text-[#A3A3A3] hover:text-[#EF4444]">Delete</button>
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </GlassCard>
-
-          <GlassCard hover={false}>
-            <SectionTitle action={<EyeOff className="h-3.5 w-3.5 text-[#A3A3A3]" />}>Privacy exclusions</SectionTitle>
-            {heatmapState.settings.privateApps.length === 0 ? <p className="text-xs text-[#525252]">No app exclusions set.</p> : (
-              <div className="flex flex-wrap gap-1.5">{heatmapState.settings.privateApps.map((e) => <span key={e} className="rounded-full border border-[#1f1f1f] px-2.5 py-1 text-[11px] text-[#A3A3A3]">{e}</span>)}</div>
-            )}
-            <p className="mt-2 text-[11px] text-[#525252]">Metadata only — no keystrokes, screenshots, or content.</p>
-          </GlassCard>
-        </div>
-      </div>
-
-      {showGoalModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label={goalForm.id ? "Edit goal" : "New goal"}>
-          <div className="w-full max-w-md rounded-2xl border p-5 shadow-2xl" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
-            <div className="mb-4 flex items-start justify-between gap-4">
-              <div><p className="text-xs uppercase tracking-[0.16em]" style={{ color: "#22C55E" }}>{goalForm.id ? "Edit" : "New"}</p><h2 className="text-xl font-semibold text-[#F5F5F5]">{goalForm.id ? "Edit goal" : "New goal"}</h2></div>
-              <button type="button" aria-label="Close" onClick={() => { setShowGoalModal(false); }} className="min-h-0 border-0 bg-transparent text-[#A3A3A3] hover:text-[#F5F5F5]">✕</button>
-            </div>
-            <div className="space-y-3">
-              <label className="block text-xs text-[#A3A3A3]">Name<input className="mt-1 w-full" value={goalForm.name} onChange={(event) => setGoalForm({ ...goalForm, name: event.target.value })} placeholder="Deep work" /></label>
-              <label className="block text-xs text-[#A3A3A3]">Target hours / week<input type="number" min="0.25" step="0.25" className="mt-1 w-full" value={goalForm.targetHoursPerWeek} onChange={(event) => setGoalForm({ ...goalForm, targetHoursPerWeek: event.target.value })} /></label>
-              <label className="block text-xs text-[#A3A3A3]">App / project keyword<input className="mt-1 w-full" value={goalForm.keyword} onChange={(event) => setGoalForm({ ...goalForm, keyword: event.target.value })} placeholder="Code, VS Code" /></label>
-              <label className="block text-xs text-[#A3A3A3]">Active<select className="mt-1 w-full" value={goalForm.active ? "true" : "false"} onChange={(event) => setGoalForm({ ...goalForm, active: event.target.value === "true" })}><option value="true">Active</option><option value="false">Inactive</option></select></label>
-            </div>
-            <div className="button-row mt-4">
-              <button type="button" className="button-primary" disabled={!goalForm.name.trim()} onClick={() => void saveGoal()}>{goalForm.id ? "Update goal" : "Create goal"}</button>
-              <button type="button" onClick={() => setShowGoalModal(false)}>Cancel</button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-
-}
 
 const emptyCaptureForm = {
   type: "note" as CaptureItemType,
@@ -17078,469 +14636,6 @@ function PlaceholderView({
           Record safe {title} click
         </button>
       </Panel>
-    </section>
-  );
-}
-
-function ExternalDevicesView({
-  externalState,
-  onStateChange,
-  onAction,
-  onRefresh
-}: {
-  externalState: ExternalDevicesState;
-  onStateChange: (state: ExternalDevicesState) => void;
-  onAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>;
-  onRefresh: () => Promise<void>;
-}) {
-  const ACCENT_DEV2 = "#FB923C";
-  const [keyInput, setKeyInput] = useState("");
-  const [showKey, setShowKey] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState("");
-  const [brightOverride, setBrightOverride] = useState<Record<string, number>>({});
-  const connected = externalState.providerStatus === "ready";
-  const group = externalState.groups[0];
-  const aliasOf = (d: ExternalDeviceCacheItem): string => d.userAlias || d.roomAlias || d.deviceName;
-
-  async function runDevice(actionId: string, params: Record<string, unknown>, message?: string): Promise<void> {
-    setBusy(true);
-    try {
-      const result = await onAction(actionId, "module_ui", params) as { ok?: boolean; error?: string; externalDevicesState?: ExternalDevicesState };
-      if (result.externalDevicesState) { onStateChange(result.externalDevicesState); }
-      else { onStateChange(await getBridge().getExternalDevicesState()); }
-      setStatus(result.ok === false ? result.error ?? "Action failed." : message ?? "");
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function toggleDevice(d: ExternalDeviceCacheItem): Promise<void> {
-    const on = d.lastKnownPowerState === "on";
-    await runDevice(on ? "external.govee.turn_off" : "external.govee.turn_on", { alias: aliasOf(d) }, on ? "Turned off." : "Turned on.");
-  }
-  async function setDeviceBrightness(d: ExternalDeviceCacheItem, value: number): Promise<void> {
-    setBrightOverride((current) => ({ ...current, [d.deviceId]: value }));
-    await runDevice("external.govee.set_brightness", { alias: aliasOf(d), brightness: value });
-  }
-  async function saveKey(): Promise<void> {
-    if (!keyInput.trim()) { return; }
-    setBusy(true);
-    try {
-      const result = await onAction("external.govee.update_settings", "module_ui", { goveeEnabled: true, apiKey: keyInput }) as { ok?: boolean; error?: string; externalDevicesState?: ExternalDevicesState };
-      if (result.externalDevicesState) { onStateChange(result.externalDevicesState); }
-      setStatus(result.ok === false ? result.error ?? "Save failed." : "Govee API key saved to Integration Keychain.");
-      setKeyInput("");
-      await onRefresh();
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const QUICK: Array<{ id: string; label: string; icon: LucideIcon; c: string; action: string; params: Record<string, unknown> }> = group ? [
-    { id: "on", label: "On", icon: Power, c: "#22C55E", action: "external.govee.turn_on", params: { alias: group.name } },
-    { id: "off", label: "Off", icon: Power, c: "#525252", action: "external.govee.turn_off", params: { alias: group.name } },
-    { id: "b40", label: "Bright 40", icon: Sun, c: "#F59E0B", action: "external.govee.set_brightness", params: { alias: group.name, brightness: 40 } },
-    { id: "blue", label: "Blue", icon: Snowflake, c: "#38BDF8", action: "external.govee.set_color", params: { alias: group.name, color: "blue" } },
-    { id: "warm", label: "Warm", icon: Flame, c: "#FB923C", action: "external.govee.set_color_temperature", params: { alias: group.name, kelvin: 2700 } }
-  ] : [];
-
-  return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_DEV2}40`, background: `${ACCENT_DEV2}14`, color: ACCENT_DEV2 }}><Lightbulb className="h-5 w-5" /></div>
-          <div><h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">External Devices</h1><p className="text-sm text-[#A3A3A3]">Govee &amp; smart-home control · voice-mapped</p></div>
-        </div>
-        <StatusChip tone={connected ? "ready" : "error"} pulse={connected}>{connected ? "Govee connected" : "Govee " + externalState.providerStatus.replace(/_/g, " ")}</StatusChip>
-      </div>
-
-      {!connected && (
-        <div className="flex items-center justify-between gap-3 rounded-xl border border-[#EF4444]/25 bg-[#EF4444]/[0.08] px-4 py-3">
-          <span className="text-sm text-[#EF4444]">{externalState.providerMessage || "Govee is not ready — check API key & network."}</span>
-          <ActionButton accent="#EF4444" variant="ghost" icon={RefreshCw} disabled={busy} onClick={() => void runDevice("external.govee.refresh_devices", {}, "Refreshed devices.")}>Refresh</ActionButton>
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
-        <div className="space-y-5 lg:col-span-8">
-          <SectionTitle action={
-            <div className="flex gap-2">
-              <ActionButton accent={ACCENT_DEV2} variant="ghost" icon={Wifi} className="text-xs" disabled={busy} onClick={() => void runDevice("external.govee.test_connection", {}, "Connection tested.")}>Test</ActionButton>
-              <ActionButton accent={ACCENT_DEV2} variant="ghost" icon={RefreshCw} className="text-xs" disabled={busy} onClick={() => void runDevice("external.govee.refresh_devices", {}, "Refreshed devices.")}>Refresh</ActionButton>
-            </div>
-          }>Devices</SectionTitle>
-
-          {externalState.devices.length === 0 ? (
-            <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-[#262626] py-12 text-center"><Lightbulb className="h-8 w-8 text-[#525252]" /><p className="mt-2 text-sm text-[#A3A3A3]">No devices cached</p><p className="text-xs text-[#525252]">Add your Govee API key on the right, then Refresh.</p></div>
-          ) : (
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              {externalState.devices.map((d) => {
-                const on = d.lastKnownPowerState === "on";
-                const glow = on ? ACCENT_DEV2 : "#1f1f1f";
-                const brightVal = brightOverride[d.deviceId] ?? d.lastKnownBrightness ?? 100;
-                return (
-                  <GlassCard key={d.deviceId} hover={false} className="flex flex-col items-center gap-3 py-5" style={{ boxShadow: on ? `inset 0 0 50px ${glow}22, 0 0 30px ${glow}22` : "none" }}>
-                    <div className="relative flex h-24 w-24 items-center justify-center">
-                      {on && <span className="absolute h-24 w-24 rounded-full blur-2xl" style={{ background: glow, opacity: 0.5 }} />}
-                      <div className="relative flex h-16 w-16 items-center justify-center rounded-full" style={{ background: on ? `${glow}33` : "#0d0d0d", border: `1px solid ${on ? glow : "#262626"}` }}>
-                        <Lightbulb className="h-7 w-7" style={{ color: on ? glow : "#525252", filter: on ? `drop-shadow(0 0 8px ${glow})` : "none" }} />
-                      </div>
-                    </div>
-                    <div className="text-center"><p className="text-sm font-medium text-[#F5F5F5]">{aliasOf(d)}</p><StatusChip tone={on ? "ready" : "offline"}>{on ? `on · ${brightVal}%` : "off"}</StatusChip></div>
-                    <div className="flex w-full items-center gap-2 px-2">
-                      <input type="range" min={0} max={100} step={1} value={brightVal} disabled={busy || !d.controllable} onChange={(event) => setBrightOverride((c) => ({ ...c, [d.deviceId]: Number(event.target.value) }))} onMouseUp={(event) => void setDeviceBrightness(d, Number((event.target as HTMLInputElement).value))} onTouchEnd={(event) => void setDeviceBrightness(d, Number((event.target as HTMLInputElement).value))} className="flex-1" />
-                      <button type="button" disabled={busy} onClick={() => void toggleDevice(d)} className={`flex h-8 w-8 items-center justify-center rounded-lg ${on ? "bg-[#22C55E]/15 text-[#22C55E]" : "bg-[#1a1a1a] text-[#525252]"}`}><Power className="h-4 w-4" /></button>
-                    </div>
-                  </GlassCard>
-                );
-              })}
-            </div>
-          )}
-
-          {group && (
-            <GlassCard accent={ACCENT_DEV2} hover={false}>
-              <SectionTitle action={<StatusChip tone="ready">group</StatusChip>}>{group.name}</SectionTitle>
-              {group.aliases.length > 0 && <p className="mb-3 text-xs text-[#A3A3A3]">aliases: <span className="font-mono text-[#FB923C]">{group.aliases.join(" · ")}</span></p>}
-              <div className="flex flex-wrap gap-2">
-                {QUICK.map((q) => {
-                  const QIcon = q.icon;
-                  return <button key={q.id} type="button" disabled={busy} onClick={() => void runDevice(q.action, q.params, `${group.name} → ${q.label}`)} className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium transition-all hover:brightness-125 disabled:opacity-40" style={{ borderColor: `${q.c}33`, color: q.c, background: `${q.c}10` }}><QIcon className="h-4 w-4" />{q.label}</button>;
-                })}
-              </div>
-            </GlassCard>
-          )}
-          {status && <p className="text-xs text-[#A3A3A3]">{status}</p>}
-        </div>
-
-        <div className="space-y-5 lg:col-span-4">
-          <GlassCard hover={false}>
-            <SectionTitle action={<KeyRound className="h-3.5 w-3.5 text-[#FB923C]" />}>Integration Keychain</SectionTitle>
-            {externalState.apiKeyStored ? (
-              <div className="flex items-center gap-2 rounded-lg border border-[#1f1f1f] bg-[#0a0a0a] px-3 py-2">
-                <span className="flex-1 font-mono text-sm text-[#A3A3A3]">{showKey ? "stored — re-enter to change" : "••••••••••••••••"}</span>
-                <button type="button" onClick={() => setShowKey((v) => !v)} className="text-[#525252] hover:text-[#FB923C]">{showKey ? <EyeOff className="h-4 w-4" /> : <Search className="h-4 w-4" />}</button>
-              </div>
-            ) : (
-              <p className="text-xs text-[#525252]">No Govee API key stored yet.</p>
-            )}
-            <div className="mt-2 flex gap-2">
-              <input type="password" value={keyInput} onChange={(event) => setKeyInput(event.target.value)} placeholder={externalState.apiKeyInKeychain ? "Enter replacement key" : "Paste Govee API key"} className="flex-1 rounded-lg border border-[#262626] bg-[#0a0a0a] px-2 py-1.5 text-xs text-[#F5F5F5]" />
-              <button type="button" disabled={busy || !keyInput.trim()} onClick={() => void saveKey()} className="rounded-md bg-[#FB923C] px-3 py-1.5 text-xs font-medium text-[#04121a] disabled:opacity-40">Save</button>
-            </div>
-            <p className="mt-2 text-xs text-[#525252]">Stored encrypted in local keychain ({externalState.keychainStorageMethod ?? "encrypted"}) · never synced.</p>
-          </GlassCard>
-
-          <GlassCard hover={false}>
-            <SectionTitle>Provider</SectionTitle>
-            <div className="glass-card flex items-center gap-3 p-3">
-              <div className="flex h-9 w-9 items-center justify-center rounded-lg" style={{ background: `${ACCENT_DEV2}16`, color: ACCENT_DEV2 }}><Lightbulb className="h-4 w-4" /></div>
-              <div className="flex-1"><p className="text-sm font-medium text-[#F5F5F5]">Govee</p><p className="font-mono text-[10px] text-[#525252]">{externalState.devices.length} devices · {externalState.groups.length} group{externalState.groups.length === 1 ? "" : "s"}</p></div>
-              <StatusChip tone={connected ? "ok" : "error"} />
-            </div>
-          </GlassCard>
-
-          <GlassCard accent="#06B6D4" hover={false}>
-            <SectionTitle>Voice mapping</SectionTitle>
-            <p className="text-sm text-[#A3A3A3]">Say <span className="font-mono text-[#06B6D4]">"turn on {group?.aliases?.[0] ?? "room lights"}"</span> or <span className="font-mono text-[#06B6D4]">"set brightness 40"</span> — DexNest maps to Govee actions.</p>
-          </GlassCard>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function BackupView({
-  backupState,
-  onAction,
-  onRefresh
-}: {
-  backupState: BackupState;
-  onAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>;
-  onRefresh: () => Promise<void>;
-}) {
-  const ACCENT_BACKUP = "#0EA5E9";
-  const [options, setOptions] = useState<BackupOptions>(backupState.defaultOptions);
-  const [restorePath, setRestorePath] = useState("");
-  const [preview, setPreview] = useState<BackupPreview | null>(null);
-  const [message, setMessage] = useState("");
-  const [busy, setBusy] = useState(false);
-  const latest = backupState.backups[0];
-
-  async function createBackup(): Promise<void> {
-    setBusy(true);
-    setMessage("Creating DexNest backup…");
-    const result = await onAction("backup.create", "module_ui", options) as { ok?: boolean; error?: string };
-    setMessage(result.ok ? "Backup created." : result.error ?? "Backup failed.");
-    setBusy(false);
-    await onRefresh();
-  }
-  async function chooseBackup(): Promise<void> {
-    const selected = await getBridge().selectBackupZip();
-    if (selected) { setRestorePath(selected); setPreview(null); void previewRestore(selected); }
-  }
-  async function deleteBackup(target: { path: string; fileName: string }): Promise<void> {
-    if (!window.confirm(`Delete backup "${target.fileName}" from disk? This cannot be undone.`)) { return; }
-    const result = await onAction("backup.delete_file", "module_ui", { path: target.path, fileName: target.fileName, confirmedDangerous: true }) as { ok?: boolean; error?: string };
-    if (result.ok) {
-      if (restorePath === target.path) { setRestorePath(""); setPreview(null); }
-      setMessage("Backup deleted.");
-      await onRefresh();
-    } else {
-      setMessage(result.error ?? "Could not delete backup.");
-    }
-  }
-  async function previewRestore(path = restorePath): Promise<void> {
-    if (!path) { return; }
-    const result = await onAction("backup.preview_restore", "module_ui", { path }) as { ok?: boolean; preview?: BackupPreview; error?: string };
-    if (result.ok && result.preview) { setPreview(result.preview); } else { setMessage(result.error ?? "Preview failed."); }
-  }
-  async function restoreBackup(): Promise<void> {
-    if (!restorePath) { setMessage("Choose a backup file first."); return; }
-    if (!window.confirm("Restore will replace current DexNest local data. A safety backup is made first. Continue?")) { return; }
-    const result = await onAction("backup.restore_confirmed", "module_ui", { path: restorePath, confirmedDangerous: true }) as { ok?: boolean; error?: string };
-    setMessage(result.ok ? "Restore completed." : result.error ?? "Restore failed.");
-    await onRefresh();
-  }
-
-  return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_BACKUP}40`, background: `${ACCENT_BACKUP}14`, color: ACCENT_BACKUP }}><HardDriveDownload className="h-5 w-5" /></div>
-          <div><h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Backup &amp; Restore</h1><p className="text-sm text-[#A3A3A3]">Encrypted local snapshots · {backupState.backups.length} backups</p></div>
-        </div>
-        <StatusChip tone={latest ? "ok" : "info"}>{latest ? "Last backup ✓" : "No backups yet"}</StatusChip>
-      </div>
-
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
-        <div className="space-y-5 lg:col-span-7">
-          <GlassCard accent={ACCENT_BACKUP} hover={false} className="flex items-center gap-4">
-            <ProgressRing value={100} size={64} color={ACCENT_BACKUP} label={busy ? "…" : "✓"} sub="ready" />
-            <div className="flex-1">
-              <SectionTitle>Create backup</SectionTitle>
-              <p className="mb-2.5 text-xs text-[#A3A3A3]">Snapshot Vault, Journal, Finance, Finder &amp; settings.</p>
-              <div className="flex flex-wrap items-center gap-2">
-                <ActionButton accent={ACCENT_BACKUP} variant="solid" icon={Plus} disabled={busy} onClick={() => void createBackup()}>Backup now</ActionButton>
-                <label className="flex items-center gap-2 text-xs text-[#A3A3A3]">
-                  <button type="button" role="switch" aria-checked={options.includeSecureVault} onClick={() => setOptions({ ...options, includeSecureVault: !options.includeSecureVault })} className="relative h-5 w-9 rounded-full transition-colors" style={{ background: options.includeSecureVault ? ACCENT_BACKUP : "#262626" }}><span className="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" style={{ left: options.includeSecureVault ? "1.125rem" : "0.125rem" }} /></button>
-                  Include Secure Vault
-                </label>
-              </div>
-            </div>
-          </GlassCard>
-
-          <GlassCard hover={false}>
-            <SectionTitle action={<button type="button" onClick={() => void onAction("backup.open_folder")} className="flex items-center gap-1 text-[10px] text-[#525252] hover:text-[#A3A3A3]"><FolderOpen className="h-3 w-3" />folder</button>}>Backups</SectionTitle>
-            {backupState.backups.length === 0 ? <p className="text-xs text-[#525252]">No backups yet. Create your first snapshot above.</p> : (
-              <div className="space-y-1.5">
-                {backupState.backups.map((b) => {
-                  const active = restorePath === b.path;
-                  return (
-                    <div key={b.path} className={`glass-card flex w-full items-center gap-3 p-3 transition-colors ${active ? "border-[#0EA5E9]/40 bg-[#0EA5E9]/[0.06]" : ""}`}>
-                      <button type="button" onClick={() => { setRestorePath(b.path); void previewRestore(b.path); }} className="flex min-w-0 flex-1 items-center gap-3 text-left">
-                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#0EA5E9]/12 text-[#0EA5E9]"><HardDriveDownload className="h-4 w-4" /></div>
-                        <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{formatLocalDateTime(b.createdAt)}</p><p className="font-mono text-[10px] text-[#525252]">{formatBytes(b.sizeBytes)} · {b.fileName}</p></div>
-                      </button>
-                      <StatusChip tone="ok">ready</StatusChip>
-                      <button type="button" title="Delete backup file from disk" onClick={() => void deleteBackup(b)} className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#EF4444]/10 hover:text-[#EF4444]"><Trash2 className="h-3.5 w-3.5" /></button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </GlassCard>
-        </div>
-
-        <div className="space-y-5 lg:col-span-5">
-          <GlassCard accent="#F59E0B" hover={false}>
-            <SectionTitle action={<button type="button" onClick={() => void chooseBackup()} className="flex items-center gap-1 text-[10px] text-[#525252] hover:text-[#A3A3A3]"><RotateCcw className="h-3 w-3" />choose file</button>}>Restore preview</SectionTitle>
-            {preview ? (
-              <div className="space-y-1.5 text-xs">
-                <div className="flex items-center justify-between"><span className="text-[#A3A3A3]">size</span><span className="font-mono text-[#F5F5F5]">{formatBytes(preview.sizeBytes)}</span></div>
-                <div className="flex items-center justify-between"><span className="text-[#A3A3A3]">entries</span><span className="font-mono text-[#F5F5F5]">{preview.entries.length}</span></div>
-                <div className="flex items-center justify-between"><span className="text-[#A3A3A3]">contents</span><span className="font-mono text-[#F5F5F5]">{preview.topLevel.slice(0, 4).join(", ") || "—"}</span></div>
-              </div>
-            ) : <p className="text-xs text-[#525252]">Select a backup to preview, or choose a file.</p>}
-            <div className="mt-3 flex items-center gap-2 rounded-lg border border-[#EF4444]/25 bg-[#EF4444]/[0.07] px-3 py-2 text-xs text-[#EF4444]"><AlertTriangle className="h-3.5 w-3.5 shrink-0" />Restoring overwrites current local data. This cannot be undone.</div>
-            <button type="button" disabled={!restorePath} onClick={() => void restoreBackup()} className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-[#F59E0B] px-4 py-2 text-sm font-semibold text-[#04121a] transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"><RotateCcw className="h-4 w-4" />Restore this backup</button>
-          </GlassCard>
-
-          <GlassCard hover={false}>
-            <SectionTitle action={<ShieldCheck className="h-3.5 w-3.5 text-[#22C55E]" />}>Backup options</SectionTitle>
-            <div className="space-y-1">
-              {([
-                ["includeSettings", "Settings"], ["includeFiles", "Files"], ["includeVaultDocuments", "Vault documents"],
-                ["includeSecureVault", "Secure Vault"], ["includeReceipts", "Receipts"], ["includeDropFiles", "Drop files"], ["includeIndex", "Search index"]
-              ] as Array<[keyof BackupOptions, string]>).map(([key, label]) => (
-                <label key={key} className="flex items-center justify-between py-1 text-xs text-[#F5F5F5]">
-                  {label}
-                  <button type="button" role="switch" aria-checked={options[key]} onClick={() => setOptions({ ...options, [key]: !options[key] })} className="relative h-5 w-9 rounded-full transition-colors" style={{ background: options[key] ? ACCENT_BACKUP : "#262626" }}><span className="absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all" style={{ left: options[key] ? "1.125rem" : "0.125rem" }} /></button>
-                </label>
-              ))}
-            </div>
-            <p className="mt-2 font-mono text-[10px] text-[#525252]">{backupState.backupFolderPath}</p>
-          </GlassCard>
-        </div>
-      </div>
-      {message && <p className="text-xs text-[#A3A3A3]">{message}</p>}
-    </div>
-  );
-}
-
-function AppHealthView({
-  healthState,
-  onRunChecks,
-  onAction
-}: {
-  healthState: AppHealthState | null;
-  onRunChecks: () => Promise<void>;
-  onAction: (actionId: string, source?: string, params?: unknown) => Promise<unknown>;
-}) {
-  const ACCENT_HEALTH = "#34D399";
-  const perf = useSyncExternalStore(subscribePerf, getPerfStats, getPerfStats);
-  const [running, setRunning] = useState(false);
-  const hasRun = Boolean(healthState?.checkedAt);
-  const summary = healthState?.summary ?? { pass: 0, warn: 0, fail: 0 };
-  const total = summary.pass + summary.warn + summary.fail;
-  const score = total > 0 ? Math.round((summary.pass / total) * 100) : 100;
-  const allChecks = (healthState?.groups ?? []).flatMap((g) => g.checks);
-  const problems = allChecks.filter((c) => c.status !== "pass");
-  const statusIcon = (s: HealthStatus) => s === "pass" ? <CheckCircle2 className="h-4 w-4 text-[#22C55E]" /> : s === "warn" ? <AlertTriangle className="h-4 w-4 text-[#F59E0B]" /> : <AlertTriangle className="h-4 w-4 text-[#EF4444]" />;
-  async function handleRunChecks(): Promise<void> {
-    setRunning(true);
-    try { await onRunChecks(); } finally { setRunning(false); }
-  }
-
-  return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_HEALTH}40`, background: `${ACCENT_HEALTH}14`, color: ACCENT_HEALTH }}><Stethoscope className="h-5 w-5" /></div>
-          <div><h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">App Health</h1><p className="text-sm text-[#A3A3A3]">System diagnostics &amp; worker status</p></div>
-        </div>
-        <div className="flex items-center gap-2">
-          {running && <InlineLoadingState accent={ACCENT_HEALTH} label="Running checks…" />}
-          {!running && hasRun && <StatusChip tone="info">checked {formatLocalDateTime(healthState!.checkedAt)}</StatusChip>}
-          {summary.warn + summary.fail > 0 && <StatusChip tone={summary.fail > 0 ? "error" : "warn"}>{summary.warn} warnings · {summary.fail} failures</StatusChip>}
-          <ActionButton accent={ACCENT_HEALTH} variant="ghost" icon={RotateCcw} disabled={running} onClick={() => void handleRunChecks()}>{running ? "Running…" : "Run checks"}</ActionButton>
-        </div>
-      </div>
-
-      {!hasRun && !running && (
-        <LoadingStatusCard accent={ACCENT_HEALTH} title="No health check has run yet" message="Checks are on-demand only — run them to see local-data safety, Git safety, registry, Secure Vault and integration status." />
-      )}
-
-      <GlassCard hover={false}>
-        <SectionTitle>Module load metrics</SectionTitle>
-        <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 font-mono text-xs sm:grid-cols-4">
-          <div className="flex items-center justify-between"><span className="text-[#525252]">last switch</span><span className="text-[#A3A3A3]">{perf.lastModule || "—"} {perf.lastModuleSwitchMs != null ? `· ${perf.lastModuleSwitchMs}ms` : ""}</span></div>
-          <div className="flex items-center justify-between"><span className="text-[#525252]">worst switch</span><span className="text-[#A3A3A3]">{perf.worstModuleSwitchMs != null ? `${perf.worstModuleSwitchMs}ms` : "—"}</span></div>
-          <div className="flex items-center justify-between"><span className="text-[#525252]">last data load</span><span className="text-[#A3A3A3]">{perf.lastDataLoadModule || "—"} {perf.lastDataLoadMs != null ? `· ${perf.lastDataLoadMs}ms` : ""}</span></div>
-          <div className="flex items-center justify-between"><span className="text-[#525252]">total ready</span><span className="text-[#A3A3A3]">{perf.lastTotalReadyMs != null ? `${perf.lastTotalReadyMs}ms` : "—"}</span></div>
-        </div>
-        {perf.slowModuleWarning && <p className="mt-2 flex items-center gap-1.5 text-[11px] text-[#F59E0B]"><AlertTriangle className="h-3 w-3" />{perf.slowModuleWarning}</p>}
-      </GlassCard>
-
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <GlassCard hover={false} accent={ACCENT_HEALTH} className="flex flex-col items-center justify-center py-5">
-          <ProgressRing value={score} size={84} color={ACCENT_HEALTH} label={`${score}`} sub="health" />
-          <p className="mt-2 text-xs text-[#A3A3A3]">Overall score</p>
-        </GlassCard>
-        <GlassCard hover={false}><p className="text-[10px] uppercase tracking-wider text-[#525252]">Passing</p><p className="mt-2 text-3xl font-semibold text-[#F5F5F5]">{summary.pass}</p></GlassCard>
-        <GlassCard hover={false}><p className="text-[10px] uppercase tracking-wider text-[#525252]">Warnings</p><p className="mt-2 text-3xl font-semibold" style={{ color: summary.warn ? "#F59E0B" : "#F5F5F5" }}>{summary.warn}</p></GlassCard>
-        <GlassCard hover={false}><p className="text-[10px] uppercase tracking-wider text-[#525252]">Failures</p><p className="mt-2 text-3xl font-semibold" style={{ color: summary.fail ? "#EF4444" : "#F5F5F5" }}>{summary.fail}</p></GlassCard>
-      </div>
-
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-        {(healthState?.groups ?? []).map((group) => (
-          <GlassCard key={group.id} hover={false}>
-            <SectionTitle>{group.title}</SectionTitle>
-            <div className="space-y-1.5">
-              {group.checks.map((check) => (
-                <div key={check.id} className="flex items-center gap-3 rounded-lg border border-[#161616] bg-[#0a0a0a] px-3 py-2">
-                  <div className="min-w-0 flex-1"><p className="text-sm text-[#F5F5F5]">{check.label}</p><p className="truncate font-mono text-[10px] text-[#525252]">{check.detail}</p></div>
-                  {statusIcon(check.status)}
-                </div>
-              ))}
-            </div>
-          </GlassCard>
-        ))}
-      </div>
-
-      {problems.length > 0 && (
-        <GlassCard accent="#EF4444" hover={false}>
-          <SectionTitle action={<StatusChip tone="error">action needed</StatusChip>}>Warnings &amp; failures</SectionTitle>
-          <div className="space-y-1.5">
-            {problems.map((check) => (
-              <div key={check.id} className="flex items-center gap-3 rounded-lg border border-[#161616] bg-[#0a0a0a] px-3 py-2">
-                {statusIcon(check.status)}
-                <span className="flex-1 text-sm text-[#F5F5F5]">{check.label}: {check.detail}</span>
-                {check.suggestion && <span className="hidden text-[11px] text-[#A3A3A3] sm:inline">{check.suggestion}</span>}
-                {check.actionId && (
-                  <button
-                    type="button"
-                    onClick={() => void onAction(check.actionId as string, "module_ui", {})}
-                    className="shrink-0 rounded-md border border-[#262626] px-2.5 py-1 text-[11px] font-medium text-[#A3A3A3] transition-colors hover:border-[#34D399]/40 hover:text-[#F5F5F5]"
-                  >
-                    {check.actionLabel ?? "Open"}
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        </GlassCard>
-      )}
-
-      {!healthState && <p className="text-xs text-[#525252]">Loading diagnostics… or click “Run checks”.</p>}
-    </div>
-  );
-}
-
-function AuditView({
-  events,
-  onRefresh,
-  refreshEvents
-}: {
-  events: EventEntry[];
-  onRefresh: (actionId: string) => Promise<void>;
-  refreshEvents: () => Promise<void>;
-}) {
-  async function refresh(): Promise<void> {
-    await onRefresh("audit.open_history");
-    await refreshEvents();
-  }
-
-  return (
-    <section className="view-stack" aria-labelledby="audit-title">
-      <PageHeader
-        eyebrow="SQLite event log"
-        title="Recent Events"
-        titleId="audit-title"
-        actions={(
-          <button type="button" onClick={() => void refresh()}>
-          Refresh
-          </button>
-        )}
-      />
-
-      <div className="event-list">
-        {events.length === 0 ? (
-          <p className="empty-state">No events yet. Run an action to populate Audit.</p>
-        ) : (
-          <LimitedList items={events} step={50}>
-            {(event) => (
-              <article className="event-row" key={event.id}>
-                <p className="technical">{formatLocalDateTime(event.timestamp)}</p>
-                <p>{event.module}</p>
-                <p className="technical">{event.actionId ?? "none"}</p>
-                <p>{event.status}</p>
-                <p>{event.source}</p>
-                <p>{event.summary}</p>
-              </article>
-            )}
-          </LimitedList>
-        )}
-      </div>
     </section>
   );
 }
@@ -19884,8 +16979,18 @@ function SettingsView({
 
           {settingsSection === "data" && (
             <div className="space-y-4">
-              <DemoDataSection onAction={onAction} onRefresh={onRefresh} />
               <DataManagementSection onAction={onAction} onRefresh={onRefresh} />
+              {/* Demo data lives at the bottom and stays collapsed by default, so it
+                  isn't the first thing seen and doesn't invite repeated re-seeding. */}
+              <details className="rounded-xl border border-[#1a1a1a] bg-[#080808]">
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-medium text-[#A3A3A3] hover:text-[#F5F5F5]">
+                  <span className="flex items-center gap-2"><FlaskConical className="h-4 w-4 text-[#A855F7]" />Demo data <span className="text-xs font-normal text-[#525252]">— optional sample content for trying DexNest</span></span>
+                  <ChevronDown className="h-4 w-4 shrink-0 text-[#525252]" />
+                </summary>
+                <div className="border-t border-[#1a1a1a] p-3">
+                  <DemoDataSection onAction={onAction} onRefresh={onRefresh} />
+                </div>
+              </details>
             </div>
           )}
           {settingsSection === "diagnostics" && (
@@ -20314,15 +17419,6 @@ function DataManagementSection({
         </div>
       )}
     </GlassCard>
-  );
-}
-
-function Panel({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <article className="panel">
-      <h3>{title}</h3>
-      <div className="panel__body">{children}</div>
-    </article>
   );
 }
 

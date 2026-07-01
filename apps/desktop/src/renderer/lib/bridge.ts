@@ -1,0 +1,760 @@
+import { formatLocalDateTime, getLocalTodayDateString } from "@dexnest/shared-types";
+import type {
+  CommandStats, DexNestBridge, DexNestProject, WakeEngineState,
+  PerformanceModeSettings, PerformanceModeState, ExternalDevicesState,
+  AmbientVoiceSettings, AmbientVoiceState, SpeechSettings, SpeechServiceState,
+  VoiceWorkflowSettings, AppLifecycleSettings, KeyboardShortcutSettings, StreamDeckSettings,
+  TimetableDay, TimetableTemplate, TimetableState, UtilitiesState, WeatherState,
+  NewsState, NewsCategory
+} from "../main";
+
+export const defaultWakeEngineState: WakeEngineState = {
+  status: "disabled",
+  installStatus: "unknown",
+  lastError: "",
+  detectionsCount: 0,
+  lastDetectedAt: null,
+  scriptPath: ""
+};
+
+export const emptyCommandStats: CommandStats = {
+  journalEntriesThisWeek: 0,
+  calendarUpcoming: 0,
+  todayNudges: 0,
+  urgentNudges: 0,
+  activeNudges: 0,
+  transactionsThisMonth: 0,
+  receiptsThisMonth: 0,
+  vaultDocuments: 0,
+  dropIncoming: 0,
+  dropOutgoing: 0,
+  capturesInbox: 0,
+  finderItems: 0,
+  devProjects: 0,
+  actionsRunToday: 0,
+  failedActionsToday: 0,
+  routinesRunToday: 0,
+  heatmapActiveSecondsToday: 0,
+  heatmapTopAppToday: "none",
+  heatmapStatus: "disabled",
+  updatedAt: new Date().toISOString()
+};
+
+export const defaultPerformanceModeSettings: PerformanceModeSettings = {
+  performanceModeEnabled: false,
+  pauseHeatmap: true,
+  pauseOcrJobs: true,
+  pauseSearchAutoIndex: true,
+  pauseBackups: true,
+  suppressNonUrgentNudges: true,
+  allowDropWhenOpen: true,
+  allowUserTriggeredAssistant: true,
+  autoEnableWhenFullscreen: false,
+  autoEnableWhenGameDetected: false,
+  showTrayStatus: true
+};
+
+export const defaultPerformanceModeState: PerformanceModeState = {
+  enabled: false,
+  reason: "unknown",
+  enabledAt: null,
+  pausedWorkers: [],
+  lastChangedAt: new Date().toISOString()
+};
+
+export const defaultExternalDevicesState: ExternalDevicesState = {
+  settingsPath: "./local-data/settings/external-devices-settings.json",
+  cachePath: "./local-data/settings/external-devices-cache.json",
+  groupsPath: "./local-data/settings/external-devices-groups.json",
+  settings: {
+    goveeEnabled: false,
+    goveeApiKeySecretId: null,
+    defaultDeviceAlias: null,
+    allowVoiceControl: true,
+    allowStreamDeckControl: true,
+    allowKeyboardShortcutControl: true,
+    requireConfirmationForPowerOff: false,
+    requireConfirmationForBrightnessBelow10: false,
+    requireConfirmationForScenes: false,
+    updatedAt: null
+  },
+  secureVaultSetup: false,
+  secureVaultUnlocked: false,
+  apiKeyStored: false,
+  providerStatus: "disabled",
+  providerMessage: "Govee provider is disabled.",
+  devices: [],
+  groups: []
+};
+
+export const defaultAmbientVoiceSettings: AmbientVoiceSettings = {
+  ambientVoiceEnabled: false,
+  wakeWordEnabled: false,
+  wakeWord: "Nest",
+  pushToTalkEnabled: true,
+  pushToTalkShortcut: "CommandOrControl+Alt+N",
+  pushToTalkShortcutStatus: "disabled",
+  pushToTalkShortcutLastError: null,
+  visibleListeningIndicator: true,
+  playStartSound: true,
+  playStopSound: true,
+  autoSendAfterSpeech: true,
+  stopListeningAfterCommand: true,
+  pauseInPerformanceMode: true,
+  allowDeviceControl: true,
+  allowClipboardActions: true,
+  allowDevActions: true,
+  allowSensitiveLookups: true,
+  speakResponses: true,
+  speakSensitiveAnswers: false,
+  speakErrors: true,
+  speakConfirmations: true,
+  speakWorkflowStatus: true,
+  wakeChimeEnabled: true,
+  wakeChimeVolume: 0.35,
+  voiceOverlayEnabled: true,
+  voiceOverlayScreen: "primary",
+  voiceOverlayPosition: "bottom_center",
+  voiceOverlaySize: "compact",
+  voiceOverlayAnimations: true,
+  voiceName: null,
+  voiceRate: 1,
+  voiceVolume: 1,
+  shortResponsesOnly: true,
+  muteInPerformanceMode: true,
+  maxListeningSeconds: 8,
+  commandCooldownMs: 1200,
+  updatedAt: new Date().toISOString()
+};
+
+export const defaultAmbientVoiceState: AmbientVoiceState = {
+  settingsPath: "./local-data/settings/ambient-voice-settings.json",
+  settings: defaultAmbientVoiceSettings,
+  currentState: "idle",
+  lastRecognizedCommand: "",
+  lastActionResult: "",
+  lastSource: "system",
+  lastChangedAt: new Date().toISOString(),
+  pausedByPerformanceMode: false,
+  wakeWordStatus: "disabled"
+};
+
+export const defaultSpeechSettings: SpeechSettings = {
+  speechEngine: "faster_whisper",
+  fallbackToWindows: true,
+  modelName: "base.en",
+  modelSizeOptions: ["tiny.en", "base.en", "small.en"],
+  device: "cpu",
+  computeType: "int8",
+  maxRecordingSeconds: 8,
+  silenceStopEnabled: true,
+  vadEnabled: true,
+  keepAudioForDebug: false,
+  pauseInPerformanceMode: true,
+  autoSendAfterSpeech: true,
+  showTranscriptBeforeSend: false,
+  useSharedSpeechEverywhere: true,
+  pythonPath: null,
+  updatedAt: null
+};
+
+export const defaultSpeechState: SpeechServiceState = {
+  settingsPath: "./local-data/settings/speech-settings.json",
+  modelRoot: "./local-data/models/speech",
+  debugAudioRoot: "./local-data/debug/audio",
+  settings: defaultSpeechSettings,
+  modelStatus: {
+    ok: false,
+    installed: false,
+    message: "Run Check local model for current status.",
+    engine: "faster_whisper",
+    model: "base.en",
+    modelPath: "./local-data/models/speech/base.en",
+    pythonPath: null,
+    deviceDetected: "unknown",
+    fasterWhisperAvailable: false,
+    lastLatencyMs: null,
+    lastError: null
+  },
+  windowsFallbackAvailable: false,
+  performancePaused: false
+};
+
+export const defaultVoiceWorkflowSettings: VoiceWorkflowSettings = {
+  continueCaptureMode: false,
+  autoSaveCaptureVoiceNotes: true,
+  confirmBeforeSavingCapture: false,
+  confirmSensitiveCapture: true,
+  autoCreateHighConfidenceCalendarVoiceEvents: false,
+  defaultMeetingDurationMinutes: 30,
+  defaultReminderTime: "09:00",
+  askBeforeRecurringEvents: true,
+  updatedAt: new Date().toISOString()
+};
+
+export const defaultAppLifecycleSettings: AppLifecycleSettings = {
+  closeBehavior: "ask",
+  showTrayCloseNotice: true,
+  minimizeToTrayOnStartup: false,
+  startDexNestWithWindows: false,
+  startMinimizedToTray: true,
+  loginItemStatus: "disabled",
+  loginItemLastError: null,
+  updatedAt: new Date().toISOString(),
+  trayAvailable: false,
+  trayModeActive: false
+};
+
+export const defaultKeyboardShortcutSettings: KeyboardShortcutSettings = {
+  enabled: true,
+  updatedAt: new Date().toISOString(),
+  mappings: []
+};
+
+export const defaultStreamDeckSettings: StreamDeckSettings = {
+  localOnly: true,
+  lanEnabled: false,
+  tokenEnabled: false,
+  token: "",
+  updatedAt: new Date().toISOString()
+};
+
+export const TIMETABLE_DAYS: TimetableDay[] = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+export const defaultTimetableTemplate: TimetableTemplate = {
+  id: "default-week",
+  name: "Default Week",
+  blocks: [],
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString()
+};
+export const defaultTimetableState: TimetableState = {
+  file: { activeTemplateId: "default-week", templates: [defaultTimetableTemplate], updatedAt: new Date().toISOString() },
+  activeTemplate: defaultTimetableTemplate,
+  templates: [defaultTimetableTemplate],
+  activeTemplateId: "default-week",
+  today: "monday",
+  selectedDay: "monday",
+  currentBlock: null,
+  nextBlock: null,
+  stats: { plannedHours: 0, done: 0, skipped: 0, remaining: 0 },
+  calendarConflicts: [],
+  timetablePath: "./local-data/settings/timetable.json"
+};
+
+export const defaultUtilitiesState: UtilitiesState = {
+  recentResults: [],
+  conversionPresets: [],
+  timers: [],
+  stopwatch: { status: "idle", elapsedMs: 0, startedAt: null, laps: [], history: [], updatedAt: new Date().toISOString() },
+  worldClocks: [],
+  settings: { defaultTimerMinutes: 25, speakTimerDone: false },
+  updatedAt: new Date().toISOString(),
+  activeTimer: null,
+  utilitiesPath: "./local-data/settings/utilities.json"
+};
+
+export const defaultWeatherState: WeatherState = {
+  settings: {
+    weatherEnabled: false,
+    locationName: "",
+    latitude: null,
+    longitude: null,
+    units: "metric",
+    showWeatherOnCommand: true,
+    refreshMode: "manual",
+    refreshOnCommandOpen: false,
+    provider: "open_meteo",
+    lastRefreshAt: null,
+    lastAutoRefreshAt: null
+  },
+  cache: {
+    provider: "open_meteo",
+    locationName: "",
+    latitude: null,
+    longitude: null,
+    units: "metric",
+    temperature: null,
+    feelsLike: null,
+    condition: "",
+    weatherCode: null,
+    high: null,
+    low: null,
+    precipitationChance: null,
+    windSpeed: null,
+    fetchedAt: null,
+    sourceStatus: "cached",
+    error: null
+  },
+  settingsPath: "./local-data/settings/weather-settings.json",
+  cachePath: "./local-data/settings/weather-cache.json",
+  status: "empty",
+  cacheTtlMinutes: null,
+  nextRefreshAt: null,
+  autoRefreshActive: false
+};
+
+export const NEWS_CATEGORIES: NewsCategory[] = ["Top", "Canada", "India", "World", "Tech", "AI", "Finance", "Sports", "Health", "Science", "Business"];
+
+export const defaultNewsState: NewsState = {
+  settings: {
+    newsEnabled: false,
+    selectedCategories: [],
+    refreshMode: "manual",
+    maxItemsPerCategory: 10,
+    readMorningBriefingCategories: [],
+    showNewsOnCommand: true,
+    provider: "rss",
+    sources: [],
+    lastRefreshAt: null,
+    lastAutoRefreshAt: null
+  },
+  cache: {
+    provider: "rss",
+    headlines: [],
+    fetchedAt: null,
+    sourceStatus: "cached",
+    error: null,
+    categoryCounts: {}
+  },
+  settingsPath: "./local-data/settings/news-settings.json",
+  cachePath: "./local-data/settings/news-cache.json",
+  status: "empty",
+  nextRefreshAt: null,
+  autoRefreshActive: false
+};
+
+export const fallbackBridge: DexNestBridge = {
+  getAppInfo: async () => ({
+    appName: "DexNest",
+    dataRoot: "./local-data",
+    dbPath: "./local-data/data/dexnest.sqlite",
+    actionEndpoint: "http://127.0.0.1:43217",
+    projectsConfigPath: "./local-data/settings/projects.json",
+    commandSettingsPath: "./local-data/settings/command-settings.json",
+    keyboardShortcutsPath: "./local-data/settings/keyboard-shortcuts.json",
+    keyboardShortcutSettings: defaultKeyboardShortcutSettings,
+    keyboardShortcutConflicts: [],
+    streamDeckSettingsPath: "./local-data/settings/stream-deck-settings.json",
+    streamDeckSettings: defaultStreamDeckSettings,
+    commandShortcutEnabled: true,
+    commandShortcut: "CommandOrControl+Space",
+    commandShortcutStatus: "disabled",
+    commandShortcutLastError: null,
+    trayStatus: "failed",
+    commandResultsPath: "./local-data/settings/project-command-results.json",
+    pinnedActionsPath: "./local-data/settings/pinned-actions.json",
+    clipboardHistoryPath: "./local-data/settings/clipboard-history.json",
+    clipboardSnippetsPath: "./local-data/settings/clipboard-snippets.json",
+    clipboardSettingsPath: "./local-data/settings/clipboard-settings.json",
+    clipboardMultiGroupsPath: "./local-data/settings/clipboard-multi-groups.json",
+    clipboardActiveMultiCopyPath: "./local-data/settings/clipboard-active-multicopy.json",
+    clipboardSlotsPath: "./local-data/settings/clipboard-slots.json",
+    dropShelfPath: "./local-data/settings/drop-shelf.json",
+    dropIncomingPath: "./local-data/settings/drop-incoming.json",
+    dropReceiveFolderPath: "./local-data/files/drop/incoming",
+    defaultReceiveFolderPath: "./local-data/files/drop/incoming",
+    customReceiveFolderPath: null,
+    dropOutgoingFolderPath: "./local-data/files/drop/outgoing",
+    dropTempFolderPath: "./local-data/files/drop/temp",
+    toolsInputFolderPath: "./local-data/files/tools/input",
+    toolsOutputFolderPath: "./local-data/files/tools/output",
+    toolsDefaultOutputFolderPath: "./local-data/files/tools/output",
+    toolsTempFolderPath: "./local-data/files/tools/temp",
+    toolsOutputsPath: "./local-data/settings/tools-outputs.json",
+    vaultDocumentsPath: "./local-data/files/vault/documents",
+    vaultImportsPath: "./local-data/files/vault/imports",
+    vaultVersionsPath: "./local-data/files/vault/versions",
+    vaultOcrOutputPath: "./local-data/files/vault/ocr",
+    vaultOcrJobsPath: "./local-data/settings/vault-ocr-jobs.json",
+    vaultOcrSettingsPath: "./local-data/settings/vault-ocr-settings.json",
+    vaultMetadataPath: "./local-data/settings/vault-documents.json",
+    searchIndexPath: "./local-data/index/search-index.json",
+    searchIndexFolderPath: "./local-data/index",
+    savedSearchesPath: "./local-data/settings/saved-searches.json",
+    journalEntriesPath: "./local-data/settings/journal-entries.json",
+    calendarEventsPath: "./local-data/settings/calendar-events.json",
+    timetablePath: "./local-data/settings/timetable.json",
+    utilitiesPath: "./local-data/settings/utilities.json",
+    weatherSettingsPath: "./local-data/settings/weather-settings.json",
+    weatherCachePath: "./local-data/settings/weather-cache.json",
+    newsSettingsPath: "./local-data/settings/news-settings.json",
+    newsCachePath: "./local-data/settings/news-cache.json",
+    nudgesPath: "./local-data/settings/nudges.json",
+    nudgeSettingsPath: "./local-data/settings/nudge-settings.json",
+    finderItemsPath: "./local-data/settings/finder-items.json",
+    financeTransactionsPath: "./local-data/settings/finance-transactions.json",
+    financeRecurringPath: "./local-data/settings/finance-recurring.json",
+    financeSettingsPath: "./local-data/settings/finance-settings.json",
+    receiptsPath: "./local-data/files/receipts",
+    captureItemsPath: "./local-data/settings/capture-items.json",
+    capturesPath: "./local-data/files/captures",
+    routinesPath: "./local-data/settings/routines.json",
+    heatmapEventsPath: "./local-data/settings/heatmap-events.json",
+    heatmapSettingsPath: "./local-data/settings/heatmap-settings.json",
+    heatmapGoalsPath: "./local-data/settings/heatmap-goals.json",
+    speechSettingsPath: "./local-data/settings/speech-settings.json",
+    voiceWorkflowSettingsPath: "./local-data/settings/voice-workflow-settings.json",
+    voiceWorkflowSettings: defaultVoiceWorkflowSettings,
+    speechModelsRoot: "./local-data/models/speech",
+    speechDebugAudioRoot: "./local-data/debug/audio",
+    speechState: defaultSpeechState,
+    ambientVoiceSettingsPath: "./local-data/settings/ambient-voice-settings.json",
+    ambientVoiceState: defaultAmbientVoiceState,
+    externalDevicesSettingsPath: "./local-data/settings/external-devices-settings.json",
+    externalDevicesCachePath: "./local-data/settings/external-devices-cache.json",
+    externalDevicesGroupsPath: "./local-data/settings/external-devices-groups.json",
+    externalDevicesState: defaultExternalDevicesState,
+    performanceModeSettingsPath: "./local-data/settings/performance-mode-settings.json",
+    appLifecycleSettingsPath: "./local-data/settings/app-lifecycle-settings.json",
+    appLifecycleSettings: defaultAppLifecycleSettings,
+    performanceModeState: defaultPerformanceModeState,
+    performanceModeSettings: defaultPerformanceModeSettings,
+    backupFolderPath: "./local-data/backups",
+    restoreStagingPath: "./local-data/backups/restore-staging",
+    packageMode: "development",
+    currentBranch: "unknown",
+    localTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    localDateTimePreview: formatLocalDateTime(new Date()),
+    localToday: getLocalTodayDateString(),
+    dropLocalUrl: "http://127.0.0.1:43217/drop",
+    dropPhoneUrl: "http://127.0.0.1:43217/drop",
+    lanIp: null,
+    projectCount: 0,
+    performanceMode: "Bridge unavailable"
+  }),
+  listActions: async () => [],
+  listProjects: async () => [],
+  listCommandResults: async () => ({}),
+  clearCommandResult: async () => undefined,
+  listPinnedActions: async () => ["command.open_home", "dev.open_dashboard", "deck.test_endpoint"],
+  savePinnedActions: async (actionIds) => actionIds,
+  getPins: async () => ({ pins: [], pinsPath: "" }),
+  getDemoState: async () => ({ seededAt: null, moduleCount: 0, defaultOptions: { replaceExisting: true, clipboard: true, vault: true, finance: true, journalCalendar: true, captureFinder: true, timetable: true, news: true, devDeck: true, secureVault: false } }),
+  togglePin: async () => ({ ok: true, pinned: false, pins: [] }),
+  setPin: async () => ({ ok: true, pinned: false, pins: [] }),
+  unpinById: async () => ({ ok: true, pins: [] }),
+  getClipboardState: async () => ({
+    history: [],
+    snippets: [],
+    settings: {
+      listenerEnabled: false,
+      listenerIntervalMs: 2000,
+      historyRetentionDays: 1,
+      lastHistoryCleanupAt: null,
+      multiCopyHotkeyEnabled: true,
+      multiCopyHotkey: "CommandOrControl+Shift+C",
+      multiCopyHotkeyStatus: "disabled",
+      multiCopyHotkeyLastError: null,
+      multiCopyHotkeyRegistered: false,
+      multiCopyAutoClearMinutes: 15,
+      multiCopyLastHotkeyAt: null,
+      multiCopyLastHotkeyStatus: "idle",
+      multiCopyLastHotkeyMessage: "",
+      lastCaptureAt: null,
+      lastCapturedPreview: "",
+      lastReadAt: null,
+      lastReadPreview: "",
+      lastReadError: null,
+      combinedSeparator: "\n\n",
+      activeMultiCopySession: null,
+      appExclusionRules: [],
+      secretProtectionEnabled: true,
+      slotSequenceEnabled: false,
+      slotSequenceStatus: "disabled",
+      slotSequenceLastError: null,
+      slotSequenceWindowMs: 700
+    },
+    multiGroups: [],
+    slots: Array.from({ length: 5 }, (_item, index) => ({ slot: index + 1, text: "", preview: "", byteLength: 0, updatedAt: "" })),
+    snippetsPath: "./local-data/settings/clipboard-snippets.json",
+    historyPath: "./local-data/settings/clipboard-history.json",
+    settingsPath: "./local-data/settings/clipboard-settings.json",
+    multiGroupsPath: "./local-data/settings/clipboard-multi-groups.json",
+    activeMultiCopyPath: "./local-data/settings/clipboard-active-multicopy.json",
+    slotsPath: "./local-data/settings/clipboard-slots.json"
+  }),
+  getDropState: async () => ({
+    shelf: [],
+    outgoing: [],
+    outgoingText: [],
+    outgoingFiles: [],
+    incoming: [],
+    shelfPath: "./local-data/settings/drop-shelf.json",
+    incomingPath: "./local-data/settings/drop-incoming.json",
+    receiveFolderPath: "./local-data/files/drop/incoming",
+    defaultReceiveFolderPath: "./local-data/files/drop/incoming",
+    customReceiveFolderPath: null,
+    outgoingFolderPath: "./local-data/files/drop/outgoing",
+    tempFolderPath: "./local-data/files/drop/temp",
+    localUrl: "http://127.0.0.1:43217/drop",
+    phoneUrl: "http://127.0.0.1:43217/drop",
+    lanIp: null
+  }),
+  getToolsState: async () => ({
+    selectedFiles: [],
+    outputs: [],
+    inputFolderPath: "./local-data/files/tools/input",
+    outputFolderPath: "./local-data/files/tools/output",
+    defaultOutputFolderPath: "./local-data/files/tools/output",
+    customOutputFolderPath: null,
+    ffmpegPath: null,
+    detectedFfmpegPath: null,
+    libreOfficePath: null,
+    detectedLibreOfficePath: null,
+    tesseractPath: null,
+    detectedTesseractPath: null,
+    pythonPath: null,
+    detectedPythonPath: null,
+    ocrEngine: "paddleocr",
+    ocrDevice: "gpu",
+    ocrLanguage: "eng",
+    tempFolderPath: "./local-data/files/tools/temp",
+    outputsPath: "./local-data/settings/tools-outputs.json"
+  }),
+  getVaultState: async () => ({
+    documents: [],
+    categories: ["Immigration", "University", "Jobs", "Startup", "Tax", "Finance", "Medical", "Research", "Receipts", "Personal", "Other"],
+    documentsPath: "./local-data/files/vault/documents",
+    importsPath: "./local-data/files/vault/imports",
+    versionsPath: "./local-data/files/vault/versions",
+    tempPath: "./local-data/files/vault/temp",
+    metadataPath: "./local-data/settings/vault-documents.json",
+    documentCount: 0,
+    totalSizeBytes: 0,
+    ocrJobs: [],
+    ocrSettings: { autoOcrOnImport: true, engine: "paddleocr", device: "gpu", pythonPath: null },
+    ocrOutputPath: "./local-data/files/vault/ocr",
+    ocrJobsPath: "./local-data/settings/vault-ocr-jobs.json",
+    ocrQueueRunning: false,
+    ocrQueuePaused: false,
+    paddleGpuStatus: { ok: false, message: "Bridge unavailable.", pythonPath: null, paddleVersion: null, deviceCount: 0 },
+    secure: {
+      isSetup: false,
+      isUnlocked: false,
+      filePath: "./local-data/files/vault/secure/secure-vault.json",
+      autoLockMinutes: 5,
+      itemTypes: ["password", "api_key", "token", "recovery_code", "private_note", "server", "other"],
+      items: []
+    }
+  }),
+  getSearchState: async () => ({
+    index: [],
+    savedSearches: [],
+    indexPath: "./local-data/index/search-index.json",
+    indexFolderPath: "./local-data/index",
+    indexStatusPath: "./local-data/settings/search-index-status.json",
+    indexStatus: { staleDueToPerformanceMode: false, staleReason: null, staleSince: null, lastSkippedAutoIndexAt: null },
+    savedSearchesPath: "./local-data/settings/saved-searches.json",
+    resultCount: 0,
+    ocrTextFileCount: 0,
+    sources: [],
+    fileTypes: []
+  }),
+  getJournalState: async () => ({
+    entries: [],
+    todayEntry: null,
+    entriesPath: "./local-data/settings/journal-entries.json",
+    today: getLocalTodayDateString()
+  }),
+  getCalendarState: async () => ({
+    events: [],
+    today: getLocalTodayDateString(),
+    todayEvents: [],
+    upcomingEvents: [],
+    eventsPath: "./local-data/settings/calendar-events.json",
+    nudges: [],
+    todayNudges: [],
+    upcomingNudges: [],
+    urgentNudges: [],
+    nudgesPath: "./local-data/settings/nudges.json",
+    nudgeSettingsPath: "./local-data/settings/nudge-settings.json",
+    nudgeSettings: {
+      enabled: true,
+      vaultExpiryReminderDays: [90, 30, 7],
+      returnReminderDays: [7, 3, 1],
+      dailyJournalReminderEnabled: true,
+      backupReminderAfterDays: 7
+    }
+  }),
+  getTimetableState: async () => defaultTimetableState,
+  getUtilitiesState: async () => defaultUtilitiesState,
+  getWeatherState: async () => defaultWeatherState,
+  getNewsState: async () => defaultNewsState,
+  getFinderState: async () => ({
+    items: [],
+    itemsPath: "./local-data/settings/finder-items.json",
+    statusCounts: { at_home: 0, lent_out: 0, missing: 0, archived: 0 }
+  }),
+  getFinanceState: async () => ({
+    transactions: [],
+    recurring: [],
+    settings: { defaultCurrency: "CAD", receiptsPath: "./local-data/files/receipts" },
+    profiles: [],
+    activeProfileId: "",
+    profilesPath: "./local-data/settings/finance-profiles.json",
+    transactionsPath: "./local-data/settings/finance-transactions.json",
+    recurringPath: "./local-data/settings/finance-recurring.json",
+    settingsPath: "./local-data/settings/finance-settings.json",
+    receiptsPath: "./local-data/files/receipts",
+    summary: {
+      currentMonth: getLocalTodayDateString().slice(0, 7),
+      previousMonth: "",
+      currentMonthTotal: 0,
+      previousMonthTotal: 0,
+      categoryTotals: {},
+      paymentTypeTotals: {},
+      cashTotal: 0,
+      cardTotal: 0,
+      transactionCount: 0
+    },
+    deadlines: { returns7: [], returns30: [], warranties90: [], expiredReturns: [] }
+  }),
+  getCaptureState: async () => ({
+    items: [],
+    inbox: [],
+    routed: [],
+    archived: [],
+    itemsPath: "./local-data/settings/capture-items.json",
+    capturesPath: "./local-data/files/captures"
+  }),
+  getHeatmapState: async () => ({
+    settings: {
+      enabled: false,
+      paused: true,
+      sampleIntervalSeconds: 60,
+      aggregationIntervalHours: 3,
+      pauseDuringFullscreen: true,
+      privateApps: [],
+      privateTitleKeywords: [],
+      lastAggregatedAt: null
+    },
+    events: [],
+    goals: [],
+    goalProgress: [],
+    summary: {
+      todayByApp: [],
+      weekByApp: [],
+      activeHours: [],
+      projectUsage: [],
+      activeSecondsToday: 0,
+      idleSecondsToday: 0,
+      topAppToday: "none"
+    },
+    eventsPath: "./local-data/settings/heatmap-events.json",
+    settingsPath: "./local-data/settings/heatmap-settings.json",
+    goalsPath: "./local-data/settings/heatmap-goals.json",
+    trackingStatus: "disabled",
+    detectionNote: "Bridge unavailable."
+  }),
+  getRoutinesState: async () => ({ routines: [], routinesPath: "./local-data/settings/routines.json" }),
+  getBackupState: async () => ({
+    backupFolderPath: "./local-data/backups",
+    restoreStagingPath: "./local-data/backups/restore-staging",
+    defaultOptions: {
+      includeSettings: true,
+      includeFiles: true,
+      includeVaultDocuments: true,
+      includeSecureVault: true,
+      includeReceipts: true,
+      includeDropFiles: true,
+      includeIndex: false
+    },
+    backups: []
+  }),
+  getExternalDevicesState: async () => defaultExternalDevicesState,
+  getDataManagementState: async () => ({
+    categories: [],
+    lastDeletion: { lastDeletionAt: null, status: null, categoriesCleared: [], backupCreated: false, backupFileName: null }
+  }),
+  getAppHealth: async () => ({
+    overallStatus: "warn",
+    checkedAt: new Date().toISOString(),
+    summary: { pass: 0, warn: 1, fail: 0 },
+    groups: [
+      {
+        id: "bridge",
+        title: "Bridge",
+        checks: [
+          {
+            id: "bridge-unavailable",
+            label: "DexNest desktop bridge",
+            status: "warn",
+            detail: "DexNest preload bridge is unavailable.",
+            suggestion: "Run DexNest through the Electron desktop app."
+          }
+        ]
+      }
+    ]
+  }),
+  getCommandStats: async () => emptyCommandStats,
+  getPerformanceModeState: async () => defaultPerformanceModeState,
+  getPerformanceModeSettings: async () => defaultPerformanceModeSettings,
+  savePerformanceModeSettings: async (payload) => ({
+    settings: { ...defaultPerformanceModeSettings, ...payload },
+    state: { ...defaultPerformanceModeState, enabled: Boolean(payload.performanceModeEnabled), pausedWorkers: Boolean(payload.performanceModeEnabled) ? ["bridge_unavailable"] : [] }
+  }),
+  setPerformanceModeEnabled: async (payload) => ({
+    settings: { ...defaultPerformanceModeSettings, performanceModeEnabled: payload.enabled },
+    state: { ...defaultPerformanceModeState, enabled: payload.enabled, reason: payload.reason ?? "manual", pausedWorkers: payload.enabled ? ["bridge_unavailable"] : [] }
+  }),
+  selectBackupZip: async () => null,
+  selectToolsFiles: async () => [],
+  selectVaultFiles: async () => [],
+  selectFinanceReceipt: async () => [],
+  selectCaptureFile: async () => [],
+  getPdfInfo: async () => [],
+  chooseToolsOutputFolder: async () => ({ ok: false, error: "Bridge unavailable" }),
+  resetToolsOutputFolder: async () => ({ ok: true, path: "./local-data/files/tools/output" }),
+  saveToolsSettings: async () => fallbackBridge.getToolsState(),
+  openToolsFile: async () => ({ ok: false, error: "Bridge unavailable" }),
+  getAssistantState: async () => ({ settings: { localIntentEngineEnabled: false, ollamaUrl: "http://127.0.0.1:11434", ollamaModel: "qwen2.5:3b", fallbackToRules: true } }),
+  saveAssistantSettings: async () => ({ localIntentEngineEnabled: false, ollamaUrl: "http://127.0.0.1:11434", ollamaModel: "qwen2.5:3b", fallbackToRules: true }),
+  testOllama: async () => ({ ok: false, error: "Bridge unavailable" }),
+  assistantLlmIntent: async () => ({ ok: false, error: "Bridge unavailable" }),
+  getAmbientVoiceState: async () => defaultAmbientVoiceState,
+  saveAmbientVoiceSettings: async () => ({ settings: defaultAmbientVoiceSettings, state: defaultAmbientVoiceState }),
+  updateAmbientVoiceState: async () => defaultAmbientVoiceState,
+  startAmbientListening: async () => defaultAmbientVoiceState,
+  getSpeechState: async () => defaultSpeechState,
+  getVoiceWorkflowSettings: async () => defaultVoiceWorkflowSettings,
+  saveVoiceWorkflowSettings: async (payload) => ({ ...defaultVoiceWorkflowSettings, ...payload, updatedAt: new Date().toISOString() }),
+  saveSpeechSettings: async (payload) => ({ settings: { ...defaultSpeechSettings, ...payload }, speechState: defaultSpeechState }),
+  checkSpeechModel: async () => ({ ok: false, status: defaultSpeechState.modelStatus, speechState: defaultSpeechState }),
+  installSpeechModel: async () => ({ ok: false, status: defaultSpeechState.modelStatus, speechState: defaultSpeechState }),
+  warmSpeechEngine: async () => ({ ok: false, error: "Bridge unavailable", speechState: defaultSpeechState }),
+  getWakeEngineState: async () => defaultWakeEngineState,
+  checkWakeEngine: async () => ({ ok: false, report: {}, error: "Bridge unavailable", state: defaultWakeEngineState }),
+  startWakeEngine: async () => ({ ok: false, status: "engine_missing", error: "Bridge unavailable", state: defaultWakeEngineState }),
+  stopWakeEngine: async () => ({ ok: true, state: defaultWakeEngineState }),
+  voiceOverlay: () => undefined,
+  onWakeDetected: () => () => undefined,
+  onRunAssistantCommand: () => () => undefined,
+  openSpeechModelFolder: async () => ({ ok: false, error: "Bridge unavailable" }),
+  transcribeSpeech: async () => ({ transcript: "", engine: "faster_whisper", model: "base.en", language: "en", durationMs: 0, status: "failed", error: "Bridge unavailable", speechState: defaultSpeechState }),
+  getAssistantSecurityState: async () => ({
+    settings: { trustedSessionEnabled: true, autoRevealWhileUnlocked: true, sessionTimeoutMinutes: 10, speakSensitiveAnswers: false, lockOnAppClose: true },
+    sessionUnlocked: false,
+    sessionExpiresAt: null,
+    secureVaultUnlocked: false,
+    secureVaultSetup: false
+  }),
+  saveAssistantSecuritySettings: async () => fallbackBridge.getAssistantSecurityState(),
+  unlockTrustedSession: async () => ({ ok: false, error: "Bridge unavailable", state: await fallbackBridge.getAssistantSecurityState() }),
+  lockTrustedSession: async () => fallbackBridge.getAssistantSecurityState(),
+  copyDropIncomingText: async () => ({ ok: true }),
+  chooseDropReceiveFolder: async () => ({ ok: false, error: "Bridge unavailable" }),
+  resetDropReceiveFolder: async () => ({ ok: true, path: "./local-data/files/drop/incoming" }),
+  logDropAutoRefresh: async () => undefined,
+  startWindowsDictation: async () => ({ ok: false, error: "Windows dictation bridge unavailable" }),
+  saveProject: async (payload) => payload as DexNestProject,
+  deleteProject: async () => undefined,
+  listEvents: async () => [],
+  runAction: async () => ({ ok: true }),
+  logActionResult: async () => undefined,
+  logUiEvent: async () => undefined,
+  rendererReady: () => undefined
+};
+
+export function getBridge(): DexNestBridge {
+  return window.dexNest ?? fallbackBridge;
+}

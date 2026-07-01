@@ -21,7 +21,13 @@ import { formatLocalDateTime, getLocalTodayDateString, parseLocalDateInput, reso
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(currentDir, "../../../..");
-const localDataRoot = resolve(repoRoot, "local-data");
+// External data folder override. When DEXNEST_DATA_ROOT is set (e.g. for the
+// packaged/portable app), DexNest reads and writes all local data there — so a
+// packaged build can point at D:\DeskNest\local-data instead of a folder next to
+// the exe. When unset, behavior is unchanged: local-data sits beside the repo.
+const localDataRoot = process.env.DEXNEST_DATA_ROOT && process.env.DEXNEST_DATA_ROOT.trim()
+  ? resolve(process.env.DEXNEST_DATA_ROOT.trim())
+  : resolve(repoRoot, "local-data");
 const settingsRoot = join(localDataRoot, "settings");
 const dropFilesRoot = join(localDataRoot, "files", "drop");
 const dropIncomingRoot = join(dropFilesRoot, "incoming");
