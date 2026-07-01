@@ -21,13 +21,18 @@ import { formatLocalDateTime, getLocalTodayDateString, parseLocalDateInput, reso
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(currentDir, "../../../..");
-// External data folder override. When DEXNEST_DATA_ROOT is set (e.g. for the
-// packaged/portable app), DexNest reads and writes all local data there — so a
-// packaged build can point at D:\DeskNest\local-data instead of a folder next to
-// the exe. When unset, behavior is unchanged: local-data sits beside the repo.
+// Data-root resolution (per AGENTS.md: all user data lives under local-data,
+// default D:\DeskNest\local-data, never AppData). Priority:
+//   1. DEXNEST_DATA_ROOT env var, if set and non-empty (explicit override).
+//   2. The canonical D:\DeskNest\local-data, if it already exists — so the
+//      packaged/portable exe reuses the same data without needing the env var.
+//   3. Fallback to <app root>/local-data (dev = repo root; packaged = beside exe).
+const CANONICAL_DATA_ROOT = resolve("D:/DeskNest/local-data");
 const localDataRoot = process.env.DEXNEST_DATA_ROOT && process.env.DEXNEST_DATA_ROOT.trim()
   ? resolve(process.env.DEXNEST_DATA_ROOT.trim())
-  : resolve(repoRoot, "local-data");
+  : existsSync(CANONICAL_DATA_ROOT)
+    ? CANONICAL_DATA_ROOT
+    : resolve(repoRoot, "local-data");
 const settingsRoot = join(localDataRoot, "settings");
 const dropFilesRoot = join(localDataRoot, "files", "drop");
 const dropIncomingRoot = join(dropFilesRoot, "incoming");
