@@ -7,6 +7,11 @@ const currentDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(currentDir, "../..");
 
 export default defineConfig({
+  // Relative asset base so the packaged renderer, loaded via file:// with
+  // BrowserWindow.loadFile(dist/renderer/index.html), references ./assets/*.
+  // With the default "/" base, file:// resolves /assets/* to the drive root
+  // (/D:/assets/*) and the app white-screens. "./" works for the dev server too.
+  base: "./",
   plugins: [react()],
   resolve: {
     alias: {

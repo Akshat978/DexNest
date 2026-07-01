@@ -5757,12 +5757,12 @@ function DexNestApp() {
         <div className={`flex items-center border-b border-[#161616] py-4 ${sidebarCollapsed ? "justify-center px-2.5" : "gap-2.5 px-4"}`}>
           <button
             type="button"
-            className="sidebar-logo-toggle group relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg outline-none transition-transform duration-150 hover:scale-[1.06] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent-command)]"
+            className="sidebar-logo-toggle group relative flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden outline-none transition-transform duration-150 hover:scale-[1.04] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent-command)]"
             onClick={() => { if (sidebarCollapsed) { setSidebarCollapsed(false); } }}
             title={sidebarCollapsed ? "Expand sidebar" : "DexNest"}
             aria-label={sidebarCollapsed ? "Expand sidebar" : "DexNest"}
           >
-            <img src={logoUrl} alt="DexNest" className="h-full w-full scale-[1.4] object-cover" />
+            <img src={logoUrl} alt="DexNest" className="sidebar-logo-image" />
             {sidebarCollapsed && (
               <span className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-lg bg-black/65 text-[var(--accent-command)] opacity-0 backdrop-blur-sm transition-opacity duration-150 group-hover:opacity-100">
                 <PanelLeft className="h-[18px] w-[18px]" />

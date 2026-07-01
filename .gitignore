@@ -17,3 +17,11 @@ sidecars/**/__pycache__/
 *.sqlite
 *.db-wal
 *.db-shm
+
+# DexNest packaging icon assets (electron-builder buildResources) — keep tracked
+# so the app/installer/tray icons survive clean checkouts. Only this specific
+# build/ folder is un-ignored; all other build/ output stays ignored.
+!apps/desktop/build/
+!apps/desktop/build/icon.ico
+!apps/desktop/build/tray.ico
+!apps/desktop/build/icon.png

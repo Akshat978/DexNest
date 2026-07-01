@@ -8,6 +8,9 @@
     "dev": "corepack pnpm --filter @dexnest/desktop dev",
     "build": "corepack pnpm -r build",
     "package:win": "corepack pnpm --filter @dexnest/desktop package:win",
+    "package:win:folder": "corepack pnpm --filter @dexnest/desktop package:win:folder",
+    "package:win:installer": "corepack pnpm --filter @dexnest/desktop package:win:installer",
+    "package:win:all": "corepack pnpm --filter @dexnest/desktop package:win:all",
     "dist:win": "corepack pnpm --filter @dexnest/desktop dist:win",
     "rebuild:native": "corepack pnpm --filter @dexnest/desktop rebuild:native",
     "typecheck": "corepack pnpm -r typecheck"

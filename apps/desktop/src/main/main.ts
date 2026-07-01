@@ -33,6 +33,14 @@ const localDataRoot = process.env.DEXNEST_DATA_ROOT && process.env.DEXNEST_DATA_
   : existsSync(CANONICAL_DATA_ROOT)
     ? CANONICAL_DATA_ROOT
     : resolve(repoRoot, "local-data");
+
+// Resolve a packaged app asset (icons). In dev these live in apps/desktop/build;
+// in the packaged app electron-builder copies them to resources/ (extraResources).
+function appAssetPath(name: string): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, name)
+    : resolve(currentDir, "..", "..", "build", name);
+}
 const settingsRoot = join(localDataRoot, "settings");
 const dropFilesRoot = join(localDataRoot, "files", "drop");
 const dropIncomingRoot = join(dropFilesRoot, "incoming");
@@ -6194,6 +6202,14 @@ function registerKeyboardShortcuts(): void {
 }
 
 function createTrayIcon(): Electron.NativeImage {
+  // Use the real DexNest logo (build/tray.ico → resources/tray.ico when packaged).
+  try {
+    const img = nativeImage.createFromPath(appAssetPath("tray.ico"));
+    if (!img.isEmpty()) {
+      return img;
+    }
+  } catch { /* fall through to the inline fallback below */ }
+  // Fallback keeps the tray from ever being blank if the icon file is missing.
   const svg = encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" rx="8" fill="#000000"/><circle cx="16" cy="16" r="9" fill="none" stroke="#22D3EE" stroke-width="3"/><circle cx="16" cy="16" r="3" fill="#22D3EE"/></svg>`);
   return nativeImage.createFromDataURL(`data:image/svg+xml;charset=utf-8,${svg}`);
 }
@@ -19935,6 +19951,8 @@ function createWindow(): void {
     minHeight: 620,
     title: "DexNest",
     show: !startHidden,
+    backgroundColor: "#000000",
+    icon: appAssetPath("icon.ico"),
     webPreferences: {
       preload: join(currentDir, "preload.cjs"),
       contextIsolation: true,
