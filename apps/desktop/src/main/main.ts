@@ -80,6 +80,53 @@ function resolveSidecarPath(...parts: string[]): string {
 function speechVenvPythonPath(): string { return resolveSidecarPath("speech", ".venv", "Scripts", "python.exe"); }
 function wakeSidecarScriptPath(): string { return resolveSidecarPath("wake-word", "wake_word_sidecar.py"); }
 function wakeModelsDir(): string { return resolveSidecarPath("wake-word", "models"); }
+
+// --- Sidecar process dedupe ------------------------------------------------
+// Orphaned Python sidecars (e.g. a set spawned at login before D: was ready,
+// then another after) fight over the microphone and break wake detection. We
+// scan for any running DexNest sidecar matching a script marker and kill it
+// before spawning a fresh one. Single-instance lock guarantees only one main
+// runs, so any match is stale/ours — safe to reap. Windows-only scan (the
+// deployment target); a no-op elsewhere (tracked child kills still apply).
+function findSidecarPids(scriptMarker: string): number[] {
+  if (process.platform !== "win32") return [];
+  try {
+    const script =
+      "Get-CimInstance Win32_Process -Filter \"Name='python.exe' or Name='pythonw.exe'\" " +
+      "| Where-Object { $_.CommandLine -like '*" + scriptMarker + "*' } " +
+      "| Select-Object -ExpandProperty ProcessId";
+    const out = execFileSync(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      { encoding: "utf8", windowsHide: true, timeout: 8000 }
+    );
+    return out
+      .split(/\r?\n/)
+      .map((line) => Number(line.trim()))
+      .filter((pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid);
+  } catch {
+    return [];
+  }
+}
+
+// Kill any stale sidecar processes for a marker, optionally sparing one pid
+// (our just-spawned/tracked child). Returns the number reaped.
+function reapStaleSidecars(scriptMarker: string, sparePid: number | null = null): number {
+  let killed = 0;
+  for (const pid of findSidecarPids(scriptMarker)) {
+    if (sparePid !== null && pid === sparePid) continue;
+    try {
+      execFileSync("taskkill", ["/PID", String(pid), "/F", "/T"], { windowsHide: true, timeout: 5000, stdio: "ignore" });
+      killed += 1;
+    } catch {
+      try { process.kill(pid); killed += 1; } catch { /* already gone */ }
+    }
+  }
+  return killed;
+}
+
+const WAKE_SIDECAR_MARKER = "wake_word_sidecar.py";
+const SPEECH_WORKER_MARKER = "dexnest-faster-whisper-worker";
 const settingsRoot = join(localDataRoot, "settings");
 const dropFilesRoot = join(localDataRoot, "files", "drop");
 const dropIncomingRoot = join(dropFilesRoot, "incoming");
@@ -2080,7 +2127,24 @@ function appHealthState(source: DexNestActionTrigger = "module_ui", writeAudit =
         // Empty index is a normal fresh state (it auto-populates as you add content), not a problem.
         check("search-index", "Search index", "pass", search.index.length > 0 ? `${search.index.length} indexed record(s).` : "0 records — the index fills in automatically as you add content.", search.index.length > 0 ? undefined : "Add content (or run Search rebuild) to populate local metadata search."),
         // Backups are optional; no backup yet is a gentle reminder, not a failure.
-        check("latest-backup", "Latest backup", "pass", latestBackup ? `${latestBackup.fileName} / ${formatLocalDateTime(latestBackup.createdAt)}` : "No backup yet (optional).", latestBackup ? undefined : "Create a local backup from Settings → Backup when you want a snapshot.", latestBackup ? undefined : "backup.open", latestBackup ? undefined : "Open Backup")
+        check("latest-backup", "Latest backup", "pass", latestBackup ? `${latestBackup.fileName} / ${formatLocalDateTime(latestBackup.createdAt)}` : "No backup yet (optional).", latestBackup ? undefined : "Create a local backup from Settings → Backup when you want a snapshot.", latestBackup ? undefined : "backup.open", latestBackup ? undefined : "Open Backup"),
+        // Duplicate wake/speech sidecars fight over the microphone and break wake
+        // detection (typical after a boot-time double spawn). Warn if more than one
+        // of either is running so the user can restart the wake service.
+        (() => {
+          const wakeCount = findSidecarPids(WAKE_SIDECAR_MARKER).length;
+          const speechCount = findSidecarPids(SPEECH_WORKER_MARKER).length;
+          const dup = wakeCount > 1 || speechCount > 1;
+          return check(
+            "voice-sidecars",
+            "Voice sidecars",
+            dup ? "warn" : "pass",
+            dup
+              ? `Duplicate sidecars detected (wake: ${wakeCount}, speech: ${speechCount}). They can fight over the microphone.`
+              : `wake: ${wakeCount}, speech: ${speechCount} — no duplicates.`,
+            dup ? "Restart the wake service in Settings → Voice (Stop, then Start real wake test), or fully quit and relaunch DexNest." : undefined
+          );
+        })()
       ]
     }
   ];
@@ -8607,6 +8671,20 @@ function speechPythonPath(settings = loadSpeechSettings()): string | null {
   return resolvePythonPath();
 }
 
+// Wake sidecar Python resolver. Unlike the speech worker, wake must NEVER silently
+// fall back to a system Python: at login the canonical venv on D: can be briefly
+// unavailable, and a system-Python fallback spawns a second mic-hogging sidecar
+// with a different runtime. We only accept (1) an explicitly configured python or
+// (2) the canonical bundled venv. Returns { path: null } while unavailable so the
+// caller can wait/retry instead of starting the wrong interpreter.
+function wakePythonPath(settings = loadSpeechSettings()): { path: string | null; source: "configured" | "venv" | "unavailable" } {
+  const configured = settings.pythonPath?.trim();
+  if (configured && existsSync(configured)) return { path: configured, source: "configured" };
+  const venvPython = speechVenvPythonPath();
+  if (existsSync(venvPython)) return { path: venvPython, source: "venv" };
+  return { path: null, source: "unavailable" };
+}
+
 function speechSidecarScript(): string {
   return [
     "import argparse, json, os, sys, time",
@@ -8711,6 +8789,11 @@ interface SpeechWorkerDiagnostics {
   loadLatencyMs: number | null;
   lastTranscriptionMs: number | null;
   lastError: string | null;
+  pid: number | null;
+  pythonPath: string;
+  lastStartAt: number | null;
+  lastStopReason: string;
+  duplicatesCleaned: number;
 }
 
 let speechWorker: ReturnType<typeof spawn> | null = null;
@@ -8727,7 +8810,12 @@ const speechWorkerDiag: SpeechWorkerDiagnostics = {
   computeType: "int8",
   loadLatencyMs: null,
   lastTranscriptionMs: null,
-  lastError: null
+  lastError: null,
+  pid: null,
+  pythonPath: "",
+  lastStartAt: null,
+  lastStopReason: "",
+  duplicatesCleaned: 0
 };
 
 function speechEngineState(): SpeechEngineState {
@@ -8851,7 +8939,7 @@ function handleSpeechWorkerMessage(message: Record<string, unknown>, onReady: (r
   }
 }
 
-function stopSpeechWorker(): void {
+function stopSpeechWorker(reason = "stopped"): void {
   // Null the reference first so this is idempotent and re-entrant-safe (a message
   // handler may call stopSpeechWorker while we're already stopping).
   const worker = speechWorker;
@@ -8859,7 +8947,9 @@ function stopSpeechWorker(): void {
   if (worker) {
     writeWorkerLine(worker, { type: "shutdown" }); // guarded — never throws on a dead pipe
     try { worker.kill(); } catch { /* ignore */ }
+    speechWorkerDiag.lastStopReason = reason;
   }
+  speechWorkerDiag.pid = null;
   speechWorkerReady = false;
   speechWorkerStarting = null;
   speechWorkerStdout = "";
@@ -8882,16 +8972,21 @@ function startSpeechWorker(settings = loadSpeechSettings()): Promise<{ ok: boole
     return speechWorkerStarting;
   }
   // Settings changed or no worker — restart cleanly.
-  stopSpeechWorker();
+  stopSpeechWorker("restart");
   const pythonPath = speechPythonPath(settings);
   if (!pythonPath) {
     speechEngineStateValue = "failed";
     speechWorkerDiag.lastError = "Python with faster-whisper was not found.";
     return Promise.resolve({ ok: false, error: speechWorkerDiag.lastError });
   }
+  // Reap any orphaned speech workers (e.g. from a prior boot-time double spawn)
+  // so exactly one worker ever holds the model/audio.
+  speechWorkerDiag.duplicatesCleaned = reapStaleSidecars(SPEECH_WORKER_MARKER);
 
   speechWorkerConfigKey = configKey;
   speechWorkerDiag.engine = "faster_whisper";
+  speechWorkerDiag.pythonPath = pythonPath;
+  speechWorkerDiag.lastStartAt = Date.now();
   speechEngineStateValue = "starting";
   const config = {
     model: settings.modelName,
@@ -8913,6 +9008,7 @@ function startSpeechWorker(settings = loadSpeechSettings()): Promise<{ ok: boole
     try {
       const child = spawn(pythonPath, [scriptPath, JSON.stringify(config)], { cwd: speechTempRoot, windowsHide: true });
       speechWorker = child;
+      speechWorkerDiag.pid = child.pid ?? null;
       attachWorkerStreamGuards(child, "speech worker");
       speechEngineStateValue = "warming";
       child.stdout.setEncoding("utf8");
@@ -9019,6 +9115,8 @@ async function transcribeWithWarmWorker(audioPath: string, language: string, vad
 
 type WakeEngineRuntimeStatus =
   | "disabled"
+  | "waiting_for_sidecar"
+  | "waiting_for_audio_device"
   | "starting"
   | "listening_for_nest"
   | "wake_detected"
@@ -9059,6 +9157,15 @@ interface WakeEngineState {
   maxScore10s: number | null;
   threshold: number | null;
   lastAudioAt: number | null;
+  // Startup-hardening diagnostics.
+  pythonSource: "configured" | "venv" | "unavailable" | "";
+  lastStartAt: number | null;
+  lastStopReason: string;
+  autoStartDelayed: boolean;
+  retryCount: number;
+  duplicatesCleaned: number;
+  argSensitivity: number | null;
+  argGain: string;
 }
 
 let wakeWorker: ReturnType<typeof spawn> | null = null;
@@ -9092,7 +9199,15 @@ let wakeEngineRuntime: WakeEngineState = {
   currentScore: null,
   maxScore10s: null,
   threshold: null,
-  lastAudioAt: null
+  lastAudioAt: null,
+  pythonSource: "",
+  lastStartAt: null,
+  lastStopReason: "",
+  autoStartDelayed: false,
+  retryCount: 0,
+  duplicatesCleaned: 0,
+  argSensitivity: null,
+  argGain: "auto"
 };
 
 function wakeEngineState(): WakeEngineState {
@@ -9105,11 +9220,13 @@ function wakeEngineState(): WakeEngineState {
   }
   // Always report the freshly-resolved paths + selected settings so diagnostics
   // reflect dev vs installed (resources/sidecars) vs external (D:\DeskNest\sidecars).
+  const wakePy = wakePythonPath();
   return {
     ...wakeEngineRuntime,
     status,
     scriptPath: wakeSidecarScriptPath(),
-    pythonPath: speechPythonPath() ?? "",
+    pythonPath: wakePy.path ?? "",
+    pythonSource: wakePy.source,
     phrase: settings.wakePhraseMode ?? "hey_jarvis",
     deviceId: settings.selectedWakeMicDeviceId ?? "",
     audioActive: status === "listening_for_nest" || status === "wake_detected" || status === "recording_command",
@@ -9224,6 +9341,12 @@ function handleWakeWorkerLine(line: string): void {
   }
 }
 
+// True once the canonical wake Python + sidecar script are both resolvable.
+// Used to gate/delay auto-start so we never spawn the wrong interpreter at boot.
+function wakeSidecarReady(settings = loadSpeechSettings()): boolean {
+  return wakePythonPath(settings).path !== null && existsSync(wakeSidecarScriptPath());
+}
+
 function startWakeEngine(): { ok: boolean; status: WakeEngineRuntimeStatus; error?: string } {
   const settings = loadAmbientVoiceSettings();
   if (!settings.wakeWordEnabled) {
@@ -9233,13 +9356,25 @@ function startWakeEngine(): { ok: boolean; status: WakeEngineRuntimeStatus; erro
   if (wakeWorker) {
     return { ok: true, status: wakeEngineRuntime.status };
   }
-  const pythonPath = speechPythonPath();
-  if (!pythonPath || !existsSync(wakeSidecarScriptPath())) {
-    wakeEngineRuntime.status = "engine_missing";
+  // Wake must use the canonical venv (or an explicitly configured python) — never
+  // a system-Python fallback, which at boot spawns a second, mic-hogging sidecar.
+  const wakePy = wakePythonPath();
+  wakeEngineRuntime.pythonSource = wakePy.source;
+  const pythonPath = wakePy.path;
+  if (!pythonPath) {
+    wakeEngineRuntime.status = "waiting_for_sidecar";
     wakeEngineRuntime.installStatus = "missing_dependencies";
-    wakeEngineRuntime.lastError = "Wake engine sidecar/python is unavailable.";
-    return { ok: false, status: "engine_missing", error: wakeEngineRuntime.lastError };
+    wakeEngineRuntime.lastError = "Waiting for the wake Python venv (e.g. D:\\DeskNest\\sidecars\\speech\\.venv) to become available.";
+    return { ok: false, status: "waiting_for_sidecar", error: wakeEngineRuntime.lastError };
   }
+  if (!existsSync(wakeSidecarScriptPath())) {
+    wakeEngineRuntime.status = "waiting_for_sidecar";
+    wakeEngineRuntime.installStatus = "missing_dependencies";
+    wakeEngineRuntime.lastError = "Waiting for the wake sidecar script to become available.";
+    return { ok: false, status: "waiting_for_sidecar", error: wakeEngineRuntime.lastError };
+  }
+  // Reap any stale/orphaned wake sidecars before spawning so two never coexist.
+  wakeEngineRuntime.duplicatesCleaned = reapStaleSidecars(WAKE_SIDECAR_MARKER);
   wakeEngineRuntime.status = "starting";
   wakeWorkerStdout = "";
   wakeEngineRuntime.lastStdout = "";
@@ -9259,14 +9394,19 @@ function startWakeEngine(): { ok: boolean; status: WakeEngineRuntimeStatus; erro
   wakeEngineRuntime.sampleRate = null;
   ensureSpeechRoot();
   const deviceId = settings.selectedWakeMicDeviceId ?? "";
+  const sensitivityArg = clampWakeThreshold(settings.wakeWordSensitivity, 0.5);
+  const gainArg = normalizeWakeInputGain(settings.wakeInputGain, "auto");
+  wakeEngineRuntime.argSensitivity = sensitivityArg;
+  wakeEngineRuntime.argGain = gainArg;
+  wakeEngineRuntime.lastStartAt = Date.now();
   // Run from a writable directory (never the read-only install dir) so the
   // openWakeWord model cache / any temp writes succeed in packaged builds.
   const child = spawn(pythonPath, [
     wakeSidecarScriptPath(),
     "--phrase", settings.wakePhraseMode ?? "hey_jarvis",
     "--model-path", settings.wakeCustomModelPath ?? "",
-    "--sensitivity", String(clampWakeThreshold(settings.wakeWordSensitivity, 0.5)),
-    "--gain", normalizeWakeInputGain(settings.wakeInputGain, "auto"),
+    "--sensitivity", String(sensitivityArg),
+    "--gain", gainArg,
     "--models-dir", wakeModelsDir(),
     "--cooldown-ms", String(settings.wakeCooldownMs ?? 1500),
     ...(deviceId ? ["--device", deviceId] : [])
@@ -9308,6 +9448,7 @@ function startWakeEngine(): { ok: boolean; status: WakeEngineRuntimeStatus; erro
     if (wakeWorker === child) {
       wakeWorker = null;
       wakeEngineRuntime.pid = null;
+      wakeEngineRuntime.lastStopReason = "exited";
       if (wakeEngineRuntime.status !== "disabled" && wakeEngineRuntime.status !== "engine_missing") {
         wakeEngineRuntime.status = loadAmbientVoiceSettings().wakeWordEnabled ? "error" : "disabled";
         // Surface the real reason (e.g. audio/model error) if we have nothing else.
@@ -9320,14 +9461,16 @@ function startWakeEngine(): { ok: boolean; status: WakeEngineRuntimeStatus; erro
   return { ok: true, status: "starting" };
 }
 
-function stopWakeEngine(): void {
+function stopWakeEngine(reason = "stopped"): void {
   // Null first so repeated calls / message-handler re-entry are safe.
   const worker = wakeWorker;
   wakeWorker = null;
   if (worker) {
     writeWorkerLine(worker, { type: "shutdown" }); // guarded — never throws on a dead pipe
     try { worker.kill(); } catch { /* ignore */ }
+    wakeEngineRuntime.lastStopReason = reason;
   }
+  wakeEngineRuntime.pid = null;
   wakeWorkerStdout = "";
   if (wakeEngineRuntime.status !== "engine_missing") {
     wakeEngineRuntime.status = "disabled";
@@ -9340,16 +9483,73 @@ function wakeEnginePausedByPerformanceMode(settings = loadAmbientVoiceSettings()
   return (settings.pauseWakeWordInPerformanceMode ?? true) && loadPerformanceModeSettings().performanceModeEnabled;
 }
 
+// Delayed/retry auto-start. At Windows login the D: venv/script can be briefly
+// unavailable; instead of falling back to the wrong Python, we poll (with backoff)
+// for up to WAKE_AUTOSTART_MAX_MS and start once the canonical sidecar is ready.
+// A single timer is ever pending — never spawns duplicate workers during retries.
+const WAKE_AUTOSTART_MAX_MS = 60000;
+let wakeAutoStartTimer: ReturnType<typeof setTimeout> | null = null;
+let wakeAutoStartDeadline = 0;
+
+function clearWakeAutoStartTimer(): void {
+  if (wakeAutoStartTimer) {
+    clearTimeout(wakeAutoStartTimer);
+    wakeAutoStartTimer = null;
+  }
+}
+
+function scheduleWakeAutoStartRetry(): void {
+  clearWakeAutoStartTimer();
+  if (Date.now() >= wakeAutoStartDeadline) {
+    // Gave up waiting — surface an honest blocker (leave status as engine_missing).
+    wakeEngineRuntime.autoStartDelayed = false;
+    wakeEngineRuntime.status = "engine_missing";
+    wakeEngineRuntime.installStatus = "missing_dependencies";
+    wakeEngineRuntime.lastError = "Wake sidecar did not become available within 60s (venv/script missing). Check D:\\DeskNest\\sidecars\\speech\\.venv.";
+    return;
+  }
+  wakeAutoStartTimer = setTimeout(() => {
+    wakeAutoStartTimer = null;
+    reconcileWakeEngine();
+  }, 2000);
+}
+
 function reconcileWakeEngine(): void {
   const settings = loadAmbientVoiceSettings();
   // Run the openWakeWord sidecar only when wake word is enabled AND not paused by
   // Performance Mode. The sidecar is lightweight and does NOT run Whisper; speech
   // transcription is invoked on-demand only after a wake event.
-  if (settings.wakeWordEnabled && !wakeEnginePausedByPerformanceMode(settings)) {
-    startWakeEngine();
-  } else {
-    stopWakeEngine();
+  if (!settings.wakeWordEnabled || wakeEnginePausedByPerformanceMode(settings)) {
+    clearWakeAutoStartTimer();
+    wakeEngineRuntime.autoStartDelayed = false;
+    wakeEngineRuntime.retryCount = 0;
+    stopWakeEngine(settings.wakeWordEnabled ? "paused" : "disabled");
+    return;
   }
+  if (wakeWorker) {
+    // Already running — nothing to do.
+    clearWakeAutoStartTimer();
+    return;
+  }
+  // First reconcile of this start attempt seeds the retry deadline.
+  if (!wakeAutoStartTimer) {
+    wakeAutoStartDeadline = Date.now() + WAKE_AUTOSTART_MAX_MS;
+    wakeEngineRuntime.retryCount = 0;
+  }
+  if (!wakeSidecarReady()) {
+    // Canonical sidecar not ready yet — wait/retry instead of spawning the wrong
+    // Python. Never spawns during this window.
+    wakeEngineRuntime.autoStartDelayed = true;
+    wakeEngineRuntime.retryCount += 1;
+    wakeEngineRuntime.status = "waiting_for_sidecar";
+    wakeEngineRuntime.lastError = "Waiting for the wake sidecar/venv (D:\\DeskNest\\sidecars\\speech\\.venv) to become available…";
+    scheduleWakeAutoStartRetry();
+    return;
+  }
+  // Ready — clear the delay flag and start once.
+  clearWakeAutoStartTimer();
+  wakeEngineRuntime.autoStartDelayed = false;
+  startWakeEngine();
 }
 
 async function checkSpeechModel(install = false): Promise<SpeechModelStatus> {
@@ -15173,6 +15373,32 @@ async function chooseDropReceiveFolder(): Promise<{ ok: boolean; path?: string; 
   return { ok: true, path: selectedPath };
 }
 
+// Open a multi-select file picker and return the chosen paths WITHOUT copying
+// them to the outgoing shelf. This lets Drop stage a pending selection so the
+// user sends explicitly (via drop.add_outgoing_file per path) instead of files
+// being committed the moment they are picked. Metadata-only logging (count).
+function pickDropOutgoingFiles(): { ok: boolean; paths?: string[]; error?: string } {
+  const options: OpenDialogSyncOptions = {
+    title: "Select files to send with DexNest Drop",
+    properties: ["openFile", "multiSelections"]
+  };
+  const result = mainWindow ? dialog.showOpenDialogSync(mainWindow, options) : dialog.showOpenDialogSync(options);
+  const paths = (result ?? []).filter((path) => path && existsSync(path));
+  if (!paths.length) {
+    return { ok: false, error: "No file selected." };
+  }
+  localDb.appendActionEvent({
+    module: "DexNest Drop",
+    actionId: "drop.pick_outgoing_files",
+    eventType: "drop.outgoing_files_picked",
+    status: "success",
+    source: "module_ui",
+    summary: `Selected ${paths.length} file${paths.length === 1 ? "" : "s"} to stage for DexNest Drop.`,
+    metadataJson: { count: paths.length }
+  });
+  return { ok: true, paths };
+}
+
 function resetDropReceiveFolder(): { ok: boolean; path: string } {
   saveDropSettings({ receiveFolderPath: null });
   ensureDropRoot();
@@ -15358,6 +15584,9 @@ function renderDropPhonePage(): string {
     .empty { padding: 18px 14px; text-align: center; color: var(--text-muted); border: 1px dashed var(--border); border-radius: var(--radius-sm); font-size: 0.85rem; }
     .path-row { display: grid; gap: 4px; padding-top: 2px; }
     .path-row .label { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-muted); }
+    .btn-row { display: flex; gap: 10px; }
+    .btn-row button:not(.primary) { flex: 0 0 auto; width: auto; min-width: 84px; color: var(--text-muted); }
+    button:disabled, a.btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
 
     /* Toasts */
     .toast-stack { position: fixed; left: 14px; right: 14px; bottom: max(16px, calc(env(safe-area-inset-bottom) + 12px)); display: grid; gap: 8px; z-index: 20; pointer-events: none; }
@@ -15396,6 +15625,7 @@ function renderDropPhonePage(): string {
     <section class="card">
       <div class="card-head"><span class="bar"></span><h2>Send to PC · Text</h2></div>
       <textarea id="note" placeholder="Write a note to save on the PC"></textarea>
+      <button id="sendTextBtn" class="primary" type="button">Send text</button>
       <p id="textStatus" class="notice"></p>
     </section>
     <section class="card">
@@ -15403,9 +15633,11 @@ function renderDropPhonePage(): string {
       <p class="notice">Photos / gallery</p>
       <input id="uploadGallery" type="file" accept="image/*" multiple />
       <p id="gallerySelectedCount" class="file-count">No photos selected</p>
+      <div class="btn-row"><button id="sendGalleryBtn" class="primary" type="button">Send photos</button><button id="clearGalleryBtn" type="button">Clear</button></div>
       <p class="notice">Files / docs</p>
       <input id="uploadFiles" type="file" multiple />
       <p id="selectedCount" class="file-count">No files selected</p>
+      <div class="btn-row"><button id="sendFilesBtn" class="primary" type="button">Send files</button><button id="clearFilesBtn" type="button">Clear</button></div>
       <p id="fileStatus" class="notice"></p>
       <div class="path-row"><span class="label">PC receive folder</span><span id="receivePath" class="mono"></span></div>
     </section>
@@ -15510,39 +15742,50 @@ function renderDropPhonePage(): string {
         files.append(node);
       }
     }
+    // Explicit send only — text is never auto-sent. The user taps "Send text".
     async function uploadTextNow() {
       const note = document.getElementById('note');
       const text = note.value.trim();
-      if (!text || text === lastSentText) return;
-      lastSentText = text;
+      if (!text) {
+        document.getElementById('textStatus').textContent = 'Type some text first.';
+        toast('Type some text first', 'error');
+        return;
+      }
       const response = await fetch('/drop/api/text', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
-      document.getElementById('textStatus').textContent = response.ok ? 'Uploaded text to PC.' : 'Text upload failed.';
+      document.getElementById('textStatus').textContent = response.ok ? 'Sent text to PC.' : 'Text send failed.';
       if (response.ok) {
         note.value = '';
-        lastSentText = '';
         toast('Text sent');
       } else {
-        lastSentText = '';
         toast('Text send failed', 'error');
       }
       await loadDrop();
     }
+    document.getElementById('sendTextBtn').onclick = () => { void uploadTextNow(); };
     document.getElementById('note').oninput = () => {
-      if (textUploadTimer) clearTimeout(textUploadTimer);
-      document.getElementById('textStatus').textContent = 'Auto-sending after typing stops.';
-      textUploadTimer = setTimeout(() => {
-        void uploadTextNow();
-      }, 900);
+      const has = document.getElementById('note').value.trim().length > 0;
+      document.getElementById('textStatus').textContent = has ? 'Ready to send — tap Send text.' : '';
     };
+    // Selecting files stages them only; nothing uploads until "Send" is tapped.
     document.getElementById('uploadFiles').onchange = (event) => {
       const count = event.target.files ? event.target.files.length : 0;
-      document.getElementById('selectedCount').textContent = count ? count + ' file' + (count === 1 ? '' : 's') + ' selected' : 'No files selected';
-      if (count) void uploadSelectedFiles('uploadFiles', 'selectedCount', 'No files selected');
+      document.getElementById('selectedCount').textContent = count ? count + ' file' + (count === 1 ? '' : 's') + ' selected — not sent yet' : 'No files selected';
     };
     document.getElementById('uploadGallery').onchange = (event) => {
       const count = event.target.files ? event.target.files.length : 0;
-      document.getElementById('gallerySelectedCount').textContent = count ? count + ' photo' + (count === 1 ? '' : 's') + ' selected' : 'No photos selected';
-      if (count) void uploadSelectedFiles('uploadGallery', 'gallerySelectedCount', 'No photos selected');
+      document.getElementById('gallerySelectedCount').textContent = count ? count + ' photo' + (count === 1 ? '' : 's') + ' selected — not sent yet' : 'No photos selected';
+    };
+    document.getElementById('sendFilesBtn').onclick = () => { void uploadSelectedFiles('uploadFiles', 'selectedCount', 'No files selected'); };
+    document.getElementById('sendGalleryBtn').onclick = () => { void uploadSelectedFiles('uploadGallery', 'gallerySelectedCount', 'No photos selected'); };
+    document.getElementById('clearFilesBtn').onclick = () => {
+      const input = document.getElementById('uploadFiles');
+      input.value = '';
+      document.getElementById('selectedCount').textContent = 'No files selected';
+    };
+    document.getElementById('clearGalleryBtn').onclick = () => {
+      const input = document.getElementById('uploadGallery');
+      input.value = '';
+      document.getElementById('gallerySelectedCount').textContent = 'No photos selected';
     };
     async function uploadSelectedFiles(inputId, countId, emptyLabel) {
       const input = document.getElementById(inputId);
@@ -19937,6 +20180,8 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("dexnest:choose-drop-receive-folder", () => chooseDropReceiveFolder());
 
+  ipcMain.handle("dexnest:pick-drop-outgoing-files", () => pickDropOutgoingFiles());
+
   ipcMain.handle("dexnest:reset-drop-receive-folder", () => resetDropReceiveFolder());
 
   ipcMain.handle("dexnest:log-drop-auto-refresh", (_event, enabled: boolean) => {
@@ -20277,9 +20522,14 @@ app.whenReady().then(() => {
     registerCommandShortcut();
     registerKeyboardShortcuts();
     createDexNestTray();
+  // Reap any orphaned wake/speech sidecars left by a prior crashed/duplicated
+  // session before we (re)start, so exactly one of each can run. Single-instance
+  // lock guarantees we're the only main, so any match is stale.
+  reapStaleSidecars(WAKE_SIDECAR_MARKER);
+  reapStaleSidecars(SPEECH_WORKER_MARKER);
   // Start the wake-word sidecar on launch if wake word is enabled (and not paused
-  // by Performance Mode). Previously this only happened on a settings change or a
-  // renderer request, so launching with wake already enabled left it dead.
+  // by Performance Mode). Uses delayed/retry auto-start so a login-time launch
+  // waits for the canonical venv instead of falling back to system Python.
   reconcileWakeEngine();
   if (shouldStartHiddenToTray()) {
     trayModeActive = true;
@@ -20303,8 +20553,13 @@ app.on("before-quit", () => {
   // Full quit always clears the in-memory Secure Vault key + trusted session.
   lockSecureVault();
   lockTrustedSession();
-  stopSpeechWorker();
-  stopWakeEngine();
+  clearWakeAutoStartTimer();
+  stopSpeechWorker("app_quit");
+  stopWakeEngine("app_quit");
+  // Belt-and-suspenders: reap any sidecar that somehow outlived its tracked
+  // handle so nothing is left holding the mic after quit.
+  reapStaleSidecars(WAKE_SIDECAR_MARKER, wakeEngineRuntime.pid);
+  reapStaleSidecars(SPEECH_WORKER_MARKER, speechWorkerDiag.pid);
   destroyVoiceOverlay();
   stopHeatmapTimer();
   if (weatherRefreshTimer) {

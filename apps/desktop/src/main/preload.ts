@@ -97,6 +97,7 @@ contextBridge.exposeInMainWorld("dexNest", {
   lockTrustedSession: () => ipcRenderer.invoke("dexnest:lock-trusted-session"),
   copyDropIncomingText: (itemId: string) => ipcRenderer.invoke("dexnest:copy-drop-incoming-text", itemId),
   chooseDropReceiveFolder: () => ipcRenderer.invoke("dexnest:choose-drop-receive-folder"),
+  pickDropOutgoingFiles: () => ipcRenderer.invoke("dexnest:pick-drop-outgoing-files"),
   resetDropReceiveFolder: () => ipcRenderer.invoke("dexnest:reset-drop-receive-folder"),
   logDropAutoRefresh: (enabled: boolean) => ipcRenderer.invoke("dexnest:log-drop-auto-refresh", enabled),
   startWindowsDictation: () => ipcRenderer.invoke("dexnest:start-windows-dictation"),

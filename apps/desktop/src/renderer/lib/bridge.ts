@@ -37,7 +37,15 @@ export const defaultWakeEngineState: WakeEngineState = {
   currentScore: null,
   maxScore10s: null,
   threshold: null,
-  lastAudioAt: null
+  lastAudioAt: null,
+  pythonSource: "",
+  lastStartAt: null,
+  lastStopReason: "",
+  autoStartDelayed: false,
+  retryCount: 0,
+  duplicatesCleaned: 0,
+  argSensitivity: null,
+  argGain: "auto"
 };
 
 export const emptyCommandStats: CommandStats = {
@@ -766,6 +774,7 @@ export const fallbackBridge: DexNestBridge = {
   lockTrustedSession: async () => fallbackBridge.getAssistantSecurityState(),
   copyDropIncomingText: async () => ({ ok: true }),
   chooseDropReceiveFolder: async () => ({ ok: false, error: "Bridge unavailable" }),
+  pickDropOutgoingFiles: async () => ({ ok: false, error: "Bridge unavailable" }),
   resetDropReceiveFolder: async () => ({ ok: true, path: "./local-data/files/drop/incoming" }),
   logDropAutoRefresh: async () => undefined,
   startWindowsDictation: async () => ({ ok: false, error: "Windows dictation bridge unavailable" }),

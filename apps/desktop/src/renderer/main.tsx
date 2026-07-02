@@ -583,6 +583,11 @@ interface SpeechWorkerDiagnostics {
   loadLatencyMs: number | null;
   lastTranscriptionMs: number | null;
   lastError: string | null;
+  pid: number | null;
+  pythonPath: string;
+  lastStartAt: number | null;
+  lastStopReason: string;
+  duplicatesCleaned: number;
 }
 
 export interface SpeechServiceState {
@@ -1971,6 +1976,7 @@ export interface DexNestBridge {
   lockTrustedSession: () => Promise<AssistantSecurityState>;
   copyDropIncomingText: (itemId: string) => Promise<{ ok: boolean; error?: string }>;
   chooseDropReceiveFolder: () => Promise<{ ok: boolean; path?: string; error?: string }>;
+  pickDropOutgoingFiles: () => Promise<{ ok: boolean; paths?: string[]; error?: string }>;
   resetDropReceiveFolder: () => Promise<{ ok: boolean; path: string }>;
   logDropAutoRefresh: (enabled: boolean) => Promise<void>;
   startWindowsDictation: () => Promise<{ ok: boolean; error?: string }>;
@@ -3475,7 +3481,7 @@ interface WakeWordServiceState {
 
 // Real main-process wake engine state (Phase 23.9).
 export interface WakeEngineState {
-  status: "disabled" | "starting" | "listening_for_nest" | "wake_detected" | "recording_command" | "paused_by_performance_mode" | "engine_missing" | "error";
+  status: "disabled" | "waiting_for_sidecar" | "waiting_for_audio_device" | "starting" | "listening_for_nest" | "wake_detected" | "recording_command" | "paused_by_performance_mode" | "engine_missing" | "error";
   installStatus: "unknown" | "ready" | "missing_dependencies" | "missing_model";
   lastError: string;
   detectionsCount: number;
@@ -3504,6 +3510,14 @@ export interface WakeEngineState {
   maxScore10s: number | null;
   threshold: number | null;
   lastAudioAt: number | null;
+  pythonSource: "configured" | "venv" | "unavailable" | "";
+  lastStartAt: number | null;
+  lastStopReason: string;
+  autoStartDelayed: boolean;
+  retryCount: number;
+  duplicatesCleaned: number;
+  argSensitivity: number | null;
+  argGain: string;
 }
 
 // Phrase-aware friendly label for the wake engine status. The internal status
@@ -3520,6 +3534,8 @@ function wakeEngineStatusLabel(state: WakeEngineState): string {
     case "listening_for_nest": return `listening for ${phraseName}`;
     case "wake_detected": return "wake detected";
     case "recording_command": return "recording command";
+    case "waiting_for_sidecar": return "waiting for sidecar (venv)";
+    case "waiting_for_audio_device": return "waiting for audio device";
     case "starting": return "starting";
     case "paused_by_performance_mode": return "paused by Performance Mode";
     case "engine_missing": return "engine unavailable";
@@ -16061,7 +16077,7 @@ function SettingsView({
             <div className="settings-row"><span>Engine state</span><strong className="technical">{speechState.engineState}</strong></div>
           )}
           {speechState.warmDiagnostics && (
-            <div className="settings-row"><span>Engine diagnostics</span><strong className="technical">{speechState.warmDiagnostics.engine} · {speechState.warmDiagnostics.device}/{speechState.warmDiagnostics.computeType} · load {speechState.warmDiagnostics.loadLatencyMs ?? "—"}ms · last {speechState.warmDiagnostics.lastTranscriptionMs ?? "—"}ms{speechState.warmDiagnostics.lastError ? ` · error: ${speechState.warmDiagnostics.lastError}` : ""}</strong></div>
+            <div className="settings-row"><span>Engine diagnostics</span><strong className="technical">{speechState.warmDiagnostics.engine} · {speechState.warmDiagnostics.device}/{speechState.warmDiagnostics.computeType} · load {speechState.warmDiagnostics.loadLatencyMs ?? "—"}ms · last {speechState.warmDiagnostics.lastTranscriptionMs ?? "—"}ms · pid {speechState.warmDiagnostics.pid ?? "—"}{speechState.warmDiagnostics.duplicatesCleaned ? ` · cleaned ${speechState.warmDiagnostics.duplicatesCleaned} dup` : ""}{speechState.warmDiagnostics.lastStopReason ? ` · last stop: ${speechState.warmDiagnostics.lastStopReason}` : ""}{speechState.warmDiagnostics.lastError ? ` · error: ${speechState.warmDiagnostics.lastError}` : ""}</strong></div>
           )}
           <div className="settings-row"><span>Settings</span><strong className="technical">{speechState.settingsPath}</strong></div>
           <div className="settings-row"><span>Models</span><strong className="technical">{speechState.modelRoot}</strong></div>
@@ -16137,8 +16153,15 @@ function SettingsView({
                 Try Auto Gain (or a higher multiplier below), a different channel, or increase the Windows input level for this mic.
               </p>
             )}
-            <p className="technical technical--truncate">python: {wakeEngineState.pythonPath || "not resolved"}</p>
+            <p className="technical technical--truncate">python: {wakeEngineState.pythonPath || "not resolved"}{wakeEngineState.pythonSource ? ` (${wakeEngineState.pythonSource})` : ""}</p>
             <p className="technical technical--truncate">script: {wakeEngineState.scriptPath || "not resolved"}</p>
+            <p className="technical">
+              startup: {wakeEngineState.autoStartDelayed ? `waiting for sidecar (retry ${wakeEngineState.retryCount})` : "ready"}
+              {wakeEngineState.lastStartAt ? ` · started ${formatLocalDateTime(new Date(wakeEngineState.lastStartAt).toISOString())}` : ""}
+              {wakeEngineState.lastStopReason ? ` · last stop: ${wakeEngineState.lastStopReason}` : ""}
+              {wakeEngineState.duplicatesCleaned ? ` · cleaned ${wakeEngineState.duplicatesCleaned} duplicate sidecar${wakeEngineState.duplicatesCleaned === 1 ? "" : "s"}` : ""}
+            </p>
+            <p className="technical">args → sensitivity: {wakeEngineState.argSensitivity !== null ? wakeEngineState.argSensitivity.toFixed(2) : "—"} · gain: {wakeEngineState.argGain}</p>
             {wakeEngineState.lastStdout && <p className="technical technical--truncate">sidecar stdout: {wakeEngineState.lastStdout}</p>}
             {wakeEngineState.lastStderr && <p className="technical technical--truncate">sidecar stderr: {wakeEngineState.lastStderr}</p>}
             {wakeEngineState.lastError && wakeEngineState.status !== "listening_for_nest" && (
