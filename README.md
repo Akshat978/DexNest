@@ -75,9 +75,23 @@ On first launch, DexNest creates its data folder next to the app and opens the c
 | Requirement | Notes |
 | --- | --- |
 | **Node.js 20+** | [nodejs.org](https://nodejs.org) or `winget install OpenJS.NodeJS.LTS` |
-| **pnpm** (via Corepack) | Bundled with Node - just run `corepack enable` once |
+| **pnpm 9.15.0** (via Corepack) | This repo is pinned to **pnpm 9.15.0** (see the `packageManager` field in `package.json`). Other pnpm versions can fail to install/build. |
 | **Git** | `winget install Git.Git` |
 | **C++ build tools** | For the native `better-sqlite3` module. Install **Visual Studio Build Tools** with the *"Desktop development with C++"* workload (`winget install Microsoft.VisualStudio.2022.BuildTools`) plus Python 3 (used by node-gyp). Most dev machines already have these. |
+
+> **Important - use the pinned pnpm 9.15.0.** This project only builds reliably with
+> pnpm **9.15.0**. The easiest way is Corepack (bundled with Node), which reads the
+> pinned version automatically **as long as you prefix commands with `corepack`**:
+>
+> ```bash
+> corepack enable
+> corepack prepare pnpm@9.15.0 --activate   # pin/activate the exact version
+> pnpm -v                                    # should print 9.15.0
+> ```
+>
+> After that you can use either `pnpm <cmd>` or `corepack pnpm <cmd>`. If you have a
+> different global pnpm and see install/build errors, run the `corepack prepare`
+> line above first - a mismatched pnpm is the usual cause.
 
 ### Steps
 
@@ -86,8 +100,9 @@ On first launch, DexNest creates its data folder next to the app and opens the c
 git clone https://github.com/Akshat978/DexNest.git
 cd DexNest
 
-# 2. Enable pnpm and install workspace dependencies
+# 2. Activate the pinned pnpm, then install workspace dependencies
 corepack enable
+corepack prepare pnpm@9.15.0 --activate
 corepack pnpm install
 
 # 3. Run the app in development (Vite dev server + Electron)
