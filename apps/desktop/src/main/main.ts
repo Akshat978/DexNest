@@ -296,10 +296,20 @@ interface DexNestProject {
   logPath?: string;
   dockerComposeEnabled?: boolean;
   healthUrl?: string;
+  // Daily-launcher extensions (all optional, backward-compatible):
+  projectType?: DevProjectType;
+  folders?: DevProjectFolder[];
+  links?: DevProjectLink[];
+  commandList?: DevProjectCommand[];
   createdAt: string;
   updatedAt: string;
   lastOpenedAt?: string | null;
 }
+
+type DevProjectType = "local_app" | "live_website" | "mobile_app" | "external_server";
+interface DevProjectFolder { label: string; path: string; }
+interface DevProjectLink { label: string; url: string; }
+interface DevProjectCommand { label: string; command: string; requiresConfirmation?: boolean; }
 
 interface ProjectInput {
   id?: string;
@@ -316,6 +326,10 @@ interface ProjectInput {
   logPath?: string;
   dockerComposeEnabled?: boolean;
   healthUrl?: string;
+  projectType?: DevProjectType;
+  folders?: DevProjectFolder[];
+  links?: DevProjectLink[];
+  commandList?: DevProjectCommand[];
 }
 
 interface RunActionInput {
@@ -3899,6 +3913,10 @@ function loadProjects(): DexNestProject[] {
 function saveProjects(projects: DexNestProject[]): void {
   writeJsonFile(projectsConfigPath, projects);
 }
+
+// Note: Dev projects are user data and live in local-data/settings/projects.json
+// (gitignored). Personal project details (paths, URLs, servers) are never
+// hardcoded in source. Add projects via the Dev UI / saveProject.
 
 function loadCommandResults(): Record<string, ProjectCommandResult> {
   return readJsonFile<Record<string, ProjectCommandResult>>(commandResultsPath, {});
@@ -10497,6 +10515,16 @@ function getProjectActionDefinitions(projects = loadProjects()): DexNestActionDe
         description: `Open all configured local URLs for ${project.name}.`,
         handlerType: "http_endpoint",
         handlerRef: (project.urls ?? []).join(", ")
+      },
+      {
+        // Generic external-link opener. The Dev dashboard passes { url } for each
+        // configured link (live/hosted websites); the palette uses the first link.
+        ...baseAction,
+        id: `${base}.open_link`,
+        title: `Open ${project.name} Website`,
+        description: `Open a configured live/hosted link for ${project.name}.`,
+        handlerType: "http_endpoint",
+        handlerRef: project.links?.[0]?.url ?? ""
       }
     ];
 
@@ -11054,6 +11082,11 @@ function upsertProject(input: ProjectInput): DexNestProject {
     logPath: input.logPath?.trim() ?? existingProject?.logPath ?? "",
     dockerComposeEnabled: typeof input.dockerComposeEnabled === "boolean" ? input.dockerComposeEnabled : (existingProject?.dockerComposeEnabled ?? false),
     healthUrl: input.healthUrl?.trim() ?? existingProject?.healthUrl ?? "",
+    // Daily-launcher fields: preserve existing when the (basic) edit form omits them.
+    projectType: input.projectType ?? existingProject?.projectType,
+    folders: input.folders ?? existingProject?.folders ?? [],
+    links: input.links ?? existingProject?.links ?? [],
+    commandList: input.commandList ?? existingProject?.commandList ?? [],
     createdAt: existingProject?.createdAt ?? now,
     updatedAt: now,
     lastOpenedAt: existingProject?.lastOpenedAt ?? null
@@ -19567,8 +19600,15 @@ function runProjectAction(actionId: string, projectId: string, operation: string
     return { ok: false, actionId, error: `Project not found: ${projectId}` };
   }
 
+  // Optional explicit target from the payload lets one action open any of a
+  // project's configured folders/links (daily-launcher quick buttons), falling
+  // back to the project's primary path/url.
+  const payloadObj = (payload && typeof payload === "object") ? payload as Record<string, unknown> : {};
+  const targetPath = typeof payloadObj.path === "string" && payloadObj.path.trim() ? payloadObj.path.trim() : project.path;
+  const targetUrl = typeof payloadObj.url === "string" && payloadObj.url.trim() ? payloadObj.url.trim() : (project.urls[0] ?? "");
+
   if (operation === "open_folder") {
-    void shell.openPath(project.path);
+    void shell.openPath(targetPath);
     touchProject(project);
     localDb.appendActionEvent({
       module: "DexNest Dev",
@@ -19576,14 +19616,14 @@ function runProjectAction(actionId: string, projectId: string, operation: string
       eventType: "project_opened",
       status: "success",
       source,
-      summary: `Opened ${project.name} folder.`,
+      summary: `Opened a ${project.name} folder.`,
       metadataJson: projectMetadata(project)
     });
     return { ok: true, actionId, message: `Opened ${project.name} folder.` };
   }
 
   if (operation === "open_vscode") {
-    const child = spawn("code", [project.path], { detached: true, stdio: "ignore" });
+    const child = spawn("code", [targetPath], { detached: true, stdio: "ignore" });
     child.unref();
     touchProject(project);
     localDb.appendActionEvent({
@@ -19599,7 +19639,7 @@ function runProjectAction(actionId: string, projectId: string, operation: string
   }
 
   if (operation === "open_terminal") {
-    const command = `Set-Location -LiteralPath '${project.path.replace(/'/g, "''")}'`;
+    const command = `Set-Location -LiteralPath '${targetPath.replace(/'/g, "''")}'`;
     const child = spawn("powershell.exe", ["-NoExit", "-Command", command], {
       detached: true,
       stdio: "ignore"
@@ -19645,6 +19685,37 @@ function runProjectAction(actionId: string, projectId: string, operation: string
       metadataJson: { ...projectMetadata(project), url }
     });
     return { ok: true, actionId, message: `Opened ${project.name} URL.` };
+  }
+
+  // Open a user-configured external link (the live/hosted websites from links[]).
+  // Unlike open_url (localhost-only), these are explicitly configured by the user,
+  // so opening them is intended. Only http(s) is allowed.
+  if (operation === "open_link") {
+    const link = targetUrl;
+    if (!/^https?:\/\//i.test(link)) {
+      localDb.appendActionEvent({
+        module: "DexNest Dev",
+        actionId,
+        eventType: "project_url_blocked",
+        status: "failed",
+        source,
+        summary: `${project.name} link is not a valid http(s) URL.`,
+        metadataJson: projectMetadata(project)
+      });
+      return { ok: false, actionId, error: "Link must be an http(s) URL." };
+    }
+    void shell.openExternal(link);
+    touchProject(project);
+    localDb.appendActionEvent({
+      module: "DexNest Dev",
+      actionId,
+      eventType: "project_link_opened",
+      status: "success",
+      source,
+      summary: `Opened a ${project.name} link.`,
+      metadataJson: { ...projectMetadata(project), url: link }
+    });
+    return { ok: true, actionId, message: `Opened ${project.name} link.` };
   }
 
   if (operation === "open_urls") {

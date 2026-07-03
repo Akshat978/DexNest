@@ -691,6 +691,10 @@ export interface DexNestProject {
   logPath?: string;
   dockerComposeEnabled?: boolean;
   healthUrl?: string;
+  projectType?: "local_app" | "live_website" | "mobile_app" | "external_server";
+  folders?: Array<{ label: string; path: string }>;
+  links?: Array<{ label: string; url: string }>;
+  commandList?: Array<{ label: string; command: string; requiresConfirmation?: boolean }>;
   createdAt: string;
   updatedAt: string;
   lastOpenedAt?: string | null;
@@ -3334,10 +3338,9 @@ function fastCommandRouter(text: string, actions: ActionDefinition[], workflowSe
     return buildRouteForIntent("capture_note", trimmed, actions, workflowSettings);
   }
 
-  const finderAdd = parseFinderAddPhrase(trimmed);
-  if (finderAdd && hasAction("finder.create_item")) {
-    return buildRouteForIntent("finder_add", trimmed, actions, workflowSettings);
-  }
+  // Voice "finder memory candidate" flow removed: spoken phrases are never turned
+  // into Finder memory candidates (it mis-classified normal statements and showed
+  // an unwanted banner). Finder lookups by voice still work below.
 
   const finderLookup = parseFinderLookupPhrase(trimmed);
   if (finderLookup && hasAction(finderLookup.kind === "location" ? "finder.reverse_lookup" : "finder.search_items")) {
@@ -4976,25 +4979,10 @@ function DexNestApp() {
     setVoiceWorkflowSettings(saved);
   }
 
-  function setFinderVoiceCandidate(candidate: FinderVoiceCandidate, source = "voice"): void {
-    setActiveView("finder");
-    setVoiceWorkflow({
-      ...defaultVoiceWorkflowState,
-      mode: "finder_add",
-      status: "candidate",
-      startedAt: Date.now(),
-      source,
-      targetModule: "finder",
-      chunksCount: 1,
-      lastTranscriptPreview: candidate.sourceText.replace(/\s+/g, " ").slice(0, 100),
-      candidate
-    });
-    logVoiceWorkflowMeta("voice.workflow.finder_candidate", source, {
-      workflowMode: "finder_add",
-      targetModule: "finder",
-      confidence: candidate.confidence,
-      sensitivityCategory: "personal"
-    });
+  // The voice "Finder memory candidate" feature was removed. This is intentionally
+  // a no-op so nothing enters the finder voice workflow or shows the banner.
+  function setFinderVoiceCandidate(_candidate: FinderVoiceCandidate, _source = "voice"): void {
+    /* removed */
   }
 
   async function saveFinderVoiceCandidate(): Promise<void> {
@@ -6071,12 +6059,10 @@ function DexNestApp() {
               <strong>{journalVoice.chunksCount} chunk{journalVoice.chunksCount === 1 ? "" : "s"}</strong>
             </div>
           )}
-          {journalVoice.mode !== "journal_dictation" && voiceWorkflow.mode !== "none" && (
-            <div className="ambient-indicator" data-state={voiceWorkflow.status === "paused" ? "paused" : voiceWorkflow.status === "saved" || voiceWorkflow.status === "lookup_complete" ? "processing" : voiceWorkflow.status === "error" ? "paused" : "listening"}>
+          {journalVoice.mode !== "journal_dictation" && voiceWorkflow.mode === "capture_note" && (
+            <div className="ambient-indicator" data-state={voiceWorkflow.status === "paused" ? "paused" : voiceWorkflow.status === "saved" ? "processing" : voiceWorkflow.status === "error" ? "paused" : "listening"}>
               <span>
-                {voiceWorkflow.mode === "capture_note"
-                  ? voiceWorkflow.status === "saved" ? "Saved to Capture inbox" : voiceWorkflow.status === "paused" ? "Capture mode paused" : "Capture mode listening"
-                  : voiceWorkflow.status === "saved" ? "Finder memory saved" : voiceWorkflow.status === "lookup_complete" ? "Finder lookup complete" : "Finder memory candidate"}
+                {voiceWorkflow.status === "saved" ? "Saved to Capture inbox" : voiceWorkflow.status === "paused" ? "Capture mode paused" : "Capture mode listening"}
               </span>
               <strong>{voiceWorkflow.error || voiceWorkflow.lastTranscriptPreview || `${voiceWorkflow.chunksCount} chunk${voiceWorkflow.chunksCount === 1 ? "" : "s"}`}</strong>
             </div>
@@ -9133,6 +9119,26 @@ function DevView({
   const runsList = Object.values(commandRunResults).filter((r) => r.finishedAt).sort((a, b) => (Date.parse(b.finishedAt || "") || 0) - (Date.parse(a.finishedAt || "") || 0));
   const selRuns = selProject ? runsList.filter((r) => r.projectId === selProject.id) : [];
   const latestRun = selRuns[0];
+  // Daily-launcher helpers.
+  const projectTypeBadge = (p: DexNestProject): { label: string; c: string } | null => {
+    switch (p.projectType) {
+      case "local_app": return { label: "Local app", c: "#3B82F6" };
+      case "live_website": return { label: "Live website", c: "#22C55E" };
+      case "mobile_app": return { label: "Mobile app", c: "#A855F7" };
+      case "external_server": return { label: "External server", c: "#F59E0B" };
+      default: return null;
+    }
+  };
+  const projectFolders = (p: DexNestProject): Array<{ label: string; path: string }> =>
+    (p.folders && p.folders.length > 0) ? p.folders : [{ label: "Project", path: p.path }];
+  const hasRunnableCommands = (p: DexNestProject): boolean =>
+    devCmds.some((c) => (p.commands[c.key] ?? "").trim()) || (p.commands.custom ?? "").trim().length > 0 || (p.commandList?.length ?? 0) > 0;
+  const hasLifecycle = (p: DexNestProject): boolean =>
+    (p.ports?.length ?? 0) > 0 || (p.commands.start ?? "").trim().length > 0 || (p.stopCommand ?? "").trim().length > 0 || Boolean(p.dockerComposeEnabled) || Boolean((p.logPath ?? "").trim() || (p.logCommand ?? "").trim());
+  async function quickProjectAction(actionId: string, params: Record<string, unknown> = {}): Promise<void> {
+    await onAction(actionId, "module_ui", params);
+    await onProjectsChanged();
+  }
 
   return (
     <div className="space-y-6">
@@ -9158,24 +9164,43 @@ function DevView({
               const dirty = false;
               return (
                 <button key={p.id} type="button" onClick={() => setSelectedDevId(p.id)} className={`glass-card lift w-full p-4 text-left ${active ? "border-[#3B82F6]/40" : ""}`}>
-                  <div className="flex items-start justify-between">
+                  <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0"><p className="truncate text-sm font-semibold text-[#F5F5F5]">{p.name}</p><p className="truncate font-mono text-[10px] text-[#525252]">{p.path}</p></div>
-                    <Circle className="h-2.5 w-2.5 shrink-0 fill-[#525252] text-[#525252]" />
+                    {(() => { const b = projectTypeBadge(p); return b
+                      ? <span className="shrink-0 rounded-full px-2 py-0.5 text-[9px] font-medium" style={{ background: `${b.c}1a`, color: b.c, border: `1px solid ${b.c}40` }}>{b.label}</span>
+                      : <Circle className="h-2.5 w-2.5 shrink-0 fill-[#525252] text-[#525252]" />; })()}
                   </div>
                   <div className="mt-2 flex items-center gap-3 font-mono text-[11px] text-[#A3A3A3]">
                     <span className="truncate">{p.description || "No description"}</span>
-                    {p.urls.length > 0 && <span className="ml-auto shrink-0 text-[#3B82F6]">{p.urls.length} url{p.urls.length === 1 ? "" : "s"}</span>}
+                    {(p.links?.length ?? 0) > 0
+                      ? <span className="ml-auto shrink-0 text-[#22C55E]">{p.links!.length} link{p.links!.length === 1 ? "" : "s"}</span>
+                      : p.urls.length > 0 && <span className="ml-auto shrink-0 text-[#3B82F6]">{p.urls.length} url{p.urls.length === 1 ? "" : "s"}</span>}
                   </div>
                 </button>
               );
             })}
             {selProject && (
               <>
-                <div className="grid grid-cols-3 gap-2">
-                  <ActionButton accent={ACCENT_DEV} variant="ghost" icon={Code2} className="text-xs" onClick={() => void runProjectAction(selProject, `dev.project.${selProject.id}.open_vscode`)}>VS Code</ActionButton>
-                  <ActionButton accent={ACCENT_DEV} variant="ghost" icon={FolderOpen} className="text-xs" onClick={() => void runProjectAction(selProject, `dev.project.${selProject.id}.open_folder`)}>Folder</ActionButton>
-                  <ActionButton accent={ACCENT_DEV} variant="ghost" icon={TerminalSquare} className="text-xs" onClick={() => void runProjectAction(selProject, `dev.project.${selProject.id}.open_terminal`)}>Terminal</ActionButton>
+                {/* One Folder / VS Code / Terminal row per configured folder (or the primary path). */}
+                <div className="space-y-2">
+                  {projectFolders(selProject).map((folder) => (
+                    <div key={folder.path} className="rounded-lg border border-[#1f1f1f] bg-[#0a0a0a] p-2">
+                      <p className="mb-1.5 truncate px-1 font-mono text-[10px] text-[#525252]" title={folder.path}>{folder.label} · {folder.path}</p>
+                      <div className="grid grid-cols-3 gap-2">
+                        <ActionButton accent={ACCENT_DEV} variant="ghost" icon={FolderOpen} className="text-xs" onClick={() => void quickProjectAction(`dev.project.${selProject.id}.open_folder`, { path: folder.path })}>Folder</ActionButton>
+                        <ActionButton accent={ACCENT_DEV} variant="ghost" icon={Code2} className="text-xs" onClick={() => void quickProjectAction(`dev.project.${selProject.id}.open_vscode`, { path: folder.path })}>VS Code</ActionButton>
+                        <ActionButton accent={ACCENT_DEV} variant="ghost" icon={TerminalSquare} className="text-xs" onClick={() => void quickProjectAction(`dev.project.${selProject.id}.open_terminal`, { path: folder.path })}>Terminal</ActionButton>
+                      </div>
+                    </div>
+                  ))}
                 </div>
+                {(selProject.links?.length ?? 0) > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {selProject.links!.map((link) => (
+                      <ActionButton key={link.url} accent="#22C55E" variant="ghost" icon={ExternalLink} className="text-xs" onClick={() => void quickProjectAction(`dev.project.${selProject.id}.open_link`, { url: link.url })}>{link.label}</ActionButton>
+                    ))}
+                  </div>
+                )}
                 <div className="flex items-center gap-2">
                   <PinButton input={{ type: "project", module: "dev", entityId: selProject.id, title: selProject.name, subtitle: "Dev project", actionId: `dev.project.${selProject.id}.open_folder` }} />
                   <button type="button" onClick={() => startEditProject(selProject)} className="min-h-0 flex-1 rounded-lg border border-[#262626] bg-transparent px-3 py-1.5 text-xs text-[#A3A3A3] hover:border-[#3B82F6]/40 hover:text-[#F5F5F5]">Edit</button>
@@ -9188,10 +9213,11 @@ function DevView({
           <div className="space-y-4 lg:col-span-7">
             {selProject && (
               <>
+                {hasRunnableCommands(selProject) && (
                 <GlassCard accent={ACCENT_DEV} hover={false}>
                   <SectionTitle action={<span className="font-mono text-[10px] text-[#525252]">{selProject.name}</span>}>Commands</SectionTitle>
                   <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                    {devCmds.map((c) => {
+                    {devCmds.filter((c) => (selProject.commands[c.key] ?? "").trim()).map((c) => {
                       const Icon = c.icon;
                       const command = selProject.commands[c.key];
                       const actionId = `dev.project.${selProject.id}.run_${c.key}`;
@@ -9215,7 +9241,9 @@ function DevView({
                     })()}
                   </div>
                 </GlassCard>
+                )}
 
+                {hasLifecycle(selProject) && (
                 <GlassCard hover={false}>
                   <SectionTitle action={(selProject.ports ?? []).length > 0 ? <span className="font-mono text-[10px] text-[#525252]">ports {(selProject.ports ?? []).join(", ")}</span> : undefined}>Lifecycle</SectionTitle>
                   <div className="flex flex-wrap gap-2">
@@ -9239,13 +9267,23 @@ function DevView({
                     )}
                   </div>
                 </GlassCard>
+                )}
 
+                {hasRunnableCommands(selProject) && (
                 <GlassCard hover={false}>
                   <SectionTitle action={latestRun ? <StatusChip tone={latestRun.status === "success" ? "ok" : latestRun.status === "running" ? "running" : "error"}>{latestRun.status === "success" ? `✓ ${latestRun.durationMs ?? "?"}ms` : latestRun.status}</StatusChip> : undefined}>Output{latestRun ? ` · ${latestRun.commandKey}` : ""}</SectionTitle>
                   {latestRun ? (
                     <pre className="max-h-64 overflow-auto rounded-lg border border-[#1f1f1f] bg-[#060606] p-3 font-mono text-[11px] leading-relaxed text-[#A3A3A3] whitespace-pre-wrap">{[latestRun.summary, latestRun.errorMessage, latestRun.stdout ? stripAnsiForDisplay(latestRun.stdout) : "", latestRun.stderr ? stripAnsiForDisplay(latestRun.stderr) : ""].filter(Boolean).join("\n\n") || "No output."}</pre>
                   ) : <p className="text-xs text-[#525252]">Run a command to see output here.</p>}
                 </GlassCard>
+                )}
+
+                {selProject.notes.trim() && (
+                  <GlassCard hover={false}>
+                    <SectionTitle>Notes</SectionTitle>
+                    <p className="whitespace-pre-wrap text-xs leading-relaxed text-[#A3A3A3]">{selProject.notes}</p>
+                  </GlassCard>
+                )}
 
                 {selProject.urls.length > 0 && (
                   <GlassCard hover={false} className="flex items-center justify-between">
