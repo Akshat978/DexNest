@@ -1505,6 +1505,10 @@ interface FinanceTransaction {
   returnDeadline?: string | null;
   warrantyUntil?: string | null;
   tags: string[];
+  // Set when this transaction was auto-posted from a recurring expense, so we
+  // never double-post the same recurring item for the same period.
+  sourceRecurringId?: string | null;
+  sourceRecurringDate?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -7237,7 +7241,7 @@ function normalizeUtilityTimer(timer: Partial<UtilityTimer>): UtilityTimer {
   const durationSeconds = Math.max(1, Math.round(Number(timer.durationSeconds ?? 1500)));
   const remainingSeconds = Math.max(0, Math.round(Number(timer.remainingSeconds ?? durationSeconds)));
   return {
-    id: timer.id ?? createId("utility-timer"),
+    id: timer.id || createId("utility-timer"),
     label: timer.label?.trim() || `${Math.round(durationSeconds / 60)} minute timer`,
     durationSeconds,
     remainingSeconds,
@@ -8055,8 +8059,18 @@ function financeProfileName(profileId: string | null | undefined): string {
 function loadFinanceTransactions(): FinanceTransaction[] {
   ensureFinanceRoot();
   const fallbackProfileId = defaultFinanceProfileId();
-  // Migrate-on-load: records without a profileId belong to the default profile.
-  return readJsonFile<FinanceTransaction[]>(financeTransactionsPath, []).map((item) => (item.profileId ? item : { ...item, profileId: fallbackProfileId }));
+  // Migrate-on-load: records without a profileId belong to the default profile,
+  // and any legacy record left with an empty id (from the old empty-id bug) gets
+  // a real id so it can be edited/deleted and never collides with new records.
+  let changed = false;
+  const items = readJsonFile<FinanceTransaction[]>(financeTransactionsPath, []).map((item) => {
+    let next = item;
+    if (!next.profileId) { next = { ...next, profileId: fallbackProfileId }; changed = true; }
+    if (!next.id) { next = { ...next, id: createId("finance-transaction") }; changed = true; }
+    return next;
+  });
+  if (changed) { writeJsonFile(financeTransactionsPath, items); }
+  return items;
 }
 
 function saveFinanceTransactions(items: FinanceTransaction[]): FinanceTransaction[] {
@@ -8069,7 +8083,15 @@ function saveFinanceTransactions(items: FinanceTransaction[]): FinanceTransactio
 function loadFinanceRecurring(): FinanceRecurringExpense[] {
   ensureFinanceRoot();
   const fallbackProfileId = defaultFinanceProfileId();
-  return readJsonFile<FinanceRecurringExpense[]>(financeRecurringPath, []).map((item) => (item.profileId ? item : { ...item, profileId: fallbackProfileId }));
+  let changed = false;
+  const items = readJsonFile<FinanceRecurringExpense[]>(financeRecurringPath, []).map((item) => {
+    let next = item;
+    if (!next.profileId) { next = { ...next, profileId: fallbackProfileId }; changed = true; }
+    if (!next.id) { next = { ...next, id: createId("finance-recurring") }; changed = true; }
+    return next;
+  });
+  if (changed) { writeJsonFile(financeRecurringPath, items); }
+  return items;
 }
 
 function saveFinanceRecurring(items: FinanceRecurringExpense[]): FinanceRecurringExpense[] {
@@ -12531,6 +12553,9 @@ function financePeriodWindow(pref: FinancePeriodPref, today: string): {
 }
 
 function financeState() {
+  // Auto-post any due recurring expenses before reading, so the dashboard and
+  // totals reflect them immediately.
+  reconcileRecurringFinance();
   const profilesFile = loadFinanceProfilesFile();
   const activeProfileId = profilesFile.activeProfileId;
   // Dashboard, lists, summary and deadlines all scope to the active profile only.
@@ -12678,7 +12703,10 @@ function normalizeFinanceTransaction(input: FinanceTransactionInput, existing?: 
   }
 
   return {
-    id: input.id ?? existing?.id ?? createId("finance-transaction"),
+    // Use || (not ??) so an empty-string id from a "new" form falls through to a
+    // freshly generated id — otherwise every new transaction shares id "" and the
+    // save step filters the previous ones out (they all collide on "").
+    id: input.id || existing?.id || createId("finance-transaction"),
     profileId: input.profileId || existing?.profileId || activeFinanceProfileId(),
     date: input.date || existing?.date || todayDateString(),
     store: input.store?.trim() || existing?.store || "Unknown store",
@@ -12693,9 +12721,95 @@ function normalizeFinanceTransaction(input: FinanceTransactionInput, existing?: 
     returnDeadline: input.returnDeadline || null,
     warrantyUntil: input.warrantyUntil || null,
     tags: parseTagList(input.tags ?? existing?.tags),
+    sourceRecurringId: existing?.sourceRecurringId ?? null,
+    sourceRecurringDate: existing?.sourceRecurringDate ?? null,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now
   };
+}
+
+// Advance a recurring due date by one period.
+function advanceRecurringDueDate(dateStr: string, frequency: FinanceRecurringFrequency): string {
+  const date = parseLocalDateInput(dateStr);
+  if (frequency === "weekly") {
+    date.setDate(date.getDate() + 7);
+  } else if (frequency === "yearly") {
+    date.setFullYear(date.getFullYear() + 1);
+  } else {
+    // monthly (and "custom" fallback)
+    date.setMonth(date.getMonth() + 1);
+  }
+  return toLocalDateInputValue(date);
+}
+
+// Auto-post recurring expenses as real transactions once they come due, then roll
+// their nextDueDate forward one period (catching up if several periods elapsed).
+// Idempotent: because nextDueDate is advanced and persisted, a due period is only
+// ever posted once, so deleting an auto-posted transaction never resurrects it.
+function reconcileRecurringFinance(): void {
+  const today = todayDateString();
+  const recurring = loadFinanceRecurring();
+  // Cheap early-out for the common case (nothing due) so this is safe to call on
+  // every finance read without doing extra work.
+  if (!recurring.some((item) => item.active && item.nextDueDate && item.nextDueDate <= today)) {
+    return;
+  }
+  const transactions = loadFinanceTransactions();
+  const alreadyPosted = new Set(
+    transactions
+      .filter((transaction) => transaction.sourceRecurringId)
+      .map((transaction) => `${transaction.sourceRecurringId}|${transaction.sourceRecurringDate}`)
+  );
+  const now = new Date().toISOString();
+  const newTransactions: FinanceTransaction[] = [];
+  let recurringChanged = false;
+  const nextRecurring = recurring.map((item) => {
+    if (!item.active || !item.nextDueDate) {
+      return item;
+    }
+    let due = item.nextDueDate;
+    let guard = 0;
+    while (due <= today && guard < 240) {
+      guard += 1;
+      const key = `${item.id}|${due}`;
+      if (!alreadyPosted.has(key)) {
+        alreadyPosted.add(key);
+        newTransactions.push({
+          id: createId("finance-transaction"),
+          profileId: item.profileId,
+          date: due,
+          store: item.name,
+          amount: Number(item.amount.toFixed(2)),
+          currency: item.currency,
+          category: item.category || "Other",
+          paymentType: item.paymentType,
+          cardName: null,
+          notes: item.notes ? item.notes : "Auto-posted recurring expense.",
+          receiptFilePath: null,
+          receiptOriginalName: null,
+          returnDeadline: null,
+          warrantyUntil: null,
+          tags: ["recurring"],
+          sourceRecurringId: item.id,
+          sourceRecurringDate: due,
+          createdAt: now,
+          updatedAt: now
+        });
+      }
+      due = advanceRecurringDueDate(due, item.frequency);
+    }
+    if (due !== item.nextDueDate) {
+      recurringChanged = true;
+      return { ...item, nextDueDate: due, updatedAt: now };
+    }
+    return item;
+  });
+  if (newTransactions.length) {
+    saveFinanceTransactions([...newTransactions, ...transactions]);
+  }
+  if (recurringChanged) {
+    saveFinanceRecurring(nextRecurring);
+  }
 }
 
 function normalizeFinanceRecurring(input: FinanceRecurringInput, existing?: FinanceRecurringExpense): FinanceRecurringExpense {
@@ -12706,7 +12820,9 @@ function normalizeFinanceRecurring(input: FinanceRecurringInput, existing?: Fina
   }
 
   return {
-    id: input.id ?? existing?.id ?? createId("finance-recurring"),
+    // See normalizeFinanceTransaction: || avoids the empty-id collision that made
+    // each new recurring expense overwrite the previous one.
+    id: input.id || existing?.id || createId("finance-recurring"),
     profileId: input.profileId || existing?.profileId || activeFinanceProfileId(),
     name: input.name?.trim() || existing?.name || "Untitled recurring expense",
     amount: Number(amount.toFixed(2)),
@@ -12900,7 +13016,7 @@ function normalizeHeatmapGoal(input: HeatmapGoalInput, existing?: HeatmapGoal): 
   }
 
   return {
-    id: input.id ?? input.goalId ?? existing?.id ?? createId("heatmap-goal"),
+    id: input.id || input.goalId || existing?.id || createId("heatmap-goal"),
     name: input.name?.trim() || existing?.name || "Focus goal",
     targetHoursPerWeek: Number(target.toFixed(2)),
     keyword: input.keyword?.trim() || existing?.keyword || "",
@@ -13081,7 +13197,7 @@ function normalizeCaptureItem(input: CaptureItemInput, existing?: CaptureItem): 
   const url = input.url?.trim() || (normalizeCaptureType(input.type ?? existing?.type) === "link" ? (input.text?.trim() || existing?.url || null) : existing?.url ?? null);
 
   return {
-    id: input.id ?? existing?.id ?? createId("capture-item"),
+    id: input.id || existing?.id || createId("capture-item"),
     type: normalizeCaptureType(input.type ?? existing?.type),
     title,
     text: input.text ?? existing?.text ?? "",
@@ -16540,7 +16656,7 @@ function normalizeTimetableBlock(input: TimetableBlockInput, existing?: Timetabl
   const startTime = /^\d{2}:\d{2}$/.test(input.startTime ?? "") ? input.startTime! : existing?.startTime ?? "09:00";
   const endTime = /^\d{2}:\d{2}$/.test(input.endTime ?? "") ? input.endTime! : existing?.endTime ?? "10:00";
   return {
-    id: input.id ?? input.blockId ?? existing?.id ?? createId("timetable-block"),
+    id: input.id || input.blockId || existing?.id || createId("timetable-block"),
     day,
     startTime,
     endTime,
@@ -16669,7 +16785,7 @@ function runJournalAction(action: DexNestActionDefinition, source: DexNestAction
     if (action.id === "journal.create_entry" || action.id === "journal.update_entry") {
       const entries = loadJournalEntries();
       const now = new Date().toISOString();
-      const entryId = input.id ?? createId("journal-entry");
+      const entryId = input.id || createId("journal-entry");
       const existing = entries.find((entry) => entry.id === entryId);
       const rawText = input.rawText ?? existing?.rawText ?? "";
       const cleanedText = cleanJournalText(rawText);
@@ -16747,7 +16863,7 @@ function runJournalAction(action: DexNestActionDefinition, source: DexNestAction
 function normalizeCalendarInput(input: CalendarEventInput, existing?: CalendarEvent): CalendarEvent {
   const now = new Date().toISOString();
   return {
-    id: input.id ?? existing?.id ?? createId("calendar-event"),
+    id: input.id || existing?.id || createId("calendar-event"),
     title: input.title?.trim() || existing?.title || "Untitled event",
     date: input.date || existing?.date || todayDateString(),
     startTime: input.startTime ?? existing?.startTime ?? null,
@@ -16926,7 +17042,7 @@ function runCalendarAction(action: DexNestActionDefinition, source: DexNestActio
 function normalizeFinderItem(input: FinderItemInput, existing?: FinderItem): FinderItem {
   const now = new Date().toISOString();
   return {
-    id: input.id ?? existing?.id ?? createId("finder-item"),
+    id: input.id || existing?.id || createId("finder-item"),
     itemName: input.itemName?.trim() || existing?.itemName || "Untitled item",
     location: input.location?.trim() || existing?.location || "Unknown location",
     room: input.room?.trim() || existing?.room || "",
@@ -17407,13 +17523,13 @@ function normalizeRoutine(input: RoutineInput, existing?: DexNestRoutine): DexNe
   const now = new Date().toISOString();
   const steps = (input.steps ?? existing?.steps ?? [])
     .map((step) => ({
-      id: step.id ?? createId("routine-step"),
+      id: step.id || createId("routine-step"),
       actionId: String(step.actionId ?? "").trim(),
       params: step.params ?? {}
     }))
     .filter((step) => Boolean(step.actionId));
   return {
-    id: input.id ?? existing?.id ?? createId("routine"),
+    id: input.id || existing?.id || createId("routine"),
     name: input.name?.trim() || existing?.name || "Untitled routine",
     description: input.description ?? existing?.description ?? "",
     steps,
@@ -20696,6 +20812,7 @@ app.whenReady().then(() => {
   syncAppLifecycleLoginItemStatus();
   cleanupClipboardHistory(false, "system");
   startActionEndpoint();
+  reconcileRecurringFinance();
   refreshNudges("system", false);
   ensureHeatmapAlwaysOn();
   startHeatmapTimer();

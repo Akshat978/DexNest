@@ -1607,6 +1607,8 @@ interface FinanceTransaction {
   returnDeadline?: string | null;
   warrantyUntil?: string | null;
   tags: string[];
+  sourceRecurringId?: string | null;
+  sourceRecurringDate?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -13375,7 +13377,7 @@ function FinanceView({
                 {(t) => (
                   <button key={t.id} type="button" onClick={() => loadTransaction(t)} className="glass-card flex w-full items-center gap-3 p-2.5 text-left">
                     <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#1a1a1a] text-[#A3A3A3]">{t.paymentType === "cash" ? <Banknote className="h-4 w-4" /> : <CreditCard className="h-4 w-4" />}</div>
-                    <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{t.store}</p><p className="font-mono text-[10px] text-[#525252]">{t.category} · {t.paymentType} · {formatLocalDate(t.date)}</p></div>
+                    <div className="min-w-0 flex-1"><p className="flex items-center gap-1.5 truncate text-sm text-[#F5F5F5]">{t.store}{t.sourceRecurringId && <Repeat className="h-3 w-3 shrink-0 text-[#3B82F6]" />}</p><p className="font-mono text-[10px] text-[#525252]">{t.category} · {t.paymentType} · {formatLocalDate(t.date)}{t.sourceRecurringId ? " · recurring" : ""}</p></div>
                     <span className="font-mono text-sm font-semibold text-[#F5F5F5]">-{money(t.amount, t.currency)}</span>
                   </button>
                 )}
