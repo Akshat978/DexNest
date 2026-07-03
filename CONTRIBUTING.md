@@ -7,9 +7,9 @@ a few project rules keep it that way. Please read these before opening a PR.
 
 - **Never commit user data.** `local-data/` is gitignored and must stay that way. It holds real documents, receipts, the vault, and the database.
 - **Offline-first.** No cloud services, logins, accounts, external APIs, or telemetry. Everything runs on the user's machine.
-- **Data stays in `local-data/`** — never write app data to Windows AppData.
+- **Data stays in `local-data/`** - never write app data to Windows AppData.
 - **Keep it modular.** Features live in `modules/` and register actions into the shared action registry; meaningful actions write metadata-only audit events.
-- **Use the design tokens.** No hardcoded colors in components — see [`docs/DESIGN_TOKENS.md`](docs/DESIGN_TOKENS.md).
+- **Use the design tokens.** No hardcoded colors in components - see [`docs/DESIGN_TOKENS.md`](docs/DESIGN_TOKENS.md).
 
 ## Development setup
 
@@ -39,7 +39,7 @@ corepack pnpm build
 Open a GitHub issue with your OS version, DexNest version (or commit), steps to
 reproduce, and what you expected. For anything voice-related, the **Settings →
 Ambient Voice / Wake** and **Speech / Voice Engine** diagnostics panels have the
-details worth pasting in (paths, engine, mic level) — they contain no private content.
+details worth pasting in (paths, engine, mic level) - they contain no private content.
 
 ## License
 
