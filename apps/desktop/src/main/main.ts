@@ -12748,10 +12748,16 @@ function advanceRecurringDueDate(dateStr: string, frequency: FinanceRecurringFre
 // ever posted once, so deleting an auto-posted transaction never resurrects it.
 function reconcileRecurringFinance(): void {
   const today = todayDateString();
+  // Post recurring occurrences whose due date falls anywhere in the CURRENT month
+  // (not just on/before today), so a monthly subscription counts toward this
+  // month's spending/category breakdown as soon as it exists, even if its billing
+  // day is later this month.
+  const [ty, tm] = today.split("-").map(Number);
+  const horizon = financeDateStr(ty, tm, financeLastDayOfMonth(ty, tm));
   const recurring = loadFinanceRecurring();
-  // Cheap early-out for the common case (nothing due) so this is safe to call on
-  // every finance read without doing extra work.
-  if (!recurring.some((item) => item.active && item.nextDueDate && item.nextDueDate <= today)) {
+  // Cheap early-out for the common case (nothing due this month) so this is safe
+  // to call on every finance read without doing extra work.
+  if (!recurring.some((item) => item.active && item.nextDueDate && item.nextDueDate <= horizon)) {
     return;
   }
   const transactions = loadFinanceTransactions();
@@ -12769,7 +12775,7 @@ function reconcileRecurringFinance(): void {
     }
     let due = item.nextDueDate;
     let guard = 0;
-    while (due <= today && guard < 240) {
+    while (due <= horizon && guard < 240) {
       guard += 1;
       const key = `${item.id}|${due}`;
       if (!alreadyPosted.has(key)) {
