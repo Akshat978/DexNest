@@ -127,7 +127,18 @@ For most people - no build tools required:
 2. Download the latest `DexNest-Setup-x.y.z.exe`.
 3. Run it and follow the installer. You can choose the install folder.
 
-**Windows SmartScreen note:** the installer is **not code-signed** (a signing certificate is paid), so Windows may show *"Windows protected your PC - unknown publisher."* Click **More info → Run anyway**. The source is fully open here if you'd rather build it yourself.
+### Is it safe? (the Windows warning)
+
+When you run the installer, Windows SmartScreen may show *"Windows protected your PC / unknown publisher."* **This is expected and DexNest is safe to install.**
+
+The warning appears because the installer is **not code-signed** (a signing certificate is a paid, ongoing cost, and this is a free project). It does **not** mean anything is wrong with the app. Windows shows this for almost every new, unsigned program from an independent developer.
+
+Why you can trust it:
+- The **entire source code is public in this repo** - nothing is hidden. You can read exactly what it does, or build it yourself.
+- DexNest is **fully offline**: no cloud, no accounts, no telemetry, nothing phones home. All data stays in your local `local-data/` folder.
+- The installer is **built automatically by GitHub Actions from this source** (see the release workflow), so the download matches the public code.
+
+To install: click **More info**, then **Run anyway**. If you would rather not, you can always [build it from source](#build-from-source) instead.
 
 On first launch, DexNest creates its data folder next to the app and opens the command home. See [Data & privacy](#data--privacy) for where your data lives and how to move it.
 
