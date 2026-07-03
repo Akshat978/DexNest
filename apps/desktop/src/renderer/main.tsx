@@ -4347,6 +4347,7 @@ function DexNestApp() {
   // UI action) collapse into a single pass instead of stacking heavy reloads.
   const refreshInFlightRef = useRef(false);
   const refreshPendingRef = useRef(false);
+  const refreshStartedAtRef = useRef(0);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [busyCount, setBusyCount] = useState(0);
   const [initialLoadDone, setInitialLoadDone] = useState(false);
@@ -5543,12 +5544,22 @@ function DexNestApp() {
 
   async function refreshShellData(): Promise<void> {
     // Coalesce: if a refresh is already running, mark one more pass and return.
-    if (refreshInFlightRef.current) {
+    // Self-healing: if a previous refresh got stuck (e.g. a bridge call that
+    // never resolved), never block forever — after REFRESH_STALE_MS treat the
+    // in-flight flag as stale and proceed, so the UI can't freeze until restart.
+    const REFRESH_STALE_MS = 15000;
+    if (refreshInFlightRef.current && Date.now() - refreshStartedAtRef.current < REFRESH_STALE_MS) {
       refreshPendingRef.current = true;
       return;
     }
     refreshInFlightRef.current = true;
+    refreshStartedAtRef.current = Date.now();
+    // Belt-and-suspenders: bound the whole refresh so a hung bridge call rejects
+    // instead of hanging the try body (which would leave the guard/busy stuck).
+    const withRefreshTimeout = <T,>(work: Promise<T>): Promise<T> =>
+      Promise.race([work, new Promise<T>((_, reject) => window.setTimeout(() => reject(new Error("Refresh timed out.")), 12000))]);
     try {
+      await withRefreshTimeout((async () => {
       const view = activeViewRef.current;
       // Always-needed lightweight/global states (sidebar, dashboard, indicators).
       const [info, nextActions, nextProjects, nextCommandResults, nextPinnedActionIds, nextClipboardState, nextDropState, nextToolsState, nextJournalState, nextCalendarState, nextTimetableState, nextUtilitiesState, nextWeatherState, nextNewsState, nextRoutinesState, nextPerformanceState, nextPerformanceSettings, nextCommandStats, nextEvents, nextAmbientVoiceState, nextSpeechState, nextVoiceWorkflowSettings] = await Promise.all([
@@ -5612,6 +5623,10 @@ function DexNestApp() {
       if (view === "settings" || view === "backup") { setBackupState(await getBridge().getBackupState()); }
       if (view === "health") { setAppHealthState(await getBridge().getAppHealth()); }
       if (view === "devices") { setExternalDevicesState(await getBridge().getExternalDevicesState()); }
+      })());
+    } catch {
+      /* a timed-out or failed refresh is non-fatal; the guard is cleared below and
+         the next user action triggers a fresh refresh */
     } finally {
       refreshInFlightRef.current = false;
       if (refreshPendingRef.current) {
