@@ -16,16 +16,14 @@ No cloud. No accounts. No telemetry. Your data stays in one local folder you con
 > Deck bridge, and optional local voice control - into one keyboard-driven hub
 > that runs entirely on your machine.
 
-<!-- Replace with real screenshots / a short GIF - this is the biggest thing for GitHub + LinkedIn reach.
 <div align="center">
-  <img src="docs/screenshots/command.png" width="80%" alt="DexNest command home" />
+  <img src="docs/screenshots/command.png" width="90%" alt="DexNest command home" />
 </div>
--->
 
 ## Contents
 
 - [Why DexNest](#why-dexnest)
-- [Features](#features)
+- [Modules](#modules)
 - [Install (download & run)](#install-download--run)
 - [Build from source](#build-from-source)
 - [Optional: local voice (wake word + dictation)](#optional-local-voice-wake-word--dictation)
@@ -42,17 +40,84 @@ No cloud. No accounts. No telemetry. Your data stays in one local folder you con
 - **One shell, many modules.** Instead of ten browser tabs and utilities, it's one app with a fast command palette.
 - **Yours to change.** Open source under MIT - read it, fork it, wire in your own modules.
 
-## Features
+## Modules
 
-- **Command home** - global-hotkey palette to run any action fast.
-- **Drop** - AirDrop-style local bridge between this PC and your phone over Wi-Fi (scan a QR, send text/files both ways). No relay servers.
-- **Finance** - local expense tracking with profiles (personal/business), receipts, recurring expenses, and a period dashboard (day / month / quarter / year / all-time / custom range).
+Every module runs locally and writes only to your `local-data/` folder. Each one
+registers actions into a shared registry, so anything a module can do is also
+runnable from the command palette, a Stream Deck, or (optionally) by voice.
+
+### Command
+Your home base: a global-hotkey command palette that can run any action across
+every module, plus quick-action pins, a live dashboard, and at-a-glance weather /
+calendar / nudges. It's the fastest way to do anything in DexNest.
+
+<div align="center"><img src="docs/screenshots/command.png" width="88%" alt="Command home" /></div>
+
+### Search / Ask
+One local search box over your DexNest data (documents, clipboard, journal,
+finder, events, and more), plus an "Ask" mode for quick lookups - all matched
+locally with no queries leaving your machine.
+
+<div align="center"><img src="docs/screenshots/search.png" width="88%" alt="Search / Ask" /></div>
+
+### Drop
+An AirDrop-style bridge between this PC and your phone over your local Wi-Fi. Scan
+a QR code and send text or files both ways with an explicit Send button - no relay
+servers, no accounts, nothing leaves your network.
+
+<div align="center"><img src="docs/screenshots/drop.png" width="88%" alt="Drop" /></div>
+
+### Finance
+Local expense tracking with separate profiles (e.g. personal / business),
+receipts, and recurring expenses that auto-post into the month. A period dashboard
+(day / month / quarter / year / all-time / custom range) shows spend, a category
+breakdown, and trends.
+
+<div align="center"><img src="docs/screenshots/finance.png" width="88%" alt="Finance" /></div>
+
+### Tools
+On-demand local file utilities - OCR, PDF compression, format conversions, and
+similar - that run only when you ask, so idle CPU stays near zero. Outputs land in
+your local files folder.
+
+<div align="center"><img src="docs/screenshots/tools.png" width="88%" alt="Tools" /></div>
+
+### Deck (Stream Deck bridge)
+Exposes DexNest actions to an Elgato Stream Deck through a localhost endpoint, and
+can build/export a Deck pack from your Dev projects and common actions - physical
+buttons for your most-used commands.
+
+<div align="center"><img src="docs/screenshots/deck.png" width="88%" alt="Deck" /></div>
+
+### Heatmap
+A privacy-first local activity heatmap: it samples lightweight, metadata-only
+signals (never content) to show when you're active and where your time goes, with
+on-demand aggregation so it never runs hot.
+
+<div align="center"><img src="docs/screenshots/heatmap.png" width="88%" alt="Heatmap" /></div>
+
+### Utilities
+Everyday quick tools in one place - timers, world clocks, unit/date conversions,
+and small calculators - kept local and instant.
+
+<div align="center"><img src="docs/screenshots/utilities.png" width="88%" alt="Utilities" /></div>
+
+### The rest
+
 - **Calendar** - events with real recurrence (daily/weekly/monthly/yearly), color tags, and lead-time reminders.
-- **Vault & OCR** - a local document vault with optional on-device OCR and an encrypted secure vault.
-- **Clipboard** - searchable local clipboard history and snippets.
-- **Stream Deck bridge** - control DexNest from an Elgato Stream Deck via a localhost endpoint.
-- **Voice (optional)** - local wake word ("Hey Jarvis") and speech-to-text using on-device models. See [Optional: local voice](#optional-local-voice-wake-word--dictation).
-- **More** - Dev dashboard, Heatmap, Journal, Finder, Capture, Weather, News, reminders/nudges.
+- **Timetable** - plan a repeating weekly routine in time blocks; it tracks your current block and resets each day.
+- **Vault & OCR** - a local document vault with optional on-device OCR and a separate encrypted "secure vault" for sensitive files.
+- **Clipboard** - searchable local clipboard history, snippets, and multi-copy slots.
+- **Journal** - a fast daily journal with optional voice dictation and light structure (mood, tags, people).
+- **Finder** - remember where you put physical things ("where did I put my passport?") with location/room/container.
+- **Capture** - a quick inbox to dump notes, links, and tasks, then route them to the right module.
+- **Dev** - a daily project launcher: open a project's folder / VS Code / terminal, its live/localhost URLs, and saved commands.
+- **Weather** - optional online weather (Open-Meteo, with a MET Norway fallback); no API key, off by default.
+- **News** - optional local RSS headlines, cached on disk; no accounts, no tracking.
+- **Reminders & Nudges** - gentle, local reminders surfaced from your calendar, vault expiries, finance deadlines, and more.
+- **External Devices** - optional local control of smart-home devices (e.g. Govee lights); any key you add stays in `local-data/`.
+- **Backup** - one-click local backup/restore to a zip under `local-data/backups`.
+- **Voice / Ambient (optional)** - local wake word ("Hey Jarvis") + on-device speech-to-text to run commands hands-free. See [Optional: local voice](#optional-local-voice-wake-word--dictation).
 
 ## Install (download & run)
 

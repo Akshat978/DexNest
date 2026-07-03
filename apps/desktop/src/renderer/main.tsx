@@ -1360,6 +1360,7 @@ interface TimetableBlock {
   accent: string;
   notes: string;
   status: TimetableBlockStatus;
+  statusDate?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -11471,6 +11472,12 @@ function TimetableView({
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
   const currentBlock = timetableState.currentBlock;
   const nextBlock = timetableState.nextBlock;
+  // The block the "What should I be doing now?" panel focuses on and acts upon:
+  // the active time-block if it's still planned, otherwise the next planned block
+  // today, so marking done/skip advances to what's next.
+  const focusBlock = (currentBlock && currentBlock.status === "planned")
+    ? currentBlock
+    : (sortedBlocks.filter((block) => block.day === timetableState.today).find((block) => block.status === "planned" && timeToMinutes(block.endTime) > nowMinutes) ?? currentBlock);
 
   function titleCaseDay(day: TimetableDay): string {
     return day.slice(0, 1).toUpperCase() + day.slice(1);
@@ -11613,11 +11620,11 @@ function TimetableView({
   }
 
   async function runCurrentAction(actionId: "timetable.mark_done" | "timetable.mark_skipped"): Promise<void> {
-    if (!currentBlock) {
+    if (!focusBlock) {
       setMessage("No current Timetable block is active.");
       return;
     }
-    await markBlock(currentBlock, actionId);
+    await markBlock(focusBlock, actionId);
   }
 
   function goToday(): void {
@@ -11659,10 +11666,6 @@ function TimetableView({
     ["focus hours", `${focusHours.toFixed(1)}h`],
     ["week planned", `${timetableState.stats.plannedHours.toFixed(1)}h`]
   ] as const;
-  const timelineStart = Math.min(6 * 60, ...selectedBlocks.map((block) => timeToMinutes(block.startTime)));
-  const timelineEnd = Math.max(22 * 60, ...selectedBlocks.map((block) => timeToMinutes(block.endTime)));
-  const timelineRange = Math.max(60, timelineEnd - timelineStart);
-  const timelineHours = Array.from({ length: Math.floor((timelineEnd - timelineStart) / 60) + 1 }, (_, index) => timelineStart + index * 60);
 
   return (
     <div className="space-y-5 accent-timetable">
@@ -11709,25 +11712,25 @@ function TimetableView({
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(20rem,0.8fr)]">
         <GlassCard accent={ACCENT} glow hover={false}>
           <SectionTitle action={<Clock className="h-3.5 w-3.5" style={{ color: ACCENT }} />}>What should I be doing now?</SectionTitle>
-          {currentBlock ? (
+          {focusBlock ? (
             <div className="grid grid-cols-1 gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
               <div className="min-w-0">
                 <div className="mb-3 flex flex-wrap items-center gap-2">
-                  <CategoryChip category={currentBlock.category} />
-                  <StatusChip tone={currentBlock.status === "done" ? "ok" : currentBlock.status === "skipped" ? "warn" : "running"}>{currentBlock.status}</StatusChip>
-                  <span className="font-mono text-xs" style={{ color: "var(--text-muted)" }}>{currentBlock.startTime} - {currentBlock.endTime}</span>
+                  <CategoryChip category={focusBlock.category} />
+                  <StatusChip tone={focusBlock.status === "done" ? "ok" : focusBlock.status === "skipped" ? "warn" : "running"}>{focusBlock.status}</StatusChip>
+                  <span className="font-mono text-xs" style={{ color: "var(--text-muted)" }}>{focusBlock.startTime} - {focusBlock.endTime}</span>
                 </div>
-                <h2 className="truncate text-3xl font-semibold tracking-tight" style={{ color: "var(--text)" }}>{currentBlock.title}</h2>
-                {currentBlock.notes ? <p className="mt-2 line-clamp-2 text-sm" style={{ color: "var(--text-muted)" }}>{currentBlock.notes}</p> : <p className="mt-2 text-sm" style={{ color: "var(--text-disabled)" }}>No notes for this block.</p>}
+                <h2 className="truncate text-3xl font-semibold tracking-tight" style={{ color: "var(--text)" }}>{focusBlock.title}</h2>
+                {focusBlock.notes ? <p className="mt-2 line-clamp-2 text-sm" style={{ color: "var(--text-muted)" }}>{focusBlock.notes}</p> : <p className="mt-2 text-sm" style={{ color: "var(--text-disabled)" }}>No notes for this block.</p>}
                 <div className="mt-4 h-2 overflow-hidden rounded-full" style={{ background: "var(--surface-2)" }}>
-                  <div className="h-full rounded-full" style={{ width: `${blockProgress(currentBlock)}%`, background: ACCENT }} />
+                  <div className="h-full rounded-full" style={{ width: `${blockProgress(focusBlock)}%`, background: ACCENT }} />
                 </div>
-                <p className="mt-1 font-mono text-[10px]" style={{ color: "var(--text-muted)" }}>{Math.round(blockProgress(currentBlock))}% through this block</p>
+                <p className="mt-1 font-mono text-[10px]" style={{ color: "var(--text-muted)" }}>{Math.round(blockProgress(focusBlock))}% through this block</p>
               </div>
               <div className="flex flex-wrap gap-2 md:flex-col">
                 <ActionButton accent={ACCENT} icon={Check} onClick={() => void runCurrentAction("timetable.mark_done")}>Mark Done</ActionButton>
                 <ActionButton accent={SECONDARY} icon={ArrowRight} variant="soft" onClick={() => void runCurrentAction("timetable.mark_skipped")}>Skip</ActionButton>
-                <button type="button" onClick={() => loadBlock(currentBlock)}>Move</button>
+                <button type="button" onClick={() => loadBlock(focusBlock)}>Move</button>
               </div>
             </div>
           ) : (
@@ -11777,8 +11780,8 @@ function TimetableView({
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                 <div className="flex flex-wrap gap-2">
                   {TIMETABLE_DAYS.map((day) => {
-                    const count = sortedBlocks.filter((block) => block.day === day).length;
                     const active = day === selectedDay;
+                    const isToday = day === timetableState.today;
                     return (
                       <button
                         key={day}
@@ -11791,7 +11794,7 @@ function TimetableView({
                           color: active ? ACCENT : "var(--text-muted)"
                         }}
                       >
-                        {titleCaseDay(day).slice(0, 3)} <span className="font-mono">{count}</span>
+                        {titleCaseDay(day).slice(0, 3)}{isToday ? <span className="ml-1 inline-block h-1.5 w-1.5 rounded-full align-middle" style={{ background: ACCENT }} /> : null}
                       </button>
                     );
                   })}
@@ -11811,52 +11814,47 @@ function TimetableView({
                   <ActionButton accent={ACCENT} icon={Plus} className="mt-4" onClick={() => openAddBlock(selectedDay)}>Add {titleCaseDay(selectedDay)} block</ActionButton>
                 </div>
               ) : (
-                <div className="relative min-h-[34rem] rounded-xl border p-4" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
-                  {timelineHours.map((minute) => (
-                    <div key={minute} className="absolute left-4 right-4 border-t" style={{ top: `${((minute - timelineStart) / timelineRange) * 100}%`, borderColor: "var(--border)" }}>
-                      <span className="absolute -top-2 w-14 pr-2 text-right font-mono text-[10px]" style={{ color: "var(--text-disabled)", background: "var(--surface)" }}>{`${String(Math.floor(minute / 60)).padStart(2, "0")}:00`}</span>
-                    </div>
-                  ))}
-                  <div className="absolute bottom-4 left-[5.25rem] right-4 top-4">
-                    {selectedBlocks.map((block) => {
-                      const top = ((timeToMinutes(block.startTime) - timelineStart) / timelineRange) * 100;
-                      const height = Math.max(8, ((timeToMinutes(block.endTime) - timeToMinutes(block.startTime)) / timelineRange) * 100);
-                      const conflicts = eventConflicts(block);
-                      const color = categoryTone(block.category);
-                      return (
-                        <article
-                          key={block.id}
-                          className="absolute left-0 right-0 overflow-hidden rounded-xl border px-3 py-2 shadow-sm"
-                          style={{
-                            top: `${top}%`,
-                            minHeight: "4.25rem",
-                            height: `${height}%`,
-                            borderColor: `color-mix(in srgb, ${color} 44%, var(--border))`,
-                            background: `linear-gradient(90deg, color-mix(in srgb, ${color} 12%, transparent), var(--surface-2))`
-                          }}
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <p className="truncate font-semibold" style={{ color: "var(--text)" }}>{block.title}</p>
-                                <CategoryChip category={block.category} />
-                                <StatusChip tone={block.status === "done" ? "ok" : block.status === "skipped" ? "warn" : "info"}>{block.status}</StatusChip>
-                                {conflicts.length > 0 && <StatusChip tone="warn">{conflicts.length} conflict{conflicts.length === 1 ? "" : "s"}</StatusChip>}
-                              </div>
-                              <p className="mt-1 font-mono text-[10px]" style={{ color: "var(--text-muted)" }}>{block.startTime} - {block.endTime} / {blockHours(block).toFixed(1)}h</p>
-                              {block.notes && <p className="mt-1 line-clamp-1 text-xs" style={{ color: "var(--text-muted)" }}>{block.notes}</p>}
-                            </div>
-                            <div className="flex shrink-0 flex-wrap gap-1">
-                              <button type="button" onClick={() => loadBlock(block)}>Edit</button>
-                              <button type="button" onClick={() => void markBlock(block, "timetable.mark_done")}>Done</button>
-                              <button type="button" onClick={() => void markBlock(block, "timetable.mark_skipped")}>Skip</button>
-                              <button type="button" className="danger-button" onClick={() => void deleteBlock(block)}>Delete</button>
-                            </div>
+                <div className="space-y-2">
+                  {selectedBlocks.map((block) => {
+                    const conflicts = eventConflicts(block);
+                    const color = categoryTone(block.category);
+                    const isCurrent = selectedDay === timetableState.today && block.id === currentBlock?.id;
+                    const smallBtn = "rounded-md border px-2.5 py-1 text-xs font-medium transition-colors";
+                    return (
+                      <article
+                        key={block.id}
+                        className="flex flex-wrap items-center gap-3 rounded-xl border p-3"
+                        style={{
+                          borderColor: isCurrent ? color : "var(--border)",
+                          borderLeftWidth: 3,
+                          borderLeftColor: color,
+                          background: "var(--surface-2)",
+                          opacity: block.status === "skipped" ? 0.6 : 1
+                        }}
+                      >
+                        <div className="w-16 shrink-0 font-mono text-xs leading-tight">
+                          <div style={{ color: "var(--text)" }}>{block.startTime}</div>
+                          <div style={{ color: "var(--text-muted)" }}>{block.endTime}</div>
+                          <div className="text-[10px]" style={{ color: "var(--text-disabled)" }}>{blockHours(block).toFixed(1)}h</div>
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="truncate font-semibold" style={{ color: "var(--text)", textDecoration: block.status === "done" ? "line-through" : "none" }}>{block.title}</p>
+                            <CategoryChip category={block.category} />
+                            <StatusChip tone={block.status === "done" ? "ok" : block.status === "skipped" ? "warn" : isCurrent ? "running" : "info"}>{isCurrent && block.status === "planned" ? "now" : block.status}</StatusChip>
+                            {conflicts.length > 0 && <StatusChip tone="warn">{conflicts.length} conflict{conflicts.length === 1 ? "" : "s"}</StatusChip>}
                           </div>
-                        </article>
-                      );
-                    })}
-                  </div>
+                          {block.notes && <p className="mt-1 line-clamp-1 text-xs" style={{ color: "var(--text-muted)" }}>{block.notes}</p>}
+                        </div>
+                        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                          <button type="button" className={smallBtn} style={{ borderColor: "var(--border)", color: "var(--text-muted)" }} onClick={() => loadBlock(block)}>Edit</button>
+                          <button type="button" className={smallBtn} style={{ borderColor: "color-mix(in srgb, var(--success) 40%, transparent)", color: "var(--success)" }} onClick={() => void markBlock(block, "timetable.mark_done")}>Done</button>
+                          <button type="button" className={smallBtn} style={{ borderColor: "color-mix(in srgb, var(--warning) 40%, transparent)", color: "var(--warning)" }} onClick={() => void markBlock(block, "timetable.mark_skipped")}>Skip</button>
+                          <button type="button" className={smallBtn} style={{ borderColor: "color-mix(in srgb, var(--error) 40%, transparent)", color: "var(--error)" }} onClick={() => void deleteBlock(block)}>Delete</button>
+                        </div>
+                      </article>
+                    );
+                  })}
                 </div>
               )}
             </GlassCard>

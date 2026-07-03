@@ -1180,6 +1180,9 @@ interface TimetableBlock {
   accent: string;
   notes: string;
   status: TimetableBlockStatus;
+  // The date (YYYY-MM-DD) the status was last set. done/skipped auto-reset to
+  // "planned" on a new day so a repeating weekly plan starts fresh each day.
+  statusDate?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -1209,6 +1212,7 @@ interface TimetableBlockInput {
   accent?: string;
   notes?: string;
   status?: TimetableBlockStatus;
+  statusDate?: string | null;
   fromDay?: TimetableDay;
   toDay?: TimetableDay;
   templateId?: string;
@@ -7220,6 +7224,30 @@ function saveTimetableFile(file: TimetableFile): TimetableFile {
   return writeJsonFile(timetablePath, { ...file, updatedAt: new Date().toISOString() });
 }
 
+// Reset any done/skipped block whose status was set on a previous day back to
+// "planned", so the repeating weekly timetable starts each day fresh (Monday's
+// completions don't linger on Tuesday). Runs whenever timetable state is read.
+function reconcileTimetableStatuses(file: TimetableFile): TimetableFile {
+  const today = todayDateString();
+  let changed = false;
+  const templates = file.templates.map((template) => {
+    let templateChanged = false;
+    const blocks = template.blocks.map((block) => {
+      if (block.status !== "planned" && block.statusDate !== today) {
+        templateChanged = true;
+        return { ...block, status: "planned" as TimetableBlockStatus, statusDate: null };
+      }
+      return block;
+    });
+    if (templateChanged) { changed = true; return { ...template, blocks }; }
+    return template;
+  });
+  if (!changed) { return file; }
+  const next = { ...file, templates };
+  saveTimetableFile(next);
+  return next;
+}
+
 function defaultUtilitiesFile(): UtilitiesFile {
   const now = new Date().toISOString();
   return {
@@ -12229,7 +12257,7 @@ function timetableStats(blocks: TimetableBlock[]) {
 }
 
 function timetableState() {
-  const file = loadTimetableFile();
+  const file = reconcileTimetableStatuses(loadTimetableFile());
   const activeTemplate = activeTimetableTemplate(file);
   const now = new Date();
   const today = currentTimetableDay();
@@ -16797,6 +16825,7 @@ function normalizeTimetableBlock(input: TimetableBlockInput, existing?: Timetabl
     accent: input.accent?.trim() || existing?.accent || "var(--accent-timetable)",
     notes: input.notes ?? existing?.notes ?? "",
     status: input.status ?? existing?.status ?? "planned",
+    statusDate: input.statusDate ?? existing?.statusDate ?? null,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now
   };
@@ -16866,7 +16895,7 @@ function runTimetableAction(action: DexNestActionDefinition, source: DexNestActi
       if (!existing) {
         throw new Error("No current Timetable block to update.");
       }
-      const updated = { ...existing, status, updatedAt: new Date().toISOString() };
+      const updated = { ...existing, status, statusDate: todayDateString(), updatedAt: new Date().toISOString() };
       saveTemplate({ ...template, blocks: [updated, ...template.blocks.filter((block) => block.id !== updated.id)], updatedAt: updated.updatedAt });
       logTimetableEvent(action.id, "success", source, status === "done" ? "Marked current Timetable block done." : "Skipped current Timetable block.", { blockId: updated.id, day: updated.day, category: updated.category, status }, startedAt);
       return { ok: true, actionId: action.id, block: updated, timetableState: timetableState(), message: status === "done" ? "Marked current block done." : "Skipped current block." };
