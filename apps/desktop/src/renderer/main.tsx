@@ -1471,13 +1471,13 @@ interface WeatherSettings {
   showWeatherOnCommand: boolean;
   refreshMode: WeatherRefreshMode;
   refreshOnCommandOpen: boolean;
-  provider: "open_meteo";
+  provider: "open_meteo" | "met_no";
   lastRefreshAt: string | null;
   lastAutoRefreshAt: string | null;
 }
 
 interface WeatherCache {
-  provider: "open_meteo";
+  provider: "open_meteo" | "met_no";
   locationName: string;
   latitude: number | null;
   longitude: number | null;
@@ -17174,8 +17174,8 @@ function SettingsView({
           </article>
           <article>
             <span>Provider</span>
-            <strong>Open-Meteo</strong>
-            <p>No API key. Only used when Weather is enabled and refreshed.</p>
+            <strong>{weatherState.cache.provider === "met_no" ? "MET Norway" : "Open-Meteo"}</strong>
+            <p>No API key. Open-Meteo with automatic MET Norway fallback if your network blocks it.</p>
           </article>
           <article>
             <span>Cache</span>

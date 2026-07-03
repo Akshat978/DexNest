@@ -1301,7 +1301,7 @@ interface UtilitiesInput {
 
 type WeatherUnits = "metric" | "imperial";
 type WeatherRefreshMode = "manual" | "every_30_min" | "every_1_hour" | "every_2_hours";
-type WeatherProvider = "open_meteo";
+type WeatherProvider = "open_meteo" | "met_no";
 type WeatherCacheStatus = "empty" | "fresh" | "stale" | "offline" | "error";
 
 interface WeatherSettings {
@@ -7431,7 +7431,9 @@ function weatherCondition(code: number | null): string {
 
 function getJsonUrl(url: string, timeoutMs = 9000): Promise<unknown> {
   return new Promise((resolveJson, rejectJson) => {
-    const request = httpsGet(url, (response) => {
+    // A User-Agent is required by some providers (e.g. api.met.no) and avoids
+    // resets on others. Identify the app; no personal data is sent.
+    const request = httpsGet(url, { headers: { "User-Agent": "DexNest/1.0 (github.com/Akshat978/DexNest)", "Accept": "application/json" } }, (response) => {
       let body = "";
       response.setEncoding("utf8");
       response.on("data", (chunk) => { body += String(chunk); });
@@ -7499,6 +7501,90 @@ function logWeatherEvent(actionId: string, status: DexNestEventStatus, source: D
   });
 }
 
+interface FetchedWeather {
+  temperature: number | null;
+  feelsLike: number | null;
+  condition: string;
+  weatherCode: number | null;
+  high: number | null;
+  low: number | null;
+  precipitationChance: number | null;
+  windSpeed: number | null;
+}
+
+const asNum = (value: unknown): number | null => (Number.isFinite(Number(value)) ? Number(value) : null);
+
+async function fetchOpenMeteoWeather(settings: WeatherSettings): Promise<FetchedWeather> {
+  const unitParam = settings.units === "imperial" ? "&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch" : "";
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${encodeURIComponent(String(settings.latitude))}&longitude=${encodeURIComponent(String(settings.longitude))}&current=temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&forecast_days=1${unitParam}`;
+  const data = await getJsonUrl(url, 7000) as { current?: Record<string, number>; daily?: Record<string, number[]> };
+  const code = asNum(data.current?.weather_code);
+  return {
+    temperature: asNum(data.current?.temperature_2m),
+    feelsLike: asNum(data.current?.apparent_temperature),
+    condition: weatherCondition(code),
+    weatherCode: code,
+    high: asNum(data.daily?.temperature_2m_max?.[0]),
+    low: asNum(data.daily?.temperature_2m_min?.[0]),
+    precipitationChance: asNum(data.daily?.precipitation_probability_max?.[0]),
+    windSpeed: asNum(data.current?.wind_speed_10m)
+  };
+}
+
+// Map met.no symbol_code (e.g. "clearsky_day", "lightrainshowers_night") to the
+// same condition label + an approximate WMO weather code used for the UI icon.
+function metNoSymbolToWeather(symbol: string): { condition: string; code: number | null } {
+  const s = (symbol || "").toLowerCase();
+  if (s.includes("thunder")) return { condition: "Thunderstorm", code: 95 };
+  if (s.includes("sleet")) return { condition: "Rain", code: 66 };
+  if (s.includes("snow")) return { condition: "Snow", code: 71 };
+  if (s.includes("rain") || s.includes("drizzle") || s.includes("showers")) return { condition: "Rain", code: 61 };
+  if (s.includes("fog")) return { condition: "Fog", code: 45 };
+  if (s.includes("cloudy")) return { condition: "Partly cloudy", code: 3 };
+  if (s.includes("fair") || s.includes("partly")) return { condition: "Partly cloudy", code: 2 };
+  if (s.includes("clear")) return { condition: "Clear", code: 0 };
+  return { condition: "Weather", code: null };
+}
+
+// Fallback provider (MET Norway) used when Open-Meteo is unreachable (some
+// networks reset connections to api.open-meteo.com). Free, no API key; requires
+// a User-Agent (sent by getJsonUrl).
+async function fetchMetNoWeather(settings: WeatherSettings): Promise<FetchedWeather> {
+  const url = `https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=${encodeURIComponent(String(settings.latitude))}&lon=${encodeURIComponent(String(settings.longitude))}`;
+  const data = await getJsonUrl(url, 9000) as {
+    properties?: { timeseries?: Array<{ data?: { instant?: { details?: Record<string, number> }; next_1_hours?: { summary?: { symbol_code?: string }; details?: Record<string, number> }; next_6_hours?: { summary?: { symbol_code?: string }; details?: Record<string, number> } } }> };
+  };
+  const series = data.properties?.timeseries ?? [];
+  const first = series[0];
+  const details = first?.data?.instant?.details;
+  if (!details) {
+    throw new Error("MET Norway returned no forecast data.");
+  }
+  const imperial = settings.units === "imperial";
+  const tempC = Number(details.air_temperature);
+  const windMs = Number(details.wind_speed);
+  // Open-Meteo metric wind is km/h; met.no is m/s. Convert so displayed units match.
+  const windSpeed = Number.isFinite(windMs) ? Math.round((imperial ? windMs * 2.236936 : windMs * 3.6) * 10) / 10 : null;
+  const conv = (c: number): number => imperial ? c * 9 / 5 + 32 : c;
+  const temperature = Number.isFinite(tempC) ? Math.round(conv(tempC) * 10) / 10 : null;
+  const sym = first?.data?.next_1_hours?.summary?.symbol_code ?? first?.data?.next_6_hours?.summary?.symbol_code ?? "";
+  const mapped = metNoSymbolToWeather(sym);
+  const precipProb = Number(first?.data?.next_1_hours?.details?.probability_of_precipitation ?? first?.data?.next_6_hours?.details?.probability_of_precipitation ?? NaN);
+  const next24 = series.slice(0, 24).map((entry) => Number(entry.data?.instant?.details?.air_temperature)).filter((value) => Number.isFinite(value));
+  const highC = next24.length ? Math.max(...next24) : (Number.isFinite(tempC) ? tempC : null);
+  const lowC = next24.length ? Math.min(...next24) : (Number.isFinite(tempC) ? tempC : null);
+  return {
+    temperature,
+    feelsLike: null, // met.no compact has no apparent-temperature field
+    condition: mapped.condition,
+    weatherCode: mapped.code,
+    high: highC === null ? null : Math.round(conv(highC) * 10) / 10,
+    low: lowC === null ? null : Math.round(conv(lowC) * 10) / 10,
+    precipitationChance: Number.isFinite(precipProb) ? precipProb : null,
+    windSpeed
+  };
+}
+
 async function refreshWeather(source: DexNestActionTrigger | "system", reason: "manual" | "auto" | "command_open" | "voice" = "manual") {
   const startedAt = Date.now();
   const settings = loadWeatherSettings();
@@ -7528,33 +7614,40 @@ async function refreshWeather(source: DexNestActionTrigger | "system", reason: "
 
   weatherRefreshInFlight = true;
   try {
-    const unitParam = settings.units === "imperial" ? "&temperature_unit=fahrenheit&wind_speed_unit=mph&precipitation_unit=inch" : "";
-    const url = `https://api.open-meteo.com/v1/forecast?latitude=${encodeURIComponent(String(settings.latitude))}&longitude=${encodeURIComponent(String(settings.longitude))}&current=temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&forecast_days=1${unitParam}`;
-    const data = await getJsonUrl(url) as {
-      current?: Record<string, number>;
-      daily?: Record<string, number[]>;
-    };
-    const code = Number.isFinite(Number(data.current?.weather_code)) ? Number(data.current?.weather_code) : null;
+    // Primary: Open-Meteo. Fallback: MET Norway (api.met.no) when the primary is
+    // unreachable (e.g. a network that resets connections to api.open-meteo.com).
+    let fetched: FetchedWeather;
+    let providerUsed: WeatherProvider = "open_meteo";
+    try {
+      fetched = await fetchOpenMeteoWeather(settings);
+    } catch (primaryError) {
+      try {
+        fetched = await fetchMetNoWeather(settings);
+        providerUsed = "met_no";
+      } catch {
+        throw primaryError; // report the primary failure if both providers fail
+      }
+    }
     const cache = saveWeatherCache({
-      provider: "open_meteo",
+      provider: providerUsed,
       locationName: settings.locationName || "Weather location",
       latitude: settings.latitude,
       longitude: settings.longitude,
       units: settings.units,
-      temperature: Number.isFinite(Number(data.current?.temperature_2m)) ? Number(data.current?.temperature_2m) : null,
-      feelsLike: Number.isFinite(Number(data.current?.apparent_temperature)) ? Number(data.current?.apparent_temperature) : null,
-      condition: weatherCondition(code),
-      weatherCode: code,
-      high: Number.isFinite(Number(data.daily?.temperature_2m_max?.[0])) ? Number(data.daily?.temperature_2m_max?.[0]) : null,
-      low: Number.isFinite(Number(data.daily?.temperature_2m_min?.[0])) ? Number(data.daily?.temperature_2m_min?.[0]) : null,
-      precipitationChance: Number.isFinite(Number(data.daily?.precipitation_probability_max?.[0])) ? Number(data.daily?.precipitation_probability_max?.[0]) : null,
-      windSpeed: Number.isFinite(Number(data.current?.wind_speed_10m)) ? Number(data.current?.wind_speed_10m) : null,
+      temperature: fetched.temperature,
+      feelsLike: fetched.feelsLike,
+      condition: fetched.condition,
+      weatherCode: fetched.weatherCode,
+      high: fetched.high,
+      low: fetched.low,
+      precipitationChance: fetched.precipitationChance,
+      windSpeed: fetched.windSpeed,
       fetchedAt: new Date().toISOString(),
       sourceStatus: "online",
       error: null
     });
     saveWeatherSettings(reason === "auto" ? { lastRefreshAt: cache.fetchedAt, lastAutoRefreshAt: cache.fetchedAt } : { lastRefreshAt: cache.fetchedAt });
-    logWeatherEvent("weather.refresh", "success", source, "Refreshed DexNest Weather.", { provider: settings.provider, reason, status: "online", units: settings.units }, startedAt);
+    logWeatherEvent("weather.refresh", "success", source, "Refreshed DexNest Weather.", { provider: providerUsed, reason, status: "online", units: settings.units }, startedAt);
     return { ok: true, actionId: "weather.refresh", status: "success", message: weatherAnswerText(weatherState()), weatherState: weatherState() };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Weather refresh failed.";
