@@ -1,0 +1,53 @@
+name: Release Windows installer
+
+# Builds the DexNest Windows installer and attaches it to a GitHub Release.
+# Trigger by pushing a version tag (e.g. `git tag v0.1.0 && git push origin v0.1.0`)
+# or run it manually from the Actions tab.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write # needed to create the release and upload the installer
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Enable Corepack (pnpm)
+        run: corepack enable
+
+      - name: Install dependencies
+        run: corepack pnpm install --frozen-lockfile
+
+      - name: Rebuild native modules for Electron
+        run: corepack pnpm -C apps/desktop rebuild:native
+
+      - name: Build and package Windows installer (NSIS)
+        run: corepack pnpm -C apps/desktop package:win:installer
+
+      - name: Upload installer as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dexnest-windows-installer
+          path: apps/desktop/release/*.exe
+          if-no-files-found: error
+
+      - name: Attach installer to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: apps/desktop/release/*.exe
+          draft: true # publish it yourself after checking the build
+          generate_release_notes: true
