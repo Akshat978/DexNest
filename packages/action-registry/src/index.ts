@@ -2965,6 +2965,24 @@ export const seededActions = [
     enabled: true,
     status: "available"
   },
+  {
+    id: "finance.set_period",
+    title: "Set Finance Period",
+    moduleId: "finance",
+    module: "finance",
+    description: "Set the DexNest Finance dashboard period (day, month, quarter, year, all-time, or custom range) for the active profile.",
+    category: "finance.profiles",
+    dangerLevel: "safe",
+    requiresConfirmation: false,
+    confirmationRule: null,
+    reversible: false,
+    undoActionId: null,
+    handlerType: "internal_function",
+    handlerRef: "finance.set_period",
+    allowedTriggers: ["command", "module_ui"],
+    enabled: true,
+    status: "available"
+  },
   ...[
     ["finance.profile.create", "Create Finance Profile", "Create a new DexNest Finance profile."],
     ["finance.profile.rename", "Rename Finance Profile", "Rename a DexNest Finance profile."],

@@ -1255,9 +1255,49 @@ interface CalendarEvent {
   sourceId?: string | null;
   recurrence?: string | null;
   reminderLevel: "soft" | "normal" | "urgent";
+  reminderMinutesBefore?: number | null;
+  color?: string | null;
   notes?: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+const CALENDAR_COLORS = ["#14B8A6", "#38BDF8", "#22C55E", "#F59E0B", "#EF4444", "#A855F7", "#EC4899", "#3B82F6", "#84CC16", "#F97316"];
+const CALENDAR_RECURRENCE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "none", label: "Does not repeat" },
+  { value: "daily", label: "Daily" },
+  { value: "weekly", label: "Weekly" },
+  { value: "monthly", label: "Monthly" },
+  { value: "yearly", label: "Yearly" }
+];
+const CALENDAR_REMINDER_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "", label: "No reminder" },
+  { value: "0", label: "At start time" },
+  { value: "30", label: "30 minutes before" },
+  { value: "60", label: "1 hour before" },
+  { value: "720", label: "12 hours before" },
+  { value: "1440", label: "1 day before" }
+];
+function normalizeRecurrenceValue(value: unknown): string {
+  const v = String(value ?? "").toLowerCase();
+  if (v.startsWith("dai")) return "daily";
+  if (v.startsWith("week")) return "weekly";
+  if (v.startsWith("month")) return "monthly";
+  if (v.startsWith("year") || v.includes("yearly-placeholder") || v.includes("annual")) return "yearly";
+  return "none";
+}
+// Does a (possibly recurring) event fall on the given YYYY-MM-DD?
+function calendarEventOccursOn(event: CalendarEvent, dateStr: string, parse: (s: string) => Date): boolean {
+  const kind = normalizeRecurrenceValue(event.recurrence);
+  if (kind === "none") return event.date === dateStr;
+  if (dateStr < event.date) return false;
+  const base = parse(event.date);
+  const target = parse(dateStr);
+  if (kind === "daily") return true;
+  if (kind === "weekly") return Math.round((target.getTime() - base.getTime()) / 86400000) % 7 === 0;
+  if (kind === "monthly") return target.getDate() === base.getDate();
+  if (kind === "yearly") return target.getDate() === base.getDate() && target.getMonth() === base.getMonth();
+  return false;
 }
 
 type NudgePriority = "soft" | "normal" | "urgent";
@@ -1598,6 +1638,28 @@ interface FinanceSummary {
   transactionCount: number;
 }
 
+type FinancePeriodKind = "day" | "month" | "quarter" | "year" | "all" | "custom";
+
+interface FinancePeriod {
+  kind: FinancePeriodKind;
+  start: string;
+  end: string;
+  label: string;
+  comparable: boolean;
+  customStart: string;
+  customEnd: string;
+}
+
+interface FinancePeriodSummary {
+  total: number;
+  previousTotal: number;
+  categoryTotals: Record<string, number>;
+  paymentTypeTotals: Record<string, number>;
+  cashTotal: number;
+  cardTotal: number;
+  transactionCount: number;
+}
+
 interface FinanceProfile {
   id: string;
   name: string;
@@ -1619,6 +1681,8 @@ interface FinanceState {
   settingsPath: string;
   receiptsPath: string;
   summary: FinanceSummary;
+  period: FinancePeriod;
+  periodSummary: FinancePeriodSummary;
   deadlines: {
     returns7: FinanceTransaction[];
     returns30: FinanceTransaction[];
@@ -4467,6 +4531,8 @@ function DexNestApp() {
       cardTotal: 0,
       transactionCount: 0
     },
+    period: { kind: "month", start: "", end: "", label: "", comparable: true, customStart: "", customEnd: "" },
+    periodSummary: { total: 0, previousTotal: 0, categoryTotals: {}, paymentTypeTotals: {}, cashTotal: 0, cardTotal: 0, transactionCount: 0 },
     deadlines: { returns7: [], returns30: [], warranties90: [], expiredReturns: [] }
   });
   const [captureState, setCaptureState] = useState<CaptureState>({
@@ -10970,7 +11036,7 @@ function TimetableViewLegacy({
   const selectedBlocks = sortedBlocks.filter((block) => block.day === selectedDay);
   const todayBlocks = sortedBlocks.filter((block) => block.day === timetableState.today);
   const selectedDate = dateForTimetableDay(selectedDay, calendarState.today);
-  const selectedEvents = calendarState.events.filter((event) => event.date === selectedDate);
+  const selectedEvents = calendarState.events.filter((event) => calendarEventOccursOn(event, selectedDate, parseLocalDateInput));
 
   function titleCaseDay(day: TimetableDay): string {
     return day.slice(0, 1).toUpperCase() + day.slice(1);
@@ -11345,7 +11411,7 @@ function TimetableView({
   const selectedBlocks = sortedBlocks.filter((block) => block.day === selectedDay);
   const todayBlocks = sortedBlocks.filter((block) => block.day === timetableState.today);
   const selectedDate = dateForTimetableDay(selectedDay, calendarState.today);
-  const selectedEvents = calendarState.events.filter((event) => event.date === selectedDate);
+  const selectedEvents = calendarState.events.filter((event) => calendarEventOccursOn(event, selectedDate, parseLocalDateInput));
   const now = new Date(tick);
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
   const currentBlock = timetableState.currentBlock;
@@ -11943,7 +12009,9 @@ function CalendarView({
   const [endTime, setEndTime] = useState("");
   const [allDay, setAllDay] = useState(false);
   const [reminderLevel, setReminderLevel] = useState<"soft" | "normal" | "urgent">("normal");
-  const [recurrence, setRecurrence] = useState("");
+  const [recurrence, setRecurrence] = useState("none");
+  const [remindBefore, setRemindBefore] = useState("");
+  const [eventColor, setEventColor] = useState<string | null>(null);
   const [notes, setNotes] = useState("");
   const [status, setStatus] = useState("");
   const [visibleMonth, setVisibleMonth] = useState(() => calendarState.today.slice(0, 7));
@@ -11979,11 +12047,11 @@ function CalendarView({
         label: String(day.getDate()),
         inMonth: value.startsWith(visibleMonth),
         isToday: value === calendarState.today,
-        events: calendarState.events.filter((event) => event.date === value)
+        events: calendarState.events.filter((event) => calendarEventOccursOn(event, value, parseLocalDateInput))
       };
     });
   }, [calendarState.events, calendarState.today, visibleMonth]);
-  const selectedDateEvents = calendarState.events.filter((event) => event.date === selectedDate);
+  const selectedDateEvents = calendarState.events.filter((event) => calendarEventOccursOn(event, selectedDate, parseLocalDateInput));
   const selectedEvent = selectedEventId ? calendarState.events.find((event) => event.id === selectedEventId) ?? null : null;
   const sortedSelectedEvents = [...selectedDateEvents].sort(sortCalendarEvents);
   const allDaySelectedEvents = sortedSelectedEvents.filter((event) => event.allDay);
@@ -11997,7 +12065,7 @@ function CalendarView({
       label: day.toLocaleDateString(undefined, { weekday: "short" }),
       dayNumber: day.getDate(),
       isToday: value === calendarState.today,
-      events: calendarState.events.filter((event) => event.date === value).sort(sortCalendarEvents)
+      events: calendarState.events.filter((event) => calendarEventOccursOn(event, value, parseLocalDateInput)).sort(sortCalendarEvents)
     };
   });
   const headerTitle = viewMode === "day"
@@ -12072,7 +12140,9 @@ function CalendarView({
     setEndTime(event.endTime ?? "");
     setAllDay(event.allDay);
     setReminderLevel(event.reminderLevel);
-    setRecurrence(event.recurrence ?? "");
+    setRecurrence(normalizeRecurrenceValue(event.recurrence));
+    setRemindBefore(event.reminderMinutesBefore != null ? String(event.reminderMinutesBefore) : "");
+    setEventColor(event.color ?? null);
     setNotes(event.notes ?? "");
   }
 
@@ -12093,7 +12163,9 @@ function CalendarView({
       setEndTime("");
     }
     setReminderLevel("normal");
-    setRecurrence("");
+    setRecurrence("none");
+    setRemindBefore("");
+    setEventColor(null);
     setNotes("");
     setShowEventModal(true);
     window.setTimeout(() => calendarTitleRef.current?.focus(), 0);
@@ -12109,7 +12181,9 @@ function CalendarView({
     setEndTime(candidate.endTime ?? "");
     setAllDay(candidate.allDay);
     setReminderLevel(candidate.reminderLevel);
-    setRecurrence(candidate.recurrence ?? "");
+    setRecurrence(normalizeRecurrenceValue(candidate.recurrence));
+    setRemindBefore("");
+    setEventColor(null);
     setNotes(candidate.notes);
   }
 
@@ -12121,7 +12195,9 @@ function CalendarView({
     setEndTime("");
     setAllDay(false);
     setReminderLevel("normal");
-    setRecurrence("");
+    setRecurrence("none");
+    setRemindBefore("");
+    setEventColor(null);
     setNotes("");
   }
 
@@ -12134,8 +12210,10 @@ function CalendarView({
       endTime: allDay ? null : endTime,
       allDay,
       sourceModule: "calendar",
-      recurrence: recurrence || null,
+      recurrence: recurrence === "none" ? null : recurrence,
       reminderLevel,
+      reminderMinutesBefore: remindBefore === "" ? null : Number(remindBefore),
+      color: eventColor,
       notes
     });
     setStatus(result.ok ? "Calendar event saved." : result.error ?? "Calendar save failed.");
@@ -12174,16 +12252,19 @@ function CalendarView({
   const nudgeColor = (p: string): string => p === "urgent" ? "#EF4444" : p === "normal" ? "#F59E0B" : "#14B8A6";
 
   function CalendarEventChip({ event, compact = false }: { event: CalendarEvent; compact?: boolean }) {
+    const dot = event.color ?? null;
     return (
       <button
         type="button"
         className={`calendar-event-chip ${compact ? "calendar-event-chip--compact" : ""}`}
+        style={dot ? { borderLeft: `3px solid ${dot}` } : undefined}
         onClick={(clickEvent) => {
           clickEvent.stopPropagation();
           loadEvent(event);
         }}
-        title={`${event.title} / ${eventTimeLabel(event)}`}
+        title={`${event.title} / ${eventTimeLabel(event)}${normalizeRecurrenceValue(event.recurrence) !== "none" ? ` / repeats ${normalizeRecurrenceValue(event.recurrence)}` : ""}`}
       >
+        {dot && <span aria-hidden="true" style={{ display: "inline-block", width: 6, height: 6, borderRadius: 9999, background: dot, marginRight: 5, flex: "none" }} />}
         <span>{event.title}</span>
         {!compact && <small>{eventTimeLabel(event)}</small>}
       </button>
@@ -12301,7 +12382,7 @@ function CalendarView({
             {sortedSelectedEvents.map((event) => (
               <button key={event.id} type="button" onClick={() => loadEvent(event)} className={`flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors ${selectedEventId === event.id ? "border-[#14B8A6]/50 bg-[#14B8A6]/[0.06]" : "border-[#1f1f1f] hover:border-[#14B8A6]/40"}`}>
                 <span className="w-16 shrink-0 font-mono text-xs text-[#14B8A6]">{event.allDay ? "all-day" : event.startTime || "—"}</span>
-                <span className="h-8 w-px shrink-0 rounded-full" style={{ background: event.reminderLevel === "urgent" ? "#EF4444" : event.reminderLevel === "normal" ? "#F59E0B" : ACCENT_CAL }} />
+                <span className="h-8 w-px shrink-0 rounded-full" style={{ background: event.color ?? (event.reminderLevel === "urgent" ? "#EF4444" : event.reminderLevel === "normal" ? "#F59E0B" : ACCENT_CAL) }} />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-medium text-[#F5F5F5]">{event.title}</span>
                   <span className="block font-mono text-[10px] text-[#525252]">{eventTimeLabel(event)} · {event.sourceModule}{event.recurrence ? ` · ${event.recurrence}` : ""}</span>
@@ -12418,9 +12499,9 @@ function CalendarView({
             <SectionTitle action={selectedEvent ? <StatusChip tone={selectedEvent.reminderLevel === "urgent" ? "error" : selectedEvent.reminderLevel === "normal" ? "warn" : "ok"}>{selectedEvent.reminderLevel}</StatusChip> : null}>Event detail</SectionTitle>
             {selectedEvent ? (
               <div className="calendar-event-detail">
-                <h3>{selectedEvent.title}</h3>
+                <h3 className="flex items-center gap-2">{selectedEvent.color && <span aria-hidden="true" style={{ display: "inline-block", width: 10, height: 10, borderRadius: 9999, background: selectedEvent.color, flex: "none" }} />}{selectedEvent.title}</h3>
                 <p className="technical">{formatLocalDate(selectedEvent.date)} / {eventTimeLabel(selectedEvent)}</p>
-                <p>{selectedEvent.allDay ? "All-day event" : "Timed event"}{selectedEvent.recurrence ? ` / ${selectedEvent.recurrence}` : ""}</p>
+                <p>{selectedEvent.allDay ? "All-day event" : "Timed event"}{normalizeRecurrenceValue(selectedEvent.recurrence) !== "none" ? ` / repeats ${normalizeRecurrenceValue(selectedEvent.recurrence)}` : ""}{selectedEvent.reminderMinutesBefore != null ? ` / ${CALENDAR_REMINDER_OPTIONS.find((o) => o.value === String(selectedEvent.reminderMinutesBefore))?.label ?? "reminder set"}` : ""}</p>
                 <p><span>Source</span><strong>{selectedEvent.sourceModule}</strong></p>
                 {selectedEvent.notes && <p>{selectedEvent.notes}</p>}
                 <p className="technical">{selectedEvent.id}</p>
@@ -12475,10 +12556,20 @@ function CalendarView({
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <label className="text-xs text-[#A3A3A3] sm:col-span-2">Title<input ref={calendarTitleRef} className="mt-1 w-full" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Birthday, meeting, call" /></label>
               <label className="text-xs text-[#A3A3A3]">Date<input type="date" className="technical mt-1 w-full" value={date} onChange={(event) => setDate(event.target.value)} /></label>
-              <label className="text-xs text-[#A3A3A3]">Reminder<select className="mt-1 w-full" value={reminderLevel} onChange={(event) => setReminderLevel(event.target.value as "soft" | "normal" | "urgent")}><option value="soft">soft</option><option value="normal">normal</option><option value="urgent">urgent</option></select></label>
+              <label className="text-xs text-[#A3A3A3]">Repeats<select className="mt-1 w-full" value={recurrence} onChange={(event) => setRecurrence(event.target.value)}>{CALENDAR_RECURRENCE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></label>
               <label className="text-xs text-[#A3A3A3]">Start<input type="time" className="technical mt-1 w-full" value={startTime} onChange={(event) => setStartTime(event.target.value)} disabled={allDay} /></label>
               <label className="text-xs text-[#A3A3A3]">End<input type="time" className="technical mt-1 w-full" value={endTime} onChange={(event) => setEndTime(event.target.value)} disabled={allDay} /></label>
-              <label className="text-xs text-[#A3A3A3] sm:col-span-2">Recurrence<input className="mt-1 w-full" value={recurrence} onChange={(event) => setRecurrence(event.target.value)} placeholder="e.g. yearly" /></label>
+              <label className="text-xs text-[#A3A3A3]">Remind me<select className="mt-1 w-full" value={remindBefore} onChange={(event) => setRemindBefore(event.target.value)}>{CALENDAR_REMINDER_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select></label>
+              <label className="text-xs text-[#A3A3A3]">Priority<select className="mt-1 w-full" value={reminderLevel} onChange={(event) => setReminderLevel(event.target.value as "soft" | "normal" | "urgent")}><option value="soft">soft</option><option value="normal">normal</option><option value="urgent">urgent</option></select></label>
+            </div>
+            <div className="mt-3">
+              <p className="text-xs text-[#A3A3A3]">Tag color</p>
+              <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                <button type="button" onClick={() => setEventColor(null)} aria-pressed={eventColor === null} title="No color" className={`flex h-6 w-6 items-center justify-center rounded-full border text-[10px] ${eventColor === null ? "border-[#F5F5F5] text-[#F5F5F5]" : "border-[#3a3a3a] text-[#525252]"}`}>✕</button>
+                {CALENDAR_COLORS.map((c) => (
+                  <button key={c} type="button" onClick={() => setEventColor(c)} aria-pressed={eventColor === c} title={c} className="h-6 w-6 rounded-full transition-transform hover:scale-110" style={{ background: c, outline: eventColor === c ? "2px solid #F5F5F5" : "none", outlineOffset: "2px" }} />
+                ))}
+              </div>
             </div>
             <label className="mt-3 flex items-center gap-2 text-xs text-[#A3A3A3]"><input type="checkbox" checked={allDay} onChange={(event) => setAllDay(event.target.checked)} /> All-day event or birthday</label>
             <label className="mt-3 block text-xs text-[#A3A3A3]">Notes<textarea className="mt-1 w-full" value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Notes" /></label>
@@ -12915,6 +13006,60 @@ const emptyFinanceRecurringForm = {
   active: true
 };
 
+// Adaptive spend trend for the selected period: weekly buckets for short spans
+// (month / short custom), monthly buckets otherwise (quarter / year / all / long
+// custom), capped to the most recent 12. A single day returns [] (no line).
+function buildFinanceTrend(txns: Array<{ date: string; amount: number }>, startStr: string, endStr: string): Array<{ d: string; v: number }> {
+  const dates = txns.map((t) => t.date).sort();
+  const start = startStr || dates[0] || "";
+  const end = endStr || dates[dates.length - 1] || start;
+  if (!start || !end) return [];
+  const s = new Date(`${start}T00:00:00`);
+  const e = new Date(`${end}T00:00:00`);
+  const spanDays = Math.floor((e.getTime() - s.getTime()) / 86400000) + 1;
+  if (spanDays <= 1) return [];
+  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const ds = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const sum = (from: string, to: string) => txns.filter((t) => t.date >= from && t.date <= to).reduce((a, t) => a + Math.abs(t.amount), 0);
+  if (spanDays <= 45) {
+    const out: Array<{ d: string; v: number }> = [];
+    const cur = new Date(s);
+    let i = 1;
+    while (cur <= e) {
+      const from = ds(cur);
+      const toDate = new Date(cur);
+      toDate.setDate(toDate.getDate() + 6);
+      out.push({ d: `W${i}`, v: sum(from, toDate > e ? ds(e) : ds(toDate)) });
+      cur.setDate(cur.getDate() + 7);
+      i += 1;
+    }
+    return out;
+  }
+  const out: Array<{ d: string; v: number }> = [];
+  let y = s.getFullYear();
+  let m = s.getMonth();
+  const endY = e.getFullYear();
+  const endM = e.getMonth();
+  while (y < endY || (y === endY && m <= endM)) {
+    const from = `${y}-${pad(m + 1)}-01`;
+    const last = new Date(y, m + 1, 0).getDate();
+    out.push({ d: MONTHS[m], v: sum(from, `${y}-${pad(m + 1)}-${pad(last)}`) });
+    m += 1;
+    if (m > 11) { m = 0; y += 1; }
+  }
+  return out.length > 12 ? out.slice(out.length - 12) : out;
+}
+
+const FINANCE_PERIOD_OPTIONS: Array<{ key: FinancePeriodKind; label: string }> = [
+  { key: "day", label: "Day" },
+  { key: "month", label: "Month" },
+  { key: "quarter", label: "Quarter" },
+  { key: "year", label: "Year" },
+  { key: "all", label: "All time" },
+  { key: "custom", label: "Custom" }
+];
+
 function FinanceView({
   financeState,
   onAction,
@@ -13066,20 +13211,41 @@ function FinanceView({
 
   const ACCENT_FIN = "#22C55E";
   const finSummary = financeState.summary;
+  const period = financeState.period;
+  const periodSummary = financeState.periodSummary;
   const finCurrency = financeState.settings.defaultCurrency || "CAD";
   const recurringTotal = financeState.recurring.filter((r) => r.active).reduce((sum, r) => sum + r.amount, 0);
-  const monthTx = financeState.transactions.filter((t) => t.date.slice(0, 7) === finSummary.currentMonth);
-  const weekBuckets = [0, 0, 0, 0];
-  monthTx.forEach((t) => { const day = Number(t.date.slice(8, 10)) || 1; weekBuckets[Math.min(3, Math.floor((day - 1) / 7))] += Math.abs(t.amount); });
-  const spendData = weekBuckets.map((v, i) => ({ d: `W${i + 1}`, v }));
+  // Transactions inside the selected window (empty start/end = unbounded / all-time).
+  const inPeriod = (date: string) => (!period.start || date >= period.start) && (!period.end || date <= period.end);
+  const periodTransactions = financeState.transactions.filter((t) => inPeriod(t.date));
+  const spendData = buildFinanceTrend(financeState.transactions.filter((t) => inPeriod(t.date)), period.start, period.end);
   const spendMax = Math.max(1, ...spendData.map((s) => s.v));
-  const spendPoints = spendData.map((s, i) => `${(i / (spendData.length - 1)) * 100},${40 - (s.v / spendMax) * 34}`);
-  const spendPath = `0,40 ${spendPoints.join(" ")} 100,40`;
+  const spendPoints = spendData.length > 1 ? spendData.map((s, i) => `${(i / (spendData.length - 1)) * 100},${40 - (s.v / spendMax) * 34}`) : [];
+  const spendPath = spendPoints.length ? `0,40 ${spendPoints.join(" ")} 100,40` : "";
   const CAT_PALETTE = ["#22C55E", "#84CC16", "#3B82F6", "#F59E0B", "#A855F7", "#EC4899", "#06B6D4"];
-  const catEntries = Object.entries(finSummary.categoryTotals).sort((a, b) => b[1] - a[1]).slice(0, 7).map(([name, value], i) => ({ name, value, c: CAT_PALETTE[i % CAT_PALETTE.length] }));
+  const catEntries = Object.entries(periodSummary.categoryTotals).sort((a, b) => b[1] - a[1]).slice(0, 7).map(([name, value], i) => ({ name, value, c: CAT_PALETTE[i % CAT_PALETTE.length] }));
   const catTotal = catEntries.reduce((s, c) => s + c.value, 0) || 1;
   const donutStops = (() => { let acc = 0; return catEntries.map((c) => { const start = (acc / catTotal) * 100; acc += c.value; return `${c.c} ${start}% ${(acc / catTotal) * 100}%`; }).join(", "); })();
   const warrantyItems = [...financeState.deadlines.returns30, ...financeState.deadlines.warranties90].slice(0, 5);
+  // Period-over-period delta (only for comparable, well-defined windows).
+  const spendDeltaPct = period.comparable && periodSummary.previousTotal > 0
+    ? Math.round(((periodSummary.total - periodSummary.previousTotal) / periodSummary.previousTotal) * 100)
+    : null;
+  const [customStart, setCustomStart] = useState(period.customStart);
+  const [customEnd, setCustomEnd] = useState(period.customEnd);
+  useEffect(() => { setCustomStart(period.customStart); setCustomEnd(period.customEnd); }, [period.customStart, period.customEnd, financeState.activeProfileId]);
+  async function setPeriod(kind: FinancePeriodKind, customRange?: { start: string; end: string }): Promise<void> {
+    const params: Record<string, unknown> = { period: kind };
+    if (kind === "custom") {
+      const start = customRange?.start ?? customStart;
+      const end = customRange?.end ?? customEnd;
+      if (!start || !end) { showToast("Pick a start and end date.", "error"); return; }
+      params.customStart = start;
+      params.customEnd = end;
+    }
+    const result = await onAction("finance.set_period", "module_ui", params);
+    if (result.ok) { await onRefresh(); } else { showToast(result.error ?? "Could not set period.", "error"); }
+  }
 
   return (
     <div className="space-y-6">
@@ -13087,7 +13253,7 @@ function FinanceView({
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div className="flex items-center gap-3">
           <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_FIN}40`, background: `${ACCENT_FIN}14`, color: ACCENT_FIN }}><Wallet className="h-5 w-5" /></div>
-          <div><h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Finance</h1><p className="text-sm text-[#A3A3A3]">{finSummary.currentMonth} · spending, receipts &amp; warranties</p></div>
+          <div><h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Finance</h1><p className="text-sm text-[#A3A3A3]">{period.label || finSummary.currentMonth} · spending, receipts &amp; warranties</p></div>
         </div>
         <ActionButton accent={ACCENT_FIN} icon={Plus} onClick={() => startAddTransaction()}>Add</ActionButton>
       </div>
@@ -13128,18 +13294,54 @@ function FinanceView({
         );
       })()}
 
+      {/* Period selector — remembered per profile. Segmented control + custom range. */}
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-[#1f1f1f] bg-[#0A0A0A] px-3 py-2">
+        <span className="text-[10px] uppercase tracking-wider text-[#525252]">Period</span>
+        <div className="flex flex-wrap items-center gap-1 rounded-lg border border-[#1f1f1f] bg-[#0d0d0d] p-0.5">
+          {FINANCE_PERIOD_OPTIONS.map((opt) => {
+            const active = period.kind === opt.key;
+            return (
+              <button
+                key={opt.key}
+                type="button"
+                onClick={() => void setPeriod(opt.key)}
+                aria-pressed={active}
+                className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${active ? "bg-[#22C55E]/15 text-[#22C55E]" : "text-[#A3A3A3] hover:bg-[#161616] hover:text-[#F5F5F5]"}`}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+        <span className="font-mono text-[11px] text-[#525252]">{period.label}</span>
+        {period.kind === "custom" && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <input type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} className="rounded-md border border-[#262626] bg-[#0d0d0d] px-2 py-1 text-xs text-[#F5F5F5]" />
+            <span className="text-[11px] text-[#525252]">→</span>
+            <input type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} className="rounded-md border border-[#262626] bg-[#0d0d0d] px-2 py-1 text-xs text-[#F5F5F5]" />
+            <button type="button" onClick={() => void setPeriod("custom", { start: customStart, end: customEnd })} className="rounded-md border border-[#22C55E]/40 bg-[#22C55E]/10 px-2.5 py-1 text-xs font-medium text-[#22C55E] hover:bg-[#22C55E]/20">Apply</button>
+          </div>
+        )}
+      </div>
+
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {[
-          { label: "Spent", value: money(finSummary.currentMonthTotal, finCurrency), icon: TrendingDown, c: "#EF4444" },
-          { label: "Recurring", value: money(recurringTotal, finCurrency), icon: Repeat, c: "#3B82F6" },
-          { label: "Card", value: money(finSummary.cardTotal, finCurrency), icon: CreditCard, c: "#22D3EE" },
-          { label: "Cash", value: money(finSummary.cashTotal, finCurrency), icon: Banknote, c: "#22C55E" }
+          { label: "Spent", value: money(periodSummary.total, finCurrency), icon: TrendingDown, c: "#EF4444", delta: spendDeltaPct },
+          { label: "Recurring", value: money(recurringTotal, finCurrency), icon: Repeat, c: "#3B82F6", delta: null },
+          { label: "Card", value: money(periodSummary.cardTotal, finCurrency), icon: CreditCard, c: "#22D3EE", delta: null },
+          { label: "Cash", value: money(periodSummary.cashTotal, finCurrency), icon: Banknote, c: "#22C55E", delta: null }
         ].map((s) => {
           const SIcon = s.icon;
           return (
             <GlassCard key={s.label} accent={s.c} className="flex items-center gap-3">
               <div className="flex h-10 w-10 items-center justify-center rounded-lg" style={{ background: `${s.c}14`, color: s.c }}><SIcon className="h-5 w-5" /></div>
-              <div><p className="text-[10px] uppercase tracking-wider text-[#525252]">{s.label}</p><p className="font-mono text-lg font-semibold text-[#F5F5F5]">{s.value}</p></div>
+              <div className="min-w-0">
+                <p className="text-[10px] uppercase tracking-wider text-[#525252]">{s.label}</p>
+                <p className="font-mono text-lg font-semibold text-[#F5F5F5]">{s.value}</p>
+                {s.delta !== null && s.delta !== undefined && (
+                  <p className={`font-mono text-[10px] ${s.delta > 0 ? "text-[#EF4444]" : s.delta < 0 ? "text-[#22C55E]" : "text-[#525252]"}`}>{s.delta > 0 ? "▲" : s.delta < 0 ? "▼" : "•"} {Math.abs(s.delta)}% vs prev</p>
+                )}
+              </div>
             </GlassCard>
           );
         })}
@@ -13148,19 +13350,28 @@ function FinanceView({
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
         <div className="space-y-5 lg:col-span-8">
           <GlassCard hover={false}>
-            <SectionTitle action={<span className="font-mono text-[10px] text-[#525252]">weekly</span>}>Spending trend</SectionTitle>
-            <svg viewBox="0 0 100 40" preserveAspectRatio="none" className="h-44 w-full">
-              <defs><linearGradient id="finGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={ACCENT_FIN} stopOpacity="0.35" /><stop offset="100%" stopColor={ACCENT_FIN} stopOpacity="0" /></linearGradient></defs>
-              <polygon points={spendPath} fill="url(#finGrad)" />
-              <polyline points={spendPoints.join(" ")} fill="none" stroke={ACCENT_FIN} strokeWidth="0.7" vectorEffect="non-scaling-stroke" />
-            </svg>
-            <div className="mt-1 flex justify-between font-mono text-[10px] text-[#525252]">{spendData.map((s) => <span key={s.d}>{s.d}</span>)}</div>
+            <SectionTitle action={<span className="font-mono text-[10px] text-[#525252]">{period.label}</span>}>Spending trend</SectionTitle>
+            {spendData.length > 1 ? (
+              <>
+                <svg viewBox="0 0 100 40" preserveAspectRatio="none" className="h-44 w-full">
+                  <defs><linearGradient id="finGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={ACCENT_FIN} stopOpacity="0.35" /><stop offset="100%" stopColor={ACCENT_FIN} stopOpacity="0" /></linearGradient></defs>
+                  <polygon points={spendPath} fill="url(#finGrad)" />
+                  <polyline points={spendPoints.join(" ")} fill="none" stroke={ACCENT_FIN} strokeWidth="0.7" vectorEffect="non-scaling-stroke" />
+                </svg>
+                <div className="mt-1 flex justify-between font-mono text-[10px] text-[#525252]">{spendData.map((s) => <span key={s.d}>{s.d}</span>)}</div>
+              </>
+            ) : (
+              <div className="flex h-44 flex-col items-center justify-center gap-1 text-center">
+                <p className="font-mono text-2xl font-semibold text-[#F5F5F5]">{money(periodSummary.total, finCurrency)}</p>
+                <p className="text-xs text-[#525252]">{periodSummary.transactionCount} transaction{periodSummary.transactionCount === 1 ? "" : "s"} · {period.label}</p>
+              </div>
+            )}
           </GlassCard>
 
           <GlassCard hover={false}>
-            <SectionTitle action={<Receipt className="h-3.5 w-3.5 text-[#22C55E]" />}>Transactions</SectionTitle>
-            {financeState.transactions.length === 0 ? <p className="text-xs text-[#525252]">No transactions yet.</p> : (
-              <LimitedList items={financeState.transactions} step={25}>
+            <SectionTitle action={<span className="font-mono text-[10px] text-[#525252]">{periodTransactions.length} in {period.label}</span>}>Transactions</SectionTitle>
+            {financeState.transactions.length === 0 ? <p className="text-xs text-[#525252]">No transactions yet.</p> : periodTransactions.length === 0 ? <p className="text-xs text-[#525252]">No transactions in {period.label}. Try a wider period.</p> : (
+              <LimitedList items={periodTransactions} step={25}>
                 {(t) => (
                   <button key={t.id} type="button" onClick={() => loadTransaction(t)} className="glass-card flex w-full items-center gap-3 p-2.5 text-left">
                     <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#1a1a1a] text-[#A3A3A3]">{t.paymentType === "cash" ? <Banknote className="h-4 w-4" /> : <CreditCard className="h-4 w-4" />}</div>
@@ -13180,7 +13391,7 @@ function FinanceView({
               <>
                 <div className="relative mx-auto my-1 h-[140px] w-[140px]">
                   <div className="h-full w-full rounded-full" style={{ background: `conic-gradient(${donutStops})` }} />
-                  <div className="absolute inset-[24%] flex flex-col items-center justify-center rounded-full bg-[#0A0A0A]"><p className="font-mono text-sm font-semibold text-[#F5F5F5]">{money(finSummary.currentMonthTotal, finCurrency)}</p><p className="text-[9px] uppercase tracking-wider text-[#525252]">total</p></div>
+                  <div className="absolute inset-[24%] flex flex-col items-center justify-center rounded-full bg-[#0A0A0A]"><p className="font-mono text-sm font-semibold text-[#F5F5F5]">{money(periodSummary.total, finCurrency)}</p><p className="text-[9px] uppercase tracking-wider text-[#525252]">total</p></div>
                 </div>
                 <div className="mt-2 space-y-1">
                   {catEntries.map((c) => <div key={c.name} className="flex items-center gap-2 text-xs"><span className="h-2 w-2 rounded-full" style={{ background: c.c }} /><span className="flex-1 truncate text-[#A3A3A3]">{c.name}</span><span className="font-mono text-[#F5F5F5]">{money(c.value, finCurrency)}</span></div>)}
@@ -16346,7 +16557,7 @@ function SettingsView({
           </label>
         </div>
         <div className="section-heading"><p>Desktop Voice Overlay</p></div>
-        <div className="settings-grid">
+        <div className="registry-controls">
           <label className="checkbox-row">
             <input type="checkbox" checked={ambientForm.voiceOverlayEnabled !== false} onChange={(event) => updateAmbientOption("voiceOverlayEnabled", event.target.checked)} />
             <span>Show a glowing voice wave on the desktop (bottom-center) while listening/speaking</span>
@@ -16370,7 +16581,7 @@ function SettingsView({
             Wake chime volume ({((ambientForm.wakeChimeVolume ?? 0.35)).toFixed(2)})
             <input type="range" min="0" max="1" step="0.05" value={ambientForm.wakeChimeVolume ?? 0.35} onChange={(event) => updateAmbientOption("wakeChimeVolume", Number(event.target.value))} />
           </label>
-          <div className="settings-row"><span>Overlay position</span><strong>Bottom center · primary display</strong></div>
+          <p className="technical">Overlay position: Bottom center · primary display</p>
         </div>
         <p className="ambient-note">
           Ambient Nest uses visible push-to-talk speech capture and the existing Ask DexNest route. No raw mic audio is stored, and sensitive answers stay masked unless the trusted session and spoken-sensitive settings are both enabled. The desktop overlay is click-through, never steals focus, and only shows visual state — never transcript content.

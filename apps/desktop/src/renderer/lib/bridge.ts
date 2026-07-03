@@ -638,6 +638,8 @@ export const fallbackBridge: DexNestBridge = {
       cardTotal: 0,
       transactionCount: 0
     },
+    period: { kind: "month", start: "", end: "", label: "", comparable: true, customStart: "", customEnd: "" },
+    periodSummary: { total: 0, previousTotal: 0, categoryTotals: {}, paymentTypeTotals: {}, cashTotal: 0, cardTotal: 0, transactionCount: 0 },
     deadlines: { returns7: [], returns30: [], warranties90: [], expiredReturns: [] }
   }),
   getCaptureState: async () => ({

@@ -1091,8 +1091,10 @@ interface CalendarEvent {
   allDay: boolean;
   sourceModule: string;
   sourceId?: string | null;
-  recurrence?: string | null;
+  recurrence?: string | null; // "daily" | "weekly" | "monthly" | "yearly" | null
   reminderLevel: "soft" | "normal" | "urgent";
+  reminderMinutesBefore?: number | null; // lead time before start: 0/30/60/720/1440
+  color?: string | null; // hex from CALENDAR_COLORS palette
   notes?: string | null;
   createdAt: string;
   updatedAt: string;
@@ -1109,7 +1111,46 @@ interface CalendarEventInput {
   sourceId?: string | null;
   recurrence?: string | null;
   reminderLevel?: "soft" | "normal" | "urgent";
+  reminderMinutesBefore?: number | null;
+  color?: string | null;
   notes?: string | null;
+}
+
+type CalendarRecurrenceKind = "none" | "daily" | "weekly" | "monthly" | "yearly";
+const CALENDAR_RECURRENCE_KINDS: CalendarRecurrenceKind[] = ["none", "daily", "weekly", "monthly", "yearly"];
+// Reminder lead times offered in the UI (minutes before the event start).
+const CALENDAR_REMINDER_LEADS = [0, 30, 60, 720, 1440];
+// 10-color tag palette (DexNest accents). Stored as hex on the event.
+const CALENDAR_COLORS = ["#14B8A6", "#38BDF8", "#22C55E", "#F59E0B", "#EF4444", "#A855F7", "#EC4899", "#3B82F6", "#84CC16", "#F97316"];
+
+function normalizeRecurrenceKind(value: unknown): CalendarRecurrenceKind {
+  const v = String(value ?? "").toLowerCase();
+  if (v.startsWith("dai")) return "daily";
+  if (v.startsWith("week")) return "weekly";
+  if (v.startsWith("month")) return "monthly";
+  if (v.startsWith("year") || v.includes("yearly-placeholder") || v.includes("annual")) return "yearly";
+  return "none";
+}
+function normalizeReminderLead(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+function normalizeCalendarColor(value: unknown): string | null {
+  return typeof value === "string" && CALENDAR_COLORS.includes(value) ? value : null;
+}
+// Does a (possibly recurring) event have an occurrence on the given YYYY-MM-DD?
+function calendarEventOccursOn(event: CalendarEvent, dateStr: string): boolean {
+  const kind = normalizeRecurrenceKind(event.recurrence);
+  if (kind === "none") return event.date === dateStr;
+  if (dateStr < event.date) return false;
+  const base = parseLocalDateInput(event.date);
+  const target = parseLocalDateInput(dateStr);
+  if (kind === "daily") return true;
+  if (kind === "weekly") return Math.round((target.getTime() - base.getTime()) / 86400000) % 7 === 0;
+  if (kind === "monthly") return target.getDate() === base.getDate();
+  if (kind === "yearly") return target.getDate() === base.getDate() && target.getMonth() === base.getMonth();
+  return false;
 }
 
 type TimetableDay = "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
@@ -1518,9 +1559,18 @@ interface FinanceRecurringInput {
   active?: boolean;
 }
 
+type FinancePeriodKind = "day" | "month" | "quarter" | "year" | "all" | "custom";
+interface FinancePeriodPref {
+  kind: FinancePeriodKind;
+  customStart?: string;
+  customEnd?: string;
+}
+
 interface FinanceSettings {
   defaultCurrency: string;
   receiptsPath: string;
+  // Last-used dashboard period, remembered per finance profile (keyed by profileId).
+  periodPrefs?: Record<string, FinancePeriodPref>;
 }
 
 type CaptureItemType = "note" | "link" | "task" | "expense" | "file" | "image" | "audio_placeholder" | "document" | "other";
@@ -12116,21 +12166,34 @@ function generatedNudgeCandidates(settings: NudgeSettings): Nudge[] {
   const existingById = new Map(loadNudges().map((nudge) => [nudge.id, nudge]));
   const candidates: Nudge[] = [];
 
+  const dayAfterTomorrow = addLocalDays(today, 2);
   for (const event of loadCalendarEvents()) {
-    if (event.date !== today && event.date !== tomorrow) {
-      continue;
+    // Consider recurring occurrences (not just the base date) within the horizon,
+    // and shift the reminder earlier for day-scale lead times ("1 day before").
+    const lead = event.reminderMinutesBefore ?? null;
+    const leadDays = lead && lead >= 1440 ? Math.floor(lead / 1440) : 0;
+    for (const occ of [today, tomorrow, dayAfterTomorrow]) {
+      if (!calendarEventOccursOn(event, occ)) {
+        continue;
+      }
+      const reminderDate = leadDays > 0 ? addLocalDays(occ, -leadDays) : occ;
+      if (reminderDate !== today && reminderDate !== tomorrow) {
+        continue;
+      }
+      const whenLabel = occ === today ? "today" : occ === tomorrow ? "tomorrow" : "in 2 days";
+      upsertGeneratedNudge(candidates, existingById, {
+        id: `calendar-event-${event.id}-${occ}`,
+        title: reminderDate === today ? "Calendar event reminder" : "Upcoming calendar event",
+        message: `${event.title}${event.allDay ? "" : event.startTime ? ` at ${event.startTime}` : ""} · ${whenLabel}`,
+        sourceModule: "calendar",
+        sourceId: event.id,
+        date: reminderDate,
+        time: event.startTime ?? null,
+        priority: event.reminderLevel,
+        snoozeUntil: null
+      });
+      break; // one reminder per event within the horizon
     }
-    upsertGeneratedNudge(candidates, existingById, {
-      id: `calendar-event-${event.id}-${event.date}`,
-      title: event.date === today ? "Calendar event today" : "Calendar event tomorrow",
-      message: `${event.title}${event.allDay ? "" : event.startTime ? ` at ${event.startTime}` : ""}`,
-      sourceModule: "calendar",
-      sourceId: event.id,
-      date: event.date,
-      time: event.startTime ?? null,
-      priority: event.reminderLevel,
-      snoozeUntil: null
-    });
   }
 
   for (const document of loadVaultDocuments()) {
@@ -12402,6 +12465,71 @@ function financeTotalBy<T extends string>(transactions: FinanceTransaction[], ke
   }, {} as Record<T, number>);
 }
 
+const FINANCE_MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const FINANCE_PERIOD_KINDS: FinancePeriodKind[] = ["day", "month", "quarter", "year", "all", "custom"];
+
+function financeLastDayOfMonth(year: number, month1: number): number {
+  return new Date(year, month1, 0).getDate(); // month1 is 1-based; day 0 of next month = last day of this month
+}
+function financeDateStr(year: number, month1: number, day: number): string {
+  return `${year}-${String(month1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function activeFinancePeriodPref(settings: FinanceSettings, profileId: string): FinancePeriodPref {
+  const pref = settings.periodPrefs?.[profileId];
+  if (pref && FINANCE_PERIOD_KINDS.includes(pref.kind)) {
+    return { kind: pref.kind, customStart: pref.customStart, customEnd: pref.customEnd };
+  }
+  return { kind: "month" };
+}
+
+// Resolve a period preference to an inclusive [start, end] date window (plus the
+// equivalent previous window for period-over-period comparison). Dates are
+// YYYY-MM-DD strings, which compare correctly lexicographically.
+function financePeriodWindow(pref: FinancePeriodPref, today: string): {
+  kind: FinancePeriodKind; start: string; end: string; label: string; comparable: boolean; prevStart: string; prevEnd: string;
+} {
+  const [ty, tm, td] = today.split("-").map(Number);
+  const kind = pref.kind;
+  if (kind === "day") {
+    const d = parseLocalDateInput(today);
+    d.setDate(d.getDate() - 1);
+    const prev = financeDateStr(d.getFullYear(), d.getMonth() + 1, d.getDate());
+    return { kind, start: today, end: today, label: `${FINANCE_MONTH_NAMES[tm - 1]} ${td}, ${ty}`, comparable: true, prevStart: prev, prevEnd: prev };
+  }
+  if (kind === "quarter") {
+    const q = Math.floor((tm - 1) / 3);
+    const sm = q * 3 + 1;
+    const em = sm + 2;
+    const start = financeDateStr(ty, sm, 1);
+    const end = financeDateStr(ty, em, financeLastDayOfMonth(ty, em));
+    const py = q === 0 ? ty - 1 : ty;
+    const pq = q === 0 ? 3 : q - 1;
+    const psm = pq * 3 + 1;
+    const pem = psm + 2;
+    return { kind, start, end, label: `Q${q + 1} ${ty}`, comparable: true, prevStart: financeDateStr(py, psm, 1), prevEnd: financeDateStr(py, pem, financeLastDayOfMonth(py, pem)) };
+  }
+  if (kind === "year") {
+    return { kind, start: financeDateStr(ty, 1, 1), end: financeDateStr(ty, 12, 31), label: `${ty}`, comparable: true, prevStart: financeDateStr(ty - 1, 1, 1), prevEnd: financeDateStr(ty - 1, 12, 31) };
+  }
+  if (kind === "custom") {
+    const s = pref.customStart || today;
+    const e = pref.customEnd || today;
+    const start = s <= e ? s : e;
+    const end = s <= e ? e : s;
+    return { kind, start, end, label: `${start} → ${end}`, comparable: false, prevStart: "", prevEnd: "" };
+  }
+  if (kind === "all") {
+    return { kind, start: "0000-01-01", end: "9999-12-31", label: "All time", comparable: false, prevStart: "", prevEnd: "" };
+  }
+  // month (default)
+  const start = financeDateStr(ty, tm, 1);
+  const end = financeDateStr(ty, tm, financeLastDayOfMonth(ty, tm));
+  const py = tm === 1 ? ty - 1 : ty;
+  const pm = tm === 1 ? 12 : tm - 1;
+  return { kind: "month", start, end, label: `${FINANCE_MONTH_NAMES[tm - 1]} ${ty}`, comparable: true, prevStart: financeDateStr(py, pm, 1), prevEnd: financeDateStr(py, pm, financeLastDayOfMonth(py, pm)) };
+}
+
 function financeState() {
   const profilesFile = loadFinanceProfilesFile();
   const activeProfileId = profilesFile.activeProfileId;
@@ -12424,6 +12552,18 @@ function financeState() {
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
   };
   const within = (value: string | null | undefined, end: string) => Boolean(value && value >= today && value <= end);
+  // Selected dashboard period (remembered per profile). Everything the period
+  // cards/donut show is scoped to this window; the month `summary` below stays
+  // month-scoped so command stats keep their "this month" meaning.
+  const periodPref = activeFinancePeriodPref(settings, activeProfileId);
+  const periodWindow = financePeriodWindow(periodPref, today);
+  const inWindow = (date: string, start: string, end: string) => date >= start && date <= end;
+  const periodTransactions = transactions.filter((transaction) => inWindow(transaction.date, periodWindow.start, periodWindow.end));
+  const previousPeriodTransactions = periodWindow.comparable
+    ? transactions.filter((transaction) => inWindow(transaction.date, periodWindow.prevStart, periodWindow.prevEnd))
+    : [];
+  const periodTotal = Number(periodTransactions.reduce((sum, transaction) => sum + transaction.amount, 0).toFixed(2));
+  const previousPeriodTotal = Number(previousPeriodTransactions.reduce((sum, transaction) => sum + transaction.amount, 0).toFixed(2));
   return {
     transactions,
     recurring,
@@ -12435,6 +12575,24 @@ function financeState() {
     recurringPath: financeRecurringPath,
     settingsPath: financeSettingsPath,
     receiptsPath: receiptsRoot,
+    period: {
+      kind: periodWindow.kind,
+      start: periodWindow.start === "0000-01-01" ? "" : periodWindow.start,
+      end: periodWindow.end === "9999-12-31" ? "" : periodWindow.end,
+      label: periodWindow.label,
+      comparable: periodWindow.comparable,
+      customStart: periodPref.customStart ?? "",
+      customEnd: periodPref.customEnd ?? ""
+    },
+    periodSummary: {
+      total: periodTotal,
+      previousTotal: previousPeriodTotal,
+      categoryTotals: financeTotalBy(periodTransactions, (transaction) => transaction.category || "Other"),
+      paymentTypeTotals: financeTotalBy(periodTransactions, (transaction) => transaction.paymentType),
+      cashTotal: Number(periodTransactions.filter((transaction) => transaction.paymentType === "cash").reduce((sum, transaction) => sum + transaction.amount, 0).toFixed(2)),
+      cardTotal: Number(periodTransactions.filter((transaction) => transaction.paymentType === "debit" || transaction.paymentType === "credit").reduce((sum, transaction) => sum + transaction.amount, 0).toFixed(2)),
+      transactionCount: periodTransactions.length
+    },
     summary: {
       currentMonth,
       previousMonth,
@@ -16597,8 +16755,17 @@ function normalizeCalendarInput(input: CalendarEventInput, existing?: CalendarEv
     allDay: input.allDay ?? existing?.allDay ?? false,
     sourceModule: input.sourceModule ?? existing?.sourceModule ?? "calendar",
     sourceId: input.sourceId ?? existing?.sourceId ?? null,
-    recurrence: input.recurrence ?? existing?.recurrence ?? null,
+    recurrence: (() => {
+      const kind = normalizeRecurrenceKind(input.recurrence ?? existing?.recurrence);
+      return kind === "none" ? null : kind;
+    })(),
     reminderLevel: input.reminderLevel ?? existing?.reminderLevel ?? "normal",
+    reminderMinutesBefore: input.reminderMinutesBefore !== undefined
+      ? normalizeReminderLead(input.reminderMinutesBefore)
+      : (existing?.reminderMinutesBefore ?? null),
+    color: input.color !== undefined
+      ? normalizeCalendarColor(input.color)
+      : (existing?.color ?? null),
     notes: input.notes ?? existing?.notes ?? null,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now
@@ -16896,6 +17063,27 @@ function runFinanceAction(action: DexNestActionDefinition, source: DexNestAction
   try {
     if (action.id === "finance.open" || action.id === "finance.show_monthly_summary") {
       logFinanceEvent(action.id, "success", source, "Opened DexNest Finance.", {}, startedAt);
+      return { ok: true, actionId: action.id, financeState: financeState() };
+    }
+
+    if (action.id === "finance.set_period") {
+      const raw = input as { period?: string; customStart?: string; customEnd?: string };
+      const kind = FINANCE_PERIOD_KINDS.includes(raw.period as FinancePeriodKind) ? (raw.period as FinancePeriodKind) : "month";
+      const settings = loadFinanceSettings();
+      const activeProfileId = loadFinanceProfilesFile().activeProfileId;
+      const pref: FinancePeriodPref = { kind };
+      if (kind === "custom") {
+        const start = typeof raw.customStart === "string" ? raw.customStart.slice(0, 10) : "";
+        const end = typeof raw.customEnd === "string" ? raw.customEnd.slice(0, 10) : "";
+        if (!start || !end) {
+          return { ok: false, actionId: action.id, error: "Custom range needs a start and end date." };
+        }
+        pref.customStart = start <= end ? start : end;
+        pref.customEnd = start <= end ? end : start;
+      }
+      const nextPrefs = { ...(settings.periodPrefs ?? {}), [activeProfileId]: pref };
+      saveFinanceSettings({ ...settings, periodPrefs: nextPrefs });
+      logFinanceEvent(action.id, "success", source, `Set Finance period to ${kind}.`, { period: kind, profileId: activeProfileId }, startedAt);
       return { ok: true, actionId: action.id, financeState: financeState() };
     }
 
