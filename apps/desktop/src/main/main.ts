@@ -17742,41 +17742,33 @@ function exportStreamDeckButtonPack(source: DexNestActionTrigger): { ok: boolean
   }
 
   // Generate Windows .lnk shortcuts under shortcuts/<Category>/ (never the Desktop)
-  // so Stream Deck System → Open can select them directly. .lnk files can't be
-  // authored from Node, so use WScript.Shell via PowerShell. Best-effort.
+  // so Stream Deck System → Open can select them directly. Each shortcut targets
+  // powershell.exe and runs the matching .ps1 hidden. Use Electron's native
+  // shell.writeShortcutLink (no PowerShell/COM subprocess) so it's reliable.
   let shortcutsCreated = 0;
   if (process.platform === "win32") {
-    try {
-      for (const category of categories) { mkdirSync(join(shortcutsRoot, category), { recursive: true }); }
-      const psEscape = (value: string) => value.replace(/'/g, "''");
-      const items = buttons.map((button) =>
-        `  @{ lnk='${psEscape(join(shortcutsRoot, button.category, `${button.file}.lnk`))}'; script='${psEscape(join(scriptsRoot, button.category, `${button.file}.ps1`))}'; desc='${psEscape(`DexNest: ${button.title}`)}' }`
-      ).join(",\r\n");
-      const psScript = [
-        "$ErrorActionPreference = 'Stop'",
-        "$ws = New-Object -ComObject WScript.Shell",
-        "$psExe = (Get-Command powershell.exe -ErrorAction SilentlyContinue).Source",
-        "if (-not $psExe) { $psExe = Join-Path $env:SystemRoot 'System32\\WindowsPowerShell\\v1.0\\powershell.exe' }",
-        `$work = '${psEscape(folder)}'`,
-        "$items = @(",
-        items,
-        ")",
-        "foreach ($it in $items) {",
-        "  $sc = $ws.CreateShortcut($it.lnk)",
-        "  $sc.TargetPath = $psExe",
-        "  $sc.Arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"' + $it.script + '\"'",
-        "  $sc.WorkingDirectory = $work",
-        "  $sc.WindowStyle = 7",
-        "  $sc.Description = $it.desc",
-        "  $sc.Save()",
-        "}",
-        "Write-Output 'OK'"
-      ].join("\r\n");
-      const encoded = Buffer.from(psScript, "utf16le").toString("base64");
-      execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-STA", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded], { windowsHide: true, timeout: 30000 });
-      shortcutsCreated = buttons.length;
-    } catch {
-      shortcutsCreated = 0;
+    const psExe = join(
+      process.env.SystemRoot || "C:\\Windows",
+      "System32",
+      "WindowsPowerShell",
+      "v1.0",
+      "powershell.exe"
+    );
+    for (const category of categories) { mkdirSync(join(shortcutsRoot, category), { recursive: true }); }
+    for (const button of buttons) {
+      const scriptPath = join(scriptsRoot, button.category, `${button.file}.ps1`);
+      const shortcutPath = join(shortcutsRoot, button.category, `${button.file}.lnk`);
+      try {
+        const ok = shell.writeShortcutLink(shortcutPath, "create", {
+          target: psExe,
+          args: `-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "${scriptPath}"`,
+          cwd: folder,
+          description: `DexNest: ${button.title}`
+        });
+        if (ok) { shortcutsCreated += 1; }
+      } catch {
+        // best-effort per shortcut; keep going
+      }
     }
   }
 
@@ -20277,7 +20269,10 @@ function shouldStartHiddenToTray(): boolean {
 
 function syncAppLifecycleLoginItemStatus(): void {
   const settings = loadAppLifecycleSettings();
-  const next = settings.startDexNestWithWindows ? applyLoginItemSettings(settings) : { ...settings, ...currentLoginItemStatus() };
+  // Always enforce the OS login item to match the setting. When "start with
+  // Windows" is off this actively clears any lingering Windows startup entry, so
+  // DexNest never auto-opens at login unless the user explicitly turns it on.
+  const next = applyLoginItemSettings(settings);
   writeJsonFile(appLifecycleSettingsPath, { ...next, updatedAt: settings.updatedAt });
 }
 

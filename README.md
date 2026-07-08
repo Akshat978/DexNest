@@ -38,6 +38,7 @@ No cloud. No accounts. No telemetry. Your data stays in one local folder you con
 
 - **Offline-first & private.** Everything runs locally. No login, no external APIs, no analytics. All real data lives under a single `local-data/` folder.
 - **One shell, many modules.** Instead of ten browser tabs and utilities, it's one app with a fast command palette.
+- **Light on your PC.** It uses around 600 MB of RAM (comparable to a couple of browser tabs) and sits at near-zero CPU when idle. Heavy work (OCR, indexing, backups) runs only when you ask, so it stays out of the way even while running all day.
 - **Yours to change.** Open source under MIT - read it, fork it, wire in your own modules.
 
 ## Modules
