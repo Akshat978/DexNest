@@ -8,7 +8,7 @@
 // /F /T for the whole tree) rather than inventing a second process manager.
 
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { dirname, resolve, basename } from "node:path";
 import type {
   CommandOutcome,
@@ -50,8 +50,40 @@ function createFileSystemPort(): FileSystemPort {
     },
     mkdirp: (path: string) => {
       mkdirSync(path, { recursive: true });
-    }
+    },
+    listDirectory: (path: string) => {
+      try { return readdirSync(path); } catch { return []; }
+    },
+    stat: (path: string) => {
+      try {
+        const info = statSync(path);
+        return { sizeBytes: info.size, modifiedAt: info.mtime.toISOString(), directory: info.isDirectory() };
+      } catch { return null; }
+    },
+    // Bounded reads so a multi-megabyte transcript can be sampled without
+    // being loaded. Both clip at a byte boundary, so the caller discards the
+    // partial line rather than parsing it.
+    readFileHead: (path: string, bytes: number) => readSlice(path, bytes, "head"),
+    readFileTail: (path: string, bytes: number) => readSlice(path, bytes, "tail")
   };
+}
+
+function readSlice(path: string, bytes: number, end: "head" | "tail"): string {
+  if (bytes <= 0) return "";
+  let handle: number | null = null;
+  try {
+    const size = statSync(path).size;
+    const length = Math.min(bytes, size);
+    const start = end === "head" ? 0 : size - length;
+    const buffer = Buffer.alloc(length);
+    handle = openSync(path, "r");
+    readSync(handle, buffer, 0, length, start);
+    return buffer.toString("utf8");
+  } catch {
+    return "";
+  } finally {
+    if (handle !== null) { try { closeSync(handle); } catch { /* already closed */ } }
+  }
 }
 
 export function createProcessPort(): ProcessPort {
@@ -106,7 +138,11 @@ export function createProcessPort(): ProcessPort {
         child.stderr?.setEncoding("utf8");
         const collect = (chunk: string, isError: boolean) => {
           if (isError) stderr = (stderr + chunk).slice(0, limit);
-          else stdout = (stdout + chunk).slice(0, limit);
+          else {
+            stdout = (stdout + chunk).slice(0, limit);
+            // Visibility only. A throwing observer must not affect the run.
+            if (input.onOutput) { try { input.onOutput(chunk); } catch { /* ignored */ } }
+          }
           if (stdout.length + stderr.length >= limit && !failure) void stop("output_limit").catch(() => child.kill());
         };
         let buffer = "";

@@ -120,6 +120,16 @@ export interface FileSystemPort {
   readFile(path: string): string;
   writeFile(path: string, contents: string): void;
   mkdirp(path: string): void;
+  /** Entry names directly inside a directory. Empty when it does not exist. */
+  listDirectory(path: string): string[];
+  stat(path: string): { sizeBytes: number; modifiedAt: string; directory: boolean } | null;
+  /**
+   * Bounded reads for files too large to load whole. Both decode leniently and
+   * may clip a multi-byte character at the cut, so callers must discard the
+   * partial line at the boundary rather than parsing it.
+   */
+  readFileHead(path: string, bytes: number): string;
+  readFileTail(path: string, bytes: number): string;
 }
 
 /**
@@ -163,6 +173,13 @@ export interface ProcessPort {
     /** Private input, delivered through stdin rather than command-line arguments. */
     stdin?: string;
     conversation?: ProcessConversation;
+    /**
+     * Called with stdout as it arrives, so a caller can show what is
+     * happening without waiting for the process to exit. Never authoritative:
+     * the outcome is still decided by the completed CommandOutcome, so a
+     * dropped or malformed chunk can only cost visibility, never correctness.
+     */
+    onOutput?: (chunk: string) => void;
   }): Promise<CommandOutcome>;
   /** Terminates a process tree. Implementations must verify ownership first. */
   terminate(owned: OwnedProcess): Promise<void>;

@@ -5,7 +5,7 @@
 // against reality rather than against a mock that agrees with it.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { dirname, resolve, basename } from "node:path";
 import type {
   CommandOutcome,
@@ -47,8 +47,40 @@ export function createFileSystemPort(): FileSystemPort {
     },
     mkdirp: (path: string) => {
       mkdirSync(path, { recursive: true });
-    }
+    },
+    listDirectory: (path: string) => {
+      try { return readdirSync(path); } catch { return []; }
+    },
+    stat: (path: string) => {
+      try {
+        const info = statSync(path);
+        return { sizeBytes: info.size, modifiedAt: info.mtime.toISOString(), directory: info.isDirectory() };
+      } catch { return null; }
+    },
+    // Bounded reads so a multi-megabyte transcript can be sampled without
+    // being loaded. Both clip at a byte boundary, so the caller discards the
+    // partial line rather than parsing it.
+    readFileHead: (path: string, bytes: number) => readSlice(path, bytes, "head"),
+    readFileTail: (path: string, bytes: number) => readSlice(path, bytes, "tail")
   };
+}
+
+function readSlice(path: string, bytes: number, end: "head" | "tail"): string {
+  if (bytes <= 0) return "";
+  let handle: number | null = null;
+  try {
+    const size = statSync(path).size;
+    const length = Math.min(bytes, size);
+    const start = end === "head" ? 0 : size - length;
+    const buffer = Buffer.alloc(length);
+    handle = openSync(path, "r");
+    readSync(handle, buffer, 0, length, start);
+    return buffer.toString("utf8");
+  } catch {
+    return "";
+  } finally {
+    if (handle !== null) { try { closeSync(handle); } catch { /* already closed */ } }
+  }
 }
 
 export interface DispatchedCommand {
