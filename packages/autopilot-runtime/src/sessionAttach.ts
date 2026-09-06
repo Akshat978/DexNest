@@ -41,7 +41,7 @@ export const ATTACH_BLOCKER_REASONS: Record<AttachBlocker, string> = {
   live: "This session was active in the last few minutes, so it is probably still open. Close it, or choose another.",
   attached_elsewhere: "Another run is already continuing this session.",
   project_mismatch: "This session was not working in this project.",
-  run_has_session: "This run already has a session."
+  run_has_session: "This run's conversation has already started, so it cannot adopt another."
 };
 
 export interface SessionCandidate {
@@ -141,8 +141,29 @@ export class SessionAttachStore {
       this.windows
     )) blockers.push("project_mismatch");
 
-    if (this.workers.session(input.runId)) blockers.push("run_has_session");
+    const existing = this.workers.session(input.runId);
+    if (existing && !this.virgin(input.runId)) blockers.push("run_has_session");
     return blockers;
+  }
+
+  /**
+   * A session row nothing has ever spoken through.
+   *
+   * Authorizing the loop creates the run's session, because the grant binds to
+   * it -- which meant every created run "had a session" and could never adopt
+   * one, and the entire attach path was reachable only from tests. The
+   * invariant behind run_has_session is about conversations, not rows: a run
+   * whose conversation has begun must not be pointed elsewhere. A placeholder
+   * that has never sent, never resumed and has no turns is not a conversation.
+   */
+  private virgin(runId: string): boolean {
+    const session = this.workers.session(runId);
+    if (!session || session.established) return false;
+    if (this.workers.list(runId).length > 0) return false;
+    const hasTurns = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='autopilot_turns'").get()
+      ? this.db.prepare("SELECT id FROM autopilot_turns WHERE run_id=:runId LIMIT 1").get({ runId })
+      : null;
+    return !hasTurns;
   }
 
   /**
@@ -185,15 +206,37 @@ export class SessionAttachStore {
 
       const now = this.ports.clock.now();
       // established=1 is the whole point: the first send must resume.
-      this.db
-        .prepare(
-          `INSERT INTO autopilot_worker_sessions (run_id, provider, session_id, cwd, established, created_at)
-           VALUES (:runId, :provider, :sessionId, :cwd, 1, :now)`
-        )
-        .run({
-          runId: input.runId, provider: input.provider,
-          sessionId: input.session.sessionId, cwd: input.workspaceRoot, now
-        });
+      const placeholder = this.virgin(input.runId) ? this.workers.session(input.runId) : null;
+      if (placeholder) {
+        // The row the authorization created, never spoken through. Adoption
+        // takes its place, and the active grant follows: the grant is bound to
+        // a session id, and leaving it pointing at the discarded placeholder
+        // would record an authorization for a session that no longer exists.
+        this.db
+          .prepare(
+            `UPDATE autopilot_worker_sessions
+                SET provider=:provider, session_id=:sessionId, cwd=:cwd, established=1,
+                    provider_session_id=NULL, restored=0, created_at=:now
+              WHERE run_id=:runId`
+          )
+          .run({
+            runId: input.runId, provider: input.provider,
+            sessionId: input.session.sessionId, cwd: input.workspaceRoot, now
+          });
+        this.db
+          .prepare("UPDATE autopilot_loop_grants SET session_id=:sessionId WHERE run_id=:runId AND status='ACTIVE'")
+          .run({ runId: input.runId, sessionId: input.session.sessionId });
+      } else {
+        this.db
+          .prepare(
+            `INSERT INTO autopilot_worker_sessions (run_id, provider, session_id, cwd, established, created_at)
+             VALUES (:runId, :provider, :sessionId, :cwd, 1, :now)`
+          )
+          .run({
+            runId: input.runId, provider: input.provider,
+            sessionId: input.session.sessionId, cwd: input.workspaceRoot, now
+          });
+      }
 
       this.db
         .prepare(
@@ -215,7 +258,9 @@ export class SessionAttachStore {
           origin: input.session.origin,
           // Metadata only. Transcript content is never journalled.
           title: input.session.title,
-          lastActivity: input.session.lastActivity
+          lastActivity: input.session.lastActivity,
+          replacedPlaceholder: Boolean(placeholder),
+          ...(placeholder ? { placeholderSessionId: placeholder.sessionId } : {})
         }
       });
       return this.record(input.runId)!;

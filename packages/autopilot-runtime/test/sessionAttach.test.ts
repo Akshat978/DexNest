@@ -94,7 +94,11 @@ function store(t: { after(fn: () => void): void }, options: { withRunSession?: b
     runs.createRun({ spec: { ...createRunSpec({ goal: "g" }, { id, now: NOW }), id }, executorId: "test" });
   }
   if (options.withRunSession) {
+    // established:true makes it a conversation, not a placeholder. A virgin row
+    // (created by authorizing the loop, never spoken through) does NOT block
+    // adoption -- that case has its own tests.
     new WorkerStore(ports).createSession({ runId: "run-a", provider: "claude", sessionId: "own-session", cwd: PROJECT, established: false });
+    ports.db.prepare("UPDATE autopilot_worker_sessions SET established=1 WHERE run_id='run-a'").run({});
   }
 
   t.after(() => { database.close(); rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); });
@@ -242,7 +246,39 @@ test("a session already adopted by another run is refused", (t) => {
   );
 });
 
-test("a run that already has a session cannot adopt another", (t) => {
+test("a placeholder session nothing has spoken through does not block adoption", (t) => {
+  // Authorizing the loop creates the run's session because the grant binds to
+  // it. Every created run therefore "had a session", and the whole attach path
+  // was unreachable outside tests -- found on the first real attempt to use it.
+  const h = store(t);
+  new WorkerStore(h.ports).createSession({ runId: "run-a", provider: "claude", sessionId: "placeholder-id", cwd: PROJECT, established: false });
+
+  const session = h.discovery.forProject(PROJECT)[0]!;
+  const record = h.attach.attach({ runId: "run-a", provider: "claude", session, workspaceRoot: PROJECT });
+  assert.equal(record.sessionId, PRIMED);
+
+  const worker = new WorkerStore(h.ports).session("run-a")!;
+  assert.equal(worker.sessionId, PRIMED, "the placeholder is replaced, not kept alongside");
+  assert.equal(worker.established, true);
+});
+
+test("adopting re-points an active grant at the adopted session", (t) => {
+  // The grant is bound to a session id. Left pointing at the discarded
+  // placeholder, the journal would record an authorization for a session that
+  // no longer exists.
+  const h = store(t);
+  new WorkerStore(h.ports).createSession({ runId: "run-a", provider: "claude", sessionId: "placeholder-id", cwd: PROJECT, established: false });
+  h.ports.db.prepare(`INSERT INTO autopilot_loop_grants (id, run_id, provider, session_id, workspace_root, max_turns, status, granted_by, granted_at)
+    VALUES ('grant-1','run-a','claude','placeholder-id',:root,10,'ACTIVE','test',:now)`).run({ root: PROJECT, now: NOW });
+
+  const session = h.discovery.forProject(PROJECT)[0]!;
+  h.attach.attach({ runId: "run-a", provider: "claude", session, workspaceRoot: PROJECT });
+
+  const grant = h.ports.db.prepare("SELECT session_id FROM autopilot_loop_grants WHERE id='grant-1'").get<{ session_id: string }>({})!;
+  assert.equal(grant.session_id, PRIMED);
+});
+
+test("a run whose conversation has begun cannot adopt another", (t) => {
   const h = store(t, { withRunSession: true });
   const session = h.discovery.forProject(PROJECT)[0]!;
   assert.throws(

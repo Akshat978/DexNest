@@ -148,5 +148,26 @@ test("a second adoption is refused once the run has a session", (t) => {
     h.workers.sessionCandidates("loop-run").every(entry => entry.blockers.includes("run_has_session")),
     true
   );
-  assert.throws(() => h.workers.attachSession({ runId: "loop-run", sessionId: PRIMED }), /already has a session/);
+  assert.throws(() => h.workers.attachSession({ runId: "loop-run", sessionId: PRIMED }), /conversation has already started/);
+});
+
+test("the real sequence: create, authorize, THEN adopt, then run", async (t) => {
+  // Exactly what happened on the first real attempt. Creating a run authorizes
+  // the loop, authorizing creates the session the grant binds to, and the run
+  // "had a session" before the operator ever saw the picker. Adoption must
+  // replace that never-used placeholder and carry the grant with it.
+  const h = fixture(t);
+  h.loop.authorize({ runId: "loop-run", maxTurns: 2, grantedBy: "human" });
+
+  const candidates = h.workers.sessionCandidates("loop-run");
+  assert.equal(candidates[0]!.attachable, true, "a placeholder nothing spoke through does not block adoption");
+
+  const record = h.workers.attachSession({ runId: "loop-run", sessionId: PRIMED });
+  assert.equal(record.sessionId, PRIMED);
+
+  await h.loop.run("loop-run");
+  const args = claudeCalls(h)[0]!.args;
+  assert.ok(args.includes("--resume"), args.join(" "));
+  assert.equal(args[args.indexOf("--resume") + 1], PRIMED);
+  assert.equal(args.includes("--session-id"), false);
 });
