@@ -213,18 +213,27 @@ export function parseDirection(text: string, planItemIds: readonly string[] = []
   if (assignment && assignment.toLowerCase() === EXAMPLE_ASSIGNMENT.toLowerCase()) return null;
 
   const rawItem = field("plan-item");
-  const planItemId = rawItem && rawItem.toLowerCase() !== "none" ? clean(rawItem, 200) : null;
-  if (planItemId && planItemIds.length > 0 && !planItemIds.includes(planItemId)) {
-    // An invented plan item would let the agent describe work as belonging to
-    // something the human never asked for.
-    return { verb: "NEEDS_HUMAN", assignment, planItemId: null, reason: "The worker referred to a plan item that does not exist.", issue: `Unknown plan item "${planItemId}".` };
-  }
+  const named = rawItem && rawItem.toLowerCase() !== "none" ? clean(rawItem, 200) : null;
+  // An invented plan item must never be recorded: work would be attributed to
+  // something the human never asked for. But an unrecognized LABEL is almost
+  // always a formatting slip — "Phase 2" for "plan-2" — and stopping the run
+  // over one wakes a person at 4am to fix a hyphen, throwing away a decision
+  // whose assignment is perfectly good.
+  //
+  // So the reference is dropped rather than trusted, the slip is recorded as
+  // an issue, and the decision itself stands. The plan's own order then picks
+  // the item, exactly as it does when an agent names none. The guarantee is
+  // kept — nothing is attributed to an item that does not exist — without
+  // spending the night on it.
+  const unknownItem = named !== null && planItemIds.length > 0 && !planItemIds.includes(named);
+  const planItemId = unknownItem ? null : named;
+  const issue = unknownItem ? `Unknown plan item "${named}"; the plan's own order was used instead.` : null;
 
   if (verb === "CONTINUE" && !assignment) {
     return { verb: "NEEDS_HUMAN", assignment: null, planItemId, reason: "The worker asked to continue without saying what to do next.", issue: "CONTINUE without an assignment." };
   }
 
-  return { verb, assignment, reason, planItemId, issue: null };
+  return { verb, assignment, reason, planItemId, issue };
 }
 
 export class DirectionStore {

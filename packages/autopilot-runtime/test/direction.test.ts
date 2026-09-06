@@ -87,12 +87,6 @@ test("a decision that cannot be trusted becomes a request for a human, not a gue
   assert.equal(unknown.verb, "NEEDS_HUMAN");
   assert.match(unknown.issue!, /Unrecognized decision/);
 
-  // An invented plan item would let work be described as something the human
-  // never asked for.
-  const invented = parseDirection(block("decision: CONTINUE\nplan-item: plan-99\nassignment: Do a thing."), ITEM_IDS)!;
-  assert.equal(invented.verb, "NEEDS_HUMAN");
-  assert.match(invented.issue!, /Unknown plan item/);
-
   const empty = parseDirection(block("decision: CONTINUE"), ITEM_IDS)!;
   assert.equal(empty.verb, "NEEDS_HUMAN");
   assert.match(empty.issue!, /without an assignment/);
@@ -202,4 +196,29 @@ test("direction tracking tolerates a database without migration 19", (t) => {
 
 test("rendering summarises decisions in one line each", () => {
   assert.equal(renderDirections([]), "No self-directed decisions.");
+});
+
+test("an unrecognized plan item is dropped, not obeyed and not fatal", () => {
+  // Two failures are possible here and only one of them matters. Attributing
+  // work to an item the human never wrote would corrupt the plan's meaning, so
+  // the reference is never trusted. But an unrecognized LABEL is almost always
+  // a formatting slip — "Phase 2" for "plan-2" — and ending an overnight run
+  // over one wakes a person at 4am to fix a hyphen, discarding an assignment
+  // that was perfectly good. The plan's own order picks the item instead.
+  const slip = parseDirection(block("decision: CONTINUE\nplan-item: Phase 2\nassignment: Write the parser."), ITEM_IDS)!;
+  assert.equal(slip.verb, "CONTINUE", "the decision stands");
+  assert.equal(slip.assignment, "Write the parser.");
+  assert.equal(slip.planItemId, null, "nothing is attributed to an item that does not exist");
+  assert.match(slip.issue!, /Unknown plan item "Phase 2"/, "the slip is recorded, not hidden");
+
+  // Same for an id-shaped one that simply is not in this plan.
+  const invented = parseDirection(block("decision: CONTINUE\nplan-item: plan-99\nassignment: Do a thing."), ITEM_IDS)!;
+  assert.equal(invented.verb, "CONTINUE");
+  assert.equal(invented.planItemId, null);
+
+  // A run with no plan has nothing to validate against, so a named item is
+  // simply carried through rather than invented against an empty list.
+  const noPlan = parseDirection(block("decision: CONTINUE\nplan-item: plan-2\nassignment: Do a thing."), [])!;
+  assert.equal(noPlan.planItemId, "plan-2");
+  assert.equal(noPlan.issue, null);
 });

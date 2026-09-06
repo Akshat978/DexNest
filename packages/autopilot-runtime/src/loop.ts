@@ -905,8 +905,29 @@ export class AutonomousLoop {
           return this.settle(runId, reason, detail, report, turnsRun);
         }
 
-        // No decision block: the run has no self-direction and a green
-        // verification means what it has always meant.
+        // No decision block, but a plan with work still in it. The run is not
+        // finished; the agent simply did not say what was next.
+        //
+        // The rule below — a green verification finishes the run — predates
+        // plans and self-direction, and was right when a run was one piece of
+        // work judged by its acceptance criteria. Against a twenty-two phase
+        // plan it is a trap: one forgotten block on phase 1 marks the whole
+        // run COMPLETED and ends the night, with twenty-one phases untouched
+        // and a report that says it succeeded.
+        //
+        // The plan's own order is the fallback, exactly as it is when an agent
+        // names no item. Nothing here is unbounded: turns, iterations, time,
+        // spend and no-progress all still apply.
+        if (!this.plans.settled(runId, spec) && this.plans.next(runId, spec)) {
+          this.ports.logger.log("info", "Autopilot turn ended without a decision; continuing on plan order", {
+            runId, turnId: turn.id
+          });
+          this.changed(runId);
+          continue;
+        }
+
+        // No decision block and nothing left in the plan: a green verification
+        // means what it has always meant.
         this.loops.closeGrant({ grantId: grant.id, status: "COMPLETED", reason: "Acceptance criteria satisfied." });
         const run = this.engine.store.requireRun(runId);
         if (run.state === "RUNNING") {
