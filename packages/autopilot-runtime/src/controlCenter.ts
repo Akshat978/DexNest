@@ -60,6 +60,16 @@ export function projectRun(ports: RuntimePorts, runId: string) {
     turn: report.loop.turns.length, maxTurns: grant?.maxTurns ?? 0, consumed: grant?.turnsUsed ?? 0,
     latestVerification: latest?.outcome ?? null, createdAt: report.run.createdAt, updatedAt: report.run.updatedAt };
 }
+/** Bounded, credential-free text for a user-visible failure reason. */
+function prose(value: string, limit = 400): string {
+  return value
+    .replace(/\b(?:sk-[\w-]+|gh[pousr]_[\w]+|github_pat_[\w]+|AKIA[A-Z0-9]{16})\b/g, "[redacted credential]")
+    .replace(/\b(?:Bearer|Basic)\s+[^\s,;]+/gi, "[redacted authorization]")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .trim()
+    .slice(0, limit);
+}
+
 export class AutopilotControlCenter {
   private readonly options: { ports: RuntimePorts; engine: AutopilotEngine; workers: ControlledWorkerTurns; executable(provider: CodingProvider): string };
   constructor(options: AutopilotControlCenter["options"]) { this.options = options; }
@@ -120,8 +130,22 @@ export class AutopilotControlCenter {
     const outcome = await engine.effects!.request({ runId: run.id, stepKey: "control-center-workspace", policy,
       intent: { kind: "CREATE_WORKTREE", repoRoot: project, worktreePath: workspaceRoot, branch: `autopilot/${id}`, baseRef: "HEAD", purpose: "Prepare the primary coding workspace" } });
     if (!("result" in outcome) || !outcome.result.ok) {
-      engine.store.appendEvent(id, { type: "RUN_FAILED", toState: "FAILED", failureReason: "Workspace preparation did not complete; inspect the blocked/failed operation." });
-      throw new Error(`Workspace preparation did not complete. Inspect run ${id}.`);
+      // Surface the reason the runtime already recorded. The first dogfood run
+      // failed on a real path bug, and the only thing the operator saw was
+      // "inspect run <id>" — the actual sentence was sitting in the operation.
+      const detail = "decision" in outcome ? outcome.decision.reason
+        : "result" in outcome ? outcome.result.summary || outcome.operation.resultSummary || ""
+        : outcome.operation.resultSummary || "";
+      const reason = prose(detail, 400);
+      engine.store.appendEvent(id, { type: "RUN_FAILED", toState: "FAILED",
+        failureReason: reason
+          ? `Workspace preparation did not complete: ${reason}`
+          : "Workspace preparation did not complete; inspect the blocked/failed operation." });
+      throw new Error(
+        reason
+          ? `Workspace preparation did not complete: ${reason} (run ${id})`
+          : `Workspace preparation did not complete. Inspect run ${id}.`
+      );
     }
     engine.store.appendEvent(id, { type: "WORKSPACE_CREATED", payload: { workspaceRoot } });
     try { workers.authorizeLoop({ runId: id, maxTurns: form.maxTurns, grantedBy: "desktop_ui" }); }

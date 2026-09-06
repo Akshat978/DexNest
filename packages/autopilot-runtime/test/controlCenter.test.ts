@@ -188,3 +188,29 @@ test("the worktree is a sibling of the project, with the project name intact", a
   const name = project.slice(project.lastIndexOf("/") + 1);
   assert.equal(worktree.includes(`/${name.slice(0, -1)}/`), false, `worktree must not use a truncated project name: ${worktree}`);
 });
+
+test("a failed workspace preparation reports the reason the runtime recorded", async t => {
+  // From the first dogfood run: the operator saw only "inspect run <id>" while
+  // the real sentence — a path outside every write root — sat in the operation.
+  const f = await setup(t);
+  const worktree = { path: "" };
+  f.h.ports.platform!.fs.realPath = (path: string) => {
+    // Corrupt only the worktree, exactly as the drive-root path bug did.
+    if (path.includes("dexnest-worktrees")) { worktree.path = path; return path.replace("dexnest-worktrees", "exnest-worktrees"); }
+    return path;
+  };
+
+  await assert.rejects(f.center.create(form(f.repo)), (error: Error) => {
+    assert.match(error.message, /Workspace preparation did not complete: /);
+    assert.match(error.message, /outside every root this run may write/);
+    assert.match(error.message, /run coding-run-/, "the run id is still named");
+    return true;
+  });
+
+  // And the same bounded reason is durable, not only thrown.
+  const failed = f.h.host.engine.listRuns(10).find(run => run.state === "FAILED")!;
+  assert.ok(failed, "the run is marked FAILED");
+  assert.match(failed.failureReason!, /Workspace preparation did not complete: .*outside every root/);
+  assert.ok(failed.failureReason!.length <= 460, "the reason stays bounded");
+  assert.ok(worktree.path.includes("dexnest-worktrees"), "the intent itself was never corrupted");
+});

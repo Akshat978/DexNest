@@ -9,7 +9,7 @@
 
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, resolve, basename } from "node:path";
 import type {
   CommandOutcome,
   EnvironmentPort,
@@ -31,7 +31,12 @@ function createFileSystemPort(): FileSystemPort {
       while (!existsSync(current)) {
         const parent = dirname(current);
         if (parent === current) return resolve(path);
-        trailing.unshift(current.slice(parent.length + 1));
+        // basename, never length arithmetic: dirname("D:\\x") is "D:\\" WITH a
+        // trailing separator, so slice(parent.length + 1) eats the first
+        // character of the segment and silently rewrites the path. That turned
+        // D:\dexnest-worktrees into D:\exnest-worktrees and failed every run
+        // whose worktree parent was a drive root.
+        trailing.unshift(basename(current));
         current = parent;
       }
       const real = realpathSync.native(current);
