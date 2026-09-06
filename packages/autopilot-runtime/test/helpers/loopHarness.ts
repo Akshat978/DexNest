@@ -24,6 +24,7 @@ import { ScriptedExecutor, MemorySideEffectLedger } from "../../src/scriptedExec
 import { defaultCapabilityPolicy } from "../../src/policy.ts";
 import type { ProcessPort, RuntimePorts } from "../../src/ports.ts";
 import type { RunSpecInput } from "../../src/runSpec.ts";
+import { SessionDiscovery } from "../../src/sessionDiscovery.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const LOOP_WORKER_FIXTURE = resolve(here, "fakeLoopWorker.mjs");
@@ -79,6 +80,8 @@ export interface OpenLoopOptions {
   commandFor?: (tier: string) => string;
   /** The chat that writes assignments, for chat-directed runs. */
   director?: import("../../src/chatDirector.ts").ChatDirector | null;
+  /** Extra environment, e.g. a USERPROFILE pointing at a fixture session store. */
+  env?: Record<string, string>;
 }
 
 export function openLoop(root: string, options: OpenLoopOptions = {}) {
@@ -87,7 +90,8 @@ export function openLoop(root: string, options: OpenLoopOptions = {}) {
 
   const platform = createPlatformPorts({
     ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
-    ANTHROPIC_API_KEY: "must-not-leak"
+    ANTHROPIC_API_KEY: "must-not-leak",
+    ...(options.env ?? {})
   });
 
   const realProcess = createProcessPort();
@@ -149,7 +153,8 @@ export function openLoop(root: string, options: OpenLoopOptions = {}) {
     executableFor: (provider) => `${provider}.exe`,
     newSessionId: () => `${LOOP_SESSION_ID.slice(0, -1)}${(sessionCounter += 1)}`,
     validateWorkspace: () => {},
-    changed: () => {}
+    changed: () => {},
+    sessionDiscovery: new SessionDiscovery({ fs: platform.fs, env: platform.env, now: () => ports.clock.now() })
   });
 
   const tiers = options.tiers ?? ["typecheck", "test"];

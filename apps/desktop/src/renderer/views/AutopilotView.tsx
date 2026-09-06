@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { ControlledWorkerTurns, RunSpecInput, RunReport } from "@dexnest/autopilot-runtime";
 import { AutopilotNewRun } from "./AutopilotNewRun";
-import { LiveActivityPanel, PlanProgress, IterationList, RunSummary, MorningPanel } from "./AutopilotLive";
+import { LiveActivityPanel, PlanProgress, IterationList, RunSummary, MorningPanel, SessionAdoption } from "./AutopilotLive";
 import "./Autopilot.css";
 import type { projectRun } from "@dexnest/autopilot-runtime";
 import { PageHeader } from "../components/shared";
@@ -285,6 +285,9 @@ export function AutopilotView() {
           <RunSummary runId={run.id} working={Boolean(worker?.busy || loop?.busy)} />
           {/* The morning: answer its claim to be finished, and say whatever
               reading it made you want to say. Neither starts a turn. */}
+          {/* Explaining a job is easy in the editor and awkward in a form,
+              so the explaining can happen there and the carrying-on here. */}
+          <SessionAdoption runId={run.id} working={Boolean(worker?.busy || loop?.busy)} onChanged={() => void refresh(run.id)} />
           <MorningPanel runId={run.id} working={Boolean(worker?.busy || loop?.busy)} onChanged={() => void refresh(run.id)} />
           {report?.plan && <PlanProgress items={report.plan.items} />}
           {report?.iterations && <IterationList iterations={report.iterations} />}

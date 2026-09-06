@@ -17,6 +17,7 @@ import { claudeExecutable, codexExecutable, validateClaudeWorkspace } from "./au
 import {
   AutopilotEngine,
   ControlledWorkerTurns,
+  SessionDiscovery,
   AutopilotControlCenter,
   ConsultationStore,
   DirectionAuthorityStore,
@@ -168,7 +169,10 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
   const codexNative = options.codexExecutable ?? codexExecutable(ports.platform!);
   const workers = new ControlledWorkerTurns({ engine, ports, executable, codexExecutable: codexNative, newSessionId: randomUUID,
     executableFor: provider => provider === "claude" ? options.claudeExecutable ?? claudeExecutable(ports.platform!) : options.codexExecutable ?? codexExecutable(ports.platform!),
-    validateWorkspace: runId => validateClaudeWorkspace(ports.platform!, engine.store.requireRun(runId).spec), changed });
+    validateWorkspace: runId => validateClaudeWorkspace(ports.platform!, engine.store.requireRun(runId).spec), changed,
+    // Metadata only, and never credentials: the reader is pointed at the
+    // transcript store and knows nothing about auth files sitting beside it.
+    sessionDiscovery: new SessionDiscovery({ fs: ports.platform!.fs, env: ports.platform!.env, now: () => ports.clock.now() }) });
   let recovered = false;
   const center = new AutopilotControlCenter({ ports, engine, workers, executable: provider => provider === "claude" ? options.claudeExecutable ?? claudeExecutable(ports.platform!) : options.codexExecutable ?? codexExecutable(ports.platform!) });
   const consultations = new ConsultationStore(ports);
@@ -440,6 +444,19 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
 
   // What the operator reads before opening the conversation.
   handle("dexnest:autopilot-morning-summary", (_event, runId: string) => morningSummaryFor(runId));
+
+  // --- continuing a session you primed --------------------------------------
+  // Explaining the job is easy in the editor and awkward in a form. This lets
+  // the explaining happen there and the carrying-on happen here.
+  handle("dexnest:autopilot-session-candidates", (_event, runId: string) => workers.sessionCandidates(runId));
+  handle("dexnest:autopilot-session-attached", (_event, runId: string) => workers.attachedSession(runId));
+  handle("dexnest:autopilot-session-attach", (_event, input: { runId: string; sessionId: string }) => {
+    const record = workers.attachSession(input);
+    options.logEvent?.("Autopilot adopted an existing session", {
+      actionId: "autopilot.session_attach", runId: input.runId, sessionId: record.sessionId, origin: record.origin
+    });
+    return record;
+  });
 
   // --- the morning ---------------------------------------------------------
   // A sentence written before letting the run carry on, and the answer to its

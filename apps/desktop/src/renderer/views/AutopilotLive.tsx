@@ -12,7 +12,7 @@
 // and it is doing this" view that a buffered run could never give.
 
 import React, { useEffect, useRef, useState } from "react";
-import type { ActivityEvent, DirectionDecision, IterationRecord, MorningSummary, OperatorNoteRecord, PlanItemProgress } from "@dexnest/autopilot-runtime";
+import type { ActivityEvent, AttachedSessionRecord, DirectionDecision, IterationRecord, MorningSummary, OperatorNoteRecord, PlanItemProgress, SessionCandidate } from "@dexnest/autopilot-runtime";
 
 interface LiveBridge {
   autopilotActivity(runId: string): Promise<ActivityEvent[]>;
@@ -282,5 +282,115 @@ export function MorningPanel({ runId, working, onChanged }: { runId: string; wor
         )}
       </div>
     </>
+  );
+}
+
+// --- continuing a session you primed ----------------------------------------
+
+interface SessionBridge {
+  autopilotSessionCandidates(runId: string): Promise<SessionCandidate[]>;
+  autopilotAttachedSession(runId: string): Promise<AttachedSessionRecord | null>;
+  autopilotAttachSession(input: { runId: string; sessionId: string }): Promise<AttachedSessionRecord>;
+}
+const sessions = () => (window as unknown as { dexNest: SessionBridge }).dexNest;
+
+const BLOCKER_TEXT: Record<string, string> = {
+  live: "Still open somewhere — close it in your editor",
+  attached_elsewhere: "Another run is already continuing it",
+  project_mismatch: "It was working in a different project",
+  run_has_session: "This run already has a session"
+};
+
+const ago = (iso: string | null) => {
+  if (!iso) return "unknown";
+  const minutes = Math.round((Date.now() - Date.parse(iso)) / 60000);
+  if (!Number.isFinite(minutes)) return "unknown";
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  return hours < 24 ? `${hours} h ago` : `${Math.round(hours / 24)} d ago`;
+};
+
+/**
+ * Adopting the conversation you already had.
+ *
+ * The workflow this is for: explain the job to Claude Code in the editor, where
+ * explaining is easy and you can see the answers, then hand that same
+ * conversation to DexNest to carry on unattended. The session is shared — the
+ * panel and DexNest's CLI read and write the same transcript files — so this is
+ * adoption, not a copy.
+ *
+ * Which is also why a session that has been written to in the last few minutes
+ * is refused. A transcript has one writer; two would interleave into something
+ * neither side can reason about, and there is no recovery from that. So the
+ * refusal is loud and says what to do about it.
+ */
+export function SessionAdoption({ runId, working, onChanged }: { runId: string; working: boolean; onChanged: () => void }) {
+  const [candidates, setCandidates] = useState<SessionCandidate[] | null>(null);
+  const [attached, setAttached] = useState<AttachedSessionRecord | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = () => {
+    void sessions().autopilotAttachedSession(runId).then(setAttached).catch(() => setAttached(null));
+    void sessions().autopilotSessionCandidates(runId).then(setCandidates).catch(() => setCandidates([]));
+  };
+  // Not keyed on onChanged: it is a new function every parent render, and
+  // depending on it refetches forever.
+  useEffect(load, [runId, working]);
+
+  if (attached) {
+    return (
+      <div className="card">
+        <h4>Continuing a conversation you started</h4>
+        <p>
+          {attached.title ? <strong>{attached.title}</strong> : <em>untitled session</em>}
+          {" — started in "}
+          {attached.origin === "vscode" ? "your editor" : attached.origin === "cli" ? "a terminal" : "an unknown client"}
+        </p>
+        <p className="technical">Session {attached.sessionId} · adopted {attached.attachedAt}</p>
+      </div>
+    );
+  }
+
+  // Nothing to offer and nothing gone wrong: a run with a session of its own is
+  // the normal case and does not need a card explaining that.
+  if (candidates !== null && candidates.length === 0) return null;
+
+  const adopt = (sessionId: string) => {
+    setBusy(true);
+    setError(null);
+    void sessions().autopilotAttachSession({ runId, sessionId })
+      .then(() => { load(); onChanged(); })
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <div className="card">
+      <h4>Continue a conversation instead</h4>
+      <p className="technical">
+        Explain the job to Claude Code in your editor, then hand that session here. DexNest resumes it rather than
+        starting cold, so everything you already said still counts.
+      </p>
+      {error && <p className="autopilot-error">{error}</p>}
+      {candidates === null && <p className="technical">Looking…</p>}
+      <ul className="autopilot-sessions">
+        {(candidates ?? []).map(({ session, blockers, attachable }) => (
+          <li key={session.sessionId} className={attachable ? undefined : "session-blocked"}>
+            <div>
+              <strong>{session.title ?? "untitled session"}</strong>
+              <span className="technical">
+                {" "}— {session.origin === "vscode" ? "editor" : session.origin === "cli" ? "terminal" : "unknown"}
+                , last active {ago(session.lastActivity)}
+              </span>
+            </div>
+            {blockers.length > 0
+              ? <p className="technical">{blockers.map(blocker => BLOCKER_TEXT[blocker] ?? blocker).join(" · ")}</p>
+              : <button type="button" disabled={busy} onClick={() => adopt(session.sessionId)}>CONTINUE THIS ONE</button>}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }

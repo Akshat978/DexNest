@@ -51,6 +51,10 @@ const tokens = resolve(desktop, "../../packages/shared-ui/src/tokens.css").repla
 writeFileSync(join(scratch, "entry.tsx"), `import React from 'react'; import {createRoot} from 'react-dom/client'; import {AutopilotView} from ${JSON.stringify(view)}; import ${JSON.stringify(tokens)}; import ${JSON.stringify(css)}; createRoot(document.getElementById('root')).render(<main style={{padding:24,maxWidth:1200,margin:'auto'}}><AutopilotView/></main>);`);
 writeFileSync(join(scratch, "preload.cjs"), `const {contextBridge}=require('electron'); const report=${JSON.stringify(report)}, snapshot=${JSON.stringify(snapshot)}, dashboard=${JSON.stringify(dashboard)};
 const notes=[];
+const attached={value:null};
+const primed={sessionId:'aaaaaaaa-1111-4111-8111-111111111111',transcriptPath:'C:/t/a.jsonl',projectPath:'D:/Worktrees/example',origin:'vscode',title:'Notifications architecture',cliVersion:'2.1.261',gitBranch:'main',firstActivity:'2026-09-04T09:00:00Z',lastActivity:'2026-09-04T18:00:00Z',sizeBytes:4096,live:false};
+const stillOpen={...primed,sessionId:'bbbbbbbb-2222-4222-8222-222222222222',title:'Still open in the editor',lastActivity:'2026-09-05T11:58:00Z',live:true};
+
 const proposal={value:{id:'dir1',runId:'review-run',turnId:'turn-4',source:'self',verb:'PLAN_COMPLETE',assignment:null,reason:'everything asked for is there',planItemId:null,consumedByTurnId:null,createdAt:'2026-09-05T12:00:00Z'}};
 contextBridge.exposeInMainWorld('dexNest', {
 autopilotDashboard: async()=>dashboard, autopilotGetRun: async()=>snapshot, autopilotReport:async()=>JSON.parse(JSON.stringify(report)),
@@ -69,6 +73,9 @@ autopilotConsultationRun:async scope=>{if(scope.requestId!=='consult1'||scope.co
  return report.diagnoses[0];},
 autopilotCancelConsultation:async()=>{Object.assign(report.consultations[0],{status:'CANCELLED',canApprove:false,canCancel:false,executionEligible:false});},
 autopilotActivity:async()=>[{id:'e1',kind:'tool',text:'Read src/example.ts',at:'2026-09-05T12:00:00Z'}],
+autopilotSessionCandidates:async()=>attached.value?[]:[{session:primed,blockers:[],attachable:true},{session:stillOpen,blockers:['live'],attachable:false}],
+autopilotAttachedSession:async()=>attached.value,
+autopilotAttachSession:async input=>{if(input.sessionId!==primed.sessionId)throw Error('This session was active in the last few minutes');attached.value={runId:input.runId,provider:'claude',sessionId:primed.sessionId,origin:'vscode',title:primed.title,transcriptPath:primed.transcriptPath,attachedAt:'2026-09-05T12:00:00Z'};return attached.value;},
 autopilotNotes:async()=>notes, autopilotAddNote:async input=>{const note={id:'n'+(notes.length+1),runId:input.runId,text:input.text,author:'desktop_ui',createdAt:'2026-09-05T12:00:00Z',consumedTurnId:null};notes.push(note);return note;},
 autopilotPlanCompleteProposal:async()=>proposal.value,
 autopilotAcceptPlanComplete:async()=>{proposal.value=null;},
@@ -89,6 +96,19 @@ await win.webContents.executeJavaScript("[...document.querySelectorAll('nav butt
 await new Promise(r=>setTimeout(r,100));
 await win.webContents.executeJavaScript("[...document.querySelectorAll('details.autopilot-mechanism')].forEach(d=>{d.open=true})");
 await new Promise(r=>setTimeout(r,100));
+
+// Continuing a conversation primed in the editor. A blocked session stays
+// visible with its reason: someone hunting for the conversation they just had
+// is better served by "close it in your editor" than by its absence.
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('Notifications architecture')"),true);
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('Still open somewhere')"),true);
+assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('.autopilot-sessions > li.session-blocked').length"),1);
+assert.equal(await win.webContents.executeJavaScript("[...document.querySelectorAll('.autopilot-sessions > li')].filter(li=>li.querySelector('button')).length"),1,'only the attachable one is actionable');
+await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(b=>b.textContent==='CONTINUE THIS ONE').click()");
+await new Promise(r=>setTimeout(r,250));
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('Continuing a conversation you started')"),true);
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('started in your editor')"),true);
+assert.equal(await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].some(b=>b.textContent==='CONTINUE THIS ONE')"),false,'adopted, so there is nothing left to choose');
 
 // The morning. A run that says it is finished is asking a question, and both
 // answers have to be reachable without leaving DexNest.

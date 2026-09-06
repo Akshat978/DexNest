@@ -21,6 +21,8 @@ import type { CapabilityPolicy } from "./policy.ts";
 import { buildRunReport } from "./report.ts";
 import { evaluateRecovery } from "./recovery.ts";
 import { authoritativeFingerprint } from "./runSpec.ts";
+import type { SessionDiscovery, DiscoveredSession } from "./sessionDiscovery.ts";
+import { SessionAttachStore, SessionAttachError, type AttachedSessionRecord, type SessionCandidate } from "./sessionAttach.ts";
 
 export interface ControlledWorkerOptions {
   ports: RuntimePorts;
@@ -31,6 +33,17 @@ export interface ControlledWorkerOptions {
   newSessionId(): string;
   /** Host revalidates the existing registered worktree before every worker action. */
   validateWorkspace(runId: string): void;
+  /**
+   * Reads Claude Code's transcript store, for adopting a primed session.
+   *
+   * Injected rather than built here. This module is not one of the few allowed
+   * to reach platform.fs / platform.env — that restriction exists so nothing
+   * routes around policy, and it applies with particular force to a reader
+   * pointed at the user's home directory, next to credentials it must never
+   * touch. So the host that already owns the platform wiring hands it over,
+   * and a runtime built without one simply cannot look.
+   */
+  sessionDiscovery?: SessionDiscovery;
   changed(runId: string): void;
 }
 
@@ -439,6 +452,65 @@ export class ControlledWorkerTurns {
 
   revokeLoop(runId: string, reason?: string) {
     return this.loopFor(runId).revoke(runId, reason);
+  }
+
+  // --- continuing a session you primed --------------------------------------
+  //
+  // The workflow this exists for: explain the job to Claude Code in the editor,
+  // where explaining is easy, then hand the conversation to DexNest to carry on
+  // unattended. Everything needed was built with the discovery and attach
+  // stores; what was missing was any way to reach them.
+
+  private discovery(): SessionDiscovery {
+    const discovery = this.options.sessionDiscovery;
+    if (!discovery) throw new Error("Finding existing sessions requires a session discovery reader.");
+    return discovery;
+  }
+
+  private workspaceFor(runId: string): string {
+    const root = this.options.engine.store.requireRun(runId).spec.capabilities.workspaceRoot ?? "";
+    if (!root) throw new Error("This run has no workspace to match sessions against.");
+    return root;
+  }
+
+  /**
+   * Every session in this project, attachable or not.
+   *
+   * Blocked ones are returned WITH their reason rather than filtered out: an
+   * operator looking for the conversation they just had is far better served by
+   * seeing it greyed out and told why than by its silent absence.
+   */
+  sessionCandidates(runId: string): SessionCandidate[] {
+    const workspaceRoot = this.workspaceFor(runId);
+    const sessions = this.discovery().forProject(workspaceRoot);
+    return new SessionAttachStore(this.options.ports).candidates({ runId, workspaceRoot, sessions });
+  }
+
+  attachedSession(runId: string): AttachedSessionRecord | null {
+    return new SessionAttachStore(this.options.ports).record(runId);
+  }
+
+  attachSession(input: { runId: string; sessionId: string }): AttachedSessionRecord {
+    if (this.active.has(input.runId)) throw new Error("A worker action is already in progress.");
+    const workspaceRoot = this.workspaceFor(input.runId);
+    // Re-read from disk rather than trusting an id the UI is holding: the
+    // transcript may have been written to since the list was drawn, which is
+    // exactly the condition the live blocker exists to catch.
+    const session: DiscoveredSession | undefined = this.discovery()
+      .forProject(workspaceRoot)
+      .find(entry => entry.sessionId === input.sessionId);
+    if (!session) {
+      throw new SessionAttachError("project_mismatch", "That session is no longer among this project's transcripts.");
+    }
+    const provider = new OwnershipStore(this.options.ports).primaryProvider(input.runId, this.options.engine.store.requireRun(input.runId).spec);
+    const record = new SessionAttachStore(this.options.ports).attach({
+      runId: input.runId, provider, session, workspaceRoot
+    });
+    // The cached worker was built when this run had no session; the next send
+    // must resume rather than open one.
+    this.workers.delete(input.runId);
+    this.options.changed(input.runId);
+    return record;
   }
 
   // --- the morning ---------------------------------------------------------
