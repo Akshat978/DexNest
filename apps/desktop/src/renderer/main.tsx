@@ -33,7 +33,7 @@ import { AssistantOrb } from "./components/ui/AssistantOrb";
 import { VoiceWaveform } from "./components/ui/VoiceWaveform";
 import { ModuleLoadingOverlay, InlineLoadingState, LoadingStatusCard } from "./components/ui/ModuleLoading";
 import { previewForUi, formatBytes, formatDate, formatDuration } from "./lib/format";
-import { MODULE_META } from "./lib/moduleMeta";
+import { MODULE_META, SIDEBAR_VIEWS, SIDEBAR_HIDDEN_VIEWS, type ViewId } from "./lib/moduleMeta";
 import { getPerfStats, subscribePerf, recordModuleSwitch, recordModuleDataLoaded } from "./lib/perf";
 import {
   emptyCommandStats, defaultPerformanceModeSettings, defaultPerformanceModeState, defaultExternalDevicesState,
@@ -59,7 +59,7 @@ import "@dexnest/shared-ui/tokens.css";
 import "./styles.css";
 import "./theme.css";
 
-export type ViewId = "command" | "dev" | "deck" | "clipboard" | "drop" | "tools" | "vault" | "search" | "capture" | "journal" | "calendar" | "timetable" | "utilities" | "news" | "finder" | "finance" | "heatmap" | "devices" | "backup" | "health" | "audit" | "autopilot" | "settings";
+export type { ViewId } from "./lib/moduleMeta";
 type ActionStatus = "success" | "failed" | "skipped" | "cancelled" | "pending";
 type ToastTone = "success" | "error";
 type AppCloseBehavior = "minimize_to_tray" | "ask" | "exit";
@@ -2119,31 +2119,8 @@ declare global {
 }
 
 
-const views: Array<{ id: ViewId; label: string; accentClass: string; actionId: string }> = [
-  { id: "command", label: "Command", accentClass: "accent-command", actionId: "command.open_home" },
-  { id: "search", label: "Search / Ask", accentClass: "accent-search", actionId: "search.open" },
-  { id: "clipboard", label: "Clipboard", accentClass: "accent-clipboard", actionId: "clipboard.open" },
-  { id: "drop", label: "Drop", accentClass: "accent-drop", actionId: "drop.open" },
-  { id: "tools", label: "Tools", accentClass: "accent-tools", actionId: "tools.open" },
-  { id: "vault", label: "Vault", accentClass: "accent-vault", actionId: "vault.open" },
-  { id: "journal", label: "Journal", accentClass: "accent-journal", actionId: "journal.open_today" },
-  { id: "calendar", label: "Calendar", accentClass: "accent-calendar", actionId: "calendar.show_today" },
-  { id: "timetable", label: "Timetable", accentClass: "accent-timetable", actionId: "timetable.open" },
-  { id: "utilities", label: "Utilities", accentClass: "accent-utilities", actionId: "utilities.open" },
-  { id: "news", label: "News", accentClass: "accent-news", actionId: "news.open" },
-  { id: "finder", label: "Finder", accentClass: "accent-finder", actionId: "finder.open" },
-  { id: "capture", label: "Capture", accentClass: "accent-capture", actionId: "capture.open" },
-  { id: "finance", label: "Finance", accentClass: "accent-finance", actionId: "finance.open" },
-  { id: "dev", label: "Dev", accentClass: "accent-dev", actionId: "dev.open_dashboard" },
-  { id: "deck", label: "Deck", accentClass: "accent-deck", actionId: "deck.test_endpoint" },
-  { id: "heatmap", label: "Heatmap", accentClass: "accent-heatmap", actionId: "heatmap.open" },
-  { id: "devices", label: "External Devices", accentClass: "accent-tools", actionId: "" },
-  { id: "backup", label: "Backup", accentClass: "accent-command", actionId: "" },
-  { id: "health", label: "App Health", accentClass: "accent-command", actionId: "" },
-  { id: "settings", label: "Settings", accentClass: "accent-command", actionId: "settings.open" },
-  { id: "autopilot", label: "Autopilot", accentClass: "accent-dev", actionId: "autopilot.open" },
-  { id: "audit", label: "Audit", accentClass: "accent-command", actionId: "audit.open_history" }
-];
+// The sidebar registry and its order live in lib/moduleMeta.
+const views = SIDEBAR_VIEWS;
 
 const moduleCards = [
   ["command", "Command", "Action hub and dashboard.", "available"],
@@ -5926,7 +5903,7 @@ function DexNestApp() {
         </div>
 
         <nav className="sidebar-scroll flex-1 space-y-0.5 overflow-y-auto px-2.5 py-3">
-          {views.filter((view) => view.id !== "audit").map((view) => {
+          {views.filter((view) => !SIDEBAR_HIDDEN_VIEWS.includes(view.id)).map((view) => {
             const meta = MODULE_META[view.id] ?? { icon: Command, accent: "#22D3EE" };
             const Icon = meta.icon;
             const active = activeView === view.id;

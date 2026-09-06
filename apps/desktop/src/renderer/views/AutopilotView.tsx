@@ -5,11 +5,11 @@ import "./Autopilot.css";
 import type { projectRun } from "@dexnest/autopilot-runtime";
 import { PageHeader } from "../components/shared";
 
-// Autopilot debug surface (Phases 1-2).
+// The Autopilot Control Center.
 //
-// Deliberately minimal: this exists to exercise and inspect the durable engine,
-// not to be the eventual Autopilot UI. The renderer holds NO authoritative run
-// state — every value here is a snapshot pushed from the main process, so
+// This is the user-facing surface for Autopilot, reached from the sidebar. It is
+// deliberately plain rather than unfinished: the renderer holds NO authoritative
+// run state — every value here is a snapshot pushed from the main process, so
 // closing or reloading this window never disturbs a run.
 //
 // Real worker turns require explicit review and approval. Every effect still passes

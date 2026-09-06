@@ -5,6 +5,57 @@ import {
   type LucideIcon
 } from "lucide-react";
 
+/** Every view the shell can route to. */
+export type ViewId =
+  | "command" | "dev" | "autopilot" | "deck" | "clipboard" | "drop" | "tools" | "vault"
+  | "search" | "capture" | "journal" | "calendar" | "timetable" | "utilities" | "news"
+  | "finder" | "finance" | "heatmap" | "devices" | "backup" | "health" | "audit" | "settings";
+
+export interface SidebarView {
+  id: ViewId;
+  label: string;
+  accentClass: string;
+  actionId: string;
+}
+
+/**
+ * The sidebar registry, in display order.
+ *
+ * Order is product surface, not bookkeeping: the shell renders this list top to
+ * bottom in a scrolling rail, so anything appended to the end is effectively
+ * hidden below the fold on a normal window. Autopilot sits with Dev because it
+ * is developer/system tooling and because that keeps it visible without
+ * scrolling.
+ */
+export const SIDEBAR_VIEWS: SidebarView[] = [
+  { id: "command", label: "Command", accentClass: "accent-command", actionId: "command.open_home" },
+  { id: "search", label: "Search / Ask", accentClass: "accent-search", actionId: "search.open" },
+  { id: "clipboard", label: "Clipboard", accentClass: "accent-clipboard", actionId: "clipboard.open" },
+  { id: "drop", label: "Drop", accentClass: "accent-drop", actionId: "drop.open" },
+  { id: "tools", label: "Tools", accentClass: "accent-tools", actionId: "tools.open" },
+  { id: "vault", label: "Vault", accentClass: "accent-vault", actionId: "vault.open" },
+  { id: "journal", label: "Journal", accentClass: "accent-journal", actionId: "journal.open_today" },
+  { id: "calendar", label: "Calendar", accentClass: "accent-calendar", actionId: "calendar.show_today" },
+  { id: "timetable", label: "Timetable", accentClass: "accent-timetable", actionId: "timetable.open" },
+  { id: "utilities", label: "Utilities", accentClass: "accent-utilities", actionId: "utilities.open" },
+  { id: "news", label: "News", accentClass: "accent-news", actionId: "news.open" },
+  { id: "finder", label: "Finder", accentClass: "accent-finder", actionId: "finder.open" },
+  { id: "capture", label: "Capture", accentClass: "accent-capture", actionId: "capture.open" },
+  { id: "finance", label: "Finance", accentClass: "accent-finance", actionId: "finance.open" },
+  { id: "dev", label: "Dev", accentClass: "accent-dev", actionId: "dev.open_dashboard" },
+  { id: "autopilot", label: "Autopilot", accentClass: "accent-dev", actionId: "autopilot.open" },
+  { id: "deck", label: "Deck", accentClass: "accent-deck", actionId: "deck.test_endpoint" },
+  { id: "heatmap", label: "Heatmap", accentClass: "accent-heatmap", actionId: "heatmap.open" },
+  { id: "devices", label: "External Devices", accentClass: "accent-tools", actionId: "" },
+  { id: "backup", label: "Backup", accentClass: "accent-command", actionId: "" },
+  { id: "health", label: "App Health", accentClass: "accent-command", actionId: "" },
+  { id: "settings", label: "Settings", accentClass: "accent-command", actionId: "settings.open" },
+  { id: "audit", label: "Audit", accentClass: "accent-command", actionId: "audit.open_history" }
+];
+
+/** Views the sidebar deliberately does not show. Audit is reached from Command. */
+export const SIDEBAR_HIDDEN_VIEWS: ViewId[] = ["audit"];
+
 // Icon + accent for each module, shared across the shell and module views.
 export const MODULE_META: Record<string, { icon: LucideIcon; accent: string }> = {
   command: { icon: Command, accent: "#22D3EE" },
