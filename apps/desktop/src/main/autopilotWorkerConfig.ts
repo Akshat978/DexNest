@@ -1,7 +1,6 @@
 import { join, isAbsolute } from "node:path";
 import { readdirSync } from "node:fs";
-import { defaultEnforcedCapabilityPolicy, evaluatePathAccess, samePath, WorkspaceManager,
-  type PlatformPorts, type RunSpecInput } from "@dexnest/autopilot-runtime";
+import { type PlatformPorts } from "@dexnest/autopilot-runtime";
 
 /** Native installation locations only; never execute a shell shim or renderer-supplied command. */
 export function claudeExecutable(platform: PlatformPorts): string {
@@ -32,21 +31,11 @@ export function codexExecutable(platform: PlatformPorts): string {
 }
 
 /** Read-only validation; the operator supplies an already registered, separate worktree. */
-export function validateClaudeWorkspace(platform: PlatformPorts, spec: RunSpecInput): void {
-  const repo = spec.projectPath;
-  const cwd = spec.capabilities?.workspaceRoot;
-  if (!repo || !cwd || !isAbsolute(repo) || !isAbsolute(cwd)) throw new Error("Select absolute primary repository and existing worktree paths.");
-  const policy = defaultEnforcedCapabilityPolicy();
-  policy.workspaceRoot = cwd;
-  policy.readRoots = [repo];
-  policy.denyRoots.push(...(spec.capabilities?.forbiddenPaths ?? []).filter(path => path !== "local-data"));
-  for (const [path, mode] of [[repo, "read"], [cwd, "write"]] as const) {
-    if (evaluatePathAccess(policy, { path, mode }).decision !== "ALLOW") throw new Error("Repository or worktree is denied by policy.");
-    if (!platform.fs.exists(path) || !samePath(platform.fs.realPath(path), path)) throw new Error("Repository and worktree must exist at their canonical paths.");
-  }
-  const manager = new WorkspaceManager({ git: platform.git, fs: platform.fs, worktreesRoot: cwd, scratchesRoot: cwd });
-  manager.assertUsable(repo, cwd);
-  if (!samePath(manager.resolveRepositoryRoot(repo), repo) || !samePath(manager.resolveRepositoryRoot(cwd), cwd)) throw new Error("Use repository roots, not subdirectories.");
-  const trees = platform.git.listWorktrees(repo);
-  if (!trees[0] || !samePath(trees[0].path, repo) || !trees.some(tree => samePath(tree.path, cwd))) throw new Error("Worktree must be registered to the selected primary repository.");
-}
+/**
+ * Re-validates the workspace before every worker action.
+ *
+ * Lives in the runtime now — it is pure logic over a Run Spec and the platform
+ * ports, with nothing Electron about it, and keeping it here meant it could not
+ * be tested at all. That is how it came to refuse an entire workspace mode.
+ */
+export { validateRunWorkspace as validateClaudeWorkspace } from "@dexnest/autopilot-runtime";

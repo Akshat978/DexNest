@@ -9,3 +9,72 @@
 @media (max-width: 700px) {
   .event-row.autopilot-run-card, .autopilot-pair { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* --- Live view -----------------------------------------------------------
+   The primary Selected Run surface: what is happening now, how far through
+   the plan, and what was decided. Deliberately quiet — this is a status
+   surface someone glances at, not a transcript they read here. */
+
+.autopilot-live {
+  max-height: 22rem;
+  overflow-y: auto;
+}
+
+.autopilot-activity,
+.autopilot-plan,
+.autopilot-iterations,
+.autopilot-assumptions {
+  margin: 0.5rem 0 0;
+  padding-left: 1.25rem;
+  display: grid;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
+.autopilot-activity {
+  list-style: none;
+  padding-left: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.autopilot-activity li {
+  display: grid;
+  grid-template-columns: 1.25rem 1fr;
+  align-items: baseline;
+  gap: 0.4rem;
+  overflow-wrap: anywhere;
+}
+
+/* The agent's own reasoning is context, not the point; tool calls are. */
+.activity-thinking { opacity: 0.65; font-style: italic; }
+.activity-tool { color: var(--accent, #0ea5e9); }
+.activity-result { color: #16a34a; }
+.activity-error { color: #dc2626; }
+
+.plan-done { opacity: 0.6; text-decoration: line-through; }
+.plan-active { font-weight: 600; }
+.plan-blocked,
+.iteration-failed { color: #dc2626; }
+.iteration-abandoned { opacity: 0.6; }
+.iteration-verified strong { color: #16a34a; }
+
+.autopilot-where {
+  margin: 0.5rem 0 0;
+  padding: 0.5rem 0.6rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-radius: 0.375rem;
+  background: rgba(127, 127, 127, 0.12);
+}
+
+/* Mechanism, not the run. Present for when something goes wrong, quiet
+   otherwise, so the primary surface stays about the work. */
+.autopilot-mechanism > summary {
+  cursor: pointer;
+  opacity: 0.7;
+  font-size: 0.85rem;
+  padding: 0.35rem 0;
+}
+
+.autopilot-mechanism > summary:hover { opacity: 1; }

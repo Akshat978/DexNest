@@ -160,13 +160,18 @@ contextBridge.exposeInMainWorld("dexNest", {
     ipcRenderer.invoke("dexnest:autopilot-handoff-cancel", scope),
   autopilotHandoffActivate: (input: { runId: string; handoffId: string; toProvider: "claude" | "codex"; maxTurns: number }) =>
     ipcRenderer.invoke("dexnest:autopilot-handoff-activate", input),
+  autopilotDirectionSwitch: (input: { runId: string; source: "self" | "chat"; reason: string }) =>
+    ipcRenderer.invoke("dexnest:autopilot-direction-switch", input),
+  autopilotMorningSummary: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-morning-summary", runId),
+  autopilotActivity: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-activity", runId),
   autopilotConsultationRequest: (input: { runId: string; consultantProvider: "claude" | "codex" }) =>
     ipcRenderer.invoke("dexnest:autopilot-consultation-request", input),
   autopilotConsultationRun: (scope: { runId: string; requestId: string; consultantProvider: "claude" | "codex" }) =>
     ipcRenderer.invoke("dexnest:autopilot-consultation-run", scope),
   autopilotLoopAuthorize: (payload: { runId: string; maxTurns: number }) => ipcRenderer.invoke("dexnest:autopilot-loop-authorize", payload),
   autopilotLoopRevoke: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-loop-revoke", runId),
-  autopilotLoopRun: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-loop-run", runId),
+  autopilotLoopRun: (runId: string, input?: { retryProviderLimit?: boolean }) =>
+    ipcRenderer.invoke("dexnest:autopilot-loop-run", runId, input),
   autopilotListApprovals: (runId?: string) => ipcRenderer.invoke("dexnest:autopilot-list-approvals", runId),
   autopilotResolveApproval: (payload: { approvalId: string; decision: "APPROVED" | "REJECTED" }) =>
     ipcRenderer.invoke("dexnest:autopilot-resolve-approval", payload),

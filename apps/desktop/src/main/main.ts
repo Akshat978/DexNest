@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, safeStorage, screen, shell, Tray } from "electron";
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, safeStorage, screen, shell, Tray } from "electron";
 import { exec, execFile, execFileSync } from "node:child_process";
 import { copyFileSync, cpSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, get as httpGet, type IncomingMessage, type ServerResponse } from "node:http";
@@ -243,6 +243,14 @@ function startAutopilotHost(): void {
       database: localDb.getDatabase(),
       ipcMain,
       getWindow: () => mainWindow,
+      // Autopilot runs while nobody is looking at DexNest, so a run that needs
+      // a person has to say so. Best effort: a missing toast must never fail a
+      // run, and the runtime itself never touches Electron.
+      notify: ({ title, body }) => {
+        try {
+          if (Notification.isSupported()) new Notification({ title, body }).show();
+        } catch { /* a notification is not worth an error */ }
+      },
       logEvent: (summary, metadata) => {
         localDb.appendActionEvent({
           module: "autopilot",

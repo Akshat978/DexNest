@@ -19,6 +19,9 @@ import {
   ControlledWorkerTurns,
   AutopilotControlCenter,
   ConsultationStore,
+  DirectionAuthorityStore,
+  UnattendedStore,
+  buildMorningSummary,
   HandoffStore,
   type ConsultationScope,
   type NewRunForm,
@@ -91,6 +94,8 @@ export interface AutopilotHostOptions {
   getWindow: () => BrowserWindow | null;
   /** Writes into the existing DexNest event log for the Audit view. */
   logEvent?: (summary: string, metadata: Record<string, unknown>) => void;
+  /** Shows the operator a native notification. Injected, so this file stays testable. */
+  notify?: (message: { title: string; body: string }) => void;
 }
 
 export interface AutopilotHost {
@@ -149,6 +154,8 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
 
   // Event-driven only. Autopilot adds no timers and no polling loops, so it is
   // dormant when no run is active (AGENTS.md idle-resource rule).
+  let resumeTimer: ReturnType<typeof setTimeout> | null = null;
+
   const changed = (runId: string) => {
     const window = options.getWindow();
     if (window && !window.isDestroyed()) {
@@ -228,6 +235,21 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
       newSessionId: result.handoff.toSessionId, grantId: result.grant.id, maxTurns: result.grant.maxTurns });
     changed(input.runId);
     return result;
+  });
+
+  // Moving who decides what happens next. State only: no process, no prompt,
+  // no grant consumption. It takes effect at the next iteration boundary, so a
+  // turn already in flight finishes under the decider it started with.
+  handle("dexnest:autopilot-direction-switch", (_event, input: { runId: string; source: "self" | "chat"; reason: string }) => {
+    if (workers.snapshot(input.runId).busy) throw new Error("Direction cannot be switched while a turn is in flight.");
+    const record = new DirectionAuthorityStore(ports).switchTo({
+      runId: input.runId, source: input.source, reason: input.reason, changedBy: "desktop_ui"
+    });
+    options.logEvent?.("Autopilot direction source changed", {
+      actionId: "autopilot.direction_switch", runId: input.runId, source: input.source
+    });
+    changed(input.runId);
+    return record;
   });
 
   // A human asking for a second opinion. Creates request state only: no
@@ -310,13 +332,118 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
     options.logEvent?.("Autopilot loop authorization revoked", { actionId: "autopilot.loop_revoke", runId, grantId: grant?.id ?? null });
     return grant;
   });
-  handle("dexnest:autopilot-loop-run", async (_event, runId: string) => {
-    const outcome = await workers.runLoop(runId);
+  /**
+   * Runs the loop and deals with however it stopped.
+   *
+   * One place, because every caller — the button, the resume timer, a future
+   * scheduler — needs the same three things afterwards: the outcome logged, the
+   * operator told if they need to act, and the wait rescheduled if the run is
+   * waiting on a limit rather than on a person.
+   */
+  async function runLoopAndReport(runId: string, retryProviderLimit: boolean) {
+    const outcome = await workers.runLoop(runId, { retryProviderLimit });
     options.logEvent?.(`Autopilot loop settled: ${outcome.reason}`, {
       actionId: "autopilot.loop_run", runId, reason: outcome.reason, turnsRun: outcome.turnsRun, finalState: outcome.finalState
     });
+    notifyIfNeeded(runId, outcome.reason);
+    scheduleResumeTimer();
+    return outcome;
+  }
+
+  /** The summary an operator reads before opening the conversation. */
+  function morningSummaryFor(runId: string) {
+    const report = workers.report(runId);
+    const unattended = new UnattendedStore(ports);
+    // How the loop stopped lives in the journal, not on the report: the report
+    // is rebuilt from durable evidence and the outcome object is a return
+    // value, which a restart does not have.
+    const held = [...engine.store.listEvents(runId)].reverse()
+      .find(event => event.type === "LOOP_HELD")?.payload as { reason?: string; detail?: string } | undefined;
+    const stop = (held?.reason ?? (report.run.state === "COMPLETED" ? "completed" : "paused")) as Parameters<typeof buildMorningSummary>[0]["reason"];
+    return buildMorningSummary({
+      reason: stop,
+      detail: held?.detail ?? report.run.failureReason ?? "",
+      iterations: report.iterations,
+      checkpoints: report.checkpoints.length,
+      assumptions: unattended.assumptions(runId),
+      directionSource: report.direction.source,
+      resume: unattended.pending(runId),
+      provider: report.roles.primary.provider,
+      sessionId: report.roles.primary.sessionId,
+      cwd: report.spec.capabilities.workspaceRoot
+    });
+  }
+
+  /**
+   * Tells the operator, once, when a run needs them.
+   *
+   * Silent on the outcomes that need nothing: a run still waiting out a usage
+   * limit will pick itself back up, and a notification for that is noise at
+   * 3am. Notifications are best-effort — a run must never fail because a toast
+   * could not be shown.
+   */
+  function notifyIfNeeded(runId: string, reason: string): void {
+    if (["provider_limit", "paused", "stopped"].includes(reason)) {
+      // provider_limit only matters once the waiting has given up.
+      const waiting = new UnattendedStore(ports).pending(runId);
+      if (reason !== "provider_limit" || (waiting && !waiting.exhausted)) return;
+    }
+    try {
+      const summary = morningSummaryFor(runId);
+      if (summary.action === "nothing" || summary.action === "waiting") return;
+      options.notify?.({ title: `Autopilot — ${summary.headline}`, body: summary.detail });
+    } catch {
+      // A missing notification is not worth failing a run over.
+    }
+  }
+
+  /**
+   * Wakes runs whose wait is over.
+   *
+   * A single timer for all of them, re-armed after every settle, so nothing is
+   * polled and a closed app simply resumes on next launch. The retry is
+   * deliberate — it passes retryProviderLimit — because waiting IS the decision
+   * that the limit may have lifted.
+   */
+  function scheduleResumeTimer(): void {
+    if (resumeTimer) { clearTimeout(resumeTimer); resumeTimer = null; }
+    const unattended = new UnattendedStore(ports);
+    const waiting = unattended.due("9999-12-31T23:59:59.999Z").filter(entry => !entry.exhausted);
+    const next = waiting.map(entry => Date.parse(entry.notBefore)).sort((left, right) => left - right)[0];
+    if (next === undefined) return;
+
+    const delay = Math.max(0, Math.min(next - Date.now(), 30 * 60_000));
+    resumeTimer = setTimeout(() => {
+      resumeTimer = null;
+      const due = unattended.due(new Date().toISOString()).filter(entry => !entry.exhausted);
+      void (async () => {
+        for (const entry of due) {
+          ports.logger.log("info", "Autopilot retrying a provider limit", { runId: entry.runId, attempt: entry.attempt });
+          engine.store.appendEvent(entry.runId, { type: "RESUME_ATTEMPTED", payload: { attempt: entry.attempt } });
+          try { await runLoopAndReport(entry.runId, true); }
+          catch (error) {
+            ports.logger.log("warn", "Autopilot resume attempt failed", { runId: entry.runId, error: String(error) });
+          }
+        }
+        // Nothing was due yet, or more waiting was scheduled: re-arm either way.
+        if (due.length === 0) scheduleResumeTimer();
+      })();
+    }, delay);
+    // A pending timer must never hold the app open.
+    resumeTimer.unref?.();
+  }
+
+  handle("dexnest:autopilot-loop-run", async (_event, runId: string, input?: { retryProviderLimit?: boolean }) => {
+    const outcome = await runLoopAndReport(runId, input?.retryProviderLimit === true);
     return outcome;
   });
+
+  // What the operator reads before opening the conversation.
+  handle("dexnest:autopilot-morning-summary", (_event, runId: string) => morningSummaryFor(runId));
+
+  // What the run is doing right now. In memory, bounded, and never the
+  // authority on anything: the conversation itself lives in the agent session.
+  handle("dexnest:autopilot-activity", (_event, runId: string) => workers.activity(runId));
 
   // --- run report ----------------------------------------------------------
   // Rebuilt from SQLite every time, so it survives restarts and remains

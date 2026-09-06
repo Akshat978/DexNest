@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { ControlledWorkerTurns, RunSpecInput, RunReport } from "@dexnest/autopilot-runtime";
 import { AutopilotNewRun } from "./AutopilotNewRun";
+import { LiveActivityPanel, PlanProgress, IterationList, RunSummary } from "./AutopilotLive";
 import "./Autopilot.css";
 import type { projectRun } from "@dexnest/autopilot-runtime";
 import { PageHeader } from "../components/shared";
@@ -98,6 +99,7 @@ interface AutopilotBridge {
   autopilotCancelConsultation(scope: { runId: string; requestId: string; consultantProvider: "claude" | "codex" }): Promise<unknown>;
   autopilotConsultationRun(scope: { runId: string; requestId: string; consultantProvider: "claude" | "codex" }): Promise<unknown>;
   autopilotConsultationRequest(input: { runId: string; consultantProvider: "claude" | "codex" }): Promise<unknown>;
+  autopilotDirectionSwitch(input: { runId: string; source: "self" | "chat"; reason: string }): Promise<unknown>;
   autopilotHandoffPropose(input: { runId: string; toProvider: "claude" | "codex"; reason?: string }): Promise<unknown>;
   autopilotHandoffApprove(scope: { runId: string; handoffId: string; toProvider: "claude" | "codex" }): Promise<unknown>;
   autopilotHandoffCancel(scope: { runId: string; handoffId: string; toProvider: "claude" | "codex" }): Promise<unknown>;
@@ -206,7 +208,7 @@ export function AutopilotView() {
   return (
     <section className="view-stack" aria-labelledby="autopilot-title">
       <PageHeader
-        eyebrow="Durable runtime · controlled worker turns · tools disabled"
+        eyebrow="Plan → iterations → checkpoints · your project, on its own branch"
         title="Autopilot Control Center"
         titleId="autopilot-title"
         actions={(
@@ -277,8 +279,35 @@ export function AutopilotView() {
             </button>
           </div>
 
-          {isRealWorker && worker && <details open={Boolean(pendingSend)}><summary>Worker sends and manual controls</summary><section className="view-stack" aria-label={`Controlled ${workerName} turn`}>
-            <PageHeader eyebrow={`${workerName} · sticky session · tools disabled`} title="Controlled prompt and send resolution" titleId="autopilot-worker-title" />
+          {/* What is happening, and what happened. The mechanism below is
+              for when something has gone wrong; this is the run. */}
+          <LiveActivityPanel runId={run.id} working={Boolean(worker?.busy || loop?.busy)} />
+          <RunSummary runId={run.id} working={Boolean(worker?.busy || loop?.busy)} />
+          {report?.plan && <PlanProgress items={report.plan.items} />}
+          {report?.iterations && <IterationList iterations={report.iterations} />}
+
+          {report?.direction && <div className="card">
+            <h4>Who decides what happens next</h4>
+            <p><strong>{report.direction.source === "chat" ? "A chat writes the assignments" : "The coding agent decides for itself"}</strong></p>
+            <p className="technical">{report.direction.source === "chat"
+              ? "A separate read-only session holds the plan and writes each assignment. One extra call per piece of work, and the coding subscription is spent on coding."
+              : "The agent ends each turn saying what it would do next. No extra call, but its own capacity pays for the planning."}</p>
+            <button type="button" disabled={busy || Boolean(worker?.busy)}
+              onClick={() => void guard(() => bridge().autopilotDirectionSwitch({
+                runId: run.id,
+                source: report.direction.source === "chat" ? "self" : "chat",
+                reason: report.direction.source === "chat" ? "Operator moved planning back to the agent." : "Operator moved planning to the chat."
+              }))}>
+              {report.direction.source === "chat" ? "LET THE AGENT DECIDE" : "LET A CHAT DECIDE"}
+            </button>
+            <p className="technical">Takes effect at the next piece of work; a turn already running finishes under the decider it started with.</p>
+            {report.direction.authority.length > 0 && report.direction.authority.map(entry =>
+              <p key={entry.id} className="technical">{entry.ordinal}. {entry.source} — {entry.reason} ({entry.changedBy})</p>)}
+          </div>}
+
+
+          {isRealWorker && worker && <details className="autopilot-mechanism" open={Boolean(pendingSend && pendingSend.status === "UNCERTAIN")}><summary>Manual worker controls and send history</summary><section className="view-stack" aria-label={`Controlled ${workerName} turn`}>
+            <PageHeader eyebrow={`${workerName} · sticky session · ${report?.spec.workerProfile === "agentic" ? "tools enabled in the workspace" : "tools disabled"}`} title="Controlled prompt and send resolution" titleId="autopilot-worker-title" />
             <p className="technical">Session: {worker.session?.sessionId ?? "Not started"} · {worker.session?.established ? "Previously confirmed" : "Reserved on first preparation"} · {worker.busy ? "Worker action in progress" : "Held"}</p>
             <p className="technical">Worker cwd: {worker.session?.cwd ?? "Run worktree (validated before preparation)"}</p>
             {worker.session?.provider === "codex" && <p className="technical">Codex thread: {worker.session.providerSessionId ?? "Assigned and journaled before the first prompt is sent"}</p>}
@@ -293,7 +322,7 @@ export function AutopilotView() {
                 <details><summary>Provider output</summary><pre className="technical">{pendingSend.result.text || "No provider output captured."}</pre></details>
               </>}
               {pendingSend.status === "AWAITING_APPROVAL" && <>
-                <p>Approve this exact saved prompt to send it once to {workerName}. This may consume subscription usage. Tools remain disabled.</p>
+                <p>Approve this exact saved prompt to send it once to {workerName}. This may consume subscription usage. {report?.spec.workerProfile === "agentic" ? "It can read, edit and run commands inside the workspace." : "Tools remain disabled."}</p>
                 <button type="button" disabled={busy || worker.busy || ["STOPPED", "FAILED", "COMPLETED"].includes(run.state)}
                   onClick={() => void guard(() => bridge().autopilotWorkerSend({ runId: run.id, sendId: pendingSend.id }))}>Approve and send once</button>
               </>}
@@ -336,6 +365,12 @@ export function AutopilotView() {
             />
             {report && <>
               <p className="technical">Project: {report.spec.projectPath} · Worktree: {report.provider.workspaceRoot}</p>
+              {/* The mechanism: sessions, recovery routing, ownership,
+                  consultations, provider diagnostics, verification detail,
+                  context requests. Still the thing to read when a run goes
+                  wrong — but it is not what the run IS, so it does not lead. */}
+              <details className="autopilot-mechanism">
+                <summary>Diagnostics — sessions, recovery, verification detail</summary>
               <p className="technical">PRIMARY {report.roles.primary.provider} · Session {report.roles.primary.sessionId ?? "Not started"} · Provider session {report.roles.primary.providerSessionId ?? "Not recorded"} · Established {String(report.roles.primary.established)} · Restored {String(report.roles.primary.restored)}</p>
               <p className="technical">CONSULTANT {report.roles.consultant.provider ?? "None"} · {report.roles.consultant.provider ? "Not started" : "No session"}</p>
               <p>Primary status: {report.primaryProgress ? ({ PROGRESSING: "Progressing", STALLED: "Stalled", BLOCKED: "Blocked" }[report.primaryProgress.status]) : "Progressing (not evaluated yet)"}</p>
@@ -559,6 +594,8 @@ export function AutopilotView() {
                     </article>
                   ))}</div>}
               </section>
+
+              </details>
 
               {report.acceptanceCriteria.length > 0 && <div className="event-list">
                 {report.acceptanceCriteria.map(criterion => (

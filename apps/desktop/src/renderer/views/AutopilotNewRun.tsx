@@ -9,7 +9,8 @@ interface CreationBridge {
 }
 const api = () => (window as unknown as { dexNest: CreationBridge }).dexNest;
 const initial: NewRunForm = {
-  goal: "", projectPath: "", primary: "claude", consultant: null, maxTurns: 5, maxFailures: 3,
+  goal: "", projectPath: "", primary: "claude", consultant: null, maxTurns: 30, maxIterations: 10, maxFailures: 3,
+  workspaceMode: "worktree", workerProfile: "mediated", planText: "", director: null, model: "", effort: "",
   constraints: [], nonGoals: [], acceptance: [{ text: "Configured tests pass", tier: "test" }],
   verification: [
     { tier: "typecheck", enabled: false, executable: "node", args: ["node_modules/typescript/bin/tsc", "--noEmit"] },
@@ -47,13 +48,49 @@ export function AutopilotNewRun({ onCreated }: { onCreated(id: string): void }) 
       </select></label>
       <label>Project path<input required value={form.projectPath} onChange={event => update({ projectPath: event.target.value, projectId: undefined })} /></label>
       <button type="button" disabled={busy} onClick={() => { void api().chooseToolsOutputFolder().then(value => { if (value.ok && value.path) update({ projectPath: value.path, projectId: undefined }); }).catch(cause => setError(String(cause))); }}>Choose project folder</button>
-      <p className="technical">Project: {form.projectPath || "Not selected"}. DexNest creates a separate worktree in a sibling dexnest-worktrees folder.</p>
+      <label>Where the agent works<select value={form.workspaceMode ?? "worktree"} onChange={event => update({ workspaceMode: event.target.value as NewRunForm["workspaceMode"] })}>
+        <option value="worktree">Separate worktree (your project is untouched)</option>
+        <option value="project-branch">In the project, on its own branch</option>
+      </select></label>
+      <p className="technical">{form.workspaceMode === "project-branch"
+        ? `Changes appear in ${form.projectPath || "your project"} on branch dexnest/<run id>, with a commit after every verified step. Your current branch is never committed to, but there is no separate copy to throw away, so the project must have no uncommitted changes before starting.`
+        : `Project: ${form.projectPath || "Not selected"}. DexNest creates a separate worktree in a sibling dexnest-worktrees folder.`}</p>
+      <label>Worker capability<select value={form.workerProfile ?? "mediated"} onChange={event => update({ workerProfile: event.target.value as NewRunForm["workerProfile"] })}>
+        <option value="mediated">Mediated — no tools, DexNest writes every file</option>
+        <option value="agentic">Agentic — the worker reads, edits and runs tests itself</option>
+      </select></label>
+      <p className="technical">{form.workerProfile === "agentic"
+        ? "The worker gets real tools inside the workspace, so it works like Claude Code does for you: no pasted files, no whole-file rewrites. DexNest no longer checks each individual write — the workspace directory, the run's branch and per-step commits are what contain it. Requires Claude Code, and is refused for a project containing DexNest local-data."
+        : "Every tool is disabled. The worker returns files as text and DexNest writes them through policy, so each write is checked individually. Slower, and it re-sends whole files to change one line."}</p>
+      <label>Plan (optional)<textarea rows={6} maxLength={200000} value={form.planText ?? ""} onChange={event => update({ planText: event.target.value })} placeholder={"Paste the phase-wise plan you agreed elsewhere. Headings become ordered items:\n\n### Phase 1 — ...\n### Phase 2 — ..."} /></label>
       <label>Primary worker<select value={form.primary} onChange={event => update({ primary: event.target.value as CodingProvider })}><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label>
+      <label>Who decides the next step<select value={form.director ?? ""} onChange={event => update({ director: (event.target.value || null) as CodingProvider | null })}>
+        <option value="">The coding agent decides for itself</option>
+        <option value="codex">ChatGPT (via Codex) writes each assignment</option>
+        <option value="claude">Claude writes each assignment, in a separate session</option>
+      </select></label>
+      <p className="technical">{form.director
+        ? "A separate read-only session holds the plan and writes each assignment. One extra call per piece of work \u2014 in exchange, the coding subscription is spent on coding. You can switch this mid-run."
+        : "The agent ends each turn saying what it would do next. No extra call, but its own capacity pays for the planning. You can switch this mid-run."}</p>
       <label>Consultant<select value={form.consultant ?? ""} onChange={event => update({ consultant: (event.target.value || null) as CodingProvider | null })}><option value="">None</option><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label>
       <p>Primary owns all coding turns. A consultant is saved configuration only and will not start.</p>
       <button type="button" disabled={busy || !form.projectPath} onClick={() => void check()}>Refresh provider readiness</button>
       {providers.map(item => <p key={item.provider} className="technical">{item.provider}: {item.installed === null ? "installation unknown" : item.installed ? "installed" : "not installed"} · {item.authenticated === null ? "login unknown" : item.authenticated ? "authenticated" : "not authenticated"} · {checkedPath !== form.projectPath ? "refresh required" : item.available ? "available" : `unavailable: ${item.failure ?? "unknown"}`}</p>)}
-      <label>Maximum autonomous turns<input type="number" min={1} max={50} required value={form.maxTurns} onChange={event => update({ maxTurns: Number(event.target.value) })} /></label>
+      <label>Model<select value={form.model ?? ""} onChange={event => update({ model: event.target.value })}>
+        <option value="">Provider default</option>
+        <option value="opus">Opus (latest)</option>
+        <option value="sonnet">Sonnet (latest)</option>
+        <option value="haiku">Haiku (latest)</option>
+      </select></label>
+      <label>Effort<select value={form.effort ?? ""} onChange={event => update({ effort: event.target.value })}>
+        <option value="">Provider default</option>
+        {["low", "medium", "high", "xhigh", "max"].map(level => <option key={level} value={level}>{level}</option>)}
+      </select></label>
+      <p className="technical">Effort trades cost against how hard the worker thinks per turn. Both apply to the agentic profile only.</p>
+      <label>Pieces of work to authorize<input type="number" min={1} max={50} required value={form.maxIterations ?? 10} onChange={event => update({ maxIterations: Number(event.target.value) })} /></label>
+      <p className="technical">Each is one assignment: the agent does it, DexNest verifies it and commits a checkpoint, then the agent says what is next. Repairs and follow-up turns belong to the piece of work that caused them.</p>
+      <label>Turn ceiling (safety limit)<input type="number" min={1} max={50} required value={form.maxTurns} onChange={event => update({ maxTurns: Number(event.target.value) })} /></label>
+      <p className="technical">A hard stop on total provider calls, so a piece of work that keeps failing cannot run forever. Must be at least the number of pieces of work.</p>
       <label>Consecutive failure limit<input type="number" min={1} max={20} required value={form.maxFailures} onChange={event => update({ maxFailures: Number(event.target.value) })} /></label>
       <details><summary>Verification</summary><p>Commands run in the new worktree. Review these examples for your project. Existing dependencies must be available; no packages are installed automatically. Enter each argument on its own line.</p>
         {form.verification.map((item, index) => <fieldset key={item.tier}><legend>{item.tier === "test" ? "Tests" : item.tier === "integration" ? "Integration tests" : item.tier}</legend>
