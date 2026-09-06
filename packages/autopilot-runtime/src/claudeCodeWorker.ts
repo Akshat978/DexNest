@@ -1,4 +1,4 @@
-import { DurableWorker, type WorkerOptions, type WorkerProtocol, type WorkerFailure, type WorkerResult } from "./worker.ts";
+import { DurableWorker, WORKER_PROMPT_TIMEOUT_MS, WORKER_PROBE_TIMEOUT_MS, type WorkerOptions, type WorkerProtocol, type WorkerFailure, type WorkerResult } from "./worker.ts";
 import type { DispatchResult } from "./dispatcher.ts";
 import type { RunCommandIntent } from "./intent.ts";
 
@@ -21,7 +21,8 @@ export function classifyClaudeFailure(text: string): WorkerFailure {
 export function claudeCodeProtocol(executable: string): WorkerProtocol {
   if (!executable.trim() || /\.(cmd|bat|ps1)$/i.test(executable)) throw new Error("Configure the native Claude executable, not a shell shim.");
   const command = (cwd: string, args: string[], stdin?: string): RunCommandIntent => ({
-    kind: "RUN_COMMAND", executable, args, cwd, stdin, timeoutMs: stdin === undefined ? 15_000 : 120_000,
+    kind: "RUN_COMMAND", executable, args, cwd, stdin,
+    timeoutMs: stdin === undefined ? WORKER_PROBE_TIMEOUT_MS : WORKER_PROMPT_TIMEOUT_MS,
     purpose: stdin === undefined ? "Inspect Claude availability" : "Send one Claude prompt"
   });
   return {

@@ -11,6 +11,24 @@ import { WorkerStore, type WorkerSession, type WorkerSend } from "./workerStore.
 import { OwnershipStore } from "./handoff.ts";
 import { assertPrimary, type WorkerRole } from "./roles.ts";
 
+/**
+ * How long a provider gets to answer one prompt.
+ *
+ * Derived, not guessed. Worker tools are disabled, so the only way a worker can
+ * change a file is to re-emit that file in full, and DexNest permits up to
+ * MAX_OUTPUT_FILE_BYTES (128 KB) per file. A single medium source file is tens
+ * of thousands of output tokens, which is minutes of generation.
+ *
+ * The first real dogfood run proved the old 120s was below what DexNest's own
+ * protocol requires: turn 3 had to re-emit a 34 KB file, produced no output
+ * inside the window, and was killed — leaving an uncertain send that a human had
+ * to resolve by hand. A timeout must bound a hung process, not a working one.
+ */
+export const WORKER_PROMPT_TIMEOUT_MS = 600_000;
+
+/** Version/auth/config probes are local and must fail fast. */
+export const WORKER_PROBE_TIMEOUT_MS = 15_000;
+
 export type WorkerFailure = "not_installed" | "auth" | "quota" | "session" | "timeout" | "interrupted" |
   "permission" | "policy" | "protocol" | "process" | "unsupported";
 export interface WorkerResult {

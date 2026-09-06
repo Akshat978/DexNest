@@ -26,15 +26,19 @@ const fs = createFileSystemPort();
 
 test("a path whose nearest existing ancestor is a drive root keeps every character", () => {
   const root = parse(process.cwd()).root;
-  const target = resolve(root, "dexnest-worktrees", "coding-run-abc123", "src", "index.ts");
+  // A real dogfood run creates D:\dexnest-worktrees, so that literal name can no
+  // longer model a missing chain. The corruption depends only on the parent being
+  // the drive root, so use a sibling guaranteed to be absent.
+  const first = `dexnest-worktrees-${process.pid}-${Date.now()}`;
+  const target = resolve(root, first, "coding-run-abc123", "src", "index.ts");
 
   // The whole chain below the drive root is missing, which is the failing case.
-  assert.equal(fs.exists(resolve(root, "dexnest-worktrees")), false, "precondition: the parent does not exist");
+  assert.equal(fs.exists(resolve(root, first)), false, "precondition: the parent does not exist");
   assert.equal(fs.realPath(target), target, "realPath must not rewrite a non-existent path");
 
   // The specific corruption: the first segment losing its leading character.
-  assert.equal(fs.realPath(target).includes("exnest-worktrees"), true);
-  assert.equal(/[\\/]exnest-worktrees/.test(fs.realPath(target)), false, "the leading 'd' must survive");
+  assert.equal(fs.realPath(target).includes(first), true, "the full first segment must survive");
+  assert.equal(fs.realPath(target).includes(resolve(root, first.slice(1))), false, "the leading 'd' must survive");
 });
 
 test("the drive-root worktree a D:\\DeskNest-style project derives is writable under policy", () => {
