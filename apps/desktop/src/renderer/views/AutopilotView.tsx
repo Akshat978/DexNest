@@ -146,6 +146,13 @@ export function AutopilotView() {
   const [prompt, setPrompt] = useState("");
   const [loopTurns, setLoopTurns] = useState(5);
   const [report, setReport] = useState<RunReportShape | null>(null);
+  // Bumped by every successful refresh, and passed to the panels that fetch
+  // their own data. They cannot depend on the refresh CALLBACK — it is a new
+  // function on every render, so depending on it refetches forever — but with
+  // nothing in its place, Refresh moved the rest of the page and left those
+  // panels showing whatever they read when they mounted. A counter is stable
+  // between refreshes and changes exactly once per refresh.
+  const [refreshedAt, setRefreshedAt] = useState(0);
   const [exported, setExported] = useState<string | null>(null);
   const [evidence, setEvidence] = useState("");
   const [busy, setBusy] = useState(false);
@@ -165,6 +172,7 @@ export function AutopilotView() {
       setSelectedId(target);
       setSnapshot(next);
       setReport(nextReport);
+      setRefreshedAt(value => value + 1);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
@@ -287,8 +295,8 @@ export function AutopilotView() {
               reading it made you want to say. Neither starts a turn. */}
           {/* Explaining a job is easy in the editor and awkward in a form,
               so the explaining can happen there and the carrying-on here. */}
-          <SessionAdoption runId={run.id} working={Boolean(worker?.busy || loop?.busy)} onChanged={() => void refresh(run.id)} />
-          <MorningPanel runId={run.id} working={Boolean(worker?.busy || loop?.busy)} onChanged={() => void refresh(run.id)} />
+          <SessionAdoption runId={run.id} working={Boolean(worker?.busy || loop?.busy)} refreshedAt={refreshedAt} onChanged={() => void refresh(run.id)} />
+          <MorningPanel runId={run.id} working={Boolean(worker?.busy || loop?.busy)} refreshedAt={refreshedAt} onChanged={() => void refresh(run.id)} />
           {report?.plan && <PlanProgress items={report.plan.items} />}
           {report?.iterations && <IterationList iterations={report.iterations} />}
 

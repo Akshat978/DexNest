@@ -190,7 +190,7 @@ const morning = () => (window as unknown as { dexNest: MorningBridge }).dexNest;
  * Neither action starts a turn. Deciding what happens next and starting it are
  * separate, deliberate acts, and every other control in this view assumes that.
  */
-export function MorningPanel({ runId, working, onChanged }: { runId: string; working: boolean; onChanged: () => void }) {
+export function MorningPanel({ runId, working, refreshedAt, onChanged }: { runId: string; working: boolean; refreshedAt: number; onChanged: () => void }) {
   const [proposal, setProposal] = useState<DirectionDecision | null>(null);
   const [notes, setNotes] = useState<OperatorNoteRecord[]>([]);
   const [reason, setReason] = useState("");
@@ -203,11 +203,11 @@ export function MorningPanel({ runId, working, onChanged }: { runId: string; wor
     void morning().autopilotNotes(runId).then(setNotes).catch(() => setNotes([]));
   };
 
-  // Keyed on runId and whether a turn is in flight, NOT on onChanged: that
-  // callback is a new function on every parent render, so depending on it
-  // refetches continuously — and a request started before an answer resolves
-  // after it, putting the answered question back on screen.
-  useEffect(load, [runId, working]);
+  // Keyed on runId, whether a turn is in flight, and the parent's refresh
+  // counter — NOT on onChanged, which is a new function every render and would
+  // refetch forever. Without the counter, pressing Refresh updated the rest of
+  // the page and left this panel showing what it read when it mounted.
+  useEffect(load, [runId, working, refreshedAt]);
 
   const act = (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -325,7 +325,7 @@ const ago = (iso: string | null) => {
  * neither side can reason about, and there is no recovery from that. So the
  * refusal is loud and says what to do about it.
  */
-export function SessionAdoption({ runId, working, onChanged }: { runId: string; working: boolean; onChanged: () => void }) {
+export function SessionAdoption({ runId, working, refreshedAt, onChanged }: { runId: string; working: boolean; refreshedAt: number; onChanged: () => void }) {
   const [candidates, setCandidates] = useState<SessionCandidate[] | null>(null);
   const [attached, setAttached] = useState<AttachedSessionRecord | null>(null);
   const [busy, setBusy] = useState(false);
@@ -335,9 +335,11 @@ export function SessionAdoption({ runId, working, onChanged }: { runId: string; 
     void sessions().autopilotAttachedSession(runId).then(setAttached).catch(() => setAttached(null));
     void sessions().autopilotSessionCandidates(runId).then(setCandidates).catch(() => setCandidates([]));
   };
-  // Not keyed on onChanged: it is a new function every parent render, and
-  // depending on it refetches forever.
-  useEffect(load, [runId, working]);
+  // The refresh counter is what makes Refresh work here. onChanged cannot be
+  // a dependency (new function every render, so it would refetch forever), and
+  // runId/working alone never change while an operator waits for a session's
+  // ten-minute liveness window to expire — which is exactly when they press it.
+  useEffect(load, [runId, working, refreshedAt]);
 
   if (attached) {
     return (

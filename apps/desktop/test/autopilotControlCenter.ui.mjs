@@ -51,6 +51,7 @@ const tokens = resolve(desktop, "../../packages/shared-ui/src/tokens.css").repla
 writeFileSync(join(scratch, "entry.tsx"), `import React from 'react'; import {createRoot} from 'react-dom/client'; import {AutopilotView} from ${JSON.stringify(view)}; import ${JSON.stringify(tokens)}; import ${JSON.stringify(css)}; createRoot(document.getElementById('root')).render(<main style={{padding:24,maxWidth:1200,margin:'auto'}}><AutopilotView/></main>);`);
 writeFileSync(join(scratch, "preload.cjs"), `const {contextBridge}=require('electron'); const report=${JSON.stringify(report)}, snapshot=${JSON.stringify(snapshot)}, dashboard=${JSON.stringify(dashboard)};
 const notes=[];
+let candidateCalls=0;
 const attached={value:null};
 const primed={sessionId:'aaaaaaaa-1111-4111-8111-111111111111',transcriptPath:'C:/t/a.jsonl',projectPath:'D:/Worktrees/example',origin:'vscode',title:'Notifications architecture',cliVersion:'2.1.261',gitBranch:'main',firstActivity:'2026-09-04T09:00:00Z',lastActivity:'2026-09-04T18:00:00Z',sizeBytes:4096,live:false};
 const stillOpen={...primed,sessionId:'bbbbbbbb-2222-4222-8222-222222222222',title:'Still open in the editor',lastActivity:'2026-09-05T11:58:00Z',live:true};
@@ -73,7 +74,8 @@ autopilotConsultationRun:async scope=>{if(scope.requestId!=='consult1'||scope.co
  return report.diagnoses[0];},
 autopilotCancelConsultation:async()=>{Object.assign(report.consultations[0],{status:'CANCELLED',canApprove:false,canCancel:false,executionEligible:false});},
 autopilotActivity:async()=>[{id:'e1',kind:'tool',text:'Read src/example.ts',at:'2026-09-05T12:00:00Z'}],
-autopilotSessionCandidates:async()=>attached.value?[]:[{session:primed,blockers:[],attachable:true},{session:stillOpen,blockers:['live'],attachable:false}],
+__candidateCalls:async()=>candidateCalls,
+autopilotSessionCandidates:async()=>(candidateCalls++,attached.value?[]:[{session:primed,blockers:[],attachable:true},{session:stillOpen,blockers:['live'],attachable:false}]),
 autopilotAttachedSession:async()=>attached.value,
 autopilotAttachSession:async input=>{if(input.sessionId!==primed.sessionId)throw Error('This session was active in the last few minutes');attached.value={runId:input.runId,provider:'claude',sessionId:primed.sessionId,origin:'vscode',title:primed.title,transcriptPath:primed.transcriptPath,attachedAt:'2026-09-05T12:00:00Z'};return attached.value;},
 autopilotNotes:async()=>notes, autopilotAddNote:async input=>{const note={id:'n'+(notes.length+1),runId:input.runId,text:input.text,author:'desktop_ui',createdAt:'2026-09-05T12:00:00Z',consumedTurnId:null};notes.push(note);return note;},
@@ -107,6 +109,14 @@ assert.equal(await win.webContents.executeJavaScript("[...document.querySelector
 await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(b=>b.textContent==='CONTINUE THIS ONE').click()");
 await new Promise(r=>setTimeout(r,250));
 assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('Continuing a conversation you started')"),true);
+// Refresh must re-read the panels that fetch their own data. Without it an
+// operator waiting out a session's ten-minute liveness window presses
+// Refresh and nothing ever changes, because runId and working never moved.
+const readCalls = async () => win.webContents.executeJavaScript("window.dexNest.__candidateCalls()");
+const before = await readCalls();
+await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(b=>b.textContent==='Refresh').click()");
+await new Promise(r=>setTimeout(r,400));
+assert.ok((await readCalls()) > before, 'Refresh re-read the session panel');
 assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('started in your editor')"),true);
 assert.equal(await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].some(b=>b.textContent==='CONTINUE THIS ONE')"),false,'adopted, so there is nothing left to choose');
 
