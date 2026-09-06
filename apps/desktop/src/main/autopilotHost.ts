@@ -288,10 +288,19 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
     options.logEvent?.("Autopilot provider readiness checked", { actionId: "autopilot.readiness" });
     return result;
   });
-  handle("dexnest:autopilot-create-automation", async (_event, form: NewRunForm) => {
+  /**
+    * start:false creates the run without taking the first turn.
+    *
+    * Needed because the first turn opens a session, and a run that has a
+    * session can never adopt one — which made the whole of phase 16 reachable
+    * only in tests. Someone who primed a conversation in their editor has to be
+    * able to create the run, attach it, and only then start.
+    */
+  handle("dexnest:autopilot-create-automation", async (_event, form: NewRunForm, input?: { start?: boolean }) => {
     const run = await center.create(form);
-    options.logEvent?.("Autopilot coding automation created", { actionId: "autopilot.create_automation", runId: run.id });
-    launchPrimary(run.id);
+    const start = input?.start !== false;
+    options.logEvent?.("Autopilot coding automation created", { actionId: "autopilot.create_automation", runId: run.id, started: start });
+    if (start) launchPrimary(run.id);
     return run;
   });
   handle("dexnest:autopilot-run-primary", (_event, runId: string) => {

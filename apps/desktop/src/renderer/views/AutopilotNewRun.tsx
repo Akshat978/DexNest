@@ -22,7 +22,7 @@ interface CreationBridge {
   listProjects(): Promise<Array<{ id: string; name: string; path: string }>>;
   chooseToolsOutputFolder(): Promise<{ ok: boolean; path?: string }>;
   autopilotReadiness(project: string): Promise<Readiness[]>;
-  autopilotCreateAutomation(form: NewRunForm): Promise<{ id: string }>;
+  autopilotCreateAutomation(form: NewRunForm, options?: { start?: boolean }): Promise<{ id: string }>;
 }
 const api = () => (window as unknown as { dexNest: CreationBridge }).dexNest;
 
@@ -107,18 +107,22 @@ export function AutopilotNewRun({ onCreated }: { onCreated(id: string): void }) 
     finally { setBusy(false); }
   }
 
+  const create = (start: boolean) => {
+    if (busy || !ready) return;
+    setBusy(true); setError(null);
+    void api().autopilotCreateAutomation(form, { start })
+      .then(run => onCreated(run.id))
+      .catch(cause => setError(String(cause)))
+      .finally(() => setBusy(false));
+  };
+
   const ready = checkedPath === form.projectPath && providers.find(item => item.provider === form.primary)?.available;
   const inProject = (form.workspaceMode ?? "project-branch") === "project-branch";
   const presets = stopPresets(new Date());
 
   return <section className="view-stack" aria-label="New Run">
     <h2>New Run</h2>
-    <form className="view-stack" onSubmit={event => {
-      event.preventDefault();
-      if (busy || !ready) return;
-      setBusy(true); setError(null);
-      void api().autopilotCreateAutomation(form).then(run => onCreated(run.id)).catch(cause => setError(String(cause))).finally(() => setBusy(false));
-    }}>
+    <form className="view-stack" onSubmit={event => { event.preventDefault(); create(true); }}>
 
       {/* 1 — what */}
       <div className="card">
@@ -300,9 +304,21 @@ export function AutopilotNewRun({ onCreated }: { onCreated(id: string): void }) 
       </p>
       {error && <p role="alert" className="autopilot-error">{error}</p>}
       {form.primary === form.consultant && <p role="alert" className="autopilot-error">Choose different primary and consultant providers.</p>}
-      <button type="submit" disabled={busy || !ready || form.primary === form.consultant}>
-        {busy ? "Working…" : "CREATE AND START"}
-      </button>
+      <div className="row">
+        <button type="submit" disabled={busy || !ready || form.primary === form.consultant}>
+          {busy ? "Working…" : "CREATE AND START"}
+        </button>
+        {/* The first turn opens a session, and a run that has one can never
+            adopt one. Anyone who primed a conversation in their editor has to
+            be able to stop here, attach it, and start after. */}
+        <button type="button" disabled={busy || !ready || form.primary === form.consultant} onClick={() => create(false)}>
+          CREATE, DON'T START YET
+        </button>
+      </div>
+      <p className="technical">
+        Stop before starting if you primed a conversation in your editor: the first turn opens a session of its own,
+        and a run that has one can no longer continue yours.
+      </p>
     </form>
   </section>;
 }
