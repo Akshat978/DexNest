@@ -198,6 +198,14 @@ export interface WorkerResult {
   /** False means execution may have occurred but completion cannot be established. */
   certain: boolean;
   providerSessionId?: string;
+  /**
+   * What the provider says the turn cost, when it says anything.
+   *
+   * On a subscription this is an API-equivalent figure rather than a bill.
+   * It is the only per-turn usage number available, so a cost budget is
+   * expressed in it — and described honestly as a usage proxy.
+   */
+  costUsd?: number;
 }
 export interface WorkerAvailability {
   installed: boolean | null;

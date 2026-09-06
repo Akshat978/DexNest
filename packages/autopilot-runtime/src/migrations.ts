@@ -810,6 +810,35 @@ export const AUTOPILOT_MIGRATIONS: readonly Migration[] = [
       );
       CREATE INDEX idx_autopilot_resume_due ON autopilot_resume_schedule(not_before);
     `
+  },
+  {
+    id: 23,
+    name: "answerable_stop_conditions",
+    up: `
+      -- Bounds an operator can actually answer before pressing start.
+      --
+      -- "How many iterations" is unanswerable on work you have not done yet,
+      -- so it was always a guess standing in for something else. These are the
+      -- questions that DO have honest answers at midnight: when do I want this
+      -- to stop, how much am I willing to spend, and how long should it keep
+      -- trying without getting anywhere.
+      --
+      -- All NULL means bounded by turns and iterations alone, exactly as
+      -- before, so existing grants are unaffected.
+      ALTER TABLE autopilot_loop_grants ADD COLUMN stop_at TEXT;
+      ALTER TABLE autopilot_loop_grants ADD COLUMN max_cost_usd REAL;
+      -- Turns since anything last verified. Counting unverified ITERATIONS
+      -- would never fire: a piece of work that never passes never settles.
+      ALTER TABLE autopilot_loop_grants ADD COLUMN max_idle_turns INTEGER;
+
+      -- What each turn cost, as the provider reported it.
+      --
+      -- On a subscription this is the API-equivalent value the CLI reports,
+      -- not a bill. It is a usage proxy, and it is the only per-turn number
+      -- available, so the cost budget is expressed in it and described as such
+      -- wherever an operator sees it.
+      ALTER TABLE autopilot_turns ADD COLUMN cost_usd REAL;
+    `
   }
 ];
 

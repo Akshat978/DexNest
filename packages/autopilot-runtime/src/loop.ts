@@ -64,6 +64,9 @@ export type LoopStopReason =
   | "verification_indeterminate"
   | "turn_limit"
   | "iteration_limit"
+  | "time_limit"
+  | "cost_limit"
+  | "no_progress"
   | "consecutive_failures"
   | "worker_uncertain"
   | "worker_failed"
@@ -204,7 +207,11 @@ export class AutonomousLoop {
    * workspace that exist right now, so a later change to any of them invalidates
    * it rather than silently carrying over.
    */
-  authorize(input: { runId: string; maxTurns: number; maxIterations?: number; grantedBy: string }): LoopGrant {
+  authorize(input: {
+    runId: string; maxTurns: number; maxIterations?: number;
+    stopAt?: string; maxCostUsd?: number; maxIdleTurns?: number;
+    grantedBy: string;
+  }): LoopGrant {
     assertPrimary(this.worker.role);
     const run = this.engine.store.requireRun(input.runId);
     const session = this.worker.startSession(input.runId);
@@ -215,6 +222,9 @@ export class AutonomousLoop {
     }
     return this.loops.grant({
       ...(input.maxIterations !== undefined ? { maxIterations: input.maxIterations } : {}),
+      ...(input.stopAt !== undefined ? { stopAt: input.stopAt } : {}),
+      ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
+      ...(input.maxIdleTurns !== undefined ? { maxIdleTurns: input.maxIdleTurns } : {}),
       runId: input.runId,
       provider: this.worker.id,
       sessionId: session.sessionId,
@@ -470,6 +480,17 @@ export class AutonomousLoop {
           this.hold(runId, "turn_limit", `Authorized ${grant.maxTurns} turn(s); the budget is spent.`);
           return this.settle(runId, "turn_limit", `Turn limit of ${grant.maxTurns} reached. Authorize more turns to continue.`, lastReport, turnsRun);
         }
+        // Bounds an operator could answer honestly at midnight, unlike a count
+        // of iterations on work nobody has done yet. All three are checked at
+        // the same boundary as the budgets: before a piece of work starts, so a
+        // turn already running always finishes.
+        const stop = this.exceededStopCondition(runId, grant);
+        if (stop) {
+          this.loops.closeGrant({ grantId: grant.id, status: "EXHAUSTED", reason: stop.detail });
+          this.hold(runId, stop.reason, stop.detail);
+          return this.settle(runId, stop.reason, stop.detail, lastReport, turnsRun);
+        }
+
         // Checked BEFORE the turn is planned. Planning first and refusing after
         // leaves a journalled turn that was never sent, which the next run
         // tries to resume against a grant that is no longer active.
@@ -631,6 +652,17 @@ export class AutonomousLoop {
 
       this.loops.updateTurn({ turnId: turn.id, status: "SENT", sendId: send.id });
       this.changed(runId);
+
+      // What the provider says the turn cost, so a cost budget has something
+      // to count. Absent for providers that report nothing, which simply means
+      // a cost budget never trips for them.
+      if (typeof send.result?.costUsd === "number") {
+        this.loops.recordTurnCost(turn.id, send.result.costUsd);
+        this.engine.store.appendEvent(runId, {
+          type: "LOOP_TURN_COST_RECORDED", stepKey: turn.id,
+          payload: { turnId: turn.id, costUsd: send.result.costUsd }
+        });
+      }
 
       // Whatever the verification says, the turn may have decided things it
       // could not ask about. Those are recorded before anything else, because a
@@ -870,6 +902,57 @@ export class AutonomousLoop {
       verification
     });
     return this.director.decide({ runId, prompt });
+  }
+
+  /**
+   * Whether an answerable bound has been reached.
+   *
+   * Deliberately evaluated only between pieces of work. A wall-clock stop that
+   * killed a turn mid-flight would leave an uncertain send for a human to
+   * resolve in the morning, which is the opposite of what "stop at 7am" is
+   * for — so the last piece of work always finishes.
+   */
+  private exceededStopCondition(runId: string, grant: LoopGrant): { reason: LoopStopReason; detail: string } | null {
+    // Time and cost wait for the piece of work in flight to finish, so nothing
+    // is left half-done. Running out of time mid-assignment and stopping there
+    // would hand the operator an unverified, uncommitted mess in the morning.
+    const between = !this.iterations.active(runId);
+
+    if (between && grant.stopAt && Date.parse(this.ports.clock.now()) >= Date.parse(grant.stopAt)) {
+      return { reason: "time_limit", detail: `Reached the ${grant.stopAt} stop time. Everything already started was finished first.` };
+    }
+    if (between && grant.maxCostUsd !== null && grant.costUsed >= grant.maxCostUsd) {
+      return {
+        reason: "cost_limit",
+        detail: `Spent ${grant.costUsed.toFixed(2)} of the ${grant.maxCostUsd.toFixed(2)} budget, as the provider reports it.`
+      };
+    }
+    // No-progress deliberately does NOT wait for the piece of work to finish.
+    // The work in flight is exactly what is going nowhere, so waiting for it
+    // to end would be waiting forever. It still only stops at a TURN boundary,
+    // which is the property that actually matters: no send is ever killed.
+    if (grant.maxIdleTurns !== null) {
+      // Turns burned since anything last passed verification.
+      //
+      // Counting unverified ITERATIONS instead cannot work: a piece of work
+      // that never passes never settles, so the count would never advance and
+      // the bound would be unreachable. Turns is also the broader signal — it
+      // catches a repair loop, a context-request storm and a run producing
+      // nothing at all, where maxConsecutiveFailures only sees failing checks.
+      const turns = this.loops.turns(runId);
+      let idle = 0;
+      for (const turn of [...turns].reverse()) {
+        if (turn.status === "VERIFIED") break;
+        idle += 1;
+      }
+      if (idle >= grant.maxIdleTurns) {
+        return {
+          reason: "no_progress",
+          detail: `${idle} turn(s) since anything last passed verification. Stopping rather than continuing to spend on it.`
+        };
+      }
+    }
+    return null;
   }
 
   private evaluateProgressHold(runId: string): boolean {

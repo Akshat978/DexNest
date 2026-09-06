@@ -11,6 +11,7 @@ const api = () => (window as unknown as { dexNest: CreationBridge }).dexNest;
 const initial: NewRunForm = {
   goal: "", projectPath: "", primary: "claude", consultant: null, maxTurns: 30, maxIterations: 10, maxFailures: 3,
   workspaceMode: "worktree", workerProfile: "mediated", planText: "", director: null, model: "", effort: "",
+  stopAt: "", maxIdleTurns: 3,
   constraints: [], nonGoals: [], acceptance: [{ text: "Configured tests pass", tier: "test" }],
   verification: [
     { tier: "typecheck", enabled: false, executable: "node", args: ["node_modules/typescript/bin/tsc", "--noEmit"] },
@@ -87,6 +88,10 @@ export function AutopilotNewRun({ onCreated }: { onCreated(id: string): void }) 
         {["low", "medium", "high", "xhigh", "max"].map(level => <option key={level} value={level}>{level}</option>)}
       </select></label>
       <p className="technical">Effort trades cost against how hard the worker thinks per turn. Both apply to the agentic profile only.</p>
+      <label>Stop at (optional)<input type="datetime-local" value={form.stopAt ?? ""} onChange={event => update({ stopAt: event.target.value ? new Date(event.target.value).toISOString() : "" })} /></label>
+      <label>Spend limit (optional)<input type="number" min={0} step={1} placeholder="no limit" value={form.maxCostUsd ?? ""} onChange={event => update({ maxCostUsd: event.target.value ? Number(event.target.value) : undefined })} /></label>
+      <p className="technical">The two bounds you can answer honestly before starting. Spend is what the provider reports per turn — on a subscription that is a usage figure, not a bill. Whichever is reached first stops the run, and whatever had started finishes.</p>
+      <label>Stop after this many turns with nothing verified<input type="number" min={1} max={20} value={form.maxIdleTurns ?? 3} onChange={event => update({ maxIdleTurns: Number(event.target.value) })} /></label>
       <label>Pieces of work to authorize<input type="number" min={1} max={50} required value={form.maxIterations ?? 10} onChange={event => update({ maxIterations: Number(event.target.value) })} /></label>
       <p className="technical">Each is one assignment: the agent does it, DexNest verifies it and commits a checkpoint, then the agent says what is next. Repairs and follow-up turns belong to the piece of work that caused them.</p>
       <label>Turn ceiling (safety limit)<input type="number" min={1} max={50} required value={form.maxTurns} onChange={event => update({ maxTurns: Number(event.target.value) })} /></label>

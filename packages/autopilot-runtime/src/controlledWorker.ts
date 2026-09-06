@@ -428,7 +428,11 @@ export class ControlledWorkerTurns {
     return { handoff: handoffs.list(input.runId).find(entry => entry.id === input.handoffId)!, grant: activated.grant };
   }
 
-  authorizeLoop(input: { runId: string; maxTurns: number; maxIterations?: number; grantedBy: string }) {
+  authorizeLoop(input: {
+    runId: string; maxTurns: number; maxIterations?: number;
+    stopAt?: string; maxCostUsd?: number; maxIdleTurns?: number;
+    grantedBy: string;
+  }) {
     if (this.active.has(input.runId)) throw new Error("A worker action is already in progress.");
     return this.loopFor(input.runId).authorize(input);
   }

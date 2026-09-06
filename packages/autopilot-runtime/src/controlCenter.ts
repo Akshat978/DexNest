@@ -17,6 +17,13 @@ export interface NewRunForm {
   maxTurns: number; maxFailures: number; constraints: string[]; nonGoals: string[];
   /** Distinct pieces of work to authorize. Omit to bound by turns alone. */
   maxIterations?: number;
+  /**
+   * Bounds an operator can answer before pressing start. "How many
+   * iterations" is not one of them on work nobody has done yet.
+   */
+  stopAt?: string;
+  maxCostUsd?: number;
+  maxIdleTurns?: number;
   /** The chat that writes assignments. Null keeps the agent self-directed. */
   director?: CodingProvider | null;
   /** Model alias or full name. Empty leaves the provider's own default. */
@@ -51,6 +58,9 @@ export function validateNewRun(form: NewRunForm): NewRunForm {
   if (!Number.isInteger(form.maxTurns) || form.maxTurns < 1 || form.maxTurns > 50) throw new Error("Authorize 1 to 50 turns.");
   if (form.maxIterations !== undefined && (!Number.isInteger(form.maxIterations) || form.maxIterations < 1 || form.maxIterations > 50)) throw new Error("Authorize 1 to 50 iterations.");
   if (form.maxIterations !== undefined && form.maxIterations > form.maxTurns) throw new Error("The turn ceiling must be at least the number of iterations, since a piece of work can take several turns.");
+  if (form.stopAt !== undefined && form.stopAt !== "" && !Number.isFinite(Date.parse(form.stopAt))) throw new Error("Enter a valid stop time.");
+  if (form.maxCostUsd !== undefined && (typeof form.maxCostUsd !== "number" || !Number.isFinite(form.maxCostUsd) || form.maxCostUsd <= 0 || form.maxCostUsd > 1000)) throw new Error("A spend limit must be between 0 and 1000.");
+  if (form.maxIdleTurns !== undefined && (!Number.isInteger(form.maxIdleTurns) || form.maxIdleTurns < 1 || form.maxIdleTurns > 20)) throw new Error("Allow between 1 and 20 turns without progress.");
   if (!Number.isInteger(form.maxFailures) || form.maxFailures < 1 || form.maxFailures > 20) throw new Error("Failure limit must be 1 to 20.");
   if (![form.constraints, form.nonGoals].every(list => Array.isArray(list) && list.length <= 30 && list.every(value => typeof value === "string" && value.length <= 2000))) throw new Error("Invalid constraints or non-goals.");
   if (!Array.isArray(form.verification) || form.verification.length > 5) throw new Error("Configure verification tiers.");
@@ -176,7 +186,11 @@ export class AutopilotControlCenter {
         throw new Error(`Could not prepare the project branch: ${reason} (run ${id})`);
       }
       engine.store.appendEvent(id, { type: "WORKSPACE_CREATED", payload: { workspaceRoot, mode: "project-branch" } });
-      try { workers.authorizeLoop({ runId: id, maxTurns: form.maxTurns, ...(form.maxIterations !== undefined ? { maxIterations: form.maxIterations } : {}), grantedBy: "desktop_ui" }); }
+      try { workers.authorizeLoop({ runId: id, maxTurns: form.maxTurns, ...(form.maxIterations !== undefined ? { maxIterations: form.maxIterations } : {}),
+      ...(form.stopAt ? { stopAt: form.stopAt } : {}),
+      ...(form.maxCostUsd !== undefined ? { maxCostUsd: form.maxCostUsd } : {}),
+      ...(form.maxIdleTurns !== undefined ? { maxIdleTurns: form.maxIdleTurns } : {}),
+      grantedBy: "desktop_ui" }); }
       catch (error) {
         engine.store.appendEvent(id, { type: "RUN_FAILED", toState: "FAILED", failureReason: "Primary setup failed. Select a canonical primary Git repository root and check provider readiness." });
         throw error;
@@ -205,7 +219,11 @@ export class AutopilotControlCenter {
       );
     }
     engine.store.appendEvent(id, { type: "WORKSPACE_CREATED", payload: { workspaceRoot } });
-    try { workers.authorizeLoop({ runId: id, maxTurns: form.maxTurns, ...(form.maxIterations !== undefined ? { maxIterations: form.maxIterations } : {}), grantedBy: "desktop_ui" }); }
+    try { workers.authorizeLoop({ runId: id, maxTurns: form.maxTurns, ...(form.maxIterations !== undefined ? { maxIterations: form.maxIterations } : {}),
+      ...(form.stopAt ? { stopAt: form.stopAt } : {}),
+      ...(form.maxCostUsd !== undefined ? { maxCostUsd: form.maxCostUsd } : {}),
+      ...(form.maxIdleTurns !== undefined ? { maxIdleTurns: form.maxIdleTurns } : {}),
+      grantedBy: "desktop_ui" }); }
     catch (error) {
       engine.store.appendEvent(id, { type: "RUN_FAILED", toState: "FAILED", failureReason: "Primary setup failed. Select a canonical primary Git repository root and check provider readiness." });
       throw error;

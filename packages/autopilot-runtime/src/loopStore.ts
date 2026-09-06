@@ -34,6 +34,17 @@ export interface LoopGrant {
   /** Distinct pieces of work authorized. Null on grants predating budgeting. */
   maxIterations: number | null;
   iterationsUsed: number;
+  /**
+   * Bounds an operator can answer honestly before pressing start, unlike a
+   * count of iterations on work nobody has done yet. All optional; a grant
+   * with none set is bounded by turns and iterations exactly as before.
+   */
+  stopAt: string | null;
+  maxCostUsd: number | null;
+  /** Turns that may pass without anything verifying before stopping. */
+  maxIdleTurns: number | null;
+  /** Reported by the provider. On a subscription, a usage proxy not a bill. */
+  costUsed: number;
   status: LoopGrantStatus;
   grantedBy: string;
   grantedAt: string;
@@ -69,7 +80,9 @@ export interface VerificationRecord {
 interface GrantRow {
   role: WorkerRole;
   id: string; run_id: string; provider: string; session_id: string; workspace_root: string;
-  max_turns: number; max_iterations: number | null; status: string; granted_by: string; granted_at: string;
+  max_turns: number; max_iterations: number | null; stop_at: string | null;
+  max_cost_usd: number | null; max_idle_turns: number | null;
+  status: string; granted_by: string; granted_at: string;
   closed_at: string | null; closed_reason: string | null;
 }
 interface TurnRow {
@@ -128,6 +141,29 @@ export class LoopStore {
     return row?.used ?? 0;
   }
 
+  /** Summed from the turns themselves, so it cannot drift from them. */
+  private costFor(grantId: string): number {
+    if (!this.hasStopConditions()) return 0;
+    const row = this.db
+      .prepare("SELECT COALESCE(SUM(cost_usd), 0) AS spent FROM autopilot_turns WHERE grant_id = :grantId")
+      .get<{ spent: number }>({ grantId });
+    return row?.spent ?? 0;
+  }
+
+  /** Databases predating migration 23 are bounded by turns alone. */
+  private hasStopConditions(): boolean {
+    return this.db
+      .prepare("SELECT name FROM pragma_table_info('autopilot_loop_grants') WHERE name='stop_at'")
+      .all<{ name: string }>({})
+      .length > 0;
+  }
+
+  /** What a turn cost, as the provider reported it. Best effort. */
+  recordTurnCost(turnId: string, costUsd: number): void {
+    if (!this.hasStopConditions() || !Number.isFinite(costUsd) || costUsd < 0) return;
+    this.db.prepare("UPDATE autopilot_turns SET cost_usd = :costUsd WHERE id = :turnId").run({ turnId, costUsd });
+  }
+
   private toGrant(row: GrantRow): LoopGrant {
     const used = this.db
       .prepare("SELECT COUNT(*) AS used FROM autopilot_turns WHERE grant_id = :grantId AND grant_consumed = 1")
@@ -142,6 +178,10 @@ export class LoopStore {
       maxTurns: row.max_turns,
       turnsUsed: used?.used ?? 0,
       maxIterations: row.max_iterations ?? null,
+      stopAt: row.stop_at ?? null,
+      maxCostUsd: row.max_cost_usd ?? null,
+      maxIdleTurns: row.max_idle_turns ?? null,
+      costUsed: this.costFor(row.id),
       // Derived, like turnsUsed: a counter that can drift is a counter that
       // eventually authorizes the wrong amount of work.
       iterationsUsed: this.iterationsFor(row.id),
@@ -166,6 +206,12 @@ export class LoopStore {
     maxTurns: number;
     /** Distinct pieces of work. Omit to bound the run by turns alone. */
     maxIterations?: number;
+    /** Stop before starting work after this instant. */
+    stopAt?: string;
+    /** Stop before starting work once this much has been spent. */
+    maxCostUsd?: number;
+    /** Stop after this many turns with nothing passing verification. */
+    maxIdleTurns?: number;
     grantedBy: string;
   }): LoopGrant {
     assertPrimary(input.role);
@@ -181,6 +227,22 @@ export class LoopStore {
         (!Number.isInteger(input.maxIterations) || input.maxIterations < 1 || input.maxIterations > 50)) {
       throw new Error("A loop grant must authorize between 1 and 50 iterations.");
     }
+    if (input.stopAt !== undefined) {
+      const at = Date.parse(input.stopAt);
+      if (!Number.isFinite(at)) throw new Error("A stop time must be a valid timestamp.");
+      // A stop time already past would end the run before it began, and one
+      // far out is not a bound at all.
+      const hours = (at - Date.parse(this.ports.clock.now())) / 3_600_000;
+      if (hours <= 0) throw new Error("A stop time must be in the future.");
+      if (hours > 48) throw new Error("A stop time must be within 48 hours.");
+    }
+    if (input.maxCostUsd !== undefined && (!Number.isFinite(input.maxCostUsd) || input.maxCostUsd <= 0 || input.maxCostUsd > 1000)) {
+      throw new Error("A cost budget must be between 0 and 1000.");
+    }
+    if (input.maxIdleTurns !== undefined &&
+        (!Number.isInteger(input.maxIdleTurns) || input.maxIdleTurns < 1 || input.maxIdleTurns > 20)) {
+      throw new Error("Allow between 1 and 20 turns without progress.");
+    }
     if (!input.grantedBy.trim()) throw new Error("A loop grant must record who granted it.");
 
     return this.store.transaction(() => {
@@ -192,8 +254,10 @@ export class LoopStore {
         .prepare(
           budgeted
             ? `INSERT INTO autopilot_loop_grants
-                 (id, run_id, provider, session_id, workspace_root, max_turns, max_iterations, status, granted_by, granted_at)
-               VALUES (:id, :runId, :provider, :sessionId, :workspaceRoot, :maxTurns, :maxIterations, 'ACTIVE', :grantedBy, :now)`
+                 (id, run_id, provider, session_id, workspace_root, max_turns, max_iterations,
+                  stop_at, max_cost_usd, max_idle_turns, status, granted_by, granted_at)
+               VALUES (:id, :runId, :provider, :sessionId, :workspaceRoot, :maxTurns, :maxIterations,
+                  :stopAt, :maxCostUsd, :maxIdleTurns, 'ACTIVE', :grantedBy, :now)`
             : `INSERT INTO autopilot_loop_grants
                  (id, run_id, provider, session_id, workspace_root, max_turns, status, granted_by, granted_at)
                VALUES (:id, :runId, :provider, :sessionId, :workspaceRoot, :maxTurns, 'ACTIVE', :grantedBy, :now)`
@@ -201,7 +265,12 @@ export class LoopStore {
         .run({
           runId: input.runId, provider: input.provider, sessionId: input.sessionId,
           workspaceRoot: input.workspaceRoot, maxTurns: input.maxTurns,
-          ...(budgeted ? { maxIterations: input.maxIterations ?? null } : {}),
+          ...(budgeted ? {
+            maxIterations: input.maxIterations ?? null,
+            stopAt: input.stopAt ?? null,
+            maxCostUsd: input.maxCostUsd ?? null,
+            maxIdleTurns: input.maxIdleTurns ?? null
+          } : {}),
           grantedBy: input.grantedBy, id, now
         });
 
@@ -214,6 +283,9 @@ export class LoopStore {
           sessionId: input.sessionId,
           maxTurns: input.maxTurns,
           maxIterations: input.maxIterations ?? null,
+          stopAt: input.stopAt ?? null,
+          maxCostUsd: input.maxCostUsd ?? null,
+          maxIdleTurns: input.maxIdleTurns ?? null,
           grantedBy: input.grantedBy
         }
       });

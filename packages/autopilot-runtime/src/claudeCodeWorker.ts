@@ -138,7 +138,10 @@ export function claudeCodeProtocol(executable: string, capabilities: WorkerCapab
       if (raw?.type === "result" && raw.session_id === sessionId) {
         const text = typeof raw.result === "string" ? raw.result : Array.isArray(raw.errors) ? raw.errors.join("\n") : "";
         if (raw.subtype === "success" && raw.is_error === false && result.ok && typeof raw.result === "string") {
-          return { ...base, ok: true, text, sessionConfirmed: true, certain: true };
+          return {
+            ...base, ok: true, text, sessionConfirmed: true, certain: true,
+            ...(typeof raw.total_cost_usd === "number" ? { costUsd: raw.total_cost_usd } : {})
+          };
         }
         if (raw.is_error === true) return { ...base, text, failure: classifyClaudeFailure(`${raw.subtype} ${text}`), sessionConfirmed: true, certain: true };
       }
