@@ -43,6 +43,7 @@ import { IterationStore } from "./iterations.ts";
 import { DirectionStore, DirectionAuthorityStore, directedPrompt, directionProtocolInstructions, parseDirection, type ParsedDirection } from "./direction.ts";
 import { ChatDirector, directorPrompt } from "./chatDirector.ts";
 import { PlanStore, renderPlanForWorker } from "./plan.ts";
+import { renderRunDigest } from "./digest.ts";
 import { UnattendedStore, parseAssumptions, unattendedInstructions } from "./unattended.ts";
 import {
   MAX_REQUESTED_BYTES,
@@ -575,7 +576,15 @@ export class AutonomousLoop {
         }
 
         const planText = renderPlanForWorker(this.plans.view(runId, spec));
-        const prompt = [body, planText, unattendedInstructions(), instructions]
+        // What has already been done, restated every turn rather than left to
+        // the session to remember. Twenty iterations in, the conversation has
+        // been compacted and the boring middle is exactly what compaction
+        // drops — which is exactly what stops finished work being redone.
+        const digest = renderRunDigest({
+          iterations: this.iterations.list(runId),
+          assumptions: this.unattended.assumptions(runId)
+        });
+        const prompt = [body, digest, planText, unattendedInstructions(), instructions]
           .filter(part => part)
           .join("\n\n");
         turn = this.loops.planTurn({ runId, grantId: grant.id, kind, prompt });

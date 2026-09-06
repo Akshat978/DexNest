@@ -68,6 +68,7 @@ export type {
 export { AUTOPILOT_MIGRATIONS, runAutopilotMigrations } from "./migrations.ts";
 
 export { PlanStore, PlanItemError, renderPlanProgress, renderPlanForWorker } from "./plan.ts";
+export { renderRunDigest, MAX_DIGEST_ITERATIONS, MAX_DIGEST_ASSUMPTIONS } from "./digest.ts";
 export type { PlanItemProgress, PlanItemStatus, PlanView, OrphanedProgress } from "./plan.ts";
 
 export { ProjectBranchManager, ProjectBranchError, branchNameForRun, renderProjectBranchSummary } from "./projectBranch.ts";

@@ -66,6 +66,8 @@ autopilotConsultationRun:async scope=>{if(scope.requestId!=='consult1'||scope.co
  report.diagnoses=[{id:'d1',runId:'review-run',consultationId:'consult1',consultantProvider:'codex',consultantSessionId:'consultant-session',providerSessionId:null,status:'COMPLETED',operationId:'op2',promptLength:900,diagnosis:'ROOT CAUSE. The guard is inverted.',outputLength:38,outputFingerprint:'diag-0001',failure:null,refusedFileBlocks:1,suppliedToTurnId:null,startedAt:'2026-09-05T12:00:00Z',completedAt:'2026-09-05T12:00:00Z'}];
  return report.diagnoses[0];},
 autopilotCancelConsultation:async()=>{Object.assign(report.consultations[0],{status:'CANCELLED',canApprove:false,canCancel:false,executionEligible:false});},
+autopilotActivity:async()=>[{id:'e1',kind:'tool',text:'Read src/example.ts',at:'2026-09-05T12:00:00Z'}],
+autopilotMorningSummary:async()=>({headline:'It stopped getting anywhere.',action:'review',detail:'Nothing passed verification for several turns in a row.',iterationsDone:1,iterationsAttempted:2,checkpoints:1,assumptions:['Kept the existing API.'],whereToWatch:'D:/Worktrees/example'}),
 listProjects:async()=>[{id:'project',name:'Example project',path:'D:/Example'}], onAutopilotChanged:()=>()=>{},
 autopilotReadiness:async()=>[{provider:'claude',installed:true,authenticated:true,available:true,failure:null},{provider:'codex',installed:true,authenticated:false,available:false,failure:'auth'}],
 chooseToolsOutputFolder:async()=>({ok:true,path:'D:/Example'})
@@ -78,6 +80,8 @@ const errors=[];win.webContents.on('console-message',(_event,level,message)=>{if
 await win.loadFile(${JSON.stringify(join(scratch,"dist/index.html"))});
 for(let n=0;n<100;n++){if(await win.webContents.executeJavaScript("document.body.innerText.includes('Completed example')"))break;await new Promise(r=>setTimeout(r,30));}
 await win.webContents.executeJavaScript("[...document.querySelectorAll('nav button')].find(b=>b.textContent==='Selected Run').click()");
+await new Promise(r=>setTimeout(r,100));
+await win.webContents.executeJavaScript("[...document.querySelectorAll('details.autopilot-mechanism')].forEach(d=>{d.open=true})");
 await new Promise(r=>setTimeout(r,100));
 assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('section[aria-label=\\"New Run\\"]').length"),1);
 assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('PRIVATE_PROMPT_SENTINEL')"),false);
