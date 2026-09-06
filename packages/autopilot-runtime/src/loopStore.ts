@@ -31,6 +31,9 @@ export interface LoopGrant {
   workspaceRoot: string;
   maxTurns: number;
   turnsUsed: number;
+  /** Distinct pieces of work authorized. Null on grants predating budgeting. */
+  maxIterations: number | null;
+  iterationsUsed: number;
   status: LoopGrantStatus;
   grantedBy: string;
   grantedAt: string;
@@ -66,7 +69,7 @@ export interface VerificationRecord {
 interface GrantRow {
   role: WorkerRole;
   id: string; run_id: string; provider: string; session_id: string; workspace_root: string;
-  max_turns: number; status: string; granted_by: string; granted_at: string;
+  max_turns: number; max_iterations: number | null; status: string; granted_by: string; granted_at: string;
   closed_at: string | null; closed_reason: string | null;
 }
 interface TurnRow {
@@ -90,6 +93,41 @@ export class LoopStore {
     this.store = new AutopilotStore(ports);
   }
 
+  /**
+   * Whether this database has the iteration budget column.
+   *
+   * A run created before migration 20 is bounded by turns alone, and must keep
+   * working rather than failing on an INSERT naming a column it has never had.
+   */
+  private hasIterationBudget(): boolean {
+    return this.db
+      .prepare("SELECT name FROM pragma_table_info('autopilot_loop_grants') WHERE name='max_iterations'")
+      .all<{ name: string }>({})
+      .length > 0;
+  }
+
+  /**
+   * Iterations opened under a grant.
+   *
+   * Joined through the turn that opened each iteration rather than stored on
+   * the grant, so the count cannot disagree with the iterations themselves.
+   */
+  private iterationsFor(grantId: string): number {
+    const present = this.db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='autopilot_iterations'")
+      .get();
+    if (!present) return 0;
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS used
+           FROM autopilot_iterations i
+           JOIN autopilot_turns t ON t.id = i.turn_id
+          WHERE t.grant_id = :grantId`
+      )
+      .get<{ used: number }>({ grantId });
+    return row?.used ?? 0;
+  }
+
   private toGrant(row: GrantRow): LoopGrant {
     const used = this.db
       .prepare("SELECT COUNT(*) AS used FROM autopilot_turns WHERE grant_id = :grantId AND grant_consumed = 1")
@@ -103,6 +141,10 @@ export class LoopStore {
       workspaceRoot: row.workspace_root,
       maxTurns: row.max_turns,
       turnsUsed: used?.used ?? 0,
+      maxIterations: row.max_iterations ?? null,
+      // Derived, like turnsUsed: a counter that can drift is a counter that
+      // eventually authorizes the wrong amount of work.
+      iterationsUsed: this.iterationsFor(row.id),
       status: row.status as LoopGrantStatus,
       grantedBy: row.granted_by,
       grantedAt: row.granted_at,
@@ -122,6 +164,8 @@ export class LoopStore {
     sessionId: string;
     workspaceRoot: string;
     maxTurns: number;
+    /** Distinct pieces of work. Omit to bound the run by turns alone. */
+    maxIterations?: number;
     grantedBy: string;
   }): LoopGrant {
     assertPrimary(input.role);
@@ -133,19 +177,33 @@ export class LoopStore {
     if (!Number.isInteger(input.maxTurns) || input.maxTurns < 1 || input.maxTurns > 50) {
       throw new Error("A loop grant must authorize between 1 and 50 turns.");
     }
+    if (input.maxIterations !== undefined &&
+        (!Number.isInteger(input.maxIterations) || input.maxIterations < 1 || input.maxIterations > 50)) {
+      throw new Error("A loop grant must authorize between 1 and 50 iterations.");
+    }
     if (!input.grantedBy.trim()) throw new Error("A loop grant must record who granted it.");
 
     return this.store.transaction(() => {
       if (this.activeGrant(input.runId)) throw new Error("This run already has an active loop grant.");
       const id = this.ports.ids.next("loop-grant");
       const now = this.ports.clock.now();
+      const budgeted = this.hasIterationBudget();
       this.db
         .prepare(
-          `INSERT INTO autopilot_loop_grants
-             (id, run_id, provider, session_id, workspace_root, max_turns, status, granted_by, granted_at)
-           VALUES (:id, :runId, :provider, :sessionId, :workspaceRoot, :maxTurns, 'ACTIVE', :grantedBy, :now)`
+          budgeted
+            ? `INSERT INTO autopilot_loop_grants
+                 (id, run_id, provider, session_id, workspace_root, max_turns, max_iterations, status, granted_by, granted_at)
+               VALUES (:id, :runId, :provider, :sessionId, :workspaceRoot, :maxTurns, :maxIterations, 'ACTIVE', :grantedBy, :now)`
+            : `INSERT INTO autopilot_loop_grants
+                 (id, run_id, provider, session_id, workspace_root, max_turns, status, granted_by, granted_at)
+               VALUES (:id, :runId, :provider, :sessionId, :workspaceRoot, :maxTurns, 'ACTIVE', :grantedBy, :now)`
         )
-        .run({ runId: input.runId, provider: input.provider, sessionId: input.sessionId, workspaceRoot: input.workspaceRoot, maxTurns: input.maxTurns, grantedBy: input.grantedBy, id, now });
+        .run({
+          runId: input.runId, provider: input.provider, sessionId: input.sessionId,
+          workspaceRoot: input.workspaceRoot, maxTurns: input.maxTurns,
+          ...(budgeted ? { maxIterations: input.maxIterations ?? null } : {}),
+          grantedBy: input.grantedBy, id, now
+        });
 
       const run = this.store.requireRun(input.runId);
       this.store.appendEventUnsafe(input.runId, run.state, {
@@ -155,6 +213,7 @@ export class LoopStore {
           provider: input.provider,
           sessionId: input.sessionId,
           maxTurns: input.maxTurns,
+          maxIterations: input.maxIterations ?? null,
           grantedBy: input.grantedBy
         }
       });

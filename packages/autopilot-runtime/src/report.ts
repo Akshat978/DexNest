@@ -26,6 +26,9 @@ import { WorkerDiagnosticsStore, DIAGNOSTIC_CATEGORY_LABELS, type WorkerDiagnost
 import { rolesFor } from "./roles.ts";
 import { OwnershipStore, HandoffStore, currentRoles, type OwnershipRecord, type HandoffRecord } from "./handoff.ts";
 import { evaluateRecovery, type RecoveryDecision, type PreflightProbe } from "./recovery.ts";
+import { DirectionStore, DirectionAuthorityStore, type DirectionDecision, type DirectionSource, type DirectionAuthority } from "./direction.ts";
+import { IterationStore, type IterationRecord } from "./iterations.ts";
+import { PlanStore, type PlanView } from "./plan.ts";
 
 export const RUN_REPORT_SCHEMA_VERSION = 5;
 const ACTIVITY_LABELS: Record<string, string> = {
@@ -111,6 +114,12 @@ export interface RunReport {
   handoffs: HandoffRecord[];
   /** The single current routing recommendation, derived from durable evidence. */
   recovery: RecoveryDecision;
+  /** Who decides what happens next, now and over time. */
+  direction: { source: DirectionSource; authority: DirectionAuthority[]; decisions: DirectionDecision[] };
+  /** One row per piece of work, joining its turn, verification and checkpoint. */
+  iterations: IterationRecord[];
+  /** The human's plan, with each item's progress. */
+  plan: PlanView;
   /** One read-only diagnosis per approved consultation, with its outcome. */
   diagnoses: DiagnosisRecord[];
   primaryProgress: PrimaryProgress | null;
@@ -311,6 +320,13 @@ export function buildRunReport(ports: RuntimePorts, runId: string, preflight?: P
     primaryProgress: latestPrimaryProgress(ports, runId),
     consultations: new ConsultationStore(ports).list(runId),
     recovery: evaluateRecovery(ports, runId, preflight),
+    iterations: new IterationStore(ports).list(runId),
+    plan: new PlanStore(ports).view(runId, run.spec),
+    direction: {
+      source: new DirectionAuthorityStore(ports).current(runId),
+      authority: new DirectionAuthorityStore(ports).history(runId),
+      decisions: new DirectionStore(ports).list(runId)
+    },
     ownership: new OwnershipStore(ports).history(runId),
     handoffs: new HandoffStore(ports).list(runId),
     consultantSessions: new ConsultantStore(ports).sessions(runId),

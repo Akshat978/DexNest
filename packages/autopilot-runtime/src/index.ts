@@ -43,7 +43,10 @@ export {
   RunSpecValidationError,
   authoritativeFingerprint,
   createRunSpec,
-  defaultCapabilityPolicy
+  defaultCapabilityPolicy,
+  parsePlanText,
+  MAX_PLAN_ITEMS,
+  MAX_PLAN_ITEM_DETAIL_CHARS
 } from "./runSpec.ts";
 export type {
   AcceptanceCriterion,
@@ -52,7 +55,10 @@ export type {
   CompletionPolicy,
   EscalationPolicy,
   FailurePolicy,
+  PlanItem,
   RunSpec,
+  WorkspaceMode,
+  WorkerProfile,
   RunSpecInput,
   SupervisorPreference,
   VerificationConfig,
@@ -60,6 +66,36 @@ export type {
 } from "./runSpec.ts";
 
 export { AUTOPILOT_MIGRATIONS, runAutopilotMigrations } from "./migrations.ts";
+
+export { PlanStore, PlanItemError, renderPlanProgress, renderPlanForWorker } from "./plan.ts";
+export type { PlanItemProgress, PlanItemStatus, PlanView, OrphanedProgress } from "./plan.ts";
+
+export { ProjectBranchManager, ProjectBranchError, branchNameForRun, renderProjectBranchSummary } from "./projectBranch.ts";
+export type { ProjectBranchRecord } from "./projectBranch.ts";
+
+export { SessionDiscovery, describeSession, SESSION_LIVE_WINDOW_MS } from "./sessionDiscovery.ts";
+export type { DiscoveredSession, SessionOrigin } from "./sessionDiscovery.ts";
+export {
+  DirectionStore, parseDirection, directionProtocolInstructions, directedPrompt, renderDirections,
+  MAX_ASSIGNMENT_CHARS
+} from "./direction.ts";
+export { DirectionAuthorityStore } from "./direction.ts";
+export type { DirectionDecision, DirectionVerb, DirectionSource, DirectionAuthority, ParsedDirection } from "./direction.ts";
+export { ChatDirector, ChatDirectorError, directorPrompt } from "./chatDirector.ts";
+export {
+  UnattendedStore, parseAssumptions, unattendedInstructions,
+  RESUME_BACKOFF_MINUTES, MAX_ASSUMPTION_CHARS
+} from "./unattended.ts";
+export type { AssumptionRecord, ResumePlan } from "./unattended.ts";
+export { buildMorningSummary, renderMorningSummary } from "./morningSummary.ts";
+export { LiveActivity, ActivityStream, readActivityLine, MAX_ACTIVITY_EVENTS } from "./liveActivity.ts";
+export type { ActivityEvent } from "./liveActivity.ts";
+export type { MorningSummary, MorningAction } from "./morningSummary.ts";
+export type { DirectorSession, ChatDirectorOptions } from "./chatDirector.ts";
+export { IterationStore, renderIterationStatus, renderWhereToWatch } from "./iterations.ts";
+export type { IterationRecord, IterationStatus } from "./iterations.ts";
+export { SessionAttachStore, SessionAttachError, ATTACH_BLOCKER_REASONS, renderAttachedSession } from "./sessionAttach.ts";
+export type { AttachedSessionRecord, AttachBlocker, SessionCandidate } from "./sessionAttach.ts";
 export type { Migration, MigrationResult } from "./migrations.ts";
 
 export { AutopilotStore } from "./store.ts";
@@ -107,6 +143,7 @@ export type {
 } from "./intent.ts";
 
 export {
+  ALWAYS_DENIED_DIRECTORIES,
   ALWAYS_DENIED_FRAGMENTS,
   ALWAYS_DENIED_ROOTS,
   BASELINE_APPROVAL_COMMANDS,
@@ -138,7 +175,7 @@ export type { ApprovalRecord, ApprovalStatus, OperationRecord, OperationStatus }
 export { EffectsGateway } from "./effects.ts";
 export type { EffectOutcome, EffectsGatewayOptions } from "./effects.ts";
 
-export { WorkspaceManager, WorkspaceError, worktreeNameForRun } from "./workspace.ts";
+export { WorkspaceManager, WorkspaceError, worktreeNameForRun, validateRunWorkspace } from "./workspace.ts";
 export type { RunWorkspace, WorkspaceManagerOptions } from "./workspace.ts";
 
 export type {
@@ -155,7 +192,11 @@ export type {
 export { HostileExecutor } from "./hostileExecutor.ts";
 export type { HostileAttempt, HostileExecutorOptions } from "./hostileExecutor.ts";
 
-export { DurableWorker } from "./worker.ts";
+export {
+  DurableWorker, MEDIATED, agenticCapabilities, assertAgenticWorkspace, AgenticWorkspaceError,
+  DEFAULT_AGENTIC_TOOLS, DEFAULT_AGENTIC_ALLOWED, DEFAULT_AGENTIC_DENIED, DEFAULT_AGENTIC_MAX_TURNS
+} from "./worker.ts";
+export type { WorkerCapabilities, WorkerCapabilityProfile, AgenticCapabilities, MediatedCapabilities } from "./worker.ts";
 export type { WorkerAdapter, WorkerAvailability, WorkerFailure, WorkerOptions, WorkerProtocol, WorkerResult } from "./worker.ts";
 export { WorkerStore } from "./workerStore.ts";
 export type { WorkerSession, WorkerSend, WorkerSendStatus } from "./workerStore.ts";

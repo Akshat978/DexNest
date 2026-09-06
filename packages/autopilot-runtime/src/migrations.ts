@@ -535,6 +535,281 @@ export const AUTOPILOT_MIGRATIONS: readonly Migration[] = [
         ON autopilot_handoffs(run_id) WHERE status IN ('PROPOSED','APPROVED','ACTIVATING');
       CREATE INDEX idx_autopilot_handoff_run ON autopilot_handoffs(run_id);
     `
+  },
+  {
+    id: 15,
+    name: "plan_item_progress",
+    up: `
+      -- Progress against the human's plan.
+      --
+      -- Item CONTENT lives in the Run Spec and is authoritative and immutable:
+      -- no agent may rewrite what it was asked to build. Only STATUS lives
+      -- here, because status is runtime state that changes as work proceeds.
+      -- A row exists only once an item leaves PENDING.
+      CREATE TABLE autopilot_plan_items (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES autopilot_runs(id) ON DELETE CASCADE,
+        -- References RunSpec.plan[].id. Not a foreign key: the spec is JSON,
+        -- so a row whose item vanished from the spec is reported as an orphan
+        -- rather than silently deleted.
+        item_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('ACTIVE','DONE','BLOCKED','SKIPPED')),
+        note TEXT,
+        started_at TEXT NOT NULL,
+        settled_at TEXT,
+        UNIQUE(run_id, item_id)
+      );
+
+      -- At most one item may be in progress per run, enforced by the database
+      -- rather than by convention.
+      CREATE UNIQUE INDEX idx_autopilot_plan_items_active
+        ON autopilot_plan_items(run_id) WHERE status='ACTIVE';
+
+      CREATE INDEX IF NOT EXISTS idx_autopilot_plan_items_run
+        ON autopilot_plan_items (run_id);
+    `
+  },
+  {
+    id: 16,
+    name: "project_branch_workspace",
+    up: `
+      -- Where a project-branch run branched from.
+      --
+      -- Working in the project instead of a worktree gives up the free
+      -- reversibility of "delete the directory", so the way back has to be
+      -- durable instead: the branch the operator was on and the commit the run
+      -- started at. Written once and never updated, so a resumed run still
+      -- reverts to where it actually began rather than to wherever the project
+      -- happened to be at the time of the restart.
+      CREATE TABLE autopilot_project_branches (
+        run_id      TEXT PRIMARY KEY REFERENCES autopilot_runs(id) ON DELETE CASCADE,
+        repo_root   TEXT NOT NULL,
+        branch      TEXT NOT NULL,
+        base_branch TEXT NOT NULL,
+        base_sha    TEXT NOT NULL,
+        created_at  TEXT NOT NULL
+      );
+    `
+  },
+  {
+    id: 17,
+    name: "attached_provider_sessions",
+    up: `
+      -- Runs that continue a session the operator already had.
+      --
+      -- The session identity itself lives in autopilot_worker_sessions, which
+      -- already enforces one session per run and one run per session. This
+      -- table records only the provenance the operator needs later: where the
+      -- conversation came from and what it was called at the moment it was
+      -- adopted. Transcript CONTENT is never stored — it is the operator's own
+      -- conversation, and DexNest has no reason to keep a copy.
+      CREATE TABLE autopilot_attached_sessions (
+        run_id          TEXT PRIMARY KEY REFERENCES autopilot_runs(id) ON DELETE CASCADE,
+        provider        TEXT NOT NULL,
+        session_id      TEXT NOT NULL UNIQUE,
+        origin          TEXT NOT NULL,
+        title           TEXT,
+        transcript_path TEXT,
+        attached_at     TEXT NOT NULL
+      );
+    `
+  },
+  {
+    id: 18,
+    name: "run_iterations",
+    up: `
+      -- One durable cycle: assignment, work, verification, checkpoint.
+      --
+      -- Turns, verifications and checkpoints were already durable but nothing
+      -- joined them, so "what happened on iteration 7" meant correlating three
+      -- tables by turn id. This is the row that later phases count, bound and
+      -- resume against.
+      --
+      -- It holds POINTERS, not content. The conversation lives in the agent's
+      -- own session, which the operator can open; DexNest orchestrates and does
+      -- not keep a second, worse copy of a transcript.
+      CREATE TABLE autopilot_iterations (
+        id              TEXT PRIMARY KEY,
+        run_id          TEXT NOT NULL REFERENCES autopilot_runs(id) ON DELETE CASCADE,
+        ordinal         INTEGER NOT NULL,
+        plan_item_id    TEXT,
+        turn_id         TEXT,
+        verification_id TEXT,
+        checkpoint_id   TEXT,
+        status          TEXT NOT NULL CHECK(status IN ('ACTIVE','VERIFIED','FAILED','INDETERMINATE','ABANDONED')),
+        summary         TEXT,
+        started_at      TEXT NOT NULL,
+        settled_at      TEXT,
+        UNIQUE(run_id, ordinal)
+      );
+
+      -- One iteration in flight per run, enforced by the database.
+      CREATE UNIQUE INDEX idx_autopilot_iterations_active
+        ON autopilot_iterations(run_id) WHERE status='ACTIVE';
+
+      CREATE UNIQUE INDEX idx_autopilot_iterations_turn
+        ON autopilot_iterations(run_id, turn_id);
+    `
+  },
+  {
+    id: 19,
+    name: "self_direction_decisions",
+    up: `
+      -- What the agent said it would do next.
+      --
+      -- A PROPOSAL ABOUT WORK, never a change of authority. The assignment is
+      -- embedded inside a DexNest-authored prompt that restates the
+      -- authoritative goal and constraints; it is never sent as the prompt, so
+      -- persuasive text here cannot widen the run's scope.
+      --
+      -- consumed_by_turn_id moves away from NULL exactly once, which is what
+      -- makes "an assignment is acted on at most once" survive a restart.
+      CREATE TABLE autopilot_direction_decisions (
+        id                  TEXT PRIMARY KEY,
+        run_id              TEXT NOT NULL REFERENCES autopilot_runs(id) ON DELETE CASCADE,
+        turn_id             TEXT NOT NULL,
+        source              TEXT NOT NULL CHECK(source IN ('self')),
+        verb                TEXT NOT NULL CHECK(verb IN ('CONTINUE','PLAN_COMPLETE','NEEDS_HUMAN')),
+        assignment          TEXT,
+        reason              TEXT,
+        plan_item_id        TEXT,
+        consumed_by_turn_id TEXT,
+        created_at          TEXT NOT NULL
+      );
+
+      -- One decision per turn: a second would overwrite what was already acted on.
+      CREATE UNIQUE INDEX idx_autopilot_direction_turn
+        ON autopilot_direction_decisions(run_id, turn_id);
+
+      CREATE INDEX idx_autopilot_direction_pending
+        ON autopilot_direction_decisions(run_id) WHERE consumed_by_turn_id IS NULL;
+    `
+  },
+  {
+    id: 20,
+    name: "milestone_iteration_budget",
+    up: `
+      -- The budget a human actually thinks in.
+      --
+      -- The turn budget stays: it is the safety ceiling that stops a runaway
+      -- repair loop. But a turn is an implementation detail — repairs and
+      -- context round-trips are turns too — so what an operator authorizes is
+      -- ITERATIONS: distinct pieces of work, each with its own assignment,
+      -- however many turns it takes to land one.
+      --
+      -- NULL means the grant predates iteration budgeting and is bounded by
+      -- turns alone, so existing runs are unaffected.
+      ALTER TABLE autopilot_loop_grants ADD COLUMN max_iterations INTEGER;
+    `
+  },
+  {
+    id: 21,
+    name: "chat_direction_and_authority",
+    up: `
+      -- Who decides what happens next, over time.
+      --
+      -- Deliberately shaped like autopilot_primary_ownership: the Run Spec
+      -- stays authoritative and untouched, and switching the source of
+      -- direction is separate durable state with a full history. Exactly one
+      -- row per run is CURRENT, enforced by the database.
+      --
+      -- This is the PLANNING axis. Who writes the code is ownership; who
+      -- decides what to write next is this. They move independently.
+      CREATE TABLE autopilot_direction_authority (
+        id         TEXT PRIMARY KEY,
+        run_id     TEXT NOT NULL REFERENCES autopilot_runs(id) ON DELETE CASCADE,
+        ordinal    INTEGER NOT NULL,
+        source     TEXT NOT NULL CHECK(source IN ('self','chat')),
+        status     TEXT NOT NULL CHECK(status IN ('CURRENT','HISTORICAL')),
+        reason     TEXT NOT NULL,
+        changed_by TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at   TEXT,
+        UNIQUE(run_id, ordinal)
+      );
+      CREATE UNIQUE INDEX idx_autopilot_direction_authority_current
+        ON autopilot_direction_authority(run_id) WHERE status='CURRENT';
+
+      -- The chat that writes assignments.
+      --
+      -- A separate session from the worker's, and read-only: it never receives
+      -- a workspace, never emits files, and its answer is parsed only as a
+      -- decision. One per run, sticky so the conversation accumulates the
+      -- project's history the way a human's chat would.
+      CREATE TABLE autopilot_director_sessions (
+        run_id              TEXT PRIMARY KEY REFERENCES autopilot_runs(id) ON DELETE CASCADE,
+        provider            TEXT NOT NULL CHECK(provider IN ('claude','codex')),
+        session_id          TEXT NOT NULL UNIQUE,
+        provider_session_id TEXT,
+        cwd                 TEXT NOT NULL,
+        established         INTEGER NOT NULL DEFAULT 0,
+        created_at          TEXT NOT NULL
+      );
+
+      -- Widen the decision source to include the chat.
+      --
+      -- SQLite cannot alter a CHECK constraint, so the table is rebuilt rather
+      -- than left with a constraint that forbids the feature. Rows are copied
+      -- first: existing decisions are evidence of what a run was told to do and
+      -- are not disposable.
+      CREATE TABLE autopilot_direction_decisions_new (
+        id                  TEXT PRIMARY KEY,
+        run_id              TEXT NOT NULL REFERENCES autopilot_runs(id) ON DELETE CASCADE,
+        turn_id             TEXT NOT NULL,
+        source              TEXT NOT NULL CHECK(source IN ('self','chat')),
+        verb                TEXT NOT NULL CHECK(verb IN ('CONTINUE','PLAN_COMPLETE','NEEDS_HUMAN')),
+        assignment          TEXT,
+        reason              TEXT,
+        plan_item_id        TEXT,
+        consumed_by_turn_id TEXT,
+        created_at          TEXT NOT NULL
+      );
+      INSERT INTO autopilot_direction_decisions_new
+        SELECT id, run_id, turn_id, source, verb, assignment, reason, plan_item_id, consumed_by_turn_id, created_at
+          FROM autopilot_direction_decisions;
+      DROP TABLE autopilot_direction_decisions;
+      ALTER TABLE autopilot_direction_decisions_new RENAME TO autopilot_direction_decisions;
+
+      CREATE UNIQUE INDEX idx_autopilot_direction_turn
+        ON autopilot_direction_decisions(run_id, turn_id);
+      CREATE INDEX idx_autopilot_direction_pending
+        ON autopilot_direction_decisions(run_id) WHERE consumed_by_turn_id IS NULL;
+    `
+  },
+  {
+    id: 22,
+    name: "unattended_operation",
+    up: `
+      -- Decisions the agent made because it could not ask.
+      --
+      -- A question at 3am is a stall, so the agent chooses and writes down what
+      -- it assumed. These are the morning's review list: the operator reads a
+      -- handful of decisions instead of a whole conversation.
+      CREATE TABLE autopilot_assumptions (
+        id           TEXT PRIMARY KEY,
+        run_id       TEXT NOT NULL REFERENCES autopilot_runs(id) ON DELETE CASCADE,
+        turn_id      TEXT NOT NULL,
+        iteration_id TEXT,
+        text         TEXT NOT NULL,
+        created_at   TEXT NOT NULL
+      );
+      CREATE INDEX idx_autopilot_assumptions_run ON autopilot_assumptions(run_id);
+
+      -- When to try a limited provider again.
+      --
+      -- One row per waiting run, replaced as the backoff escalates, deleted the
+      -- moment the run moves on. It records a WAIT, never an authorization: the
+      -- grant is untouched, so waiting out a limit can never buy a run more
+      -- work than a human allowed it.
+      CREATE TABLE autopilot_resume_schedule (
+        run_id     TEXT PRIMARY KEY REFERENCES autopilot_runs(id) ON DELETE CASCADE,
+        attempt    INTEGER NOT NULL,
+        not_before TEXT NOT NULL,
+        reason     TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX idx_autopilot_resume_due ON autopilot_resume_schedule(not_before);
+    `
   }
 ];
 

@@ -8,13 +8,29 @@ import { defaultCapabilityPolicy, evaluatePathAccess } from "./policy.ts";
 import { validateRoles, rolesFor, type CodingProvider } from "./roles.ts";
 import { buildRunReport } from "./report.ts";
 import { canonicalize } from "./paths.ts";
+import { parsePlanText, type WorkspaceMode, type WorkerProfile } from "./runSpec.ts";
+import { ProjectBranchManager } from "./projectBranch.ts";
 
 export const CONTROL_TIERS = ["typecheck", "lint", "test", "integration", "build"] as const;
 export interface NewRunForm {
   goal: string; projectPath: string; projectId?: string; primary: CodingProvider; consultant: CodingProvider | null;
   maxTurns: number; maxFailures: number; constraints: string[]; nonGoals: string[];
+  /** Distinct pieces of work to authorize. Omit to bound by turns alone. */
+  maxIterations?: number;
+  /** The chat that writes assignments. Null keeps the agent self-directed. */
+  director?: CodingProvider | null;
+  /** Model alias or full name. Empty leaves the provider's own default. */
+  model?: string;
+  /** How hard the worker thinks per turn. Empty leaves the default. */
+  effort?: string;
   acceptance: Array<{ text: string; tier: string | null }>;
   verification: Array<{ tier: string; enabled: boolean; executable: string; args: string[] }>;
+  /** Defaults to the isolated worktree; see WorkspaceMode. */
+  workspaceMode?: WorkspaceMode;
+  /** Whether the worker gets its real tools. Defaults to mediated. */
+  workerProfile?: WorkerProfile;
+  /** The written plan, parsed into ordered items. Optional. */
+  planText?: string;
 }
 export function validateNewRun(form: NewRunForm): NewRunForm {
   validateRoles(form?.primary, form?.consultant);
@@ -22,7 +38,19 @@ export function validateNewRun(form: NewRunForm): NewRunForm {
   if (typeof form.projectPath !== "string" || !/^(?:[A-Za-z]:[\\/]|\/)/.test(form.projectPath)) throw new Error("Choose an absolute project path.");
   const policy = defaultCapabilityPolicy(); policy.readRoots = [form.projectPath];
   if (evaluatePathAccess(policy, { path: form.projectPath, mode: "read" }).decision !== "ALLOW") throw new Error("Project path is denied by policy.");
+  if (form.workspaceMode !== undefined && !["worktree", "project-branch"].includes(form.workspaceMode)) throw new Error("Choose a supported workspace mode.");
+  if (form.workerProfile !== undefined && !["mediated", "agentic"].includes(form.workerProfile)) throw new Error("Choose a supported worker profile.");
+  if (form.director != null && !["claude", "codex"].includes(form.director)) throw new Error("Choose a supported director.");
+  if (form.model !== undefined && (typeof form.model !== "string" || form.model.length > 80 || /[\s"']/.test(form.model))) throw new Error("A model is a single name, with no spaces or quotes.");
+  if (form.effort !== undefined && form.effort !== "" && !["low", "medium", "high", "xhigh", "max"].includes(form.effort)) throw new Error("Choose a supported effort level.");
+  // A chat that is also doing the coding is not the split that makes chat
+  // direction worth its extra call; it is the same session paying twice.
+  if (form.director != null && form.director === form.primary) throw new Error("The director must be a different provider from the worker.");
+  if (form.workerProfile === "agentic" && form.primary !== "claude") throw new Error("Only Claude Code can run with tools enabled today.");
+  if (form.planText !== undefined && (typeof form.planText !== "string" || form.planText.length > 200_000)) throw new Error("The plan must be text of up to 200000 characters.");
   if (!Number.isInteger(form.maxTurns) || form.maxTurns < 1 || form.maxTurns > 50) throw new Error("Authorize 1 to 50 turns.");
+  if (form.maxIterations !== undefined && (!Number.isInteger(form.maxIterations) || form.maxIterations < 1 || form.maxIterations > 50)) throw new Error("Authorize 1 to 50 iterations.");
+  if (form.maxIterations !== undefined && form.maxIterations > form.maxTurns) throw new Error("The turn ceiling must be at least the number of iterations, since a piece of work can take several turns.");
   if (!Number.isInteger(form.maxFailures) || form.maxFailures < 1 || form.maxFailures > 20) throw new Error("Failure limit must be 1 to 20.");
   if (![form.constraints, form.nonGoals].every(list => Array.isArray(list) && list.length <= 30 && list.every(value => typeof value === "string" && value.length <= 2000))) throw new Error("Invalid constraints or non-goals.");
   if (!Array.isArray(form.verification) || form.verification.length > 5) throw new Error("Configure verification tiers.");
@@ -113,11 +141,14 @@ export class AutopilotControlCenter {
     // must be found on a slash-normalized copy. Splitting the display form on
     // "/" alone finds nothing and silently truncates the project's last
     // character, putting the worktree in a near-miss sibling directory.
-    const separated = project.replace(/\\/g, "/");
-    const cut = separated.lastIndexOf("/");
-    if (cut <= 0) throw new Error("Choose a project directory inside a parent directory, not a drive root.");
-    const parent = separated.slice(0, cut);
-    const workspaceRoot = `${parent}/dexnest-worktrees/${id}`;
+    const inProject = form.workspaceMode === "project-branch";
+    let workspaceRoot = project;
+    if (!inProject) {
+      const separated = project.replace(/\\/g, "/");
+      const cut = separated.lastIndexOf("/");
+      if (cut <= 0) throw new Error("Choose a project directory inside a parent directory, not a drive root.");
+      workspaceRoot = `${separated.slice(0, cut)}/dexnest-worktrees/${id}`;
+    }
     const structuredCommands = Object.fromEntries(form.verification.filter(item => item.enabled).map(item => [item.tier, { executable: item.executable.trim(), args: item.args }]));
     const run = engine.createRun({ id, goal: form.goal, projectPath: project, projectId: form.projectId,
       workers: { primary: form.primary, consultant: form.consultant, sticky: true, fallback: null, consultantMode: false },
@@ -125,8 +156,34 @@ export class AutopilotControlCenter {
       acceptanceCriteria: form.acceptance.map((item, index) => ({ id: `acceptance-${index + 1}`, text: item.text, kind: item.tier ? "automated" : "judgment", ...(item.tier ? { checkCommand: structuredCommands[item.tier] } : {}) })),
       verification: { tiers: Object.keys(structuredCommands), commands: {}, structuredCommands },
       failurePolicy: { maxConsecutiveFailures: form.maxFailures, maxAttemptsPerStep: form.maxFailures },
+      ...(form.planText?.trim() ? { plan: parsePlanText(form.planText).items } : {}),
+      ...(inProject ? { workspaceMode: "project-branch" as const } : {}),
+      ...(form.workerProfile === "agentic" ? { workerProfile: "agentic" as const } : {}),
+      ...(form.director ? { supervisor: { provider: form.director } } : {}),
+      ...(form.model?.trim() ? { model: form.model.trim() } : {}),
+      ...(form.effort ? { effort: form.effort } : {}),
       capabilities: { workspaceRoot, allowedPaths: [workspaceRoot], forbiddenPaths: ["local-data"], allowedCommands: [], forbiddenCommands: ["git push", "npm publish", "gh pr merge"], requiresApproval: [] } });
     const policy = defaultCapabilityPolicy(); policy.workspaceRoot = workspaceRoot; policy.readRoots = [project];
+
+    // Working in the project has no worktree to create: the equivalent step is
+    // branching away from the operator's work, which refuses on a dirty tree.
+    if (inProject) {
+      try {
+        await new ProjectBranchManager({ ports, effects: engine.effects! }).ensureBranch({ runId: id, repoRoot: project, policy });
+      } catch (error) {
+        const reason = prose(error instanceof Error ? error.message : String(error), 400);
+        engine.store.appendEvent(id, { type: "RUN_FAILED", toState: "FAILED", failureReason: `Could not prepare the project branch: ${reason}` });
+        throw new Error(`Could not prepare the project branch: ${reason} (run ${id})`);
+      }
+      engine.store.appendEvent(id, { type: "WORKSPACE_CREATED", payload: { workspaceRoot, mode: "project-branch" } });
+      try { workers.authorizeLoop({ runId: id, maxTurns: form.maxTurns, ...(form.maxIterations !== undefined ? { maxIterations: form.maxIterations } : {}), grantedBy: "desktop_ui" }); }
+      catch (error) {
+        engine.store.appendEvent(id, { type: "RUN_FAILED", toState: "FAILED", failureReason: "Primary setup failed. Select a canonical primary Git repository root and check provider readiness." });
+        throw error;
+      }
+      return run;
+    }
+
     const outcome = await engine.effects!.request({ runId: run.id, stepKey: "control-center-workspace", policy,
       intent: { kind: "CREATE_WORKTREE", repoRoot: project, worktreePath: workspaceRoot, branch: `autopilot/${id}`, baseRef: "HEAD", purpose: "Prepare the primary coding workspace" } });
     if (!("result" in outcome) || !outcome.result.ok) {
@@ -148,7 +205,7 @@ export class AutopilotControlCenter {
       );
     }
     engine.store.appendEvent(id, { type: "WORKSPACE_CREATED", payload: { workspaceRoot } });
-    try { workers.authorizeLoop({ runId: id, maxTurns: form.maxTurns, grantedBy: "desktop_ui" }); }
+    try { workers.authorizeLoop({ runId: id, maxTurns: form.maxTurns, ...(form.maxIterations !== undefined ? { maxIterations: form.maxIterations } : {}), grantedBy: "desktop_ui" }); }
     catch (error) {
       engine.store.appendEvent(id, { type: "RUN_FAILED", toState: "FAILED", failureReason: "Primary setup failed. Select a canonical primary Git repository root and check provider readiness." });
       throw error;

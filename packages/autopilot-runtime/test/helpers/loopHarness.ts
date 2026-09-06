@@ -41,6 +41,8 @@ export interface LoopPlanStep {
    */
   emitFiles?: Array<{ path: string; contents: string }>;
   workerFailure?: "quota" | "auth" | "session" | "process" | "truncated";
+  /** Free text appended to the reply, e.g. a self-direction decision block. */
+  say?: string;
   /** Paths this turn asks DexNest to supply on the next turn. */
   requestFiles?: string[];
   hang?: boolean;
@@ -75,6 +77,8 @@ export interface OpenLoopOptions {
   beforeProcess?: (input: Parameters<ProcessPort["run"]>[0]) => void;
   /** Overrides the command for a tier, e.g. to model a misconfigured one. */
   commandFor?: (tier: string) => string;
+  /** The chat that writes assignments, for chat-directed runs. */
+  director?: import("../../src/chatDirector.ts").ChatDirector | null;
 }
 
 export function openLoop(root: string, options: OpenLoopOptions = {}) {
@@ -136,7 +140,7 @@ export function openLoop(root: string, options: OpenLoopOptions = {}) {
   });
 
   const worker = new ClaudeCodeWorker({ executable: "claude.exe", ports, effects, policy, newSessionId: () => LOOP_SESSION_ID });
-  const loop = new AutonomousLoop({ ports, engine, policy, worker });
+  const loop = new AutonomousLoop({ ports, engine, policy, worker, director: options.director ?? null });
 
   // The controlled host, so ownership handoff runs through the production path.
   let sessionCounter = 0;

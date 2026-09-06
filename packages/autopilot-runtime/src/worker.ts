@@ -2,14 +2,172 @@ import type { RunCommandIntent } from "./intent.ts";
 import type { DispatchResult } from "./dispatcher.ts";
 import type { EffectsGateway, EffectOutcome } from "./effects.ts";
 import type { CapabilityPolicy } from "./policy.ts";
-import { evaluatePathAccess } from "./policy.ts";
+import { evaluatePathAccess, ALWAYS_DENIED_ROOTS } from "./policy.ts";
 import type { RuntimePorts } from "./ports.ts";
 import { AutopilotStore } from "./store.ts";
 import { isTerminal } from "./states.ts";
-import { samePath } from "./paths.ts";
+import { canonicalize, contains, samePath } from "./paths.ts";
 import { WorkerStore, type WorkerSession, type WorkerSend } from "./workerStore.ts";
 import { OwnershipStore } from "./handoff.ts";
 import { assertPrimary, type WorkerRole } from "./roles.ts";
+
+/**
+ * What the worker is allowed to be.
+ *
+ * "mediated" is the original model. The worker runs with every tool disabled,
+ * so it cannot read or write anything; it emits whole files as text and DexNest
+ * writes them through policy. Every single side effect is therefore evaluated
+ * by evaluatePathAccess before it happens.
+ *
+ * "agentic" gives the worker its real tools inside the workspace: it reads,
+ * edits and runs the project's own commands itself. That is what makes it
+ * useful on a real codebase — no context-request round-trips, no re-emitting a
+ * 34 KB file to change one line — and it is a genuine reduction in mediation,
+ * stated plainly here rather than buried:
+ *
+ *   DexNest no longer sees individual file writes. evaluatePathAccess is not
+ *   consulted for them, because they never reach the EffectsGateway.
+ *
+ * What contains an agentic worker instead:
+ *   1. cwd. File tools are confined to the working directory and DexNest adds
+ *      no others, so the workspace boundary is the process boundary.
+ *   2. assertAgenticWorkspace below, which refuses outright when the workspace
+ *      contains a root DexNest would otherwise have denied per-write.
+ *   3. An explicit tool allow-list; tools not named simply do not exist.
+ *   4. The run's branch and its per-iteration checkpoints, for reversibility.
+ *
+ * Because 1 and 2 are the load-bearing guarantees, neither depends on a deny
+ * rule being interpreted the way we hope by another process.
+ */
+export type WorkerCapabilityProfile = "mediated" | "agentic";
+
+/**
+ * The built-in tools an agentic worker gets. An allow-list, not a deny-list:
+ * a tool absent here does not exist for the worker, and the set does not grow
+ * when the CLI adds new tools. Network tools are deliberately absent — a run
+ * works on the code in front of it.
+ */
+export const DEFAULT_AGENTIC_TOOLS: readonly string[] = ["Bash", "Edit", "Read", "Write", "Glob", "Grep", "TodoWrite"];
+
+/**
+ * Refused regardless of the allow-list. These are things whose damage outlives
+ * the run's branch, so no checkpoint would undo them.
+ */
+export const DEFAULT_AGENTIC_DENIED: readonly string[] = [
+  "Bash(git push *)",
+  "Bash(git reset *)",
+  "Bash(git clean *)",
+  "Bash(git rebase *)",
+  "Bash(rm *)",
+  "Bash(rmdir *)",
+  "WebFetch",
+  "WebSearch"
+];
+
+/** Read-only git the worker may run without a human present. */
+export const DEFAULT_AGENTIC_ALLOWED: readonly string[] = [
+  "Bash(git status *)",
+  "Bash(git diff *)",
+  "Bash(git log *)",
+  "Bash(git show *)"
+];
+
+/**
+ * Turns WITHIN one send, not turns of the loop grant. An agentic worker spends
+ * these reading, editing and running tests before it answers once.
+ */
+export const DEFAULT_AGENTIC_MAX_TURNS = 30;
+
+/** Effort the provider spends per turn. Cost and quality both scale with it. */
+export type WorkerEffort = "low" | "medium" | "high" | "xhigh" | "max";
+
+export interface AgenticCapabilities {
+  profile: "agentic";
+  tools: readonly string[];
+  /** Model alias or full name. Undefined leaves the CLI's own default. */
+  model?: string;
+  effort?: WorkerEffort;
+  /** Pre-approved invocations, so verification can run with nobody watching. */
+  allowedTools: readonly string[];
+  deniedTools: readonly string[];
+  maxTurns: number;
+}
+
+export interface MediatedCapabilities {
+  profile: "mediated";
+}
+
+export type WorkerCapabilities = AgenticCapabilities | MediatedCapabilities;
+
+export const MEDIATED: MediatedCapabilities = { profile: "mediated" };
+
+/**
+ * Builds the agentic capability set for a run.
+ *
+ * Verification commands are pre-approved by name, so the worker may run exactly
+ * the commands the run is judged by. Anything else still needs a decision, and
+ * with no human present a decision it cannot get is a refusal, which is the
+ * safe direction.
+ */
+export function agenticCapabilities(input: {
+  verificationExecutables?: readonly string[];
+  maxTurns?: number;
+  extraAllowed?: readonly string[];
+  model?: string;
+  effort?: WorkerEffort;
+} = {}): AgenticCapabilities {
+  const verification = (input.verificationExecutables ?? [])
+    .map((value) => value.replace(/\\/g, "/").split("/").at(-1)!.replace(/\.exe$/i, "").trim())
+    .filter((name) => name && /^[A-Za-z0-9_.-]+$/.test(name))
+    .map((name) => `Bash(${name} *)`);
+  return {
+    profile: "agentic",
+    tools: [...DEFAULT_AGENTIC_TOOLS],
+    ...(input.model?.trim() ? { model: input.model.trim() } : {}),
+    ...(input.effort ? { effort: input.effort } : {}),
+    allowedTools: [...new Set([...DEFAULT_AGENTIC_ALLOWED, ...verification, ...(input.extraAllowed ?? [])])],
+    deniedTools: [...DEFAULT_AGENTIC_DENIED],
+    maxTurns: Math.max(1, Math.min(input.maxTurns ?? DEFAULT_AGENTIC_MAX_TURNS, 200))
+  };
+}
+
+export class AgenticWorkspaceError extends Error {
+  readonly rule: string;
+  constructor(rule: string, message: string) {
+    super(message);
+    this.name = "AgenticWorkspaceError";
+    this.rule = rule;
+  }
+}
+
+/**
+ * Refuses an agentic run whose workspace contains a root that would otherwise
+ * be denied per-write.
+ *
+ * With tools enabled DexNest cannot stop a single write, so the only honest
+ * place to enforce "never touch local-data" is before the worker starts. A
+ * workspace containing such a root is refused rather than run with a deny rule
+ * we would be trusting another process to honour.
+ */
+export function assertAgenticWorkspace(workspaceRoot: string, options: { windows?: boolean } = {}): void {
+  const windows = options.windows ?? true;
+  const workspace = canonicalize(workspaceRoot, { windows });
+  if (!workspace.absolute) {
+    throw new AgenticWorkspaceError("agentic.not-absolute", "An agentic workspace must be an absolute path.");
+  }
+  for (const denied of ALWAYS_DENIED_ROOTS) {
+    const root = canonicalize(denied, { windows });
+    if (samePath(root, workspace, windows) || contains(root, workspace, windows)) {
+      throw new AgenticWorkspaceError("agentic.inside-denied-root", `An agentic worker may not run inside ${denied}.`);
+    }
+    if (contains(workspace, root, windows)) {
+      throw new AgenticWorkspaceError(
+        "agentic.contains-denied-root",
+        `${workspaceRoot} contains ${denied}. With tools enabled DexNest cannot refuse an individual write, so this run must use the mediated worker instead.`
+      );
+    }
+  }
+}
 
 /**
  * How long a provider gets to answer one prompt.
@@ -79,6 +237,12 @@ export interface WorkerOptions {
   policy: CapabilityPolicy;
   /** Host-generated UUID. The domain never generates randomness itself. */
   newSessionId(): string;
+  /**
+   * Opens a live output channel for a run's next send, if the host wants one.
+   * Returns the sink that receives stdout as it arrives, or undefined for no
+   * live view. Purely additive: a worker with no channel behaves identically.
+   */
+  onOutput?: (runId: string) => ((chunk: string) => void) | undefined;
 }
 
 export class DurableWorker implements WorkerAdapter {
@@ -108,7 +272,20 @@ export class DurableWorker implements WorkerAdapter {
     if (!cwd || !this.options.policy.workspaceRoot || !samePath(cwd, this.options.policy.workspaceRoot)) {
       throw new Error("Worker cwd must match the existing run worktree and enforced policy.");
     }
-    if (run.spec.projectPath && samePath(cwd, run.spec.projectPath)) throw new Error("Worker may not use the primary checkout.");
+    // A worktree run must never write to the project itself — that is the whole
+    // point of the isolation. A project-branch run works in the project by
+    // definition, and buys its reversibility somewhere else: a clean tree
+    // before it starts, a dedicated branch, and a checkpoint commit per
+    // verified piece of work.
+    //
+    // Applying the worktree rule to both modes refused project-branch runs
+    // outright, which is exactly what it did until the first one was attempted.
+    if (
+      run.spec.workspaceMode !== "project-branch" &&
+      run.spec.projectPath && samePath(cwd, run.spec.projectPath)
+    ) {
+      throw new Error("Worker may not use the primary checkout.");
+    }
     if (evaluatePathAccess(this.options.policy, { path: cwd, mode: "write" }).decision !== "ALLOW") {
       throw new Error("Worker workspace is denied by policy.");
     }
@@ -177,6 +354,9 @@ export class DurableWorker implements WorkerAdapter {
       const outcome = await this.options.effects.request({ runId, stepKey: `worker:${sendId}`,
         policy: this.options.policy, intent: this.protocol.prompt(session, prompt),
         diagnostics: { provider: this.protocol.id, role: "PRIMARY" },
+        // Visibility only, and deliberately outside every guard below: a
+        // watcher must never be able to interrupt a dispatch.
+        onOutput: this.options.onOutput?.(runId),
         onWorkerSession: (providerSessionId) => {
           const current = this.store.requireRun(runId);
           if (current.state !== "RUNNING" || current.stopRequested || current.pauseRequested || this.interrupted.has(runId)) throw new Error("Worker dispatch interrupted.");

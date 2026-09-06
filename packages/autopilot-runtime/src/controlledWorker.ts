@@ -2,6 +2,7 @@ import { evaluatePrimaryProgress, latestPrimaryProgress } from "./progress.ts";
 import { ClaudeCodeWorker } from "./claudeCodeWorker.ts";
 import { CodexWorker } from "./codexWorker.ts";
 import type { DurableWorker } from "./worker.ts";
+import { agenticCapabilities, assertAgenticWorkspace } from "./worker.ts";
 import type { AutopilotEngine } from "./engine.ts";
 import type { RuntimePorts } from "./ports.ts";
 import { defaultCapabilityPolicy } from "./policy.ts";
@@ -14,6 +15,8 @@ import { codexProtocol, codexConfigArgs } from "./codexWorker.ts";
 import type { ConsultationScope } from "./consultations.ts";
 import { rolesFor, type CodingProvider } from "./roles.ts";
 import { AutonomousLoop } from "./loop.ts";
+import { ChatDirector } from "./chatDirector.ts";
+import { LiveActivity, type ActivityEvent } from "./liveActivity.ts";
 import type { CapabilityPolicy } from "./policy.ts";
 import { buildRunReport } from "./report.ts";
 import { evaluateRecovery } from "./recovery.ts";
@@ -39,6 +42,15 @@ export class ControlledWorkerTurns {
   private readonly policies = new Map<string, CapabilityPolicy>();
   private readonly loops = new Map<string, AutonomousLoop>();
   private readonly consultants = new Map<string, ConsultantRunner>();
+  private readonly directors = new Map<string, ChatDirector>();
+  /**
+   * What each run is doing right now, for showing a person.
+   *
+   * In memory and per run: the conversation is already durable in the
+   * agent's own session, so keeping a second copy here would be a worse
+   * transcript store. This is a window, not a record.
+   */
+  private readonly live: LiveActivity;
   /** Which provider each cached worker was built for, so a handoff invalidates it. */
   private readonly workerProviders = new Map<string, string>();
   private readonly active = new Set<string>();
@@ -46,6 +58,12 @@ export class ControlledWorkerTurns {
   constructor(options: ControlledWorkerOptions) {
     this.options = options;
     this.sessions = new WorkerStore(options.ports);
+    this.live = new LiveActivity(() => options.ports.clock.now(), (runId) => options.changed(runId));
+  }
+
+  /** The last few things this run did. Empty once it settles. */
+  activity(runId: string): ActivityEvent[] {
+    return this.live.recent(runId);
   }
 
   snapshot(runId: string) {
@@ -67,11 +85,66 @@ export class ControlledWorkerTurns {
         engine: this.options.engine,
         policy: this.policies.get(runId)!,
         worker,
+        director: this.director(runId),
         changed: this.options.changed
       });
       this.loops.set(runId, loop);
     }
     return loop;
+  }
+
+  /**
+   * The chat that writes assignments, when the Run Spec names one.
+   *
+   * Read-only by construction. It gets its own launch permission and nothing
+   * else: the same policy as the implementation worker, minus any ability to
+   * act, because a director proposes work and never does it. Runs with no
+   * configured director return null, and a chat-directed run then holds for a
+   * human rather than quietly letting the worker decide instead.
+   */
+  private director(runId: string): ChatDirector | null {
+    const { engine, ports } = this.options;
+    const cached = this.directors.get(runId);
+    if (cached) return cached;
+
+    const run = engine.store.requireRun(runId);
+    const provider = run.spec.supervisor?.provider;
+    if (provider !== "claude" && provider !== "codex") return null;
+
+    // Building the worker first guarantees the workspace was validated and the
+    // per-run policy exists, exactly as an implementation turn would.
+    this.worker(runId);
+    const policy = this.policies.get(runId)!;
+    const executable = this.options.executableFor?.(provider)
+      ?? (provider === "codex" ? this.options.codexExecutable : this.options.executable);
+    if (!executable) throw new Error(`${provider} native installation was not found.`);
+    if (!engine.effects) throw new Error("Worker platform is unavailable.");
+
+    const directorPolicy: CapabilityPolicy = {
+      ...policy,
+      allowedCommands: [
+        ...policy.allowedCommands,
+        ...(provider === "codex" ? ["--version", "login", "mcp"] : ["--version", "auth"]).map(subcommand => ({
+          executable: provider, subcommand, decision: "ALLOW" as const,
+          reason: "Inspect director CLI availability", risk: "low" as const
+        })),
+        {
+          executable: provider, subcommand: provider === "codex" ? "app-server" : "--print",
+          decision: "ALLOW" as const,
+          reason: "Ask the configured director what this run should do next; it has no tools and writes nothing.",
+          risk: "high" as const
+        }
+      ]
+    };
+
+    const director = new ChatDirector({
+      ports, effects: engine.effects, policy: directorPolicy, provider,
+      protocol: provider === "codex" ? codexProtocol(executable) : claudeCodeProtocol(executable),
+      newSessionId: this.options.newSessionId,
+      cwd: run.spec.capabilities.workspaceRoot ?? ""
+    });
+    this.directors.set(runId, director);
+    return director;
   }
 
   loopSnapshot(runId: string) {
@@ -355,7 +428,7 @@ export class ControlledWorkerTurns {
     return { handoff: handoffs.list(input.runId).find(entry => entry.id === input.handoffId)!, grant: activated.grant };
   }
 
-  authorizeLoop(input: { runId: string; maxTurns: number; grantedBy: string }) {
+  authorizeLoop(input: { runId: string; maxTurns: number; maxIterations?: number; grantedBy: string }) {
     if (this.active.has(input.runId)) throw new Error("A worker action is already in progress.");
     return this.loopFor(input.runId).authorize(input);
   }
@@ -365,19 +438,25 @@ export class ControlledWorkerTurns {
   }
 
   /** Runs authorized turns until the loop settles. */
-  async runLoop(runId: string) {
+  /**
+   * retryProviderLimit is the deliberate answer to a run paused for a usage
+   * limit or a stale login. Passed straight through: the loop is the thing that
+   * knows whether such a hold exists, and only a caller that decided to retry
+   * ever sets it.
+   */
+  async runLoop(runId: string, options: { retryProviderLimit?: boolean } = {}) {
     if (this.active.has(runId)) throw new Error("A worker action is already in progress.");
     const loop = this.loopFor(runId);
     this.active.add(runId);
     try {
       const progress = latestPrimaryProgress(this.options.ports, runId);
-      if (progress && progress.status !== "PROGRESSING") return await loop.run(runId);
+      if (progress && progress.status !== "PROGRESSING") return await loop.run(runId, options);
       const available = await this.worker(runId).detect(runId);
       if (!available.installed || !available.authenticated || available.failure) {
         evaluatePrimaryProgress(this.options.ports, runId, available.failure ?? "auth");
         throw new Error(`PRIMARY unavailable: ${available.failure ?? "auth"}`);
       }
-      return await loop.run(runId);
+      return await loop.run(runId, options);
     } finally {
       this.active.delete(runId);
       this.options.changed(runId);
@@ -419,10 +498,39 @@ export class ControlledWorkerTurns {
       for (const command of Object.values(run.spec.verification.structuredCommands ?? {})) {
         policy.allowedCommands.push({ executable: command.executable.replace(/\\/g, "/").split("/").at(-1)!.replace(/\.exe$/i, ""), subcommand: command.args[0] ?? "", decision: "ALLOW", reason: "Human-configured structured verification", risk: "low" });
       }
-      policy.approvalCommands.push({ executable: provider, subcommand: provider === "codex" ? "app-server" : "--print", decision: "REQUIRE_APPROVAL", reason: `Send this saved prompt to ${provider} using the existing subscription; tools are disabled.`, risk: "high" });
+      // Only Claude has an agentic profile so far; Codex stays mediated until
+      // it is a writer at all.
+      const agentic = run.spec.workerProfile === "agentic" && provider === "claude";
+      if (agentic) {
+        // Refuse before the worker exists, not after it has written something.
+        assertAgenticWorkspace(run.spec.capabilities.workspaceRoot ?? "");
+      }
+      policy.approvalCommands.push({
+        executable: provider,
+        subcommand: provider === "codex" ? "app-server" : "--print",
+        decision: "REQUIRE_APPROVAL",
+        reason: agentic
+          ? `Send this saved prompt to ${provider} using the existing subscription. Tools are ENABLED: it may read, edit and run commands inside the workspace on its own.`
+          : `Send this saved prompt to ${provider} using the existing subscription; tools are disabled.`,
+        risk: "high"
+      });
       if (!engine.effects) throw new Error("Worker platform is unavailable.");
       const Adapter = provider === "codex" ? CodexWorker : ClaudeCodeWorker;
-      worker = new Adapter({ ports, effects: engine.effects, policy, executable, newSessionId: this.options.newSessionId });
+      worker = new Adapter({
+        ports, effects: engine.effects, policy, executable, newSessionId: this.options.newSessionId,
+        // A fresh window per send, so the panel shows this turn and not the
+        // last one. Purely additive; a worker with no channel is unchanged.
+        onOutput: (id: string) => this.live.begin(id),
+        ...(agentic
+          ? {
+              capabilities: agenticCapabilities({
+                verificationExecutables: Object.values(run.spec.verification.structuredCommands ?? {}).map(command => command.executable),
+                ...(run.spec.model ? { model: run.spec.model } : {}),
+                ...(run.spec.effort ? { effort: run.spec.effort as "low" | "medium" | "high" | "xhigh" | "max" } : {})
+              })
+            }
+          : {})
+      });
       this.workers.set(runId, worker);
       this.policies.set(runId, policy);
       this.workerProviders.set(runId, provider);

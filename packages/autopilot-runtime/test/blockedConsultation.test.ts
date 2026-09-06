@@ -51,7 +51,11 @@ for (const [failure, category] of [["quota", "quota"], ["auth", "auth"], ["sessi
     const f = fixture(t, [{ workerFailure: failure }]);
     const outcome = await f.h.loop.run("loop-run");
 
-    assert.equal(outcome.reason, "worker_failed", outcome.detail);
+    // Losing subscription capacity or a login is named apart from a broken
+    // turn: nothing is wrong with the work, the run has simply lost the
+    // ability to continue for now.
+    const expected = failure === "session" ? "worker_failed" : "provider_limit";
+    assert.equal(outcome.reason, expected, outcome.detail);
     const progress = latestPrimaryProgress(f.h.ports, "loop-run")!;
     assert.equal(progress.status, "BLOCKED");
     assert.equal(progress.reason, `terminal_obstacle:${category}`);
@@ -67,7 +71,9 @@ for (const [failure, category] of [["quota", "quota"], ["auth", "auth"], ["sessi
     assert.deepEqual(new ConsultantStore(f.h.ports).sessions("loop-run"), []);
 
     // The failed turn cost one grant turn and no further PRIMARY turn was spent.
+    // The authorization survives either way, so resuming is a resume.
     assert.equal(new LoopStore(f.h.ports).activeGrant("loop-run")!.turnsUsed, 1);
+    assert.equal(new LoopStore(f.h.ports).activeGrant("loop-run")!.status, "ACTIVE");
     assert.equal(f.prompts().length, 1);
 
     // The obstacle is durable: re-running holds instead of retrying blindly.

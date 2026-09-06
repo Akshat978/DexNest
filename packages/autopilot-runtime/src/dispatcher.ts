@@ -74,6 +74,12 @@ export class Dispatcher {
     policy: CapabilityPolicy;
     runId: string;
     onWorkerSession?: (providerSessionId: string) => void;
+    /**
+     * Stdout as it arrives, for showing a person what is happening.
+     * Advisory: the outcome is still read from the completed process, so a
+     * missing or malformed chunk costs visibility and nothing else.
+     */
+    onOutput?: (chunk: string) => void;
   }): Promise<DispatchResult> {
     const { operation, intent, policy, runId } = input;
 
@@ -110,7 +116,7 @@ export class Dispatcher {
         this.assertRealPathWithin(intent.cwd, policy, "write");
         if (intent.transport && !input.onWorkerSession) throw new UnauthorizedDispatchError("dispatch.missing-session-journal", "Interactive worker dispatch requires durable session binding.");
         const conversation = intent.transport === "codex-app-server" ? new CodexConversation(intent.stdin ?? "", intent.cwd, input.onWorkerSession!) : undefined;
-        const outcome = await this.runProcess(runId, operation.id, intent.executable, intent.args, intent.cwd, policy, intent.timeoutMs, intent.stdin, conversation);
+        const outcome = await this.runProcess(runId, operation.id, intent.executable, intent.args, intent.cwd, policy, intent.timeoutMs, intent.stdin, conversation, input.onOutput);
         return {
           ok: outcome.exitCode === 0,
           summary: `${intent.executable} exited ${outcome.exitCode}`,
@@ -172,7 +178,8 @@ export class Dispatcher {
     policy: CapabilityPolicy,
     timeoutMs?: number,
     stdin?: string,
-    conversation?: ProcessConversation
+    conversation?: ProcessConversation,
+    onOutput?: (chunk: string) => void
   ): Promise<CommandOutcome> {
     // The child never inherits the host environment.
     const env = buildEnvironment(policy, this.platform.env.snapshot());
@@ -180,7 +187,7 @@ export class Dispatcher {
     for (const key of Object.keys(env)) {
       if (["ANTHROPIC_API_KEY", "OPENAI_API_KEY"].includes(key.toUpperCase())) delete env[key];
     }
-    return this.platform.process.run({ runId, operationId, executable, args, cwd, env, timeoutMs, stdin, conversation });
+    return this.platform.process.run({ runId, operationId, executable, args, cwd, env, timeoutMs, stdin, conversation, onOutput });
   }
 
   /**

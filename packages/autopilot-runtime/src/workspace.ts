@@ -8,6 +8,9 @@
 // filesystem sandbox — see policy.ts and the architecture document.
 
 import { canonicalize, contains, samePath } from "./paths.ts";
+import { defaultCapabilityPolicy, evaluatePathAccess } from "./policy.ts";
+import type { PlatformPorts } from "./ports.ts";
+import type { RunSpecInput } from "./runSpec.ts";
 import type { GitPort, FileSystemPort } from "./ports.ts";
 import { ALWAYS_DENIED_ROOTS } from "./policy.ts";
 
@@ -141,4 +144,59 @@ export class WorkspaceManager {
   primaryCheckoutState(repoRoot: string): { head: string; dirty: boolean } {
     return { head: this.git.head(repoRoot), dirty: this.git.isDirty(repoRoot) };
   }
+}
+
+/**
+ * Re-validates the workspace before every worker action.
+ *
+ * What "valid" means depends on where the run works, and the two answers are
+ * opposites:
+ *
+ *   worktree       the workspace must NOT be the project, and must be a
+ *                  worktree registered to it;
+ *   project-branch the workspace must BE the project, which the worktree guard
+ *                  exists specifically to forbid.
+ *
+ * Running the worktree checks against a project-branch run therefore refuses
+ * every time, with "The primary checkout may never be used as an autonomous
+ * writable workspace" — correct for the mode it was written for, and wrong for
+ * this one. Found on the first real project-branch run, which had never
+ * actually reached a worker.
+ */
+export function validateRunWorkspace(platform: PlatformPorts, spec: RunSpecInput): void {
+  const repo = spec.projectPath;
+  const cwd = spec.capabilities?.workspaceRoot;
+  const inProject = spec.workspaceMode === "project-branch";
+  if (!repo || !cwd || !canonicalize(repo).absolute || !canonicalize(cwd).absolute) {
+    throw new Error(inProject
+      ? "Select an absolute project path."
+      : "Select absolute primary repository and existing worktree paths.");
+  }
+
+  const policy = defaultCapabilityPolicy();
+  policy.workspaceRoot = cwd;
+  policy.readRoots = [repo];
+  policy.denyRoots.push(...(spec.capabilities?.forbiddenPaths ?? []).filter(path => path !== "local-data"));
+  for (const [path, mode] of [[repo, "read"], [cwd, "write"]] as const) {
+    if (evaluatePathAccess(policy, { path, mode }).decision !== "ALLOW") throw new Error("Repository or workspace is denied by policy.");
+    if (!platform.fs.exists(path) || !samePath(platform.fs.realPath(path), path)) throw new Error("Repository and workspace must exist at their canonical paths.");
+  }
+
+  const manager = new WorkspaceManager({ git: platform.git, fs: platform.fs, worktreesRoot: cwd, scratchesRoot: cwd });
+  if (!samePath(manager.resolveRepositoryRoot(repo), repo)) throw new Error("Use a repository root, not a subdirectory.");
+
+  if (inProject) {
+    // The workspace IS the project, so the only structural question left is
+    // whether they are genuinely the same canonical place. The rest of what
+    // makes this mode safe — a clean tree, a real branch, a commit to return
+    // to — is ProjectBranchManager's preflight, which runs before the branch
+    // is created rather than before every turn.
+    if (!samePath(repo, cwd)) throw new Error("A project-branch run must work in the project itself.");
+    return;
+  }
+
+  manager.assertUsable(repo, cwd);
+  if (!samePath(manager.resolveRepositoryRoot(cwd), cwd)) throw new Error("Use repository roots, not subdirectories.");
+  const trees = platform.git.listWorktrees(repo);
+  if (!trees[0] || !samePath(trees[0].path, repo) || !trees.some(tree => samePath(tree.path, cwd))) throw new Error("Worktree must be registered to the selected primary repository.");
 }

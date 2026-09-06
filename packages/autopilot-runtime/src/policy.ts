@@ -99,6 +99,21 @@ export const ALWAYS_DENIED_ROOTS: readonly string[] = [
 /** Path fragments that are denied wherever they appear. */
 export const ALWAYS_DENIED_FRAGMENTS: readonly string[] = [".ssh", ".aws", ".gnupg", ".npmrc", ".git-credentials"];
 
+/**
+ * Directory names never readable or writable, wherever they appear.
+ *
+ * .git holds the object store, the reflog and the hooks directory. A worktree
+ * made this survivable — its .git is a file, and the whole thing was
+ * disposable. Working directly in the project is not: a write into .git can
+ * rewrite history the run was supposed to be revertible against, or drop an
+ * executable hook that later runs outside every check here.
+ *
+ * Matching is per path segment, so .gitignore, .gitattributes and .github are
+ * ordinary files an agent may edit. Git itself is unaffected: git commands go
+ * through GIT_OPERATION, which is evaluated separately.
+ */
+export const ALWAYS_DENIED_DIRECTORIES: readonly string[] = [".git"];
+
 /** Environment variables never passed to a dispatched command. */
 export const DEFAULT_ENV_STRIP_PATTERNS: readonly string[] = [
   "ANTHROPIC_API_KEY",
@@ -282,6 +297,19 @@ export function evaluatePathAccess(
     const needle = windows ? fragment.toLowerCase() : fragment;
     if (target.key.split("/").includes(needle)) {
       return deny("path.sensitive-fragment", `Paths containing "${fragment}" hold credentials and are never accessible.`, capability, "critical", target.display);
+    }
+  }
+
+  for (const directory of ALWAYS_DENIED_DIRECTORIES) {
+    const needle = windows ? directory.toLowerCase() : directory;
+    if (target.key.split("/").includes(needle)) {
+      return deny(
+        "path.repository-internals",
+        `${directory} holds repository history and hooks; use a git operation rather than writing to it directly.`,
+        capability,
+        "critical",
+        target.display
+      );
     }
   }
 

@@ -25,7 +25,7 @@ import type { RuntimePorts } from "./ports.ts";
 import type { AutopilotEngine } from "./engine.ts";
 import type { CapabilityPolicy } from "./policy.ts";
 import type { RunSpec } from "./runSpec.ts";
-import type { WorkerAdapter } from "./worker.ts";
+import type { WorkerAdapter, WorkerFailure } from "./worker.ts";
 import type { WorkerSend } from "./workerStore.ts";
 import { LoopStore, type LoopGrant, type TurnRecord } from "./loopStore.ts";
 import { Verifier, initialPrompt, repairPrompt, type VerificationReport } from "./verification.ts";
@@ -39,6 +39,11 @@ import { ConsultationStore } from "./consultations.ts";
 import { HandoffBriefings, OwnershipStore } from "./handoff.ts";
 import { recordRecoveryDecision } from "./recovery.ts";
 import { ContextRequestStore, type ContextRequest } from "./contextRequests.ts";
+import { IterationStore } from "./iterations.ts";
+import { DirectionStore, DirectionAuthorityStore, directedPrompt, directionProtocolInstructions, parseDirection, type ParsedDirection } from "./direction.ts";
+import { ChatDirector, directorPrompt } from "./chatDirector.ts";
+import { PlanStore, renderPlanForWorker } from "./plan.ts";
+import { UnattendedStore, parseAssumptions, unattendedInstructions } from "./unattended.ts";
 import {
   MAX_REQUESTED_BYTES,
   renderRequestOutcomes,
@@ -58,9 +63,13 @@ export type LoopStopReason =
   | "completed"
   | "verification_indeterminate"
   | "turn_limit"
+  | "iteration_limit"
   | "consecutive_failures"
   | "worker_uncertain"
   | "worker_failed"
+  | "provider_limit"
+  | "plan_complete_proposed"
+  | "direction_needs_human"
   | "paused"
   | "stopped"
   | "grant_closed";
@@ -84,6 +93,8 @@ export interface AutonomousLoopOptions {
   changed?: (runId: string) => void;
   /** Bounds on the workspace view embedded in each prompt. */
   contextLimits?: typeof DEFAULT_CONTEXT_LIMITS;
+  /** The chat that writes assignments, when direction is not self-directed. */
+  director?: ChatDirector | null;
 }
 
 export class AutonomousLoop {
@@ -94,6 +105,11 @@ export class AutonomousLoop {
   readonly consultantDiagnoses: ConsultantStore;
   readonly consultations: ConsultationStore;
   readonly handoffs: HandoffBriefings;
+  readonly iterations: IterationStore;
+  readonly directions: DirectionStore;
+  readonly directionAuthority: DirectionAuthorityStore;
+  readonly plans: PlanStore;
+  readonly unattended: UnattendedStore;
 
   private readonly ports: RuntimePorts;
   private readonly engine: AutopilotEngine;
@@ -102,6 +118,7 @@ export class AutonomousLoop {
   private readonly changed: (runId: string) => void;
   private readonly contextLimits: typeof DEFAULT_CONTEXT_LIMITS;
   private readonly active = new Set<string>();
+  private readonly director: ChatDirector | null;
 
   constructor(options: AutonomousLoopOptions) {
     this.ports = options.ports;
@@ -118,6 +135,12 @@ export class AutonomousLoop {
     this.consultantDiagnoses = new ConsultantStore(options.ports);
     this.consultations = new ConsultationStore(options.ports);
     this.handoffs = new HandoffBriefings(options.ports);
+    this.iterations = new IterationStore(options.ports);
+    this.directions = new DirectionStore(options.ports);
+    this.directionAuthority = new DirectionAuthorityStore(options.ports);
+    this.director = options.director ?? null;
+    this.plans = new PlanStore(options.ports);
+    this.unattended = new UnattendedStore(options.ports);
   }
 
   /** The durable run report. Reads SQLite only; runs no git. */
@@ -168,6 +191,7 @@ export class AutonomousLoop {
       turns: this.loops.turns(runId),
       verifications: this.loops.verifications(runId),
       checkpoints: this.checkpoints.store.list(runId),
+      iterations: this.iterations.list(runId),
       contextRequests: this.contextRequests.list(runId),
       consultantSessions: this.consultantDiagnoses.sessions(runId),
       diagnoses: this.consultantDiagnoses.diagnoses(runId),
@@ -180,7 +204,7 @@ export class AutonomousLoop {
    * workspace that exist right now, so a later change to any of them invalidates
    * it rather than silently carrying over.
    */
-  authorize(input: { runId: string; maxTurns: number; grantedBy: string }): LoopGrant {
+  authorize(input: { runId: string; maxTurns: number; maxIterations?: number; grantedBy: string }): LoopGrant {
     assertPrimary(this.worker.role);
     const run = this.engine.store.requireRun(input.runId);
     const session = this.worker.startSession(input.runId);
@@ -190,6 +214,7 @@ export class AutonomousLoop {
       throw new Error("The autonomous loop requires one explicit sticky provider with no fallback.");
     }
     return this.loops.grant({
+      ...(input.maxIterations !== undefined ? { maxIterations: input.maxIterations } : {}),
       runId: input.runId,
       provider: this.worker.id,
       sessionId: session.sessionId,
@@ -228,11 +253,22 @@ export class AutonomousLoop {
    * Safe to call again after a restart: it resumes from durable turn state, and
    * never re-sends a prompt whose send already completed.
    */
-  async run(runId: string): Promise<LoopOutcome> {
+  /**
+   * Drives the loop until it stops.
+   *
+   * retryProviderLimit is the deliberate answer to a run paused because the
+   * provider had no capacity or the login had gone stale. Those holds are not
+   * released by simply running again — an obstacle that is still there should
+   * not cost a turn to rediscover — but they ARE the one kind of block that
+   * time or a human signing in can fix, so something has to be able to say
+   * "try again now". This is that signal, and only a caller who decided to
+   * retry passes it.
+   */
+  async run(runId: string, options: { retryProviderLimit?: boolean } = {}): Promise<LoopOutcome> {
     if (this.active.has(runId)) throw new Error("The loop is already running for this run.");
     this.active.add(runId);
     try {
-      return await this.drive(runId);
+      return await this.drive(runId, options.retryProviderLimit === true);
     } finally {
       this.active.delete(runId);
       this.changed(runId);
@@ -282,7 +318,7 @@ export class AutonomousLoop {
     return null;
   }
 
-  private async drive(runId: string): Promise<LoopOutcome> {
+  private async drive(runId: string, retryProviderLimit = false): Promise<LoopOutcome> {
     const latestTurn = this.loops.turns(runId).at(-1);
     if (latestTurn && ["FAILED_VERIFICATION", "REQUESTED_CONTEXT", "ABANDONED"].includes(latestTurn.status)) evaluatePrimaryProgress(this.ports, runId);
     const heldProgress = latestPrimaryProgress(this.ports, runId);
@@ -298,7 +334,46 @@ export class AutonomousLoop {
     const releasesHold = advisory
       ? this.consultations.list(runId).find(entry => entry.id === advisory.consultationId)?.triggerType !== "OPERATOR"
       : false;
-    if (heldProgress && heldProgress.status !== "PROGRESSING" && !(advisory && releasesHold)) {
+    // Running out of capacity, or a login going stale, blocks PRIMARY exactly
+    // like a stall does — and it should, because a consultant handoff is a real
+    // answer to it. But it is the one obstacle that time or a human signing in
+    // can clear on its own, so unlike a stall it must be releasable WITHOUT a
+    // consultant diagnosis: there would be nothing to diagnose.
+    //
+    // Releasing it is still a decision, never a side effect of running again.
+    // An obstacle that is still there should not cost a turn to rediscover, so
+    // a bare re-run keeps holding exactly as it did before; only a caller that
+    // deliberately retries clears it.
+    const limited = retryProviderLimit &&
+      heldProgress?.status !== "PROGRESSING" &&
+      ["terminal_obstacle:quota", "terminal_obstacle:auth"].includes(heldProgress?.reason ?? "");
+    if (limited && heldProgress) {
+      // The hold is sticky: evaluatePrimaryProgress refuses to re-evaluate
+      // while the latest decision is non-PROGRESSING, so releasing it must
+      // record a PROGRESSING decision or the run could never be blocked again.
+      // The evidence itself is preserved in the fingerprints.
+      this.engine.store.appendEvent(runId, {
+        type: "PRIMARY_PROGRESS_EVALUATED",
+        payload: {
+          decision: {
+            ...heldProgress, status: "PROGRESSING", consecutiveStalled: 0,
+            reason: "provider_limit_retry", consultantRecommended: false
+          },
+          consultant_recommended: false
+        }
+      });
+      // A previous bare re-run will have pushed the run to NEEDS_REVIEW. The
+      // retry is the review: the operator, or the wait, has decided the limit
+      // may have lifted.
+      if (this.engine.store.requireRun(runId).state === "NEEDS_REVIEW") {
+        this.engine.store.appendEvent(runId, {
+          type: "RUN_RESUMED", toState: "RUNNING", reconcileReason: null,
+          payload: { reason: "provider limit retried" }
+        });
+      }
+    }
+
+    if (!limited && heldProgress && heldProgress.status !== "PROGRESSING" && !(advisory && releasesHold)) {
       this.needsReview(runId, heldProgress.reason);
       return this.settle(runId, heldProgress.consultantRecommended ? "consultant_recommended" : "primary_blocked", heldProgress.reason, null, 0);
     }
@@ -395,22 +470,47 @@ export class AutonomousLoop {
           this.hold(runId, "turn_limit", `Authorized ${grant.maxTurns} turn(s); the budget is spent.`);
           return this.settle(runId, "turn_limit", `Turn limit of ${grant.maxTurns} reached. Authorize more turns to continue.`, lastReport, turnsRun);
         }
+        // Checked BEFORE the turn is planned. Planning first and refusing after
+        // leaves a journalled turn that was never sent, which the next run
+        // tries to resume against a grant that is no longer active.
+        if (
+          grant.maxIterations !== null &&
+          !this.iterations.active(runId) &&
+          grant.iterationsUsed >= grant.maxIterations
+        ) {
+          this.loops.closeGrant({ grantId: grant.id, status: "EXHAUSTED", reason: `Iteration limit of ${grant.maxIterations} reached.` });
+          this.hold(runId, "iteration_limit", `Authorized ${grant.maxIterations} iteration(s); the budget is spent.`);
+          return this.settle(runId, "iteration_limit", `Iteration limit of ${grant.maxIterations} reached. Authorize more to continue.`, lastReport, turnsRun);
+        }
         // A repair turn requires evidence to repair against. Without a prior
         // report (a resumed run whose verification never recorded), restate the
         // goal rather than fabricating a failure summary.
         const priorTurns = this.loops.turns(runId).length;
-        const evidence = priorTurns === 0 ? null : lastReport;
+        // Only a FAILING report is repair evidence. Before self-direction a
+        // passing verification ended the run, so "there is a previous report"
+        // and "the previous turn failed" were the same thing. They are not any
+        // more: a green turn now continues, and treating its report as evidence
+        // sent the agent a repair prompt for work that had just succeeded.
+        const evidence = priorTurns === 0 || lastReport?.outcome === "PASSED" ? null : lastReport;
         const kind = evidence ? "REPAIR" : "INITIAL";
-        // The worker has no tools, so every prompt carries the current code —
-        // but only the files that matter, chosen deterministically.
+        // A mediated worker has no tools, so every prompt carries the current
+        // code — but only the files that matter, chosen deterministically.
         // Pending requests come from durable rows, so a restart resumes them.
-        const pendingRequests = this.contextRequests.pending(runId);
-        const context = await this.readWorkspaceContext(runId, grant.workspaceRoot, {
-          spec,
-          lastReport: evidence,
-          changed: [...changedByWorker],
-          pendingRequests
-        });
+        //
+        // An agentic worker reads the workspace itself. Pasting files into its
+        // prompt would be worse than useless: it would spend context on a stale
+        // copy of code it can open, and invite it to answer with whole files
+        // instead of editing them.
+        const agentic = spec.workerProfile === "agentic";
+        const pendingRequests = agentic ? [] : this.contextRequests.pending(runId);
+        const context = agentic
+          ? ""
+          : await this.readWorkspaceContext(runId, grant.workspaceRoot, {
+              spec,
+              lastReport: evidence,
+              changed: [...changedByWorker],
+              pendingRequests
+            });
         // A completed diagnosis rides along as clearly-labelled ADVISORY text on
         // the SAME sticky PRIMARY session. PRIMARY still owns the decision, the
         // worktree and the Run Spec; the consultant only offered an opinion.
@@ -424,14 +524,65 @@ export class AutonomousLoop {
         const briefing = this.handoffs.briefingFor(runId);
         const withBriefing = briefing ? `${briefing}\n\n${withAdvisory}` : withAdvisory;
 
-        const prompt = evidence ? repairPrompt(evidence, spec, withBriefing) : initialPrompt(spec, withBriefing);
+        // A failing verification is DexNest's finding and stays deterministic:
+        // the repair prompt carries the real evidence. Only after a green turn
+        // does the agent's own stated next step become the prompt.
+        const direction = evidence ? null : this.directions.pending(runId);
+        const guidance = direction?.verb === "CONTINUE" ? direction : null;
+        const instructions = directionProtocolInstructions(spec.plan.map(item => item.id));
+        const body = evidence
+          ? repairPrompt(evidence, spec, withBriefing)
+          : guidance
+            ? directedPrompt(guidance, spec, withBriefing)
+            : initialPrompt(spec, withBriefing);
+        // Claim the plan item BEFORE the prompt is built, or the plan is
+        // rendered with nothing marked as the current work and the worker is
+        // told everything is still pending.
+        //
+        // The agent's own stated choice wins when it named one; otherwise the
+        // plan's order does, because the human wrote that order and it is the
+        // default rather than a suggestion an agent may quietly skip.
+        if (!this.iterations.active(runId)) {
+          const claimed = this.directions.pending(runId)?.planItemId ?? null;
+          const item = this.plans.active(runId, spec)
+            ?? (claimed ? this.plans.view(runId, spec).items.find(entry => entry.id === claimed && entry.status === "PENDING") : null)
+            ?? this.plans.next(runId, spec);
+          if (item && item.status === "PENDING") {
+            try { this.plans.start(runId, spec, item.id); }
+            catch { /* another item is already in flight; the plan is unchanged */ }
+          }
+        }
+
+        const planText = renderPlanForWorker(this.plans.view(runId, spec));
+        const prompt = [body, planText, unattendedInstructions(), instructions]
+          .filter(part => part)
+          .join("\n\n");
         turn = this.loops.planTurn({ runId, grantId: grant.id, kind, prompt });
+        // Bound the assignment to the turn it produced, so it is acted on once.
+        if (guidance) this.directions.consume(guidance.id, turn.id);
         // Requests were settled while this prompt was built, before the turn
         // existed; link them to it now.
         this.contextRequests.attributeUnconsumed(runId, turn.id);
         // Marking it supplied is what makes "exactly once" true: the row's
         // supplied_to_turn_id can only transition from NULL a single time.
         if (pendingAdvisory) this.consultantDiagnoses.markSupplied(pendingAdvisory.consultationId, turn.id, turn.ordinal);
+      }
+
+      // An ITERATION is one piece of work, not one turn. Repairs and context
+      // round-trips belong to the assignment that caused them, so a new
+      // iteration opens only when none is in flight — which is exactly after
+      // the previous one reached an outcome.
+      if (!this.iterations.active(runId)) {
+        this.iterations.open({ runId, turnId: turn.id, planItemId: this.plans.active(runId, spec)?.id ?? null });
+      }
+
+      // Revocation is a button a human may press at any moment, including
+      // after this turn was planned. Checked immediately before the send, so
+      // withdrawing authorization settles the run rather than throwing out of
+      // run() when the turn tries to spend a grant that is no longer there.
+      if (this.loops.activeGrant(runId)?.id !== grant.id) {
+        this.iterations.settleActive(runId, { status: "ABANDONED", summary: "The loop authorization was withdrawn." });
+        return this.settle(runId, "grant_closed", "The loop authorization was revoked.", lastReport, turnsRun);
       }
 
       this.ensureRunning(runId);
@@ -451,6 +602,29 @@ export class AutonomousLoop {
         this.loops.updateTurn({ turnId: turn.id, status: "ABANDONED", sendId: send.id });
         const failure = send.result?.failure ?? "unknown";
         evaluatePrimaryProgress(this.ports, runId);
+
+        // Running out of subscription capacity, or a login going stale, is not
+        // the same kind of event as a broken turn. Nothing is wrong with the
+        // work, the run has simply lost the ability to continue for now — so it
+        // is named separately, and the grant stays open so resuming is a resume
+        // rather than a fresh authorization.
+        //
+        // Safe to treat this way only because both failures are classified
+        // CERTAIN by the provider adapters: the send is known not to have been
+        // delivered, so nothing is half-done.
+        if (failure === "quota" || failure === "auth") {
+          const detail = failure === "quota"
+            ? `${this.worker.id} has no capacity left. The run is paused with its session and authorization intact.`
+            : `${this.worker.id} is no longer logged in. Sign in again and resume; the run keeps its session and authorization.`;
+          this.iterations.settleActive(runId, { status: "ABANDONED", summary: detail });
+          this.hold(runId, "provider_limit", detail);
+          // The limit lifts on its own, so the run waits rather than sitting
+          // until morning. The wait buys time, never authorization.
+          this.unattended.scheduleRetry({ runId, reason: detail });
+          return this.settle(runId, "provider_limit", detail, lastReport, turnsRun);
+        }
+
+        this.iterations.settleActive(runId, { status: "FAILED", summary: `Worker turn failed: ${failure}.` });
         this.hold(runId, "worker_failed", `Turn ${turn.ordinal} failed: ${failure}.`);
         return this.settle(runId, "worker_failed", `The worker turn failed (${failure}). The loop does not retry a terminal worker failure automatically.`, lastReport, turnsRun);
       }
@@ -458,13 +632,28 @@ export class AutonomousLoop {
       this.loops.updateTurn({ turnId: turn.id, status: "SENT", sendId: send.id });
       this.changed(runId);
 
-      // The worker returned text, not actions. DexNest writes the files it asked
-      // for, through policy, so the worktree stays an enforced boundary.
-      const outputText = send.result?.text ?? "";
-      const application = await this.applyWorkerOutput(runId, turn, outputText, grant.workspaceRoot);
+      // Whatever the verification says, the turn may have decided things it
+      // could not ask about. Those are recorded before anything else, because a
+      // failed turn's assumptions are exactly the ones worth reading.
+      this.unattended.recordAssumptions({
+        runId, turnId: turn.id,
+        iterationId: this.iterations.active(runId)?.id ?? null,
+        texts: parseAssumptions(send.result?.text ?? "")
+      });
+
+      // A mediated worker returned text, not actions: DexNest writes the files
+      // it asked for, through policy, so the workspace stays an enforced
+      // boundary. An agentic worker already made its changes with its own
+      // tools, so there is nothing to apply and nothing to request — its work
+      // is judged by verification and recorded by the checkpoint, exactly as a
+      // human's would be.
+      const application = this.engine.store.requireRun(runId).spec.workerProfile === "agentic"
+        ? { applied: [] as string[], refused: [] as string[], requested: [] as string[], issues: [] as string[] }
+        : await this.applyWorkerOutput(runId, turn, send.result?.text ?? "", grant.workspaceRoot);
       for (const path of application.applied) changedByWorker.add(path);
       if (application.refused.length > 0) {
         this.loops.updateTurn({ turnId: turn.id, status: "ABANDONED" });
+        this.iterations.settleActive(runId, { status: "ABANDONED", summary: "Worker output was refused by policy." });
         evaluatePrimaryProgress(this.ports, runId, "policy");
         this.needsReview(runId, "Required worker output was refused by policy.");
         return this.settle(runId, "primary_blocked", "Required worker output was refused by policy.", lastReport, turnsRun);
@@ -476,6 +665,8 @@ export class AutonomousLoop {
       // invisibly.
       if (application.requested.length > 0 && application.applied.length === 0) {
         this.loops.updateTurn({ turnId: turn.id, status: "REQUESTED_CONTEXT", sendId: send.id });
+        // Asking for files is not an iteration of work, but it consumed one.
+
         this.engine.store.appendEvent(runId, {
           type: "LOOP_TURN_SETTLED",
           stepKey: turn.id,
@@ -501,6 +692,9 @@ export class AutonomousLoop {
         return this.settle(runId, "stopped", "Stopped before verification.", lastReport, turnsRun);
       }
 
+      // The turn landed, so whatever limit was being waited out is over.
+      this.unattended.clear(runId);
+
       this.engine.store.appendEvent(runId, { type: "VERIFICATION_STARTED", payload: { turnId: turn.id, ordinal: turn.ordinal } });
       const report = await this.verifier.verify({
         runId,
@@ -517,8 +711,68 @@ export class AutonomousLoop {
         evaluatePrimaryProgress(this.ports, runId);
         this.loops.updateTurn({ turnId: turn.id, status: "VERIFIED", verificationId: record.id });
         // Only a fully green verification earns a checkpoint.
-        await this.checkpointTurn(runId, turn, record.id, report.summary, grant.workspaceRoot);
+        const checkpoint = await this.checkpointTurn(runId, turn, record.id, report.summary, grant.workspaceRoot);
+        this.iterations.settleActive(runId, {
+          status: "VERIFIED", verificationId: record.id,
+          checkpointId: checkpoint?.id ?? null, summary: report.summary
+        });
         await this.captureSnapshot(runId, turn.id, "verification-passed", grant.workspaceRoot);
+
+        // Who decides what happens next is durable state the operator sets,
+        // and it is read fresh every iteration so a switch takes effect at the
+        // next boundary rather than at the next run.
+        //
+        // Only asked after a green turn either way: a failing verification is
+        // answered with evidence, not with anybody's opinion.
+        const source = this.directionAuthority.current(runId);
+        let decision: ParsedDirection | null;
+        if (source === "chat") {
+          const asked = await this.askDirector(runId, spec, turn.id, send.result?.text ?? "", report);
+          // The director runs on its own subscription, so it has its own limit.
+          // Losing the decider is the same kind of event as losing the worker:
+          // the work stands, the run simply cannot choose what is next.
+          if (asked.failure === "quota" || asked.failure === "auth") {
+            const detail = `The chat directing this run is unavailable (${asked.failure}). The run is paused with its sessions and authorization intact.`;
+            this.hold(runId, "provider_limit", detail);
+            this.unattended.scheduleRetry({ runId, reason: detail });
+            return this.settle(runId, "provider_limit", detail, report, turnsRun);
+          }
+          decision = asked.decision;
+        } else {
+          decision = parseDirection(send.result?.text ?? "", spec.plan.map(item => item.id));
+        }
+        if (decision) this.directions.record({ runId, turnId: turn.id, decision, source });
+
+        // The item this piece of work was for is done: verification passed and
+        // it is checkpointed. Marked here rather than on the agent's say-so,
+        // because "it passed the checks" is DexNest's finding and "I think I
+        // finished" is not.
+        const workedOn = this.plans.active(runId, spec);
+        if (workedOn) {
+          this.plans.complete(runId, spec, workedOn.id, report.summary.split("\n")[0]?.slice(0, 200));
+        }
+
+        if (decision?.verb === "CONTINUE") {
+          // Passing verification ended the ITERATION, not the run. The agent
+          // has more to do and said what it is; the next turn will do it.
+          this.changed(runId);
+          continue;
+        }
+
+        if (decision) {
+          // PLAN_COMPLETE is a proposal, not a completion. An agent that could
+          // declare itself finished would be marking its own homework at 3am,
+          // so both remaining verbs stop and ask a person.
+          const reason = decision.verb === "PLAN_COMPLETE" ? "plan_complete_proposed" : "direction_needs_human";
+          const detail = decision.verb === "PLAN_COMPLETE"
+            ? `The worker believes the plan is complete: ${decision.reason ?? "no reason given"}. Verification passed; a human decides whether the run is done.`
+            : `The worker asked for a human: ${decision.reason ?? "no reason given"}.`;
+          this.hold(runId, reason, detail);
+          return this.settle(runId, reason, detail, report, turnsRun);
+        }
+
+        // No decision block: the run has no self-direction and a green
+        // verification means what it has always meant.
         this.loops.closeGrant({ grantId: grant.id, status: "COMPLETED", reason: "Acceptance criteria satisfied." });
         const run = this.engine.store.requireRun(runId);
         if (run.state === "RUNNING") {
@@ -530,6 +784,7 @@ export class AutonomousLoop {
       if (report.outcome === "INDETERMINATE") {
         this.loops.updateTurn({ turnId: turn.id, status: "VERIFIED", verificationId: record.id });
         // No checkpoint: an inconclusive result is not a known-good state.
+        this.iterations.settleActive(runId, { status: "INDETERMINATE", verificationId: record.id, summary: report.summary });
         await this.captureSnapshot(runId, turn.id, "verification-indeterminate", grant.workspaceRoot);
         evaluatePrimaryProgress(this.ports, runId);
         // Requirement: never invent success. Hold for a human instead.
@@ -538,16 +793,23 @@ export class AutonomousLoop {
       }
 
       this.loops.updateTurn({ turnId: turn.id, status: "FAILED_VERIFICATION", verificationId: record.id });
-      // No checkpoint: a failing tree is never recorded as known-good.
+      // No checkpoint: a failing tree is never recorded as known-good. The
+      // ITERATION stays open — repairing this assignment is still this piece of
+      // work, and charging a fresh iteration for every failed attempt would
+      // make the operator's budget mean something they did not choose.
       await this.captureSnapshot(runId, turn.id, "verification-failed", grant.workspaceRoot);
       this.engine.store.appendEvent(runId, {
         type: "VERIFICATION_TIER_FAILED",
         payload: { turnId: turn.id, tier: report.failingTier?.tier ?? null, exitCode: report.failingTier?.exitCode ?? null }
       });
 
-      if (this.evaluateProgressHold(runId)) return this.settle(runId, "consultant_recommended", "PRIMARY stalled without new progress.", report, turnsRun);
+      if (this.evaluateProgressHold(runId)) {
+        this.iterations.settleActive(runId, { status: "FAILED", verificationId: record.id, summary: report.summary });
+        return this.settle(runId, "consultant_recommended", "PRIMARY stalled without new progress.", report, turnsRun);
+      }
       consecutiveFailures += 1;
       if (consecutiveFailures >= maxConsecutive) {
+        this.iterations.settleActive(runId, { status: "FAILED", verificationId: record.id, summary: report.summary });
         this.hold(runId, "consecutive_failures", `${consecutiveFailures} consecutive verification failures.`);
         return this.settle(
           runId,
@@ -569,6 +831,47 @@ export class AutonomousLoop {
    * then resolves that approval and the second call dispatches it. Nothing here
    * bypasses policy, and each turn produces its own approval record.
    */
+  /**
+   * Asks the chat what to do next.
+   *
+   * The director sees evidence, never the workspace: the human's goal and plan,
+   * the assignment it gave last time, what the agent reported, and what
+   * DexNest's own verification found. If no director is wired, this is a
+   * request for a human rather than a silent fall back to self-direction —
+   * the operator chose who decides, and quietly substituting a different
+   * decider would make that choice a suggestion.
+   */
+  private async askDirector(
+    runId: string,
+    spec: RunSpec,
+    turnId: string,
+    workerReport: string,
+    verification: VerificationReport | null
+  ): Promise<{ decision: ParsedDirection; failure: WorkerFailure | null }> {
+    if (!this.director) {
+      return {
+        decision: {
+          verb: "NEEDS_HUMAN", assignment: null, planItemId: null,
+          reason: "This run is directed by a chat, but no chat session is configured.",
+          issue: "No director is available."
+        },
+        failure: null
+      };
+    }
+    const grant = this.loops.activeGrant(runId);
+    const previous = this.directions.list(runId).filter(entry => entry.verb === "CONTINUE").at(-1) ?? null;
+    const prompt = directorPrompt({
+      spec,
+      plan: this.plans.view(runId, spec),
+      iteration: this.iterations.list(runId).length,
+      iterationsRemaining: grant?.maxIterations != null ? Math.max(0, grant.maxIterations - grant.iterationsUsed) : null,
+      lastAssignment: previous?.assignment ?? null,
+      workerReport,
+      verification
+    });
+    return this.director.decide({ runId, prompt });
+  }
+
   private evaluateProgressHold(runId: string): boolean {
     const decision = evaluatePrimaryProgress(this.ports, runId);
     if (!decision || decision.status === "PROGRESSING") return false;

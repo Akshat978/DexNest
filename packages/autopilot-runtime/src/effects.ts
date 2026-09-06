@@ -75,6 +75,8 @@ export class EffectsGateway {
     intent: Intent;
     beforeDispatch?: (operation: OperationRecord) => void;
     onWorkerSession?: (providerSessionId: string) => void;
+    /** Stdout as it arrives, for live display. Never authoritative. */
+    onOutput?: (chunk: string) => void;
     /**
      * Declares this operation as an Autopilot provider process, which is the
      * only thing that enables durable failure diagnostics. Omitted everywhere
@@ -103,7 +105,7 @@ export class EffectsGateway {
         }
       }
       if (existing.status === "APPROVED") {
-        return this.execute({ runId, stepKey, policy, intent, operation: existing, beforeDispatch: input.beforeDispatch, onWorkerSession: input.onWorkerSession, diagnostics: input.diagnostics });
+        return this.execute({ runId, stepKey, policy, intent, operation: existing, beforeDispatch: input.beforeDispatch, onWorkerSession: input.onWorkerSession, onOutput: input.onOutput, diagnostics: input.diagnostics });
       }
       if (existing.status === "REJECTED") {
         const approval = this.operations.getApprovalForOperation(existing.id);
@@ -194,7 +196,7 @@ export class EffectsGateway {
       return { status: "AWAITING_APPROVAL", operation: this.operations.require(operation.id), approval };
     }
 
-    return this.execute({ runId, stepKey, policy, intent, operation, beforeDispatch: input.beforeDispatch, onWorkerSession: input.onWorkerSession, diagnostics: input.diagnostics });
+    return this.execute({ runId, stepKey, policy, intent, operation, beforeDispatch: input.beforeDispatch, onWorkerSession: input.onWorkerSession, onOutput: input.onOutput, diagnostics: input.diagnostics });
   }
 
   /**
@@ -212,6 +214,8 @@ export class EffectsGateway {
     operation: OperationRecord;
     beforeDispatch?: (operation: OperationRecord) => void;
     onWorkerSession?: (providerSessionId: string) => void;
+    /** Stdout as it arrives, for live display. Never authoritative. */
+    onOutput?: (chunk: string) => void;
     /**
      * Declares this operation as an Autopilot provider process, which is the
      * only thing that enables durable failure diagnostics. Omitted everywhere
@@ -257,7 +261,7 @@ export class EffectsGateway {
     // A failure here deliberately leaves an unsettled dispatch for reconciliation.
     input.beforeDispatch?.(operation);
     try {
-      const result = await this.dispatcher.dispatch({ operation, intent, policy, runId, onWorkerSession: input.onWorkerSession });
+      const result = await this.dispatcher.dispatch({ operation, intent, policy, runId, onWorkerSession: input.onWorkerSession, onOutput: input.onOutput });
       const settled = this.operations.updateStatus({
         operationId: operation.id,
         status: result.ok ? "COMPLETED" : "FAILED",

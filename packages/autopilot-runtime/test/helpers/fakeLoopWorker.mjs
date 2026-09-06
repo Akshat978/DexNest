@@ -83,6 +83,9 @@ if (TERMINAL_ERRORS[step.workerFailure]) {
     parts.push(blocks ? `Here are the updated files.\n\n${blocks}` : 'I looked at the code but made no changes.');
   }
   if (parts.length === 0) parts.push(`Applied turn ${index}`);
+  // Trailing free text, e.g. a self-direction decision block, appended exactly
+  // as a real worker would end its reply.
+  if (typeof step.say === 'string' && step.say) parts.push(step.say);
   const body = parts.join('\n\n');
   console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: sessionId, result: body }));
 }

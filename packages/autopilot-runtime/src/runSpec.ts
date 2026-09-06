@@ -10,6 +10,57 @@ export const RUN_SPEC_SCHEMA_VERSION = 1;
 
 export type AcceptanceCriterionKind = "automated" | "judgment";
 
+/**
+ * One item of the plan the human hands to Autopilot.
+ *
+ * The plan is the output of work that happens OUTSIDE DexNest: the human
+ * brainstorms and designs with an agent or a chat, and what comes back is an
+ * ordered list of things to build. DexNest never authors it and no agent may
+ * rewrite it, which is why it lives in the Run Spec and is fingerprinted with
+ * the other authoritative fields.
+ *
+ * Progress against an item is deliberately NOT stored here. Content is
+ * human-owned and immutable; status is runtime state and belongs in
+ * autopilot_plan_items.
+ */
+export interface PlanItem {
+  id: string;
+  ordinal: number;
+  title: string;
+  /** Body text under the heading. Empty when the item is a bare title. */
+  detail: string;
+}
+
+/** Bounds. A plan is a work list, not a document store. */
+export const MAX_PLAN_ITEMS = 200;
+export const MAX_PLAN_ITEM_DETAIL_CHARS = 8_000;
+
+/**
+ * Where a run does its work.
+ *
+ * "worktree" is the original model: a disposable checkout outside the project,
+ * so the project is never touched and abandoning a run is a directory removal.
+ *
+ * "project-branch" works in the project itself, on a dedicated branch. The
+ * operator sees results in their own working copy without merging, which is the
+ * point, but the safety properties are genuinely weaker: there is no separate
+ * copy to throw away, so reversibility rests entirely on the branch and its
+ * per-iteration checkpoint commits.
+ *
+ * It changes the blast radius of a run, so it is authoritative: an agent cannot
+ * move a run into the project by editing its own configuration.
+ */
+export type WorkspaceMode = "worktree" | "project-branch";
+
+/**
+ * Whether the worker gets its real tools. See WorkerCapabilityProfile in
+ * worker.ts for what each profile actually means and gives up.
+ *
+ * Authoritative, because it decides whether DexNest evaluates every individual
+ * file write or none of them. An agent must not be able to grant itself tools.
+ */
+export type WorkerProfile = "mediated" | "agentic";
+
 export interface AcceptanceCriterion {
   checkCommand?: { executable: string; args: string[] };
   id: string;
@@ -80,6 +131,20 @@ export interface RunSpec {
   constraints: string[];
   nonGoals: string[];
   acceptanceCriteria: AcceptanceCriterion[];
+  /** Ordered work items. Empty for runs driven by the goal alone. */
+  plan: PlanItem[];
+  /** Where the run works. Defaults to the isolated worktree. */
+  workspaceMode: WorkspaceMode;
+  /** Whether the worker has tools. Defaults to the fully mediated worker. */
+  workerProfile: WorkerProfile;
+  /**
+   * Model and effort for the worker. Deliberately NOT authoritative: they
+   * change what a turn costs and how well it thinks, never what it is
+   * allowed to touch, so they are configuration rather than a promise the
+   * fingerprint has to protect.
+   */
+  model: string | null;
+  effort: string | null;
 
   workers: WorkerPreference;
   supervisor: SupervisorPreference;
@@ -96,6 +161,8 @@ export interface RunSpec {
 /** Fields no agent, worker, supervisor or runtime event may silently change. */
 export const AUTHORITATIVE_FIELDS = [
   "goal",
+  "plan",
+  "workerProfile",
   "constraints",
   "nonGoals",
   "acceptanceCriteria",
@@ -120,6 +187,76 @@ export class RunSpecValidationError extends Error {
 function stringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0).map((entry) => entry.trim());
+}
+
+/**
+ * Turns a written plan into ordered items.
+ *
+ * Accepts what a human actually pastes: markdown headings, "Phase 3 - title",
+ * or a numbered list. Text before the first heading is returned separately as
+ * preamble rather than silently dropped or silently promoted to an item — the
+ * caller decides whether that context belongs in the goal.
+ */
+export function parsePlanText(text: string): { items: PlanItem[]; preamble: string } {
+  const heading = (line: string): string | null => {
+    // Strip wrapping emphasis first: people write "**Phase 2 — Worker**" as a
+    // heading, and a title is no less a title for being bold.
+    const unwrap = (value: string) => value.replace(/^\*{1,3}(.*?)\*{1,3}$/, "$1").trim();
+    const bare = unwrap(line.trim());
+    const markdown = /^#{1,6}\s+(.+?)\s*$/.exec(bare);
+    if (markdown) return unwrap(markdown[1]!);
+    // Markup is stripped; prose the human wrote is kept, so a "Phase 2" label
+    // survives in the title exactly as it does inside a markdown heading.
+    if (/^(?:phase|step|milestone|stage)\s+\d{1,3}\b/i.test(bare)) return bare;
+    const numbered = /^\d{1,3}[.)]\s+(.+?)\s*$/.exec(bare);
+    if (numbered) return numbered[1]!;
+    return null;
+  };
+
+  const items: PlanItem[] = [];
+  const bodies: string[][] = [];
+  const preamble: string[] = [];
+
+  for (const line of String(text ?? "").split(/\r?\n/)) {
+    const title = heading(line);
+    if (title !== null) {
+      items.push({ id: `plan-${items.length + 1}`, ordinal: items.length + 1, title, detail: "" });
+      bodies.push([]);
+      continue;
+    }
+    // Lines before the first heading are preamble, not part of any item.
+    (bodies.at(-1) ?? preamble).push(line);
+  }
+
+  for (const [index, item] of items.entries()) item.detail = (bodies[index] ?? []).join("\n").trim();
+
+  return { items, preamble: preamble.join("\n").trim() };
+}
+
+/** Normalizes plan input, recording problems rather than repairing them. */
+function normalizePlan(value: unknown, issues: string[]): PlanItem[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    issues.push("plan must be an array of items");
+    return [];
+  }
+  if (value.length > MAX_PLAN_ITEMS) issues.push(`plan has ${value.length} items; the maximum is ${MAX_PLAN_ITEMS}`);
+
+  const seen = new Set<string>();
+  return value.slice(0, MAX_PLAN_ITEMS).map((raw, index) => {
+    const source = (raw ?? {}) as Partial<PlanItem>;
+    const title = typeof source.title === "string" ? source.title.trim() : "";
+    if (!title) issues.push(`plan[${index}].title is required`);
+    const detail = typeof source.detail === "string" ? source.detail.trim() : "";
+    if (detail.length > MAX_PLAN_ITEM_DETAIL_CHARS) {
+      issues.push(`plan[${index}].detail exceeds ${MAX_PLAN_ITEM_DETAIL_CHARS} characters`);
+    }
+    const id = typeof source.id === "string" && source.id.trim() ? source.id.trim() : `plan-${index + 1}`;
+    if (seen.has(id)) issues.push(`duplicate plan item id "${id}"`);
+    seen.add(id);
+    // Ordinal is positional and never taken from input: list order IS the plan.
+    return { id, ordinal: index + 1, title, detail };
+  });
 }
 
 export function defaultCapabilityPolicy(): CapabilityPolicy {
@@ -179,6 +316,8 @@ export function createRunSpec(
     criterionIds.add(criterion.id);
   }
 
+  const plan = normalizePlan(input.plan, issues);
+
   const revision = typeof input.revision === "number" && Number.isInteger(input.revision) && input.revision >= 1 ? input.revision : 1;
   const primary = input.workers?.primary ?? input.provider ?? "scripted";
   if (input.workers?.consultant != null && (!["claude", "codex"].includes(input.workers.consultant) || !["claude", "codex"].includes(primary) || primary === input.workers.consultant)) issues.push("Consultant must be the other coding provider.");
@@ -200,6 +339,11 @@ export function createRunSpec(
     constraints: stringArray(input.constraints),
     nonGoals: stringArray(input.nonGoals),
     acceptanceCriteria,
+    plan,
+    workspaceMode: input.workspaceMode === "project-branch" ? "project-branch" : "worktree",
+    workerProfile: input.workerProfile === "agentic" ? "agentic" : "mediated",
+    model: typeof input.model === "string" && input.model.trim() ? input.model.trim() : null,
+    effort: ["low", "medium", "high", "xhigh", "max"].includes(String(input.effort)) ? String(input.effort) : null,
     workers: {
       primary,
       ...(input.workers?.consultant !== undefined ? { consultant: input.workers.consultant } : {}),
@@ -250,6 +394,14 @@ export function authoritativeFingerprint(spec: RunSpec): string {
   const canonical = JSON.stringify({
     ...(spec.workers?.consultant !== undefined ? { workerRoles: { primary: spec.workers.primary, consultant: spec.workers.consultant } } : {}),
     ...(spec.verification?.structuredCommands ? { verification: spec.verification } : {}),
+    // Conditional so runs created before plans existed keep the fingerprint
+    // they were stored with. Same for the workspace mode: "worktree" was the
+    // only behaviour, so it must hash as the absence of a choice.
+    ...(spec.plan?.length
+      ? { plan: spec.plan.map((item) => ({ id: item.id, ordinal: item.ordinal, title: item.title, detail: item.detail })) }
+      : {}),
+    ...(spec.workspaceMode && spec.workspaceMode !== "worktree" ? { workspaceMode: spec.workspaceMode } : {}),
+    ...(spec.workerProfile && spec.workerProfile !== "mediated" ? { workerProfile: spec.workerProfile } : {}),
     goal: spec.goal,
     constraints: [...spec.constraints].sort(),
     nonGoals: [...spec.nonGoals].sort(),
