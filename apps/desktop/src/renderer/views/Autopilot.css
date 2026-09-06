@@ -128,3 +128,23 @@
 
 .autopilot-sessions > li.session-blocked { opacity: 0.55; }
 .autopilot-sessions p { margin: 0.25rem 0 0; }
+
+/* "Stop at 7am" is the answer a person has at midnight; a datetime field makes
+   them pick a date too, and getting it wrong past midnight puts the stop time
+   in the past. The chosen preset has to be obvious at a glance. */
+.preset-chosen {
+  outline: 2px solid currentColor;
+  font-weight: 600;
+}
+
+.view-stack .card > h3 {
+  margin: 0 0 0.5rem;
+}
+
+.view-stack .card > .row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 0.5rem;
+}

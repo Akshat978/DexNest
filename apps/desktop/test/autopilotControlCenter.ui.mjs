@@ -198,9 +198,18 @@ await new Promise(r=>setTimeout(r,100));
 assert.equal(await win.webContents.executeJavaScript("[...document.querySelectorAll('button.event-row')].length"),1);
 assert.equal(await win.webContents.executeJavaScript("[...document.querySelectorAll('button.event-row')][0].textContent.includes('Completed example')"),true);
 await win.webContents.executeJavaScript("[...document.querySelectorAll('nav button')].find(b=>b.textContent==='New Run').click()");
-await win.webContents.executeJavaScript("(()=>{const s=[...document.querySelectorAll('select')].find(s=>s.parentElement.textContent.startsWith('Dev project'));s.value='project';s.dispatchEvent(new Event('change',{bubbles:true}));})()");
+await win.webContents.executeJavaScript("(()=>{const s=[...document.querySelectorAll('select')].find(s=>s.parentElement.textContent.startsWith('Project'));s.value='project';s.dispatchEvent(new Event('change',{bubbles:true}));})()");
 await new Promise(r=>setTimeout(r,100));
-await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(b=>b.textContent==='Refresh provider readiness').click()");
+// The three questions a person can answer at midnight, and nothing else on
+// the primary surface. Everything the form used to ask is still reachable.
+assert.equal(await win.webContents.executeJavaScript("[...document.querySelectorAll('section[aria-label=\\"New Run\\"] > form > .card > h3')].map(h=>h.textContent).join('|')"),'What should it build?|Where?|When should it stop?');
+assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('section[aria-label=\\"New Run\\"] > form > details').length"),1,'one Advanced, not a wall of fields');
+// Picking a stop time must not require getting the date right past midnight.
+await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(b=>b.textContent==='At 7am').click()");
+await new Promise(r=>setTimeout(r,100));
+assert.equal(await win.webContents.executeJavaScript("[...document.querySelectorAll('button.preset-chosen')].map(b=>b.textContent).join()"),'At 7am');
+assert.equal(await win.webContents.executeJavaScript("(()=>{const i=[...document.querySelectorAll('input[type=datetime-local]')][0];return i.value.endsWith('07:00');})()"),true);
+await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(b=>b.textContent==='CHECK').click()");
 await new Promise(r=>setTimeout(r,100));
 assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('unavailable: auth')"),true);
 await win.webContents.executeJavaScript("[...document.querySelectorAll('nav button')].find(b=>b.textContent==='Selected Run').click()");
