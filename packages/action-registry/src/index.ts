@@ -41,6 +41,18 @@ const baseStreamDeckCatalog: StreamDeckCatalogGroup[] = [
     ]
   },
   {
+    id: "autopilot",
+    title: "Autopilot",
+    description:
+      "Physical approval surface for autonomous runs. Approve/Reject require the Stream Deck control token to be enabled in Settings; they fail closed without it.",
+    items: [
+      { category: "Autopilot", file: "open-autopilot", title: "Open Autopilot", actionId: "autopilot.open", params: {}, description: "Open the Autopilot dashboard." },
+      { category: "Autopilot", file: "autopilot-approve", title: "Autopilot: Approve Pending", description: "Approve the pending Autopilot operation.", note: "POST /autopilot/approve â€” requires the control token. This is a human authorization interface, not hardware isolation." },
+      { category: "Autopilot", file: "autopilot-reject", title: "Autopilot: Reject Pending", description: "Reject the pending Autopilot operation.", note: "POST /autopilot/reject â€” requires the control token." },
+      { category: "Autopilot", file: "autopilot-approvals", title: "Autopilot: Pending Approvals", description: "List pending Autopilot approvals.", note: "GET /autopilot/approvals â€” requires the control token." }
+    ]
+  },
+  {
     id: "search-ask",
     title: "Search / Ask",
     description: "Search, smart lookup, and voice entry actions.",
@@ -436,7 +448,7 @@ export const seededActions = [
     category: "data_management",
     dangerLevel: dangerLevel as "safe" | "caution" | "danger" | "critical",
     requiresConfirmation: requiresConfirmation as boolean,
-    confirmationRule: (requiresConfirmation as boolean) ? "Deletes a file from disk — this cannot be undone." : null,
+    confirmationRule: (requiresConfirmation as boolean) ? "Deletes a file from disk â€” this cannot be undone." : null,
     reversible: false,
     undoActionId: null,
     handlerType: "internal_function" as const,
@@ -3276,6 +3288,96 @@ export const seededActions = [
     enabled: true,
     status: "available" as const
   })),
+  {
+    id: "autopilot.open",
+    title: "Open Autopilot",
+    moduleId: "autopilot",
+    module: "autopilot",
+    description: "Open the Autopilot run dashboard.",
+    category: "navigation",
+    dangerLevel: "safe",
+    requiresConfirmation: false,
+    confirmationRule: null,
+    reversible: false,
+    undoActionId: null,
+    handlerType: "internal_function",
+    handlerRef: "desktop.view.autopilot",
+    allowedTriggers: ["command", "deck", "module_ui"],
+    enabled: true,
+    status: "available"
+  },
+  {
+    id: "autopilot.create_automation",
+    title: "Create a Coding Automation",
+    moduleId: "autopilot", module: "autopilot",
+    description: "Open the Autopilot Control Center to configure a bounded primary coding run.",
+    category: "autopilot.worker", dangerLevel: "safe", requiresConfirmation: false, confirmationRule: null,
+    reversible: false, undoActionId: null, handlerType: "internal_function", handlerRef: "desktop.view.autopilot",
+    allowedTriggers: ["command", "module_ui"], enabled: true, status: "available"
+  },
+  {
+    id: "autopilot.consultation_approve",
+    title: "Review Consultation Authorization",
+    moduleId: "autopilot", module: "autopilot",
+    description: "Open Autopilot to approve one future diagnosis for an exact consultation request.",
+    category: "autopilot.worker", dangerLevel: "safe", requiresConfirmation: false, confirmationRule: null,
+    reversible: true, undoActionId: "autopilot.consultation_cancel", handlerType: "internal_function", handlerRef: "desktop.view.autopilot",
+    allowedTriggers: ["module_ui"], enabled: true, status: "available"
+  },
+  {
+    id: "autopilot.consultation_cancel",
+    title: "Review Consultation Cancellation",
+    moduleId: "autopilot", module: "autopilot",
+    description: "Open Autopilot to cancel a pending or approved consultation request.",
+    category: "autopilot.worker", dangerLevel: "safe", requiresConfirmation: false, confirmationRule: null,
+    reversible: false, undoActionId: null, handlerType: "internal_function", handlerRef: "desktop.view.autopilot",
+    allowedTriggers: ["module_ui"], enabled: true, status: "available"
+  },
+  {
+    id: "autopilot.readiness",
+    title: "Check Autopilot Provider Readiness",
+    moduleId: "autopilot", module: "autopilot",
+    description: "Open Autopilot to inspect native installation and subscription login availability.",
+    category: "autopilot.worker", dangerLevel: "safe", requiresConfirmation: false, confirmationRule: null,
+    reversible: false, undoActionId: null, handlerType: "internal_function", handlerRef: "desktop.view.autopilot",
+    allowedTriggers: ["module_ui"], enabled: true, status: "available"
+  },
+  {
+    id: "autopilot.worker_prepare",
+    title: "Review a Worker Prompt",
+    moduleId: "autopilot", module: "autopilot",
+    description: "Open the Autopilot controls to prepare one saved worker prompt for review.",
+    category: "autopilot.worker", dangerLevel: "safe", requiresConfirmation: false, confirmationRule: null,
+    reversible: false, undoActionId: null, handlerType: "internal_function", handlerRef: "desktop.view.autopilot",
+    allowedTriggers: ["module_ui"], enabled: true, status: "available"
+  },
+  {
+    id: "autopilot.worker_send",
+    title: "Review and Send One Worker Prompt",
+    moduleId: "autopilot", module: "autopilot",
+    description: "Open the saved prompt review. Sending requires the trusted Autopilot approval control.",
+    category: "autopilot.worker", dangerLevel: "safe", requiresConfirmation: false, confirmationRule: null,
+    reversible: false, undoActionId: null, handlerType: "internal_function", handlerRef: "desktop.view.autopilot",
+    allowedTriggers: ["module_ui"], enabled: true, status: "available"
+  },
+  {
+    id: "autopilot.worker_resolve",
+    title: "Resolve an Uncertain Worker Send",
+    moduleId: "autopilot", module: "autopilot",
+    description: "Open the specific uncertain send for a human evidence-based resolution.",
+    category: "autopilot.worker", dangerLevel: "safe", requiresConfirmation: false, confirmationRule: null,
+    reversible: false, undoActionId: null, handlerType: "internal_function", handlerRef: "desktop.view.autopilot",
+    allowedTriggers: ["module_ui"], enabled: true, status: "available"
+  },
+  {
+    id: "autopilot.worker_interrupt",
+    title: "Open Worker Cancellation",
+    moduleId: "autopilot", module: "autopilot",
+    description: "Open Autopilot to cancel only the owned worker process tree.",
+    category: "autopilot.worker", dangerLevel: "safe", requiresConfirmation: false, confirmationRule: null,
+    reversible: false, undoActionId: null, handlerType: "internal_function", handlerRef: "desktop.view.autopilot",
+    allowedTriggers: ["module_ui"], enabled: true, status: "available"
+  },
   {
     id: "audit.open_history",
     title: "Open Audit History",

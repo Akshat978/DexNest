@@ -1,6 +1,6 @@
 import {
   Activity, Calculator, CalendarClock, CalendarDays, ClipboardList, CloudSun, Code2, Command,
-  HardDriveDownload, Inbox, LayoutGrid, Lightbulb, Newspaper, NotebookPen, PackageSearch,
+  Bot, HardDriveDownload, Inbox, LayoutGrid, Lightbulb, Newspaper, NotebookPen, PackageSearch,
   ScrollText, Settings as SettingsIcon, Share2, Sparkles, Stethoscope, Vault, Wallet, Wrench,
   type LucideIcon
 } from "lucide-react";
@@ -9,6 +9,7 @@ import {
 export const MODULE_META: Record<string, { icon: LucideIcon; accent: string }> = {
   command: { icon: Command, accent: "#22D3EE" },
   dev: { icon: Code2, accent: "#3B82F6" },
+  autopilot: { icon: Bot, accent: "#0EA5E9" },
   deck: { icon: LayoutGrid, accent: "#A855F7" },
   clipboard: { icon: ClipboardList, accent: "#8B5CF6" },
   drop: { icon: Share2, accent: "#38BDF8" },

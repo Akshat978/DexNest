@@ -2,7 +2,11 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
-    "types": ["vite/client"]
+    "types": ["vite/client"],
+    // See tsconfig.node.json.
+    "allowImportingTsExtensions": true
   },
-  "include": ["src/renderer/**/*.ts", "src/renderer/**/*.tsx", "../../modules/**/*.ts", "../../modules/**/*.tsx", "../../packages/**/*.ts"]
+  "include": ["src/renderer/**/*.ts", "src/renderer/**/*.tsx", "../../modules/**/*.ts", "../../modules/**/*.tsx", "../../packages/**/*.ts"],
+  // See tsconfig.node.json: the runtime package typechecks itself.
+  "exclude": ["../../packages/autopilot-runtime/**/*"]
 }

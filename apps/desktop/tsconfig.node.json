@@ -6,8 +6,17 @@
     "outDir": "dist",
     "rootDir": "../..",
     "types": ["node"],
+    // @dexnest/autopilot-runtime uses explicit .ts import specifiers so Node can
+    // run its tests via --experimental-strip-types with no build step. Both
+    // desktop projects are only ever typechecked (always with --noEmit); vite
+    // performs the real build.
+    "allowImportingTsExtensions": true,
     "noEmit": false,
     "isolatedModules": false
   },
-  "include": ["src/main/**/*.ts", "../../packages/**/*.ts", "../../modules/deck/**/*.ts"]
+  "include": ["src/main/**/*.ts", "../../packages/**/*.ts", "../../modules/deck/**/*.ts"],
+  // autopilot-runtime uses allowImportingTsExtensions (required so Node's
+  // --experimental-strip-types can run its tests without a build step) and is
+  // typechecked by its own `pnpm --filter @dexnest/autopilot-runtime typecheck`.
+  "exclude": ["../../packages/autopilot-runtime/**/*"]
 }

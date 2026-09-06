@@ -154,6 +154,12 @@ importers:
         specifier: workspace:*
         version: link:../shared-types
 
+  packages/autopilot-runtime:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.13.14
+        version: 22.20.0
+
   packages/local-db:
     dependencies:
       '@dexnest/shared-types':

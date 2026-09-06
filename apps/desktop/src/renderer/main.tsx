@@ -51,6 +51,7 @@ import { PinButton, PinsContext, setActivePinContext, activePinContext, pinModul
 import type { PinInput, PinsContextValue } from "./components/pins";
 import { ClipboardView } from "./views/ClipboardView";
 import { AuditView } from "./views/AuditView";
+import { AutopilotView } from "./views/AutopilotView";
 import { BackupView } from "./views/BackupView";
 import { ExternalDevicesView } from "./views/ExternalDevicesView";
 import logoUrl from "./logo.png";
@@ -58,7 +59,7 @@ import "@dexnest/shared-ui/tokens.css";
 import "./styles.css";
 import "./theme.css";
 
-export type ViewId = "command" | "dev" | "deck" | "clipboard" | "drop" | "tools" | "vault" | "search" | "capture" | "journal" | "calendar" | "timetable" | "utilities" | "news" | "finder" | "finance" | "heatmap" | "devices" | "backup" | "health" | "audit" | "settings";
+export type ViewId = "command" | "dev" | "deck" | "clipboard" | "drop" | "tools" | "vault" | "search" | "capture" | "journal" | "calendar" | "timetable" | "utilities" | "news" | "finder" | "finance" | "heatmap" | "devices" | "backup" | "health" | "audit" | "autopilot" | "settings";
 type ActionStatus = "success" | "failed" | "skipped" | "cancelled" | "pending";
 type ToastTone = "success" | "error";
 type AppCloseBehavior = "minimize_to_tray" | "ask" | "exit";
@@ -2140,6 +2141,7 @@ const views: Array<{ id: ViewId; label: string; accentClass: string; actionId: s
   { id: "backup", label: "Backup", accentClass: "accent-command", actionId: "" },
   { id: "health", label: "App Health", accentClass: "accent-command", actionId: "" },
   { id: "settings", label: "Settings", accentClass: "accent-command", actionId: "settings.open" },
+  { id: "autopilot", label: "Autopilot", accentClass: "accent-dev", actionId: "autopilot.open" },
   { id: "audit", label: "Audit", accentClass: "accent-command", actionId: "audit.open_history" }
 ];
 
@@ -6315,6 +6317,7 @@ function DexNestApp() {
             <AppHealthView healthState={appHealthState ? addVoiceValidationHealth(appHealthState, actions, voiceWorkflowSettings) : appHealthState} onRunChecks={async () => { const r = await runUiAction("system.health.run_checks", "module_ui", {}) as { health?: AppHealthState }; const health = r?.health ?? await getBridge().getAppHealth(); setAppHealthState(addVoiceValidationHealth(health, actions, voiceWorkflowSettings)); }} onAction={runUiAction} />
           )}
           {activeView === "audit" && <AuditView events={events} onRefresh={handleAction} refreshEvents={refreshEvents} />}
+          {activeView === "autopilot" && <AutopilotView />}
           {activeView === "settings" && (
             <SettingsView
               actions={actions}

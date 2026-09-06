@@ -15,6 +15,7 @@ import { PDFDocument } from "pdf-lib";
 import { Jimp } from "jimp";
 import { createActionRegistry, createStreamDeckActionCatalog, seededActions, streamDeckCatalogItems } from "@dexnest/action-registry";
 import { createLocalDb } from "@dexnest/local-db";
+import { createAutopilotHost, type AutopilotHost } from "./autopilotHost.js";
 import type { MessageBoxOptions, MessageBoxSyncOptions, OpenDialogOptions, OpenDialogSyncOptions } from "electron";
 import type { DexNestActionDefinition, DexNestActionTrigger, DexNestEventStatus, DexNestPin, DexNestPinType } from "@dexnest/shared-types";
 import { formatLocalDateTime, getLocalTodayDateString, parseLocalDateInput, resolveRelativeLocalDate, toLocalDateInputValue } from "@dexnest/shared-types";
@@ -228,6 +229,41 @@ const localDb = createLocalDb({
 const actionRegistry = createActionRegistry();
 for (const action of seededActions) {
   actionRegistry.register(action);
+}
+
+// --- Autopilot host --------------------------------------------------------
+// The Autopilot runtime lives in @dexnest/autopilot-runtime and is hosted here.
+// This file owns only the wiring; all orchestration logic stays in the package.
+// See docs/AUTOPILOT_ARCHITECTURE.md.
+let autopilotHost: AutopilotHost | null = null;
+
+function startAutopilotHost(): void {
+  try {
+    autopilotHost = createAutopilotHost({
+      database: localDb.getDatabase(),
+      ipcMain,
+      getWindow: () => mainWindow,
+      logEvent: (summary, metadata) => {
+        localDb.appendActionEvent({
+          module: "autopilot",
+          eventType: "autopilot_run",
+          status: "success",
+          source: "system",
+          summary,
+          metadataJson: metadata
+        });
+      }
+    });
+
+    // Reconcile anything a previous crash left mid-flight, before the UI opens.
+    void autopilotHost.recover().catch((error: unknown) => {
+      console.warn("[autopilot] reconciliation failed", error);
+    });
+  } catch (error) {
+    // Autopilot must never prevent DexNest from starting.
+    console.warn("[autopilot] host failed to start", error);
+    autopilotHost = null;
+  }
 }
 
 let mainWindow: BrowserWindow | null = null;
@@ -10817,6 +10853,41 @@ function tokenFromRequest(request: IncomingMessage, url: URL): string {
   return Array.isArray(headerToken) ? headerToken[0] ?? "" : String(headerToken ?? url.searchParams.get("token") ?? "");
 }
 
+/**
+ * Stronger authorization for Autopilot approval routes.
+ *
+ * Ordinary Stream Deck actions allow token-disabled mode (tokenEnabled defaults
+ * to false). Approving an autonomous operation is a different class of
+ * authority, so it requires the configured control token unconditionally, on top
+ * of the usual localhost/LAN rule.
+ *
+ * Fail-closed by design: with no token configured, approval routes return 401
+ * and explain how to enable one, rather than silently accepting unauthenticated
+ * approvals. Nothing about existing action routes changes.
+ *
+ * This is a human authorization interface, not a hardware security boundary.
+ */
+function authorizeAutopilotApproval(request: IncomingMessage, url: URL): { ok: boolean; statusCode: number; error?: string } {
+  const base = authorizeControlEndpoint(request, url);
+  if (!base.ok) {
+    return base;
+  }
+
+  const settings = loadStreamDeckSettings();
+  if (!settings.tokenEnabled || !settings.token) {
+    return {
+      ok: false,
+      statusCode: 401,
+      error:
+        "Autopilot approvals require a Stream Deck control token. Enable the token in DexNest Settings → Stream Deck, then set it on the button."
+    };
+  }
+  if (tokenFromRequest(request, url) !== settings.token) {
+    return { ok: false, statusCode: 401, error: "A valid DexNest control token is required to resolve an Autopilot approval." };
+  }
+  return { ok: true, statusCode: 200 };
+}
+
 function authorizeControlEndpoint(request: IncomingMessage, url: URL): { ok: boolean; statusCode: number; error?: string } {
   const settings = loadStreamDeckSettings();
   if (!settings.lanEnabled && !isLocalRequest(request)) {
@@ -18201,6 +18272,9 @@ async function runSearchAction(action: DexNestActionDefinition, source: DexNestA
 }
 
 function navigationTargetForAction(actionId: string): { view: string; focusAssistant?: boolean; message: string } | null {
+  if (["autopilot.worker_prepare", "autopilot.worker_send", "autopilot.worker_resolve", "autopilot.worker_interrupt"].includes(actionId)) {
+    return { view: "autopilot", message: "Use the Autopilot run controls to review the specific worker action." };
+  }
   const targets: Record<string, { view: string; focusAssistant?: boolean; message: string }> = {
     "command.open_home": { view: "command", message: "DexNest opened Command." },
     "command.open_palette": { view: "command", message: "DexNest opened Command Palette." },
@@ -18214,6 +18288,7 @@ function navigationTargetForAction(actionId: string): { view: string; focusAssis
     "vault.open": { view: "vault", message: "DexNest opened Vault." },
     "settings.open": { view: "settings", message: "DexNest opened Settings." },
     "audit.open_history": { view: "audit", message: "DexNest opened Audit." },
+    "autopilot.open": { view: "autopilot", message: "DexNest opened Autopilot." },
     "system.health.open": { view: "settings", message: "DexNest opened App Health." },
     "system.performance.open": { view: "settings", message: "DexNest opened Performance Mode settings." }
   };
@@ -20072,6 +20147,80 @@ function startActionEndpoint(): void {
       return;
     }
 
+    // --- Autopilot approvals (token-authenticated) --------------------------
+    // These sit behind authorizeAutopilotApproval, which is deliberately
+    // stricter than the ordinary action routes above.
+    if (url.pathname === "/autopilot/approvals" || url.pathname === "/autopilot/approve" || url.pathname === "/autopilot/reject") {
+      const approvalAuth = authorizeAutopilotApproval(request, url);
+      if (!approvalAuth.ok) {
+        sendJson(response, approvalAuth.statusCode, { ok: false, status: "failed", message: approvalAuth.error });
+        return;
+      }
+      if (!autopilotHost) {
+        sendJson(response, 503, { ok: false, status: "failed", message: "Autopilot is not running." });
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/autopilot/approvals") {
+        const pending = autopilotHost.pendingApprovals();
+        sendJson(response, 200, {
+          ok: true,
+          status: "success",
+          message: `${pending.length} pending Autopilot approval(s).`,
+          approvals: pending.map((approval) => ({
+            id: approval.id,
+            runId: approval.runId,
+            summary: approval.summary,
+            reason: approval.reason,
+            risk: approval.risk,
+            capability: approval.capability,
+            requestedAt: approval.requestedAt
+          }))
+        });
+        return;
+      }
+
+      if (request.method === "POST") {
+        const decision = url.pathname === "/autopilot/approve" ? "APPROVED" : "REJECTED";
+        const pending = autopilotHost.pendingApprovals();
+        // An explicit id is required unless exactly one approval is pending, so
+        // a button press can never resolve an approval the user has not seen.
+        const requestedId = url.searchParams.get("approvalId");
+        const target = requestedId
+          ? pending.find((approval) => approval.id === requestedId)
+          : pending.length === 1
+            ? pending[0]
+            : undefined;
+
+        if (!target) {
+          sendJson(response, 409, {
+            ok: false,
+            status: "failed",
+            message: requestedId
+              ? "That Autopilot approval is not pending."
+              : pending.length === 0
+                ? "There is no pending Autopilot approval."
+                : `${pending.length} approvals are pending; specify approvalId.`
+          });
+          return;
+        }
+
+        const resolved = autopilotHost.resolveApproval({
+          approvalId: target.id,
+          decision,
+          source: "stream_deck_http"
+        });
+        sendJson(response, 200, {
+          ok: true,
+          status: "success",
+          message: `Autopilot approval ${resolved.status.toLowerCase()}: ${resolved.summary}`,
+          approvalId: resolved.id,
+          runId: resolved.runId
+        });
+        return;
+      }
+    }
+
     if (request.method === "POST" && url.pathname === "/sensitive/lock") {
       const startedAt = Date.now();
       lockSensitiveSessionFromTray();
@@ -21003,6 +21152,7 @@ app.whenReady().then(() => {
   ensureSpeechRoot();
   ensureBackupRoot();
   registerIpcHandlers();
+  startAutopilotHost();
   syncAppLifecycleLoginItemStatus();
   cleanupClipboardHistory(false, "system");
   startActionEndpoint();

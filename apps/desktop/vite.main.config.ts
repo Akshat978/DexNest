@@ -9,6 +9,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@dexnest/action-registry": resolve(repoRoot, "packages/action-registry/src/index.ts"),
+      "@dexnest/autopilot-runtime": resolve(repoRoot, "packages/autopilot-runtime/src/index.ts"),
       "@dexnest/local-db": resolve(repoRoot, "packages/local-db/src/index.ts"),
       "@dexnest/module-deck": resolve(repoRoot, "modules/deck/src/index.ts"),
       "@dexnest/shared-types": resolve(repoRoot, "packages/shared-types/src/index.ts")

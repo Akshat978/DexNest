@@ -1,0 +1,11 @@
+.autopilot-areas { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.autopilot-areas button[aria-pressed="true"] { border-color: var(--text); background: var(--surface); }
+.event-row.autopilot-run-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-4); text-align: left; }
+.autopilot-run-card > div { min-width: 0; display: grid; gap: var(--space-2); }
+.autopilot-run-card p { margin: 0; overflow-wrap: anywhere; }
+.autopilot-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
+.autopilot-pair label { min-width: 0; }
+.autopilot-timeline { max-height: 24rem; overflow: auto; }
+@media (max-width: 700px) {
+  .event-row.autopilot-run-card, .autopilot-pair { grid-template-columns: minmax(0, 1fr); }
+}

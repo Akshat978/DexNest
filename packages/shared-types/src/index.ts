@@ -21,7 +21,8 @@ export type DexNestModuleId =
   | "external_devices"
   | "system"
   | "voice"
-  | "assistant";
+  | "assistant"
+  | "autopilot";
 
 export type DexNestActionStatus = "available" | "placeholder";
 export type DexNestActionDangerLevel = "safe" | "caution" | "danger" | "critical";

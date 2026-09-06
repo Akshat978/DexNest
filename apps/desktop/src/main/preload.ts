@@ -126,5 +126,55 @@ contextBridge.exposeInMainWorld("dexNest", {
     const listener = (_event: Electron.IpcRendererEvent, payload: { view: string; focusAssistant?: boolean; startListening?: boolean; source?: string }) => callback(payload);
     ipcRenderer.on("dexnest:open-view", listener);
     return () => ipcRenderer.removeListener("dexnest:open-view", listener);
+  },
+
+  // --- Autopilot: durable spine and explicitly approved worker turns -------
+  // The renderer is a viewer. Run state lives in the main process and SQLite, so
+  // closing or reloading this window never disturbs a run.
+  autopilotListRuns: () => ipcRenderer.invoke("dexnest:autopilot-list-runs"),
+  autopilotDashboard: () => ipcRenderer.invoke("dexnest:autopilot-dashboard"),
+  autopilotReadiness: (project: string) => ipcRenderer.invoke("dexnest:autopilot-readiness", project),
+  autopilotCreateAutomation: (input: unknown) => ipcRenderer.invoke("dexnest:autopilot-create-automation", input),
+  autopilotRunPrimary: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-run-primary", runId),
+  autopilotApproveConsultation: (scope: { runId: string; requestId: string; consultantProvider: "claude" | "codex" }) => ipcRenderer.invoke("dexnest:autopilot-consultation-approve", scope),
+  autopilotCancelConsultation: (scope: { runId: string; requestId: string; consultantProvider: "claude" | "codex" }) => ipcRenderer.invoke("dexnest:autopilot-consultation-cancel", scope),
+  autopilotWorkerConfig: () => ipcRenderer.invoke("dexnest:autopilot-worker-config"),
+  autopilotWorkerPrepare: (input: { runId: string; prompt: string; retryOf?: string }) => ipcRenderer.invoke("dexnest:autopilot-worker-prepare", input),
+  autopilotWorkerSend: (input: { runId: string; sendId: string }) => ipcRenderer.invoke("dexnest:autopilot-worker-send", input),
+  autopilotWorkerResolve: (input: { runId: string; sendId: string; decision: "completed" | "not_sent" | "keep_unresolved"; evidence: string }) => ipcRenderer.invoke("dexnest:autopilot-worker-resolve", input),
+  autopilotWorkerInterrupt: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-worker-interrupt", runId),
+  autopilotGetRun: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-get-run", runId),
+  autopilotCreateRun: (input: { goal: string; constraints?: string[]; nonGoals?: string[] }) =>
+    ipcRenderer.invoke("dexnest:autopilot-create-run", input),
+  autopilotStartRun: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-start-run", runId),
+  autopilotPauseRun: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-pause-run", runId),
+  autopilotResumeRun: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-resume-run", runId),
+  autopilotStopRun: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-stop-run", runId),
+  autopilotReport: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-report", runId),
+  autopilotReportExport: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-report-export", runId),
+  autopilotHandoffPropose: (input: { runId: string; toProvider: "claude" | "codex"; reason?: string }) =>
+    ipcRenderer.invoke("dexnest:autopilot-handoff-propose", input),
+  autopilotHandoffApprove: (scope: { runId: string; handoffId: string; toProvider: "claude" | "codex" }) =>
+    ipcRenderer.invoke("dexnest:autopilot-handoff-approve", scope),
+  autopilotHandoffCancel: (scope: { runId: string; handoffId: string; toProvider: "claude" | "codex" }) =>
+    ipcRenderer.invoke("dexnest:autopilot-handoff-cancel", scope),
+  autopilotHandoffActivate: (input: { runId: string; handoffId: string; toProvider: "claude" | "codex"; maxTurns: number }) =>
+    ipcRenderer.invoke("dexnest:autopilot-handoff-activate", input),
+  autopilotConsultationRequest: (input: { runId: string; consultantProvider: "claude" | "codex" }) =>
+    ipcRenderer.invoke("dexnest:autopilot-consultation-request", input),
+  autopilotConsultationRun: (scope: { runId: string; requestId: string; consultantProvider: "claude" | "codex" }) =>
+    ipcRenderer.invoke("dexnest:autopilot-consultation-run", scope),
+  autopilotLoopAuthorize: (payload: { runId: string; maxTurns: number }) => ipcRenderer.invoke("dexnest:autopilot-loop-authorize", payload),
+  autopilotLoopRevoke: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-loop-revoke", runId),
+  autopilotLoopRun: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-loop-run", runId),
+  autopilotListApprovals: (runId?: string) => ipcRenderer.invoke("dexnest:autopilot-list-approvals", runId),
+  autopilotResolveApproval: (payload: { approvalId: string; decision: "APPROVED" | "REJECTED" }) =>
+    ipcRenderer.invoke("dexnest:autopilot-resolve-approval", payload),
+  autopilotResolveUncertain: (payload: { runId: string; stepKey: string; resolution: "completed" | "not_performed" }) =>
+    ipcRenderer.invoke("dexnest:autopilot-resolve-uncertain", payload),
+  onAutopilotChanged: (callback: (payload: { runId: string }) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: { runId: string }) => callback(payload);
+    ipcRenderer.on("dexnest:autopilot-changed", listener);
+    return () => ipcRenderer.removeListener("dexnest:autopilot-changed", listener);
   }
 });

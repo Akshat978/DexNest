@@ -15,6 +15,7 @@
     "baseUrl": ".",
     "paths": {
       "@dexnest/action-registry": ["packages/action-registry/src/index.ts"],
+      "@dexnest/autopilot-runtime": ["packages/autopilot-runtime/src/index.ts"],
       "@dexnest/local-db": ["packages/local-db/src/index.ts"],
       "@dexnest/shared-types": ["packages/shared-types/src/index.ts"],
       "@dexnest/shared-ui/tokens.css": ["packages/shared-ui/src/tokens.css"],

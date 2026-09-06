@@ -160,9 +160,18 @@ export function createLocalDb(options: CreateLocalDbOptions) {
     db = null;
   }
 
+  // Exposes the live connection so other packages (Autopilot) can add their own
+  // tables to the SAME database rather than opening a second one. Callers must
+  // treat existing tables as read-only and confine themselves to their own
+  // namespace; event_log belongs to this module.
+  function getDatabase(): Database.Database {
+    return getDb();
+  }
+
   return {
     dbPath,
     initialize,
+    getDatabase,
     appendEvent,
     appendActionEvent,
     listRecentEvents,
