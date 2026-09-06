@@ -239,3 +239,40 @@ test("rendering shows one line per item and flags orphans", (t) => {
   assert.match(text, /\[ \] 2\. Phase 2 — Work in the real project/);
   assert.equal(renderPlanProgress({ items: [], orphans: [], counts: { PENDING: 0, ACTIVE: 0, DONE: 0, BLOCKED: 0, SKIPPED: 0 } }), "No plan items.");
 });
+
+test("a document title above the first phase is a title, not work", () => {
+  // The first real PLAN.md began "# Plan: Twenty (working name)" and the
+  // parser made that item 1 — so the run's opening assignment was to "do" the
+  // title of the document. A title above numbered work folds into the
+  // preamble, detail and all; a closing non-phase item someone wrote after the
+  // phases is still theirs.
+  const { items, preamble } = parsePlanText([
+    "# Plan: Twenty (working name)",
+    "",
+    "A tree-walking interpreter.",
+    "",
+    "### Phase 1 — Lexer",
+    "Tokens.",
+    "### Phase 2 — Parser",
+    "Trees.",
+    "### Wrap-up",
+    "Docs."
+  ].join("\n"));
+
+  assert.equal(items.length, 3);
+  assert.equal(items[0]!.title, "Phase 1 — Lexer");
+  assert.equal(items[0]!.ordinal, 1, "ordinals are renumbered after the fold");
+  assert.equal(items[0]!.id, "plan-1");
+  assert.equal(items.at(-1)!.title, "Wrap-up", "trailing items are kept");
+  assert.ok(preamble.includes("Plan: Twenty (working name)"));
+  assert.ok(preamble.includes("A tree-walking interpreter."), "the title's body survives too");
+});
+
+test("a plan with no phase-numbered items keeps every heading as work", () => {
+  // The fold is only justified when the author explicitly numbered their work.
+  // In a plan of plain headings there is no signal separating a title from a
+  // task, and guessing would silently delete someone's first item.
+  const { items } = parsePlanText("# Set up the repo\n\n# Write the tests\n");
+  assert.equal(items.length, 2);
+  assert.equal(items[0]!.title, "Set up the repo");
+});

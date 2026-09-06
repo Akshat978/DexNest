@@ -230,7 +230,26 @@ export function parsePlanText(text: string): { items: PlanItem[]; preamble: stri
 
   for (const [index, item] of items.entries()) item.detail = (bodies[index] ?? []).join("\n").trim();
 
-  return { items, preamble: preamble.join("\n").trim() };
+  // A real PLAN.md usually opens with a document title — "# Plan: ..." —
+  // above the first phase. A title is a heading, but it is not work: left in,
+  // it becomes item 1, and the run's first assignment is to "do" the title of
+  // the document. So when the plan contains explicitly numbered work, leading
+  // items that are not numbered work are folded into the preamble, detail and
+  // all. Only leading ones: a closing "Wrap-up" item someone wrote after the
+  // phases is still theirs.
+  const work = /^(?:phase|step|milestone|stage)\s+\d{1,3}\b/i;
+  if (items.some(item => work.test(item.title))) {
+    while (items.length > 0 && !work.test(items[0]!.title)) {
+      const dropped = items.shift()!;
+      preamble.push(dropped.title, dropped.detail);
+    }
+    for (const [index, item] of items.entries()) {
+      item.id = `plan-${index + 1}`;
+      item.ordinal = index + 1;
+    }
+  }
+
+  return { items, preamble: preamble.filter(line => line.trim()).join("\n").trim() };
 }
 
 /** Normalizes plan input, recording problems rather than repairing them. */
