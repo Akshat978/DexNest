@@ -441,6 +441,26 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
   // What the operator reads before opening the conversation.
   handle("dexnest:autopilot-morning-summary", (_event, runId: string) => morningSummaryFor(runId));
 
+  // --- the morning ---------------------------------------------------------
+  // A sentence written before letting the run carry on, and the answer to its
+  // claim of being finished. Neither starts a turn: running stays separate.
+  handle("dexnest:autopilot-note-add", (_event, input: { runId: string; text: string }) => {
+    const note = workers.addNote({ runId: input.runId, text: input.text, author: "desktop_ui" });
+    options.logEvent?.("Autopilot note recorded", { actionId: "autopilot.note_add", runId: input.runId, noteId: note.id, length: note.text.length });
+    return note;
+  });
+  handle("dexnest:autopilot-notes", (_event, runId: string) => workers.notes(runId));
+  handle("dexnest:autopilot-plan-complete-proposal", (_event, runId: string) => workers.planCompleteProposal(runId));
+  handle("dexnest:autopilot-plan-complete-accept", (_event, runId: string) => {
+    workers.acceptPlanComplete(runId);
+    options.logEvent?.("Autopilot plan completion accepted", { actionId: "autopilot.plan_complete_accept", runId });
+  });
+  handle("dexnest:autopilot-plan-complete-reject", (_event, input: { runId: string; reason: string }) => {
+    const note = workers.rejectPlanComplete({ runId: input.runId, reason: input.reason });
+    options.logEvent?.("Autopilot plan completion rejected", { actionId: "autopilot.plan_complete_reject", runId: input.runId, noteId: note.id });
+    return note;
+  });
+
   // What the run is doing right now. In memory, bounded, and never the
   // authority on anything: the conversation itself lives in the agent session.
   handle("dexnest:autopilot-activity", (_event, runId: string) => workers.activity(runId));

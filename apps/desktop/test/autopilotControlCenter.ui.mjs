@@ -50,6 +50,8 @@ const css = resolve(desktop, "src/renderer/styles.css").replaceAll("\\", "/");
 const tokens = resolve(desktop, "../../packages/shared-ui/src/tokens.css").replaceAll("\\", "/");
 writeFileSync(join(scratch, "entry.tsx"), `import React from 'react'; import {createRoot} from 'react-dom/client'; import {AutopilotView} from ${JSON.stringify(view)}; import ${JSON.stringify(tokens)}; import ${JSON.stringify(css)}; createRoot(document.getElementById('root')).render(<main style={{padding:24,maxWidth:1200,margin:'auto'}}><AutopilotView/></main>);`);
 writeFileSync(join(scratch, "preload.cjs"), `const {contextBridge}=require('electron'); const report=${JSON.stringify(report)}, snapshot=${JSON.stringify(snapshot)}, dashboard=${JSON.stringify(dashboard)};
+const notes=[];
+const proposal={value:{id:'dir1',runId:'review-run',turnId:'turn-4',source:'self',verb:'PLAN_COMPLETE',assignment:null,reason:'everything asked for is there',planItemId:null,consumedByTurnId:null,createdAt:'2026-09-05T12:00:00Z'}};
 contextBridge.exposeInMainWorld('dexNest', {
 autopilotDashboard: async()=>dashboard, autopilotGetRun: async()=>snapshot, autopilotReport:async()=>JSON.parse(JSON.stringify(report)),
 autopilotApproveConsultation:async scope=>{if(scope.runId!=='review-run'||scope.requestId!=='consult1'||scope.consultantProvider!=='codex')throw Error('Wrong scope');Object.assign(report.consultations[0],{status:'APPROVED',canApprove:false,executionEligible:true});},
@@ -67,6 +69,10 @@ autopilotConsultationRun:async scope=>{if(scope.requestId!=='consult1'||scope.co
  return report.diagnoses[0];},
 autopilotCancelConsultation:async()=>{Object.assign(report.consultations[0],{status:'CANCELLED',canApprove:false,canCancel:false,executionEligible:false});},
 autopilotActivity:async()=>[{id:'e1',kind:'tool',text:'Read src/example.ts',at:'2026-09-05T12:00:00Z'}],
+autopilotNotes:async()=>notes, autopilotAddNote:async input=>{const note={id:'n'+(notes.length+1),runId:input.runId,text:input.text,author:'desktop_ui',createdAt:'2026-09-05T12:00:00Z',consumedTurnId:null};notes.push(note);return note;},
+autopilotPlanCompleteProposal:async()=>proposal.value,
+autopilotAcceptPlanComplete:async()=>{proposal.value=null;},
+autopilotRejectPlanComplete:async input=>{if(!input.reason.trim())throw Error('Say what is still missing');proposal.value=null;const note={id:'n0',runId:input.runId,text:input.reason,author:'desktop_ui',createdAt:'2026-09-05T12:00:00Z',consumedTurnId:null};notes.push(note);return note;},
 autopilotMorningSummary:async()=>({headline:'It stopped getting anywhere.',action:'review',detail:'Nothing passed verification for several turns in a row.',iterationsDone:1,iterationsAttempted:2,checkpoints:1,assumptions:['Kept the existing API.'],whereToWatch:'D:/Worktrees/example'}),
 listProjects:async()=>[{id:'project',name:'Example project',path:'D:/Example'}], onAutopilotChanged:()=>()=>{},
 autopilotReadiness:async()=>[{provider:'claude',installed:true,authenticated:true,available:true,failure:null},{provider:'codex',installed:true,authenticated:false,available:false,failure:'auth'}],
@@ -81,6 +87,33 @@ await win.loadFile(${JSON.stringify(join(scratch,"dist/index.html"))});
 for(let n=0;n<100;n++){if(await win.webContents.executeJavaScript("document.body.innerText.includes('Completed example')"))break;await new Promise(r=>setTimeout(r,30));}
 await win.webContents.executeJavaScript("[...document.querySelectorAll('nav button')].find(b=>b.textContent==='Selected Run').click()");
 await new Promise(r=>setTimeout(r,100));
+await win.webContents.executeJavaScript("[...document.querySelectorAll('details.autopilot-mechanism')].forEach(d=>{d.open=true})");
+await new Promise(r=>setTimeout(r,100));
+
+// The morning. A run that says it is finished is asking a question, and both
+// answers have to be reachable without leaving DexNest.
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('It says the work is done')"),true);
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('everything asked for is there')"),true);
+assert.equal(await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].some(b=>b.textContent.startsWith('ACCEPT'))"),true);
+// Rejecting without saying why would hand back the same evidence that produced
+// "I am finished", so the button cannot be pressed until there is a reason.
+assert.equal(await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(b=>b.textContent.startsWith('REJECT')).disabled"),true);
+const typeInto = (selector,value)=>win.webContents.executeJavaScript("(()=>{const el="+selector+";const set=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set;set.call(el,"+JSON.stringify(value)+");el.dispatchEvent(new Event('input',{bubbles:true}));})()");
+await typeInto("document.querySelector('.autopilot-decision textarea')","The error paths have no tests.");
+await new Promise(r=>setTimeout(r,80));
+assert.equal(await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(b=>b.textContent.startsWith('REJECT')).disabled"),false);
+await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(b=>b.textContent.startsWith('REJECT')).click()");
+await new Promise(r=>setTimeout(r,200));
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('It says the work is done')"),false,'answered, so the question goes away');
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('Waiting to be sent: The error paths have no tests.')"),true);
+
+// And a note written for its own sake, which reaches exactly one prompt.
+await typeInto("[...document.querySelectorAll('.card')].find(c=>c.textContent.startsWith('Before it carries on')).querySelector('textarea')","Use the existing logger.");
+await new Promise(r=>setTimeout(r,80));
+await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(b=>b.textContent==='SAVE NOTE').click()");
+await new Promise(r=>setTimeout(r,200));
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('Waiting to be sent: Use the existing logger.')"),true);
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('does not change the goal or the acceptance criteria')"),true);
 await win.webContents.executeJavaScript("[...document.querySelectorAll('details.autopilot-mechanism')].forEach(d=>{d.open=true})");
 await new Promise(r=>setTimeout(r,100));
 assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('section[aria-label=\\"New Run\\"]').length"),1);

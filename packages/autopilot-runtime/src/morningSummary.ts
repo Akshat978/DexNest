@@ -34,7 +34,7 @@ const OUTCOMES: Record<LoopStopReason, { headline: string; action: MorningAction
   plan_complete_proposed: {
     headline: "It believes the work is done.",
     action: "decide",
-    detail: "Verification passed and the agent proposed that the plan is complete. It did not finish the run itself — that is yours to confirm."
+    detail: "Verification passed and the agent proposed that the plan is complete. It did not finish the run itself — accept it to finish the run, or reject it and say what is still missing, which becomes the instruction for the next turn."
   },
   direction_needs_human: { headline: "It needs a decision from you.", action: "decide", detail: "The run stopped and asked for a person." },
   provider_limit: { headline: "It ran out of capacity.", action: "waiting", detail: "The subscription limit was reached, or a login went stale." },

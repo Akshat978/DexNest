@@ -164,6 +164,11 @@ contextBridge.exposeInMainWorld("dexNest", {
     ipcRenderer.invoke("dexnest:autopilot-direction-switch", input),
   autopilotMorningSummary: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-morning-summary", runId),
   autopilotActivity: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-activity", runId),
+  autopilotAddNote: (input: { runId: string; text: string }) => ipcRenderer.invoke("dexnest:autopilot-note-add", input),
+  autopilotNotes: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-notes", runId),
+  autopilotPlanCompleteProposal: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-plan-complete-proposal", runId),
+  autopilotAcceptPlanComplete: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-plan-complete-accept", runId),
+  autopilotRejectPlanComplete: (input: { runId: string; reason: string }) => ipcRenderer.invoke("dexnest:autopilot-plan-complete-reject", input),
   autopilotConsultationRequest: (input: { runId: string; consultantProvider: "claude" | "codex" }) =>
     ipcRenderer.invoke("dexnest:autopilot-consultation-request", input),
   autopilotConsultationRun: (scope: { runId: string; requestId: string; consultantProvider: "claude" | "codex" }) =>

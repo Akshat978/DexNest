@@ -40,11 +40,12 @@ import { HandoffBriefings, OwnershipStore } from "./handoff.ts";
 import { recordRecoveryDecision } from "./recovery.ts";
 import { ContextRequestStore, type ContextRequest } from "./contextRequests.ts";
 import { IterationStore } from "./iterations.ts";
-import { DirectionStore, DirectionAuthorityStore, directedPrompt, directionProtocolInstructions, parseDirection, type ParsedDirection } from "./direction.ts";
+import { DirectionStore, DirectionAuthorityStore, directedPrompt, directionProtocolInstructions, parseDirection, type DirectionDecision, type ParsedDirection } from "./direction.ts";
 import { ChatDirector, directorPrompt } from "./chatDirector.ts";
 import { PlanStore, renderPlanForWorker } from "./plan.ts";
 import { renderRunDigest } from "./digest.ts";
 import { UnattendedStore, parseAssumptions, unattendedInstructions } from "./unattended.ts";
+import { OperatorNoteStore, renderOperatorNote, type OperatorNoteRecord } from "./operatorNote.ts";
 import {
   MAX_REQUESTED_BYTES,
   renderRequestOutcomes,
@@ -114,6 +115,7 @@ export class AutonomousLoop {
   readonly directionAuthority: DirectionAuthorityStore;
   readonly plans: PlanStore;
   readonly unattended: UnattendedStore;
+  readonly notes: OperatorNoteStore;
 
   private readonly ports: RuntimePorts;
   private readonly engine: AutopilotEngine;
@@ -145,6 +147,7 @@ export class AutonomousLoop {
     this.director = options.director ?? null;
     this.plans = new PlanStore(options.ports);
     this.unattended = new UnattendedStore(options.ports);
+    this.notes = new OperatorNoteStore(options.ports);
   }
 
   /** The durable run report. Reads SQLite only; runs no git. */
@@ -284,6 +287,89 @@ export class AutonomousLoop {
       this.active.delete(runId);
       this.changed(runId);
     }
+  }
+
+  /**
+   * The proposed completion waiting for an answer, if there is one.
+   *
+   * "The last hold said plan_complete_proposed" is not enough on its own: a
+   * later turn could have run and stopped for some other reason, and the stale
+   * hold would still be the last one of its kind. So the proposal must come
+   * from the LATEST turn and still be unanswered. That is what makes accepting
+   * safe — it can only ever complete a run that is sitting exactly where the
+   * proposal left it.
+   */
+  planCompleteProposal(runId: string): DirectionDecision | null {
+    const run = this.engine.store.requireRun(runId);
+    if (isTerminal(run.state) || run.state === "RUNNING") return null;
+    const pending = this.directions.pending(runId);
+    if (!pending || pending.verb !== "PLAN_COMPLETE") return null;
+    return pending.turnId === (this.loops.turns(runId).at(-1)?.id ?? null) ? pending : null;
+  }
+
+  private requireProposal(runId: string): DirectionDecision {
+    const proposal = this.planCompleteProposal(runId);
+    if (!proposal) throw new Error("This run is not waiting on a proposed completion.");
+    return proposal;
+  }
+
+  /**
+   * The human agrees: the plan is done and the run is finished.
+   *
+   * This is the counterpart to PLAN_COMPLETE being a proposal rather than a
+   * completion. An agent that could declare itself finished would be marking
+   * its own homework at 3am; a person who has read what it did can mark it,
+   * and this is where they do so.
+   *
+   * PAUSED cannot reach COMPLETED directly — the state machine routes every
+   * out-of-band resolution through RECONCILING, which is what this is: a human
+   * settling something the loop could not settle itself.
+   */
+  acceptPlanComplete(runId: string, options: { by?: string } = {}): void {
+    const proposal = this.requireProposal(runId);
+    const store = this.engine.store;
+    const by = String(options.by ?? "").trim() || "operator";
+
+    const grant = this.loops.activeGrant(runId);
+    if (grant) {
+      this.loops.closeGrant({ grantId: grant.id, status: "COMPLETED", reason: "A human accepted the proposed completion." });
+    }
+    store.appendEvent(runId, {
+      type: "PLAN_COMPLETE_ACCEPTED",
+      payload: { directionId: proposal.id, by, reason: proposal.reason }
+    });
+    if (store.requireRun(runId).state !== "RECONCILING") {
+      store.appendEvent(runId, { type: "RECONCILIATION_STARTED", toState: "RECONCILING" });
+    }
+    store.appendEvent(runId, { type: "RUN_COMPLETED", toState: "COMPLETED" });
+    this.changed(runId);
+  }
+
+  /**
+   * The human disagrees, and says why.
+   *
+   * The reason is mandatory and is not merely recorded: it becomes the note
+   * that opens the next prompt. Rejecting without saying what is missing would
+   * hand the agent back the same evidence that made it say it was finished,
+   * and it would reach the same conclusion — so the reason IS the answer.
+   *
+   * The run stays paused. Rejecting decides what happens next; starting it is
+   * still a separate, deliberate act.
+   */
+  rejectPlanComplete(runId: string, input: { reason: string; by?: string }): OperatorNoteRecord {
+    const proposal = this.requireProposal(runId);
+    const reason = String(input.reason ?? "").trim();
+    if (!reason) {
+      throw new Error("Say what is still missing: the reason becomes the instruction for the next turn.");
+    }
+    const by = String(input.by ?? "").trim() || "operator";
+    const note = this.notes.add({ runId, text: reason, author: by });
+    this.engine.store.appendEvent(runId, {
+      type: "PLAN_COMPLETE_REJECTED",
+      payload: { directionId: proposal.id, noteId: note.id, by }
+    });
+    this.changed(runId);
+    return note;
   }
 
   private hold(runId: string, reason: LoopStopReason, detail: string): void {
@@ -584,10 +670,17 @@ export class AutonomousLoop {
           iterations: this.iterations.list(runId),
           assumptions: this.unattended.assumptions(runId)
         });
-        const prompt = [body, digest, planText, unattendedInstructions(), instructions]
+        // Whatever the person said before letting this carry on, placed
+        // directly behind the goal: it outranks the agent's own note about
+        // what to do next, and nothing else in the prompt.
+        const note = this.notes.pending(runId);
+        const prompt = [body, note ? renderOperatorNote(note) : "", digest, planText, unattendedInstructions(), instructions]
           .filter(part => part)
           .join("\n\n");
         turn = this.loops.planTurn({ runId, grantId: grant.id, kind, prompt });
+        // Bound to the turn that carried it, so one sentence written at
+        // breakfast does not silently become a standing instruction.
+        if (note) this.notes.consume(note.id, turn.id);
         // Bound the assignment to the turn it produced, so it is acted on once.
         if (guidance) this.directions.consume(guidance.id, turn.id);
         // Requests were settled while this prompt was built, before the turn

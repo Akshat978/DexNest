@@ -78,3 +78,33 @@
 }
 
 .autopilot-mechanism > summary:hover { opacity: 1; }
+
+/* A run that says it is finished is asking a question, and a card that looks
+   like every other card does not read as one. The accent is the only thing in
+   the view that says "this is waiting on you". */
+.autopilot-decision {
+  border-left: 3px solid #f59e0b;
+}
+
+.autopilot-decision .row {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+}
+
+.autopilot-decision textarea,
+.card > label > textarea {
+  display: block;
+  width: 100%;
+  margin-top: 0.35rem;
+  box-sizing: border-box;
+  font: inherit;
+  padding: 0.4rem 0.5rem;
+  border-radius: 0.375rem;
+}
+
+.autopilot-error {
+  color: #dc2626;
+  margin: 0.5rem 0 0;
+}

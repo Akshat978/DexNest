@@ -839,6 +839,35 @@ export const AUTOPILOT_MIGRATIONS: readonly Migration[] = [
       -- wherever an operator sees it.
       ALTER TABLE autopilot_turns ADD COLUMN cost_usd REAL;
     `
+  },
+  {
+    id: 24,
+    name: "operator_notes",
+    up: `
+      -- What a person says before letting a run carry on.
+      --
+      -- Reading a stopped run almost always produces a sentence, and until now
+      -- there was nowhere to put it: editing the Run Spec is the wrong
+      -- instrument because the goal has not changed, and typing into the
+      -- agent's session by hand is the manual shuttling this exists to remove.
+      --
+      -- Consumed exactly once, like an assignment and a diagnosis:
+      -- consumed_by_turn_id can only move away from NULL a single time. A note
+      -- that reappeared every turn would read as a standing instruction, which
+      -- is not what one sentence at breakfast meant.
+      CREATE TABLE IF NOT EXISTS autopilot_operator_notes (
+        id                  TEXT PRIMARY KEY,
+        run_id              TEXT NOT NULL REFERENCES autopilot_runs(id) ON DELETE CASCADE,
+        text                TEXT NOT NULL,
+        -- Free text. DexNest has no accounts, and "operator" is honest about
+        -- that in a way a fabricated identity would not be.
+        author              TEXT NOT NULL,
+        created_at          TEXT NOT NULL,
+        consumed_by_turn_id TEXT REFERENCES autopilot_turns(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_operator_notes_run
+        ON autopilot_operator_notes(run_id, consumed_by_turn_id);
+    `
   }
 ];
 

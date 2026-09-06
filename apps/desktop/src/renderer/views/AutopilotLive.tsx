@@ -12,7 +12,7 @@
 // and it is doing this" view that a buffered run could never give.
 
 import React, { useEffect, useRef, useState } from "react";
-import type { ActivityEvent, IterationRecord, MorningSummary, PlanItemProgress } from "@dexnest/autopilot-runtime";
+import type { ActivityEvent, DirectionDecision, IterationRecord, MorningSummary, OperatorNoteRecord, PlanItemProgress } from "@dexnest/autopilot-runtime";
 
 interface LiveBridge {
   autopilotActivity(runId: string): Promise<ActivityEvent[]>;
@@ -165,5 +165,122 @@ export function RunSummary({ runId, working }: { runId: string; working: boolean
       <p><strong>Next:</strong> {next[summary.action]}</p>
       <pre className="technical autopilot-where">{summary.whereToWatch}</pre>
     </div>
+  );
+}
+
+// --- the morning ------------------------------------------------------------
+
+interface MorningBridge {
+  autopilotNotes(runId: string): Promise<OperatorNoteRecord[]>;
+  autopilotAddNote(input: { runId: string; text: string }): Promise<OperatorNoteRecord>;
+  autopilotPlanCompleteProposal(runId: string): Promise<DirectionDecision | null>;
+  autopilotAcceptPlanComplete(runId: string): Promise<void>;
+  autopilotRejectPlanComplete(input: { runId: string; reason: string }): Promise<OperatorNoteRecord>;
+}
+const morning = () => (window as unknown as { dexNest: MorningBridge }).dexNest;
+
+/**
+ * What a person does after reading a run.
+ *
+ * Two questions that are really one surface, which is why they are one
+ * component: answer the run's claim to be finished, and say whatever reading
+ * it made you want to say. Rejecting a completion IS writing a note, so
+ * splitting them would leave the note list stale the moment it mattered most.
+ *
+ * Neither action starts a turn. Deciding what happens next and starting it are
+ * separate, deliberate acts, and every other control in this view assumes that.
+ */
+export function MorningPanel({ runId, working, onChanged }: { runId: string; working: boolean; onChanged: () => void }) {
+  const [proposal, setProposal] = useState<DirectionDecision | null>(null);
+  const [notes, setNotes] = useState<OperatorNoteRecord[]>([]);
+  const [reason, setReason] = useState("");
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = () => {
+    void morning().autopilotPlanCompleteProposal(runId).then(setProposal).catch(() => setProposal(null));
+    void morning().autopilotNotes(runId).then(setNotes).catch(() => setNotes([]));
+  };
+
+  // Keyed on runId and whether a turn is in flight, NOT on onChanged: that
+  // callback is a new function on every parent render, so depending on it
+  // refetches continuously — and a request started before an answer resolves
+  // after it, putting the answered question back on screen.
+  useEffect(load, [runId, working]);
+
+  const act = (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(null);
+    void fn()
+      .then(() => { setReason(""); setText(""); load(); onChanged(); })
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+      .finally(() => setBusy(false));
+  };
+
+  const pending = [...notes].reverse().find(note => !note.consumedTurnId) ?? null;
+
+  return (
+    <>
+      {proposal && (
+        <div className="card autopilot-decision">
+          <h4>It says the work is done</h4>
+          <p className="technical">Its reason: {proposal.reason ?? "none given"}</p>
+          <p>It did not finish the run itself. Accepting completes it; rejecting sends what you write below as the next instruction.</p>
+          <label>
+            What is still missing (needed only to reject)
+            <textarea rows={3} value={reason} disabled={busy} onChange={event => setReason(event.target.value)} />
+          </label>
+          <div className="row">
+            <button type="button" disabled={busy} onClick={() => act(() => morning().autopilotAcceptPlanComplete(runId))}>
+              ACCEPT — the run is done
+            </button>
+            {/* Handing back the same evidence that produced "I am finished"
+                produces "I am finished" again, so the reason is not a
+                formality — it is the instruction for the next turn. */}
+            <button type="button" disabled={busy || !reason.trim()} onClick={() => act(() => morning().autopilotRejectPlanComplete({ runId, reason }))}>
+              REJECT — keep going
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="card">
+        <h4>Before it carries on</h4>
+        <p className="technical">
+          Goes in front of the next prompt, once. It outranks what the agent said it would do next; it does not change
+          the goal or the acceptance criteria.
+        </p>
+        <label>
+          <textarea
+            rows={3}
+            value={text}
+            disabled={busy}
+            placeholder="e.g. The error handling is the wrong shape — use Result, not exceptions."
+            onChange={event => setText(event.target.value)}
+          />
+        </label>
+        {error && <p className="autopilot-error">{error}</p>}
+        <div className="row">
+          <button type="button" disabled={busy || !text.trim()} onClick={() => act(() => morning().autopilotAddNote({ runId, text }))}>
+            SAVE NOTE
+          </button>
+        </div>
+        {pending && <p><strong>Waiting to be sent:</strong> {pending.text}</p>}
+        {notes.length > 0 && (
+          <details className="autopilot-mechanism">
+            <summary>Notes on this run ({notes.length})</summary>
+            <ol className="autopilot-assumptions">
+              {notes.map(note => (
+                <li key={note.id}>
+                  {note.text}
+                  <span className="technical"> — {note.author}, {note.consumedTurnId ? "sent" : "not sent yet"}</span>
+                </li>
+              ))}
+            </ol>
+          </details>
+        )}
+      </div>
+    </>
   );
 }

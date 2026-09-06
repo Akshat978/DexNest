@@ -441,6 +441,38 @@ export class ControlledWorkerTurns {
     return this.loopFor(runId).revoke(runId, reason);
   }
 
+  // --- the morning ---------------------------------------------------------
+  // What a person does after reading a run: say something before letting it
+  // carry on, and answer its claim to be finished. None of these start a turn;
+  // running is still a separate, deliberate act.
+
+  addNote(input: { runId: string; text: string; author?: string }) {
+    const note = this.loopFor(input.runId).notes.add(input);
+    this.options.changed(input.runId);
+    return note;
+  }
+
+  notes(runId: string) {
+    return this.loopFor(runId).notes.list(runId);
+  }
+
+  /** The completion waiting for an answer, or null. Drives the two buttons. */
+  planCompleteProposal(runId: string) {
+    return this.loopFor(runId).planCompleteProposal(runId);
+  }
+
+  acceptPlanComplete(runId: string, by?: string) {
+    if (this.active.has(runId)) throw new Error("A worker action is already in progress.");
+    this.loopFor(runId).acceptPlanComplete(runId, { by: by ?? "desktop_ui" });
+  }
+
+  rejectPlanComplete(input: { runId: string; reason: string; by?: string }) {
+    if (this.active.has(input.runId)) throw new Error("A worker action is already in progress.");
+    return this.loopFor(input.runId).rejectPlanComplete(input.runId, {
+      reason: input.reason, by: input.by ?? "desktop_ui"
+    });
+  }
+
   /** Runs authorized turns until the loop settles. */
   /**
    * retryProviderLimit is the deliberate answer to a run paused for a usage
