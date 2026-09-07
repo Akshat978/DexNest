@@ -148,3 +148,28 @@
   align-items: center;
   margin-top: 0.5rem;
 }
+
+/* Tonight's projects, in the order they will be worked through. The one in
+   flight has to be findable at a glance from across the room. */
+.autopilot-queue {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.autopilot-queue > li {
+  padding: 0.45rem 0.6rem;
+  border-radius: 0.375rem;
+  background: rgba(127, 127, 127, 0.1);
+  border-left: 3px solid transparent;
+}
+
+.autopilot-queue > li.queue-running { border-left-color: #f59e0b; }
+.autopilot-queue > li.queue-done { border-left-color: #16a34a; }
+.autopilot-queue > li.queue-failed { border-left-color: #dc2626; }
+.autopilot-queue > li.queue-pending { opacity: 0.65; }
+.autopilot-queue > li.queue-skipped,
+.autopilot-queue > li.queue-abandoned { opacity: 0.75; }
+.autopilot-queue p { margin: 0.2rem 0 0; }

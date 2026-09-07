@@ -69,8 +69,9 @@ test("every sidebar module has an icon and a route", () => {
 
 test("there is exactly one Autopilot Control Center", () => {
   assert.match(autopilotSource, /title="Autopilot Control Center"/);
-  // New Run / Runs / Selected Run stay on the one canonical page.
-  assert.match(autopilotSource, /\["New Run", "Runs", "Selected Run"\]/);
+  // Every area stays on the one canonical page rather than becoming a second
+  // Autopilot screen somewhere in the shell.
+  assert.match(autopilotSource, /\["New Run", "Queue", "Runs", "Selected Run"\]/);
   // No second, simplified copy of the page anywhere in the renderer.
   const copies = [...shellSource.matchAll(/Autopilot Control Center/g)].length;
   assert.equal(copies, 0, "the shell does not re-implement the Control Center");

@@ -868,6 +868,62 @@ export const AUTOPILOT_MIGRATIONS: readonly Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_operator_notes_run
         ON autopilot_operator_notes(run_id, consumed_by_turn_id);
     `
+  },
+  {
+    id: 25,
+    name: "run_queue",
+    up: `
+      -- Several projects in one night, on one budget.
+      --
+      -- An authorization covers one run in one repository, which is why an
+      -- overnight session could only ever improve one project. A queue is the
+      -- ordered list, and the budget spans it rather than each run getting its
+      -- own: three projects share one deadline and one spend cap.
+      CREATE TABLE IF NOT EXISTS autopilot_run_queues (
+        id                       TEXT PRIMARY KEY,
+        status                   TEXT NOT NULL CHECK(status IN ('ACTIVE','CLOSED')),
+        deadline                 TEXT,
+        max_cost_usd             REAL,
+        max_items                INTEGER,
+        max_consecutive_failures INTEGER,
+        -- How every run in this queue is set up. One template, because a queue
+        -- is "do the same thing to these projects" -- if two projects needed
+        -- different models they were never one night's work.
+        model                    TEXT,
+        effort                   TEXT,
+        max_turns                INTEGER NOT NULL DEFAULT 50,
+        max_iterations           INTEGER NOT NULL DEFAULT 25,
+        max_idle_turns           INTEGER NOT NULL DEFAULT 5,
+        max_failures             INTEGER NOT NULL DEFAULT 5,
+        created_at               TEXT NOT NULL,
+        closed_at                TEXT,
+        closed_reason            TEXT
+      );
+
+      -- The item row is the ONLY place an item's status lives. The decision
+      -- engine takes "records" as input, and those are built from these rows
+      -- every time rather than stored a second time -- two places holding the
+      -- same truth is how they come to disagree, and a queue that thought an
+      -- item was PENDING while the row said DONE would start work twice.
+      CREATE TABLE IF NOT EXISTS autopilot_run_queue_items (
+        id           TEXT PRIMARY KEY,
+        queue_id     TEXT NOT NULL REFERENCES autopilot_run_queues(id) ON DELETE CASCADE,
+        ordinal      INTEGER NOT NULL,
+        project_path TEXT NOT NULL,
+        goal         TEXT NOT NULL,
+        plan_text    TEXT,
+        label        TEXT,
+        status       TEXT NOT NULL CHECK(status IN ('PENDING','RUNNING','DONE','FAILED','SKIPPED','ABANDONED')),
+        started_at   TEXT,
+        settled_at   TEXT,
+        reason       TEXT,
+        -- Set when the item becomes a real run. Unique, so one run can never
+        -- be claimed by two items.
+        run_id       TEXT UNIQUE REFERENCES autopilot_runs(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_run_queue_items_queue
+        ON autopilot_run_queue_items(queue_id, ordinal);
+    `
   }
 ];
 

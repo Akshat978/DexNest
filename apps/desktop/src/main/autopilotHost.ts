@@ -18,6 +18,8 @@ import {
   AutopilotEngine,
   ControlledWorkerTurns,
   SessionDiscovery,
+  RunQueueStore,
+  QUEUE_OUTCOME,
   AutopilotControlCenter,
   ConsultationStore,
   DirectionAuthorityStore,
@@ -26,6 +28,7 @@ import {
   HandoffStore,
   type ConsultationScope,
   type NewRunForm,
+  type LoopStopReason,
   type PlatformPorts,
   type WorkerResolutionDecision,
   MemorySideEffectLedger,
@@ -358,9 +361,111 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
     options.logEvent?.(`Autopilot loop settled: ${outcome.reason}`, {
       actionId: "autopilot.loop_run", runId, reason: outcome.reason, turnsRun: outcome.turnsRun, finalState: outcome.finalState
     });
+    // Before telling the operator anything: if this run was one project in a
+    // queue, the queue may have another to start, and starting it changes what
+    // there is to say.
+    await advanceQueue(runId, outcome.reason);
     notifyIfNeeded(runId, outcome.reason);
     scheduleResumeTimer();
     return outcome;
+  }
+
+  /**
+   * Moves a queue on when one of its projects finishes.
+   *
+   * The engine decides; this only translates. How the loop stopped becomes what
+   * happened to the item (QUEUE_OUTCOME), the engine is asked what is next, and
+   * a `start` becomes a real run created and launched exactly as the button
+   * would have created it.
+   *
+   * A run that is not part of a queue leaves through the first line, which is
+   * every run that exists today.
+   */
+  async function advanceQueue(runId: string, reason: LoopStopReason): Promise<void> {
+    const queues = new RunQueueStore(ports);
+    const item = queues.itemForRun(runId);
+    if (!item) return;
+
+    const meaning = QUEUE_OUTCOME[reason];
+    if (meaning === "hold") {
+      // provider_limit already has a scheduled retry, and the rest mean a
+      // person intervened. Advancing would override the decision they just
+      // made, so the queue waits with this item still in flight.
+      ports.logger.log("info", "Autopilot queue holding", { runId, itemId: item.id, reason });
+      return;
+    }
+    queues.settle(item.id, meaning, reason);
+
+    const action = queues.decide(item.queueId);
+    if (action.kind !== "start") {
+      if (action.kind === "stop") {
+        queues.close(item.queueId, action.detail);
+        options.logEvent?.(`Autopilot queue finished: ${action.reason}`, {
+          actionId: "autopilot.queue_finished", queueId: item.queueId, reason: action.reason
+        });
+        try {
+          options.notify?.({ title: "Autopilot — the queue is finished", body: queues.summary(item.queueId, action.reason) });
+        } catch { /* a missing notification is not worth failing on */ }
+      }
+      return;
+    }
+
+    const next = queues.items(item.queueId).find(entry => entry.id === action.itemId);
+    if (!next) return;
+    const queue = queues.get(item.queueId)!;
+    try {
+      const run = await center.create(queuedRunForm(queue, next));
+      queues.start(next.id, run.id);
+      options.logEvent?.("Autopilot queue started the next project", {
+        actionId: "autopilot.queue_next", queueId: queue.id, itemId: next.id, runId: run.id, project: next.projectPath
+      });
+      launchPrimary(run.id);
+    } catch (error) {
+      // A project that will not even start must not stall the rest of the
+      // night. SKIPPED rather than FAILED, and not because the engine refuses
+      // PENDING to FAILED — that refusal is right. Nothing was attempted: no
+      // run exists, no worker was asked, no verification ran. Calling that a
+      // failure would also count it toward the consecutive-failure bound and
+      // end a night over three bad project paths.
+      const detail = error instanceof Error ? error.message : String(error);
+      queues.settle(next.id, "SKIPPED", `Could not start: ${detail}`);
+      ports.logger.log("warn", "Autopilot queue could not start a project", { itemId: next.id, error: detail });
+      await advanceQueue(runId, reason);
+    }
+  }
+
+  /** One queue item, as the Run Spec form that creates its run. */
+  function queuedRunForm(queue: ReturnType<RunQueueStore["get"]> & object, item: { projectPath: string; goal: string; planText?: string }): NewRunForm {
+    return {
+      goal: item.goal,
+      projectPath: item.projectPath,
+      primary: "claude",
+      consultant: null,
+      maxTurns: queue.template.maxTurns,
+      maxIterations: queue.template.maxIterations,
+      maxFailures: queue.template.maxFailures,
+      maxIdleTurns: queue.template.maxIdleTurns,
+      workspaceMode: "project-branch",
+      workerProfile: "agentic",
+      planText: item.planText ?? "",
+      director: null,
+      model: queue.template.model ?? "",
+      effort: queue.template.effort ?? "",
+      // The queue owns the deadline and the spend cap, and they span every
+      // project. Giving each run its own copy would let three projects spend
+      // three times the budget.
+      stopAt: "",
+      constraints: [],
+      nonGoals: [],
+      acceptance: [{ text: "Configured tests pass", tier: "test" }],
+      verification: [
+        { tier: "typecheck", enabled: false, executable: "node", args: ["node_modules/typescript/bin/tsc", "--noEmit"] },
+        { tier: "lint", enabled: false, executable: "node", args: ["node_modules/eslint/bin/eslint.js", "."] },
+        { tier: "test", enabled: true, executable: "node", args: ["--test"] },
+        { tier: "integration", enabled: false, executable: "node", args: ["--test", "test/integration.test.js"] },
+        { tier: "build", enabled: false, executable: "node", args: ["node_modules/vite/bin/vite.js", "build"] }
+      ]
+    };
   }
 
   /** The summary an operator reads before opening the conversation. */
@@ -453,6 +558,48 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
 
   // What the operator reads before opening the conversation.
   handle("dexnest:autopilot-morning-summary", (_event, runId: string) => morningSummaryFor(runId));
+
+  // --- the run queue ---------------------------------------------------------
+  // Several projects in one night, on one budget. Creating a queue starts its
+  // first project immediately; every later one starts when the previous run
+  // settles, in advanceQueue.
+  handle("dexnest:autopilot-queue", () => {
+    const queues = new RunQueueStore(ports);
+    const queue = queues.active();
+    if (!queue) return null;
+    return {
+      queue,
+      items: queues.items(queue.id),
+      progress: queues.progress(queue.id),
+      spentUsd: queues.spentUsd(queue.id),
+      summary: queues.summary(queue.id, null)
+    };
+  });
+  handle("dexnest:autopilot-queue-create", async (_event, input: {
+    items: Array<{ projectPath: string; goal: string; planText?: string; label?: string }>;
+    budget?: { deadline?: string; maxCostUsd?: number; maxItems?: number; maxConsecutiveFailures?: number };
+    template?: { model?: string | null; effort?: string | null };
+  }) => {
+    const queues = new RunQueueStore(ports);
+    const queue = queues.create(input);
+    options.logEvent?.(`Autopilot queue created with ${input.items.length} project(s)`, {
+      actionId: "autopilot.queue_create", queueId: queue.id, projects: input.items.length
+    });
+
+    const action = queues.decide(queue.id);
+    if (action.kind === "start") {
+      const next = queues.items(queue.id).find(entry => entry.id === action.itemId)!;
+      const run = await center.create(queuedRunForm(queue, next));
+      queues.start(next.id, run.id);
+      launchPrimary(run.id);
+    }
+    return queues.active();
+  });
+  handle("dexnest:autopilot-queue-close", (_event, queueId: string) => {
+    const queues = new RunQueueStore(ports);
+    options.logEvent?.("Autopilot queue closed by the operator", { actionId: "autopilot.queue_close", queueId });
+    return queues.close(queueId, "Closed by the operator.");
+  });
 
   // --- continuing a session you primed --------------------------------------
   // Explaining the job is easy in the editor and awkward in a form. This lets

@@ -155,6 +155,10 @@ importers:
         version: link:../shared-types
 
   packages/autopilot-runtime:
+    dependencies:
+      '@dexnest/run-queue':
+        specifier: workspace:*
+        version: link:../run-queue
     devDependencies:
       '@types/node':
         specifier: ^22.13.14
@@ -175,6 +179,8 @@ importers:
       '@types/node':
         specifier: ^22.13.14
         version: 22.20.0
+
+  packages/run-queue: {}
 
   packages/shared-types: {}
 

@@ -11,6 +11,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test --experimental-strip-types --experimental-sqlite --no-warnings test/*.test.ts"
   },
+  "dependencies": {
+    "@dexnest/run-queue": "workspace:*"
+  },
   "devDependencies": {
     "@types/node": "^22.13.14"
   }

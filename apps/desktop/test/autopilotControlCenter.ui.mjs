@@ -75,6 +75,9 @@ autopilotConsultationRun:async scope=>{if(scope.requestId!=='consult1'||scope.co
 autopilotCancelConsultation:async()=>{Object.assign(report.consultations[0],{status:'CANCELLED',canApprove:false,canCancel:false,executionEligible:false});},
 autopilotActivity:async()=>[{id:'e1',kind:'tool',text:'Read src/example.ts',at:'2026-09-05T12:00:00Z'}],
 __candidateCalls:async()=>candidateCalls,
+autopilotQueue:async()=>null,
+autopilotQueueCreate:async input=>{if(!input.items.length)throw Error('A run queue needs at least one project.');return {id:'q1'};},
+autopilotQueueClose:async()=>null,
 autopilotSessionCandidates:async()=>(candidateCalls++,attached.value?[]:[{session:primed,blockers:[],attachable:true},{session:stillOpen,blockers:['live'],attachable:false}]),
 autopilotAttachedSession:async()=>attached.value,
 autopilotAttachSession:async input=>{if(input.sessionId!==primed.sessionId)throw Error('This session was active in the last few minutes');attached.value={runId:input.runId,provider:'claude',sessionId:primed.sessionId,origin:'vscode',title:primed.title,transcriptPath:primed.transcriptPath,attachedAt:'2026-09-05T12:00:00Z'};return attached.value;},
@@ -202,6 +205,13 @@ assert.equal(await win.webContents.executeJavaScript("document.body.innerText.in
 await win.webContents.executeJavaScript("[...document.querySelectorAll('section')].filter(s=>s.querySelector('h3')&&s.querySelector('h3').textContent==='Provider failure')[0].querySelector('details').open=true");
 await new Promise(r=>setTimeout(r,80));
 assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('Input must be provided')"),true);
+await win.webContents.executeJavaScript("[...document.querySelectorAll('nav button')].find(b=>b.textContent==='Queue').click()");
+await new Promise(r=>setTimeout(r,150));
+assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('section[aria-label=\\"Run Queue\\"]').length"),1,'the Queue area renders');
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('Work through several projects tonight')"),true);
+// The budget spans the queue, and the page has to say so where it is set.
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('one shared budget')"),true);
+assert.equal(await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(b=>b.textContent.startsWith('START')).disabled"),true,'no projects yet, so nothing to start');
 await win.webContents.executeJavaScript("[...document.querySelectorAll('nav button')].find(b=>b.textContent==='Runs').click()");
 await win.webContents.executeJavaScript("(()=>{const s=[...document.querySelectorAll('select')].find(s=>s.parentElement.textContent.startsWith('Filter runs'));s.value='COMPLETED';s.dispatchEvent(new Event('change',{bubbles:true}));})()");
 await new Promise(r=>setTimeout(r,100));
