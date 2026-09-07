@@ -942,6 +942,27 @@ export const AUTOPILOT_MIGRATIONS: readonly Migration[] = [
       -- until a person says otherwise.
       ALTER TABLE autopilot_loop_grants ADD COLUMN auto_resume_on_limit INTEGER NOT NULL DEFAULT 0;
     `
+  },
+  {
+    id: 27,
+    name: "rotate_session_between_phases",
+    up: `
+      -- Whether each piece of work gets a fresh conversation.
+      --
+      -- One session resumed across a whole run means every model call carries
+      -- every phase before it. Measured on a real 22-phase night: context per
+      -- call grew from 12k tokens to 165k, a 14x climb, 11.7M input tokens
+      -- across 144 calls, growing almost perfectly linearly. That is what
+      -- paying for your own history looks like.
+      --
+      -- The digest exists precisely so a phase does not need the transcript:
+      -- what carries forward is the code on disk and the record of what was
+      -- done and decided. So rotation is the default, and 0 opts out.
+      --
+      -- Rotation happens ONLY between settled pieces of work. A repair turn
+      -- keeps its session, because repairing needs the failure in context.
+      ALTER TABLE autopilot_loop_grants ADD COLUMN rotate_session INTEGER NOT NULL DEFAULT 1;
+    `
   }
 ];
 

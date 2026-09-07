@@ -143,7 +143,18 @@ export function openLoop(root: string, options: OpenLoopOptions = {}) {
     policy
   });
 
-  const worker = new ClaudeCodeWorker({ executable: "claude.exe", ports, effects, policy, newSessionId: () => LOOP_SESSION_ID });
+  // Unique per call, like randomUUID in production. It used to return one
+  // fixed id, which made session rotation invisible: every rotation minted
+  // the same id, so a test could not tell a fresh conversation from a
+  // resumed one. The FIRST id is still LOOP_SESSION_ID, so tests that name
+  // the session a run started with are unaffected.
+  let workerSessions = 0;
+  const worker = new ClaudeCodeWorker({
+    executable: "claude.exe", ports, effects, policy,
+    newSessionId: () => (workerSessions += 1) === 1
+      ? LOOP_SESSION_ID
+      : `${LOOP_SESSION_ID.slice(0, -2)}${String(workerSessions).padStart(2, "0")}`
+  });
   const loop = new AutonomousLoop({ ports, engine, policy, worker, director: options.director ?? null });
 
   // The controlled host, so ownership handoff runs through the production path.

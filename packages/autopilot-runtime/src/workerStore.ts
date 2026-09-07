@@ -96,7 +96,7 @@ export class WorkerStore {
    *
    * Unsafe: the caller must already hold the activation transaction.
    */
-  replacePrimaryUnsafe(input: { runId: string; provider: string; sessionId: string; cwd: string }): void {
+  replacePrimaryUnsafe(input: { runId: string; provider: string; sessionId: string; cwd: string; reason?: "handoff" | "rotation" }): void {
     const now = this.ports.clock.now();
     const changes = this.ports.db
       .prepare(`UPDATE autopilot_worker_sessions
@@ -113,7 +113,13 @@ export class WorkerStore {
     const run = this.store.requireRun(input.runId);
     this.store.appendEventUnsafe(input.runId, run.state, {
       type: "WORKER_SESSION_CREATED",
-      payload: { role: "PRIMARY", provider: input.provider, sessionId: input.sessionId, ownershipHandoff: true }
+      payload: {
+        role: "PRIMARY", provider: input.provider, sessionId: input.sessionId,
+        // A rotation is not a change of owner. Saying "ownershipHandoff" about
+        // one would make the journal claim the run changed hands every phase.
+        ownershipHandoff: (input.reason ?? "handoff") === "handoff",
+        reason: input.reason ?? "handoff"
+      }
     });
   }
 

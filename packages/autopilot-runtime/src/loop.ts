@@ -216,6 +216,8 @@ export class AutonomousLoop {
     stopAt?: string; maxCostUsd?: number; maxIdleTurns?: number;
     /** Wait and retry by itself when the provider runs out. Off by default. */
     autoResumeOnLimit?: boolean;
+    /** Give each piece of work a fresh conversation. On by default. */
+    rotateSession?: boolean;
     grantedBy: string;
   }): LoopGrant {
     assertPrimary(this.worker.role);
@@ -232,6 +234,7 @@ export class AutonomousLoop {
       ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
       ...(input.maxIdleTurns !== undefined ? { maxIdleTurns: input.maxIdleTurns } : {}),
       ...(input.autoResumeOnLimit !== undefined ? { autoResumeOnLimit: input.autoResumeOnLimit } : {}),
+      ...(input.rotateSession !== undefined ? { rotateSession: input.rotateSession } : {}),
       runId: input.runId,
       provider: this.worker.id,
       sessionId: session.sessionId,
@@ -373,6 +376,32 @@ export class AutonomousLoop {
     });
     this.changed(runId);
     return note;
+  }
+
+  /**
+   * Starts the next piece of work in a new conversation.
+   *
+   * Only ever called between settled pieces of work. The grant follows the new
+   * session id: left pointing at the retired one, the journal would record an
+   * authorization for a conversation that no longer exists.
+   *
+   * Never fatal. A run that cannot rotate is a run that costs more than it
+   * should, which is not a reason to stop it doing the work.
+   */
+  private rotateSessionForNextPhase(runId: string, grant: LoopGrant): void {
+    if (!grant.rotateSession) return;
+    try {
+      const session = this.worker.rotateSession(runId);
+      this.loops.rebindSession(runId, session.sessionId);
+      this.engine.store.appendEvent(runId, {
+        type: "WORKER_SESSION_ROTATED",
+        payload: { provider: session.provider, sessionId: session.sessionId, afterIteration: this.iterations.list(runId).length }
+      });
+    } catch (error) {
+      this.ports.logger.log("warn", "Autopilot could not rotate the worker session", {
+        runId, error: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
 
   private hold(runId: string, reason: LoopStopReason, detail: string): void {
@@ -899,6 +928,19 @@ export class AutonomousLoop {
         if (decision?.verb === "CONTINUE") {
           // Passing verification ended the ITERATION, not the run. The agent
           // has more to do and said what it is; the next turn will do it.
+          //
+          // And it does it in a fresh conversation. A resumed session carries
+          // every previous phase into every model call: measured across one
+          // real 22-phase night, context per call grew from 12k tokens to 165k
+          // — 11.7M input tokens over 144 calls, climbing almost linearly.
+          //
+          // Safe here and nowhere else. This is a settled, verified,
+          // checkpointed piece of work: the code is on disk and the digest
+          // carries what was done and decided, which is exactly what the digest
+          // was built for. A REPAIR turn must keep its session, because
+          // repairing needs the failure in context — and repairs never reach
+          // this branch, which only runs on a green verification.
+          this.rotateSessionForNextPhase(runId, grant);
           this.changed(runId);
           continue;
         }

@@ -445,6 +445,7 @@ export class ControlledWorkerTurns {
     runId: string; maxTurns: number; maxIterations?: number;
     stopAt?: string; maxCostUsd?: number; maxIdleTurns?: number;
     autoResumeOnLimit?: boolean;
+    rotateSession?: boolean;
     grantedBy: string;
   }) {
     if (this.active.has(input.runId)) throw new Error("A worker action is already in progress.");

@@ -52,6 +52,13 @@ export interface LoopGrant {
    * better placed to know when it is worth trying again.
    */
   autoResumeOnLimit: boolean;
+  /**
+   * Whether each piece of work gets a fresh conversation.
+   *
+   * On by default. A resumed session carries every previous phase into
+   * every model call; the digest exists so it does not have to.
+   */
+  rotateSession: boolean;
   /** Reported by the provider. On a subscription, a usage proxy not a bill. */
   costUsed: number;
   status: LoopGrantStatus;
@@ -99,6 +106,7 @@ interface GrantRow {
   id: string; run_id: string; provider: string; session_id: string; workspace_root: string;
   max_turns: number; max_iterations: number | null; stop_at: string | null;
   max_cost_usd: number | null; max_idle_turns: number | null; auto_resume_on_limit: number | null;
+  rotate_session: number | null;
   status: string; granted_by: string; granted_at: string;
   closed_at: string | null; closed_reason: string | null;
 }
@@ -177,6 +185,19 @@ export class LoopStore {
   }
 
   /** What a turn cost, as the provider reported it. Best effort. */
+  /**
+   * Points an active grant at a new session.
+   *
+   * The grant binds to the session it authorized. Left pointing at a retired
+   * one, the journal would record an authorization for a conversation that no
+   * longer exists — the same fault adoption had to fix.
+   */
+  rebindSession(runId: string, sessionId: string): void {
+    this.db
+      .prepare("UPDATE autopilot_loop_grants SET session_id = :sessionId WHERE run_id = :runId AND status = 'ACTIVE'")
+      .run({ runId, sessionId });
+  }
+
   recordTurnCost(turnId: string, costUsd: number): void {
     if (!this.hasStopConditions() || !Number.isFinite(costUsd) || costUsd < 0) return;
     this.db.prepare("UPDATE autopilot_turns SET cost_usd = :costUsd WHERE id = :turnId").run({ turnId, costUsd });
@@ -200,6 +221,7 @@ export class LoopStore {
       maxCostUsd: row.max_cost_usd ?? null,
       maxIdleTurns: row.max_idle_turns ?? null,
       autoResumeOnLimit: row.auto_resume_on_limit === 1,
+      rotateSession: row.rotate_session !== 0,
       costUsed: this.costFor(row.id),
       // Derived, like turnsUsed: a counter that can drift is a counter that
       // eventually authorizes the wrong amount of work.
@@ -233,6 +255,8 @@ export class LoopStore {
     maxIdleTurns?: number;
     /** Wait and retry by itself when the provider runs out. Off by default. */
     autoResumeOnLimit?: boolean;
+    /** Give each piece of work a fresh conversation. On by default. */
+    rotateSession?: boolean;
     grantedBy: string;
   }): LoopGrant {
     assertPrimary(input.role);
@@ -276,9 +300,9 @@ export class LoopStore {
           budgeted
             ? `INSERT INTO autopilot_loop_grants
                  (id, run_id, provider, session_id, workspace_root, max_turns, max_iterations,
-                  stop_at, max_cost_usd, max_idle_turns, auto_resume_on_limit, status, granted_by, granted_at)
+                  stop_at, max_cost_usd, max_idle_turns, auto_resume_on_limit, rotate_session, status, granted_by, granted_at)
                VALUES (:id, :runId, :provider, :sessionId, :workspaceRoot, :maxTurns, :maxIterations,
-                  :stopAt, :maxCostUsd, :maxIdleTurns, :autoResume, 'ACTIVE', :grantedBy, :now)`
+                  :stopAt, :maxCostUsd, :maxIdleTurns, :autoResume, :rotate, 'ACTIVE', :grantedBy, :now)`
             : `INSERT INTO autopilot_loop_grants
                  (id, run_id, provider, session_id, workspace_root, max_turns, status, granted_by, granted_at)
                VALUES (:id, :runId, :provider, :sessionId, :workspaceRoot, :maxTurns, 'ACTIVE', :grantedBy, :now)`
@@ -291,7 +315,8 @@ export class LoopStore {
             stopAt: input.stopAt ?? null,
             maxCostUsd: input.maxCostUsd ?? null,
             maxIdleTurns: input.maxIdleTurns ?? null,
-            autoResume: input.autoResumeOnLimit === true ? 1 : 0
+            autoResume: input.autoResumeOnLimit === true ? 1 : 0,
+            rotate: input.rotateSession === false ? 0 : 1
           } : {}),
           grantedBy: input.grantedBy, id, now
         });

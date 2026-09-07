@@ -239,6 +239,8 @@ export interface WorkerAdapter {
   readonly id: string;
   detect(runId: string): Promise<WorkerAvailability>;
   startSession(runId: string): WorkerSession;
+  /** Retires the conversation and reserves a fresh one. Between phases only. */
+  rotateSession(runId: string): WorkerSession;
   resumeSession(runId: string): WorkerSession;
   sessionAvailability(runId: string): "missing" | "reserved" | "last_confirmed" | "needs_reconciliation";
   sendPrompt(input: { runId: string; sendId: string; prompt: string; retryOf?: string }): Promise<WorkerSend>;
@@ -317,6 +319,26 @@ export class DurableWorker implements WorkerAdapter {
       throw new Error("Worker workspace is denied by policy.");
     }
     return cwd;
+  }
+
+  /**
+   * Retires this run's conversation and reserves a fresh one.
+   *
+   * Called between pieces of work, never inside one. A resumed session carries
+   * every previous phase into every model call, which measured at 14x growth
+   * across a single night — from 12k tokens a call to 165k. What a new phase
+   * genuinely needs is the code on disk and the digest of what was done, and
+   * both survive a new conversation; what does not survive is the transcript,
+   * which is the expensive part and the part the digest exists to replace.
+   */
+  rotateSession(runId: string): WorkerSession {
+    const cwd = this.workspace(runId);
+    const sessionId = this.options.newSessionId();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId)) {
+      throw new Error("Worker session ID must be a UUID.");
+    }
+    this.sessions.replacePrimaryUnsafe({ runId, provider: this.id, sessionId, cwd, reason: "rotation" });
+    return this.sessions.session(runId)!;
   }
 
   startSession(runId: string): WorkerSession {
