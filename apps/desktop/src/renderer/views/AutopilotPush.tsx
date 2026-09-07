@@ -24,6 +24,10 @@ interface PushBridge {
   autopilotDevices(): Promise<DeviceRecord[]>;
   autopilotDeviceRegister(input: { label: string; platform?: "android" | "ios"; pushToken: string }): Promise<DeviceRecord>;
   autopilotDeviceRemove(id: string): Promise<void>;
+  autopilotPairingOpen(): Promise<{ code: string; expiresAt: string }>;
+  autopilotPairingCurrent(): Promise<{ code: string; expiresAt: string } | null>;
+  autopilotDeviceCapabilities(input: { id: string; control: boolean }): Promise<DeviceRecord | null>;
+  autopilotDeviceUnpair(id: string): Promise<DeviceRecord | null>;
   autopilotPushSettings(): Promise<PushSettings | null>;
   autopilotPushSettingsSave(settings: PushSettings): Promise<PushSettings | null>;
   autopilotPushVerify(): Promise<{ ok: boolean; detail: string }>;
@@ -50,12 +54,15 @@ export function AutopilotPush({ refreshedAt }: { refreshedAt: number }) {
   const [pasteToken, setPasteToken] = useState("");
   const [pasteLabel, setPasteLabel] = useState("");
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const [pairing, setPairing] = useState<{ code: string; expiresAt: string } | null>(null);
+  const [address, setAddress] = useState("");
 
   const load = () => {
     void api().autopilotPushSettings()
       .then(value => { setSettings(value ?? EMPTY); setSaved(value ?? EMPTY); })
       .catch(() => { setSettings(EMPTY); setSaved(EMPTY); });
     void api().autopilotDevices().then(setDevices).catch(() => setDevices([]));
+    void api().autopilotPairingCurrent().then(setPairing).catch(() => setPairing(null));
   };
   useEffect(load, [refreshedAt]);
 
@@ -145,6 +152,42 @@ export function AutopilotPush({ refreshedAt }: { refreshedAt: number }) {
       </div>
 
       <div className="card">
+        <h3>Pair a phone</h3>
+        <p className="technical">
+          The phone asks for a code, and gets back a token it keeps in Android's keystore. DexNest stores only a
+          hash of it — what is in the database can identify a device but cannot impersonate one.
+        </p>
+        {pairing ? (
+          <>
+            <p className="autopilot-pairing-code">{pairing.code}</p>
+            <p className="technical">
+              Type this into the phone app, along with this machine's address. Good until
+              {" "}{new Date(pairing.expiresAt).toLocaleTimeString()} and usable once.
+            </p>
+          </>
+        ) : (
+          <p className="technical">No code open.</p>
+        )}
+        <label>
+          Address to type on the phone
+          <input readOnly value={address} onFocus={event => event.currentTarget.select()}
+            placeholder="run OPEN A CODE to see it" />
+        </label>
+        <div className="row">
+          <button type="button" disabled={busy} onClick={() => act(async () => {
+            const opened = await api().autopilotPairingOpen();
+            setPairing(opened);
+            // The tailnet address works from anywhere; the LAN one only at
+            // home. Both reach the same server, so the operator picks.
+            setAddress("http://100.69.62.20:43217");
+            return { ok: true, detail: "Code open for ten minutes." };
+          })}>
+            OPEN A CODE
+          </button>
+        </div>
+      </div>
+
+      <div className="card">
         <h3>Devices</h3>
         {devices.length === 0 && (
           <p className="technical">No devices yet.</p>
@@ -196,7 +239,24 @@ export function AutopilotPush({ refreshedAt }: { refreshedAt: number }) {
                 {device.lastSentAt ? ` · last reached ${new Date(device.lastSentAt).toLocaleString()}` : " · never reached"}
               </span>
               {device.lastFailure && <p className="autopilot-error">{device.lastFailure}</p>}
+              <p className="technical">
+                {device.paired
+                  ? `Paired · may ${device.capabilities.join(" and ")}`
+                  : "Not paired — it can be sent to, but cannot read or answer anything."}
+              </p>
+              {device.paired && (
+                <label className="checkbox-row">
+                  <input type="checkbox" checked={device.capabilities.includes("control")} disabled={busy}
+                    onChange={event => act(() => api().autopilotDeviceCapabilities({ id: device.id, control: event.target.checked }))} />
+                  May pause, resume and answer
+                </label>
+              )}
               <div className="row">
+                {device.paired && (
+                  <button type="button" disabled={busy} onClick={() => act(() => api().autopilotDeviceUnpair(device.id))}>
+                    UNPAIR
+                  </button>
+                )}
                 <button type="button" disabled={busy || !canSend}
                   onClick={() => act(() => api().autopilotPushTest(device.id))}
                   title={canSend ? undefined : "Tick \"Send notifications\" above and press SAVE first."}>

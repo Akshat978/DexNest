@@ -16,6 +16,7 @@ import { Jimp } from "jimp";
 import { createActionRegistry, createStreamDeckActionCatalog, seededActions, streamDeckCatalogItems } from "@dexnest/action-registry";
 import { createLocalDb } from "@dexnest/local-db";
 import { createAutopilotHost, type AutopilotHost } from "./autopilotHost.js";
+import { createCompanionApi, openPairing } from "./companionApi.js";
 import type { MessageBoxOptions, MessageBoxSyncOptions, OpenDialogOptions, OpenDialogSyncOptions } from "electron";
 import type { DexNestActionDefinition, DexNestActionTrigger, DexNestEventStatus, DexNestPin, DexNestPinType } from "@dexnest/shared-types";
 import { formatLocalDateTime, getLocalTodayDateString, parseLocalDateInput, resolveRelativeLocalDate, toLocalDateInputValue } from "@dexnest/shared-types";
@@ -292,6 +293,27 @@ let rendererReady = false;
 let pendingOpenView: { view: string; focusAssistant?: boolean; startListening?: boolean; source?: DexNestActionTrigger } | null = null;
 let tray: Tray | null = null;
 let actionServer: ReturnType<typeof createServer> | null = null;
+let companionApi: ReturnType<typeof createCompanionApi> | null = null;
+/** Routes the phone's requests, once Autopilot's host exists to serve them. */
+async function companionRoutes(request: IncomingMessage, response: ServerResponse): Promise<boolean> {
+  if (!autopilotHost) return false;
+  if (!companionApi) {
+    companionApi = createCompanionApi({
+      host: autopilotHost,
+      logEvent: (summary, metadata) => {
+        localDb.appendActionEvent({
+          module: "autopilot",
+          eventType: "autopilot_companion",
+          status: "success",
+          source: "phone",
+          summary,
+          metadataJson: metadata
+        });
+      }
+    });
+  }
+  return companionApi(request, response);
+}
 let secureVaultKey: Buffer | null = null;
 // Trusted sensitive-access session for the Assistant. In-memory only — never
 // persisted — so it is always locked again on app close. Established by reusing
@@ -20037,6 +20059,29 @@ Start-Sleep -Milliseconds 80
 function startActionEndpoint(): void {
   actionServer = createServer(async (request, response) => {
     try {
+      // The phone's own API, ahead of everything else. It carries its own
+      // authorisation — a paired device token, per route, per capability —
+      // because this server listens on every interface and being able to reach
+      // a port is not the same as being allowed to act.
+      if (autopilotHost && (await companionRoutes(request, response))) {
+        return;
+      }
+      // Drop used to run BEFORE any authorisation and do none of its own, so
+      // anyone who could route to this port could read the files waiting there
+      // and push files onto this PC. On a home network that is low risk; on a
+      // café or hotel network it is not, and the same server now also carries
+      // the phone's API. It goes through the same gate as everything else.
+      //
+      // The gate is the existing one: localhost always, LAN only when the
+      // operator has enabled it, and a token when they have set one.
+      const dropUrl = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
+      if (dropUrl.pathname === "/drop" || dropUrl.pathname.startsWith("/drop/")) {
+        const dropAuth = authorizeControlEndpoint(request, dropUrl);
+        if (!dropAuth.ok) {
+          sendJson(response, dropAuth.statusCode, { ok: false, error: dropAuth.error });
+          return;
+        }
+      }
       if (await handleDropRoutes(request, response)) {
         return;
       }

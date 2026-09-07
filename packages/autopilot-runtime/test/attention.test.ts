@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
 import { AttentionStore, ATTENTION_REASON, DEFAULT_QUIET_HOURS, toLocalIso } from "../src/attention.ts";
+import { DeviceStore } from "../src/devices.ts";
 import { runAutopilotMigrations } from "../src/migrations.ts";
 import { AutopilotStore } from "../src/store.ts";
 import { createRunSpec } from "../src/runSpec.ts";
@@ -232,4 +233,98 @@ test("a database from before the delivery log simply has no memory", (t) => {
     h.store.decide(h.store.itemsForRun({ runId: "run-1", reason: "completed" }), { quietHours: NO_QUIET_WINDOW }).deliver.length,
     1
   );
+});
+
+// --- pairing a phone --------------------------------------------------------
+//
+// The token never enters the runtime: the host hashes it and passes the hash.
+// What is proved here is everything around that — that a code is single use
+// and expiring, that pairing grants read and not control, and that control is
+// only ever granted separately.
+
+test("a pairing code is single use and expires", (t) => {
+  const h = fixture(t);
+  const devices = new DeviceStore(h.ports);
+  const opened = devices.openPairing("123456", 10);
+  assert.equal(devices.openPairingCode()!.code, "123456");
+
+  devices.completePairing({ code: "123456", tokenHash: "hash-a", label: "phone", pushToken: "push-a" });
+  assert.throws(
+    () => devices.completePairing({ code: "123456", tokenHash: "hash-b", label: "other", pushToken: "push-b" }),
+    /already been used/
+  );
+  assert.equal(devices.openPairingCode(), null, "a used code is no longer on offer");
+  assert.ok(Date.parse(opened.expiresAt) > Date.parse(NOW));
+});
+
+test("a code this machine never issued is refused", (t) => {
+  const h = fixture(t);
+  assert.throws(
+    () => new DeviceStore(h.ports).completePairing({ code: "999999", tokenHash: "h", label: "phone" }),
+    /not one this machine issued/
+  );
+});
+
+test("pairing grants read, never control", (t) => {
+  // Seeing that a run is blocked is a far smaller thing to hand a phone than
+  // being able to stop one, and bundling them would mean deciding both while
+  // someone is fumbling with a pairing code.
+  const h = fixture(t);
+  const devices = new DeviceStore(h.ports);
+  devices.openPairing("111111", 10);
+  const device = devices.completePairing({ code: "111111", tokenHash: "hash-a", label: "phone", pushToken: "push-a" });
+
+  assert.deepEqual(device.capabilities, ["read"]);
+  assert.equal(device.paired, true);
+  assert.equal(devices.byTokenHash("hash-a")!.id, device.id);
+  assert.equal(devices.byTokenHash("some-other-hash"), null);
+});
+
+test("control is granted separately, and can be taken back", (t) => {
+  const h = fixture(t);
+  const devices = new DeviceStore(h.ports);
+  devices.openPairing("222222", 10);
+  const device = devices.completePairing({ code: "222222", tokenHash: "hash-b", label: "phone", pushToken: "push-b" });
+
+  assert.deepEqual(devices.setCapabilities(device.id, ["control"])!.capabilities.sort(), ["control", "read"]);
+  assert.deepEqual(devices.setCapabilities(device.id, [])!.capabilities, ["read"], "read survives; it is implied by pairing");
+});
+
+test("a device record never carries the thing that authenticates it", (t) => {
+  // This record reaches the renderer. A value that authenticates has no
+  // business being rendered, so only the fact of pairing crosses.
+  const h = fixture(t);
+  const devices = new DeviceStore(h.ports);
+  devices.openPairing("333333", 10);
+  const device = devices.completePairing({ code: "333333", tokenHash: "secret-hash", label: "phone", pushToken: "push-c" });
+
+  assert.equal(JSON.stringify(device).includes("secret-hash"), false);
+  assert.equal(device.paired, true, "only that it is paired");
+});
+
+test("unpairing revokes the token without forgetting the device", (t) => {
+  const h = fixture(t);
+  const devices = new DeviceStore(h.ports);
+  devices.openPairing("444444", 10);
+  const device = devices.completePairing({ code: "444444", tokenHash: "hash-d", label: "phone", pushToken: "push-d" });
+  devices.setCapabilities(device.id, ["control"]);
+
+  const after = devices.unpair(device.id)!;
+  assert.equal(after.paired, false);
+  assert.deepEqual(after.capabilities, ["read"], "and control does not survive a re-pair by accident");
+  assert.equal(devices.byTokenHash("hash-d"), null, "the old token authenticates nothing");
+  assert.equal(devices.get(device.id)!.label, "phone", "what it was sent is still on record");
+});
+
+test("a push token can rotate without re-pairing", (t) => {
+  // Android reissues these on its own. Making someone re-pair each time would
+  // make the whole thing feel broken.
+  const h = fixture(t);
+  const devices = new DeviceStore(h.ports);
+  devices.openPairing("555555", 10);
+  const device = devices.completePairing({ code: "555555", tokenHash: "hash-e", label: "phone", pushToken: "push-old" });
+
+  devices.setPushToken(device.id, "push-new");
+  assert.equal(devices.get(device.id)!.pushToken, "push-new");
+  assert.equal(devices.byTokenHash("hash-e")!.id, device.id, "identity is the paired token, not the address");
 });

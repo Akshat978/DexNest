@@ -254,3 +254,12 @@
   margin: 0;
   flex: 0 0 auto;
 }
+
+/* A pairing code is read off the screen and typed on a phone, so it has to be
+   legible from a metre away and unambiguous between 0 and O. */
+.autopilot-pairing-code {
+  font-family: ui-monospace, "Cascadia Mono", Menlo, monospace;
+  font-size: 2.2rem;
+  letter-spacing: 0.4rem;
+  margin: 0.4rem 0;
+}

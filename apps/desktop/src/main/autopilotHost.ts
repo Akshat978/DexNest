@@ -15,6 +15,7 @@ import type { BrowserWindow, IpcMain } from "electron";
 import { createAutopilotPlatformPorts } from "./autopilotPlatform.ts";
 import { claudeExecutable, codexExecutable, validateClaudeWorkspace } from "./autopilotWorkerConfig.ts";
 import { PushSender } from "./push.ts";
+import { openPairing } from "./companionApi.ts";
 import {
   AutopilotEngine,
   ControlledWorkerTurns,
@@ -130,6 +131,12 @@ export interface PushSettings {
 export interface AutopilotHost {
   engine: AutopilotEngine;
   workers: ControlledWorkerTurns;
+  /** Devices DexNest may speak to, and which of them may speak back. */
+  devices: DeviceStore;
+  /** What needs a person — the same decision the desktop panel shows. */
+  attentionSnapshot: () => { deliver: unknown[]; hold: unknown[]; reason: unknown[]; summary: string };
+  /** Runs in the shape a phone screen needs, not the desk-sized report. */
+  runsForPhone: () => Array<Record<string, unknown>>;
   /** Pending approvals across all runs, for the UI and the Stream Deck. */
   pendingApprovals: () => ApprovalRecord[];
   /** Resolves one approval. The only granter of gated authority. */
@@ -641,6 +648,26 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
 
   // --- devices and push settings ---------------------------------------------
   handle("dexnest:autopilot-devices", () => new DeviceStore(ports).list());
+  handle("dexnest:autopilot-pairing-open", () => {
+    const pairing = openPairing({ devices: new DeviceStore(ports) } as never);
+    options.logEvent?.("Autopilot opened a pairing window", { actionId: "autopilot.pairing_open" });
+    return pairing;
+  });
+  handle("dexnest:autopilot-pairing-current", () => new DeviceStore(ports).openPairingCode());
+  handle("dexnest:autopilot-device-capabilities", (_event, input: { id: string; control: boolean }) => {
+    // Control is granted here and nowhere else. A phone can ask to pair; it
+    // cannot ask to be trusted further.
+    const device = new DeviceStore(ports).setCapabilities(input.id, input.control ? ["read", "control"] : ["read"]);
+    options.logEvent?.(input.control ? "Autopilot granted a device control" : "Autopilot withdrew a device's control", {
+      actionId: "autopilot.device_capabilities", deviceId: input.id, control: input.control
+    });
+    return device;
+  });
+  handle("dexnest:autopilot-device-unpair", (_event, id: string) => {
+    const device = new DeviceStore(ports).unpair(id);
+    options.logEvent?.("Autopilot unpaired a device", { actionId: "autopilot.device_unpair", deviceId: id });
+    return device;
+  });
   handle("dexnest:autopilot-device-register", (_event, input: { label: string; platform?: "android" | "ios"; pushToken: string }) => {
     const device = new DeviceStore(ports).register(input);
     options.logEvent?.("Autopilot registered a device for notifications", {
@@ -706,6 +733,53 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
     const decision = attention.decide(items);
     return { ...decision, summary: attention.summarise(decision) };
   });
+
+  /** What the phone reads: the same decision the desktop panel shows. */
+  function attentionSnapshot() {
+    const attention = new AttentionStore(ports);
+    if (!attention.available()) return { deliver: [], hold: [], reason: [], summary: "" };
+    const settings = options.readPushSettings?.();
+    const items = engine.listRuns(50).flatMap(run => {
+      const held = [...engine.store.listEvents(run.id)].reverse()
+        .find(event => event.type === "LOOP_HELD")?.payload as { reason?: string; detail?: string } | undefined;
+      if (!held?.reason) return [];
+      return attention.itemsForRun({ runId: run.id, reason: held.reason as LoopStopReason, detail: held.detail ?? "" });
+    });
+    const decision = attention.decide(
+      items,
+      settings ? { quietHours: { start: settings.quietStart, end: settings.quietEnd } } : {}
+    );
+    return { ...decision, summary: attention.summarise(decision) };
+  }
+
+  /**
+   * Runs, in the shape a phone screen needs.
+   *
+   * Deliberately not the run report. That is built for a desk — verification
+   * output, send history, workspace evidence — and shipping it to a phone
+   * would be shipping a debugging surface to somewhere nobody can debug.
+   */
+  function runsForPhone() {
+    const queues = new RunQueueStore(ports);
+    return engine.listRuns(20).map(run => {
+      const report = workers.report(run.id);
+      const plan = report.plan;
+      const done = plan.items.filter(item => item.status === "DONE").length;
+      const active = plan.items.find(item => item.status === "ACTIVE");
+      const checkpoint = report.checkpoints.at(-1);
+      return {
+        id: run.id,
+        label: queues.itemForRun(run.id)?.label ?? (run.spec.projectPath ?? "").split(/[\/]/).filter(Boolean).pop() ?? run.id,
+        state: run.state,
+        phase: done + (active ? 1 : 0),
+        phaseTotal: plan.items.length,
+        phaseTitle: active?.title ?? "",
+        lastCheckpointAt: checkpoint?.createdAt ?? null,
+        verification: report.loop.turns.at(-1)?.verification?.outcome ?? "NONE",
+        costUsd: report.usage.totalUsd
+      };
+    });
+  }
 
   /** The summary an operator reads before opening the conversation. */
   function morningSummaryFor(runId: string) {
@@ -974,6 +1048,9 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
       });
       return resolved;
     },
+    devices: new DeviceStore(ports),
+    attentionSnapshot,
+    runsForPhone,
     async recover(): Promise<void> {
       // autoResume is deliberately absent: after an unexplained restart the safe
       // default is to hold, not to resume autonomous work unattended.

@@ -1039,6 +1039,42 @@ export const AUTOPILOT_MIGRATIONS: readonly Migration[] = [
         last_failure  TEXT
       );
     `
+  },
+  {
+    id: 31,
+    name: "device_pairing",
+    up: `
+      -- Letting a phone talk back.
+      --
+      -- Until now a device was only somewhere to SEND to, and the push token it
+      -- registered granted nothing: a token is useless without the sending
+      -- credentials, which never leave this machine. Reading a run or answering
+      -- a question is the other direction, and needs real authority.
+      --
+      -- Stored as a hash, never the token itself. The phone is shown it once at
+      -- pairing and keeps it in Android's keystore; a database anyone can read
+      -- should not also be a database anyone can authenticate with.
+      ALTER TABLE autopilot_devices ADD COLUMN token_hash TEXT;
+
+      -- Read and control are separate grants, and a device starts with read.
+      -- Being able to see that a run is blocked is a much smaller thing to hand
+      -- a phone than being able to stop one, and bundling them would mean
+      -- deciding both at the moment someone is fumbling with a pairing code.
+      ALTER TABLE autopilot_devices ADD COLUMN capabilities TEXT NOT NULL DEFAULT 'read';
+      ALTER TABLE autopilot_devices ADD COLUMN paired_at TEXT;
+      ALTER TABLE autopilot_devices ADD COLUMN last_seen_at TEXT;
+
+      -- A short-lived code the operator reads off the desktop and types into
+      -- the phone. Single use and expiring, because a pairing code that
+      -- outlived its moment would be a password nobody remembers setting.
+      CREATE TABLE IF NOT EXISTS autopilot_pairings (
+        code       TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        used_at    TEXT,
+        device_id  TEXT REFERENCES autopilot_devices(id)
+      );
+    `
   }
 ];
 
