@@ -17,6 +17,8 @@ import type { ActivityEvent, AttachedSessionRecord, DirectionDecision, Iteration
 interface LiveBridge {
   autopilotActivity(runId: string): Promise<ActivityEvent[]>;
   autopilotMorningSummary(runId: string): Promise<MorningSummary>;
+  /** retryProviderLimit is the deliberate "the limit has reset, carry on". */
+  autopilotLoopRun(runId: string, input?: { retryProviderLimit?: boolean }): Promise<unknown>;
 }
 const api = () => (window as unknown as { dexNest: LiveBridge }).dexNest;
 
@@ -120,8 +122,10 @@ export function IterationList({ iterations }: { iterations: IterationRecord[] })
  * Loaded on demand rather than with every refresh: it is derived from the whole
  * report and there is no reason to rebuild it while a run is mid-turn.
  */
-export function RunSummary({ runId, working }: { runId: string; working: boolean }) {
+export function RunSummary({ runId, working, refreshedAt, onChanged }: { runId: string; working: boolean; refreshedAt: number; onChanged: () => void }) {
   const [summary, setSummary] = useState<MorningSummary | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -130,7 +134,7 @@ export function RunSummary({ runId, working }: { runId: string; working: boolean
       .then(value => { if (alive) setSummary(value); })
       .catch(() => { if (alive) setSummary(null); });
     return () => { alive = false; };
-  }, [runId, working]);
+  }, [runId, working, refreshedAt]);
 
   if (working) {
     return <div className="card"><h4>Status</h4><p><strong>Working.</strong></p></div>;
@@ -163,6 +167,32 @@ export function RunSummary({ runId, working }: { runId: string; working: boolean
         </>
       )}
       <p><strong>Next:</strong> {next[summary.action]}</p>
+      {/* Running out of capacity is the one obstacle that clears on its own,
+          and by default the run no longer retries by itself — so the operator
+          needs a way to say "it is back". Until this existed the signal was
+          reachable only by the resume timer, which is why a run that hit its
+          limit could not be continued at all without waiting for a backoff. */}
+      {summary.action === "resume" && (
+        <>
+          {error && <p className="autopilot-error">{error}</p>}
+          <div className="row">
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                setBusy(true);
+                setError(null);
+                void api().autopilotLoopRun(runId, { retryProviderLimit: true })
+                  .then(() => onChanged())
+                  .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+                  .finally(() => setBusy(false));
+              }}
+            >
+              {busy ? "Trying…" : "TRY AGAIN NOW"}
+            </button>
+          </div>
+        </>
+      )}
       <pre className="technical autopilot-where">{summary.whereToWatch}</pre>
     </div>
   );

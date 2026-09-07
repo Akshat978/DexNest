@@ -73,13 +73,22 @@ export function buildMorningSummary(input: {
   let detail = outcome.detail;
 
   if (input.reason === "provider_limit") {
-    // A limit that is still being waited out needs nothing from the operator.
-    // One that has given up does.
+    const signIn = /logged in|sign in/i.test(input.detail);
     if (input.resume && !input.resume.exhausted) {
+      // Only when the operator asked it to wait. Then nothing is needed of
+      // them, and saying so is the difference between a quiet night and one
+      // they get out of bed for.
       detail = `${detail} It is waiting and will try again after ${input.resume.notBefore}.`;
-    } else {
-      action = /logged in|sign in/i.test(input.detail) ? "sign_in" : "resume";
+    } else if (input.resume) {
+      action = signIn ? "sign_in" : "resume";
       detail = `${detail} It waited and the limit did not clear, so it stopped.`;
+    } else {
+      // Waiting is off, which is the default: the run is holding for a person
+      // and will not move on its own however long it is left.
+      action = signIn ? "sign_in" : "resume";
+      detail = signIn
+        ? `${detail} Sign in again, then tell it to carry on — it is not retrying by itself.`
+        : `${detail} It is holding with its session and authorization intact, and will not retry by itself. Tell it to try again once your limit has reset.`;
     }
   }
 

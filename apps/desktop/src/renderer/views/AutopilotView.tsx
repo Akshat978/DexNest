@@ -294,7 +294,7 @@ export function AutopilotView() {
           {/* What is happening, and what happened. The mechanism below is
               for when something has gone wrong; this is the run. */}
           <LiveActivityPanel runId={run.id} working={Boolean(worker?.busy || loop?.busy)} />
-          <RunSummary runId={run.id} working={Boolean(worker?.busy || loop?.busy)} />
+          <RunSummary runId={run.id} working={Boolean(worker?.busy || loop?.busy)} refreshedAt={refreshedAt} onChanged={() => void refresh(run.id)} />
           {/* The morning: answer its claim to be finished, and say whatever
               reading it made you want to say. Neither starts a turn. */}
           {/* Explaining a job is easy in the editor and awkward in a form,

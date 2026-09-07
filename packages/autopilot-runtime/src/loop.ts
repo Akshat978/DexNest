@@ -214,6 +214,8 @@ export class AutonomousLoop {
   authorize(input: {
     runId: string; maxTurns: number; maxIterations?: number;
     stopAt?: string; maxCostUsd?: number; maxIdleTurns?: number;
+    /** Wait and retry by itself when the provider runs out. Off by default. */
+    autoResumeOnLimit?: boolean;
     grantedBy: string;
   }): LoopGrant {
     assertPrimary(this.worker.role);
@@ -229,6 +231,7 @@ export class AutonomousLoop {
       ...(input.stopAt !== undefined ? { stopAt: input.stopAt } : {}),
       ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
       ...(input.maxIdleTurns !== undefined ? { maxIdleTurns: input.maxIdleTurns } : {}),
+      ...(input.autoResumeOnLimit !== undefined ? { autoResumeOnLimit: input.autoResumeOnLimit } : {}),
       runId: input.runId,
       provider: this.worker.id,
       sessionId: session.sessionId,
@@ -741,9 +744,16 @@ export class AutonomousLoop {
             : `${this.worker.id} is no longer logged in. Sign in again and resume; the run keeps its session and authorization.`;
           this.iterations.settleActive(runId, { status: "ABANDONED", summary: detail });
           this.hold(runId, "provider_limit", detail);
-          // The limit lifts on its own, so the run waits rather than sitting
-          // until morning. The wait buys time, never authorization.
-          this.unattended.scheduleRetry({ runId, reason: detail });
+          // Waiting is a decision, not a default.
+          //
+          // The limit does lift on its own, so a genuinely unattended night is
+          // better off retrying than sitting until morning. But an operator
+          // watching their own quota knows better than a backoff table when it
+          // is worth trying again, and until this was a choice they had no way
+          // to say so: retryProviderLimit was passed only by the timer.
+          //
+          // Either way the wait buys time, never authorization.
+          if (grant.autoResumeOnLimit) this.unattended.scheduleRetry({ runId, reason: detail });
           return this.settle(runId, "provider_limit", detail, lastReport, turnsRun);
         }
 
@@ -868,7 +878,7 @@ export class AutonomousLoop {
           if (asked.failure === "quota" || asked.failure === "auth") {
             const detail = `The chat directing this run is unavailable (${asked.failure}). The run is paused with its sessions and authorization intact.`;
             this.hold(runId, "provider_limit", detail);
-            this.unattended.scheduleRetry({ runId, reason: detail });
+            if (grant.autoResumeOnLimit) this.unattended.scheduleRetry({ runId, reason: detail });
             return this.settle(runId, "provider_limit", detail, report, turnsRun);
           }
           decision = asked.decision;

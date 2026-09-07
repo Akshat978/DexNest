@@ -444,6 +444,7 @@ export class ControlledWorkerTurns {
   authorizeLoop(input: {
     runId: string; maxTurns: number; maxIterations?: number;
     stopAt?: string; maxCostUsd?: number; maxIdleTurns?: number;
+    autoResumeOnLimit?: boolean;
     grantedBy: string;
   }) {
     if (this.active.has(input.runId)) throw new Error("A worker action is already in progress.");

@@ -924,6 +924,24 @@ export const AUTOPILOT_MIGRATIONS: readonly Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_run_queue_items_queue
         ON autopilot_run_queue_items(queue_id, ordinal);
     `
+  },
+  {
+    id: 26,
+    name: "manual_resume_after_provider_limit",
+    up: `
+      -- Who decides when a run continues after the provider says no.
+      --
+      -- Running out of capacity used to schedule its own retry, on a backoff of
+      -- 15/30/60/120/240 minutes, and there was no way to say "try now" —
+      -- retryProviderLimit was passed only by that timer. So the one decision
+      -- the operator most wanted (it is back, carry on) was the one they could
+      -- not make.
+      --
+      -- Waiting is still the right answer for a genuinely unattended night, so
+      -- it stays available. It is no longer the default: 0 means the run holds
+      -- until a person says otherwise.
+      ALTER TABLE autopilot_loop_grants ADD COLUMN auto_resume_on_limit INTEGER NOT NULL DEFAULT 0;
+    `
   }
 ];
 

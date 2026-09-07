@@ -21,12 +21,21 @@ import { DEFAULT_AGENTIC_TOOLS } from "../src/worker.ts";
 
 const assumed = (body: string) => `<<<DEXNEST_ASSUMED>>>\n${body}\n<<<END_DEXNEST_ASSUMED>>>`;
 
-function fixture(t: { after(fn: () => void): void }, plan: LoopPlanStep[]) {
+function fixture(
+  t: { after(fn: () => void): void },
+  plan: LoopPlanStep[],
+  options: { autoResumeOnLimit?: boolean } = {}
+) {
   const root = mkdtempSync(resolve(tmpdir(), "dexnest-unattended-"));
   initWorktree(resolve(root, "worktree"), plan, { typecheck: 1 });
   const h = openLoop(root, { maxConsecutiveFailures: 20 });
   h.createRun();
-  h.loop.authorize({ runId: "loop-run", maxTurns: 10, maxIterations: 4, grantedBy: "human" });
+  // Waiting is opt-in. Most of these tests are about what the wait DOES, so
+  // they ask for it; the tests about who decides do not.
+  h.loop.authorize({
+    runId: "loop-run", maxTurns: 10, maxIterations: 4, grantedBy: "human",
+    ...(options.autoResumeOnLimit === false ? {} : { autoResumeOnLimit: true })
+  });
   t.after(() => {
     try { h.close(); } catch { /* already closed */ }
     rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
@@ -104,7 +113,36 @@ test("every prompt carries the unattended instructions", async (t) => {
 
 // --- waiting out a limit ----------------------------------------------------
 
-test("a usage limit schedules a wait rather than sitting until morning", async (t) => {
+test("by default a usage limit holds and waits for a person", async (t) => {
+  // Running out of capacity used to schedule its own retry, and there was no
+  // way to say "try now" — retryProviderLimit was passed only by that timer.
+  // So the one decision an operator most wanted was the one they could not
+  // make. Now the run holds, keeps its session and its authorization, and
+  // waits to be told.
+  const h = fixture(t, [{ workerFailure: "quota" }], { autoResumeOnLimit: false });
+  const outcome = await h.loop.run("loop-run");
+
+  assert.equal(outcome.reason, "provider_limit");
+  assert.equal(new UnattendedStore(h.ports).pending("loop-run"), null, "nothing retries behind the operator's back");
+  const grant = new LoopStore(h.ports).activeGrant("loop-run")!;
+  assert.equal(grant.status, "ACTIVE", "the authorization survives, so continuing is a resume");
+  assert.equal(grant.autoResumeOnLimit, false);
+});
+
+test("a person saying try again now is all it takes to continue", async (t) => {
+  const h = fixture(t, [
+    { workerFailure: "quota" },
+    { emitFiles: [{ path: "a.txt", contents: "a\n" }], verify: { typecheck: 0 } }
+  ], { autoResumeOnLimit: false });
+  await h.loop.run("loop-run");
+
+  // The same signal the timer used to send, now available to the operator.
+  const second = await h.loop.run("loop-run", { retryProviderLimit: true });
+  assert.notEqual(second.reason, "provider_limit");
+  assert.equal(new LoopStore(h.ports).turns("loop-run").length, 2, "the held turn was retried, not re-authorized");
+});
+
+test("asked for, a usage limit schedules a wait rather than sitting until morning", async (t) => {
   const h = fixture(t, [{ workerFailure: "quota" }]);
   const outcome = await h.loop.run("loop-run");
   assert.equal(outcome.reason, "provider_limit");

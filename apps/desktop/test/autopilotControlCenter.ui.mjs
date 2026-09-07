@@ -51,6 +51,7 @@ const tokens = resolve(desktop, "../../packages/shared-ui/src/tokens.css").repla
 writeFileSync(join(scratch, "entry.tsx"), `import React from 'react'; import {createRoot} from 'react-dom/client'; import {AutopilotView} from ${JSON.stringify(view)}; import ${JSON.stringify(tokens)}; import ${JSON.stringify(css)}; createRoot(document.getElementById('root')).render(<main style={{padding:24,maxWidth:1200,margin:'auto'}}><AutopilotView/></main>);`);
 writeFileSync(join(scratch, "preload.cjs"), `const {contextBridge}=require('electron'); const report=${JSON.stringify(report)}, snapshot=${JSON.stringify(snapshot)}, dashboard=${JSON.stringify(dashboard)};
 const notes=[];
+const retried={value:false};
 let candidateCalls=0;
 const attached={value:null};
 const primed={sessionId:'aaaaaaaa-1111-4111-8111-111111111111',transcriptPath:'C:/t/a.jsonl',projectPath:'D:/Worktrees/example',origin:'vscode',title:'Notifications architecture',cliVersion:'2.1.261',gitBranch:'main',firstActivity:'2026-09-04T09:00:00Z',lastActivity:'2026-09-04T18:00:00Z',sizeBytes:4096,live:false};
@@ -75,6 +76,7 @@ autopilotConsultationRun:async scope=>{if(scope.requestId!=='consult1'||scope.co
 autopilotCancelConsultation:async()=>{Object.assign(report.consultations[0],{status:'CANCELLED',canApprove:false,canCancel:false,executionEligible:false});},
 autopilotActivity:async()=>[{id:'e1',kind:'tool',text:'Read src/example.ts',at:'2026-09-05T12:00:00Z'}],
 __candidateCalls:async()=>candidateCalls,
+__retried:async()=>retried.value,
 autopilotQueue:async()=>null,
 autopilotQueueCreate:async input=>{if(!input.items.length)throw Error('A run queue needs at least one project.');return {id:'q1'};},
 autopilotQueueClose:async()=>null,
@@ -85,7 +87,8 @@ autopilotNotes:async()=>notes, autopilotAddNote:async input=>{const note={id:'n'
 autopilotPlanCompleteProposal:async()=>proposal.value,
 autopilotAcceptPlanComplete:async()=>{proposal.value=null;},
 autopilotRejectPlanComplete:async input=>{if(!input.reason.trim())throw Error('Say what is still missing');proposal.value=null;const note={id:'n0',runId:input.runId,text:input.reason,author:'desktop_ui',createdAt:'2026-09-05T12:00:00Z',consumedTurnId:null};notes.push(note);return note;},
-autopilotMorningSummary:async()=>({headline:'It stopped getting anywhere.',action:'review',detail:'Nothing passed verification for several turns in a row.',iterationsDone:1,iterationsAttempted:2,checkpoints:1,assumptions:['Kept the existing API.'],whereToWatch:'D:/Worktrees/example'}),
+autopilotMorningSummary:async()=>({headline:'It ran out of capacity.',action:'resume',detail:'It is holding with its session and authorization intact, and will not retry by itself.',iterationsDone:1,iterationsAttempted:2,checkpoints:1,assumptions:['Kept the existing API.'],whereToWatch:'D:/Worktrees/example'}),
+autopilotLoopRun:async(runId,input)=>{if(!input||input.retryProviderLimit!==true)throw Error('a manual retry must pass retryProviderLimit');retried.value=true;return {reason:'completed'};},
 listProjects:async()=>[{id:'project',name:'Example project',path:'D:/Example'}], onAutopilotChanged:()=>()=>{},
 autopilotReadiness:async()=>[{provider:'claude',installed:true,authenticated:true,available:true,failure:null},{provider:'codex',installed:true,authenticated:false,available:false,failure:'auth'}],
 chooseToolsOutputFolder:async()=>({ok:true,path:'D:/Example'})
@@ -101,6 +104,14 @@ await win.webContents.executeJavaScript("[...document.querySelectorAll('nav butt
 await new Promise(r=>setTimeout(r,100));
 await win.webContents.executeJavaScript("[...document.querySelectorAll('details.autopilot-mechanism')].forEach(d=>{d.open=true})");
 await new Promise(r=>setTimeout(r,100));
+
+// Running out of capacity no longer retries by itself, so the operator needs a
+// way to say "it is back". Until this control existed, retryProviderLimit was
+// reachable only by the resume timer.
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('will not retry by itself')"),true);
+await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(b=>b.textContent==='TRY AGAIN NOW').click()");
+await new Promise(r=>setTimeout(r,250));
+assert.equal(await win.webContents.executeJavaScript("window.dexNest.__retried()"),true,'the button sends the deliberate retry signal');
 
 // Continuing a conversation primed in the editor. A blocked session stays
 // visible with its reason: someone hunting for the conversation they just had

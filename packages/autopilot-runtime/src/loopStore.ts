@@ -43,6 +43,15 @@ export interface LoopGrant {
   maxCostUsd: number | null;
   /** Turns that may pass without anything verifying before stopping. */
   maxIdleTurns: number | null;
+  /**
+   * Whether the run waits and retries itself when the provider says no.
+   *
+   * Off by default. Running out of capacity is the one obstacle that clears on
+   * its own, so waiting is right for a genuinely unattended night — but it is a
+   * decision, not a default, because the operator watching their own quota is
+   * better placed to know when it is worth trying again.
+   */
+  autoResumeOnLimit: boolean;
   /** Reported by the provider. On a subscription, a usage proxy not a bill. */
   costUsed: number;
   status: LoopGrantStatus;
@@ -81,7 +90,7 @@ interface GrantRow {
   role: WorkerRole;
   id: string; run_id: string; provider: string; session_id: string; workspace_root: string;
   max_turns: number; max_iterations: number | null; stop_at: string | null;
-  max_cost_usd: number | null; max_idle_turns: number | null;
+  max_cost_usd: number | null; max_idle_turns: number | null; auto_resume_on_limit: number | null;
   status: string; granted_by: string; granted_at: string;
   closed_at: string | null; closed_reason: string | null;
 }
@@ -181,6 +190,7 @@ export class LoopStore {
       stopAt: row.stop_at ?? null,
       maxCostUsd: row.max_cost_usd ?? null,
       maxIdleTurns: row.max_idle_turns ?? null,
+      autoResumeOnLimit: row.auto_resume_on_limit === 1,
       costUsed: this.costFor(row.id),
       // Derived, like turnsUsed: a counter that can drift is a counter that
       // eventually authorizes the wrong amount of work.
@@ -212,6 +222,8 @@ export class LoopStore {
     maxCostUsd?: number;
     /** Stop after this many turns with nothing passing verification. */
     maxIdleTurns?: number;
+    /** Wait and retry by itself when the provider runs out. Off by default. */
+    autoResumeOnLimit?: boolean;
     grantedBy: string;
   }): LoopGrant {
     assertPrimary(input.role);
@@ -255,9 +267,9 @@ export class LoopStore {
           budgeted
             ? `INSERT INTO autopilot_loop_grants
                  (id, run_id, provider, session_id, workspace_root, max_turns, max_iterations,
-                  stop_at, max_cost_usd, max_idle_turns, status, granted_by, granted_at)
+                  stop_at, max_cost_usd, max_idle_turns, auto_resume_on_limit, status, granted_by, granted_at)
                VALUES (:id, :runId, :provider, :sessionId, :workspaceRoot, :maxTurns, :maxIterations,
-                  :stopAt, :maxCostUsd, :maxIdleTurns, 'ACTIVE', :grantedBy, :now)`
+                  :stopAt, :maxCostUsd, :maxIdleTurns, :autoResume, 'ACTIVE', :grantedBy, :now)`
             : `INSERT INTO autopilot_loop_grants
                  (id, run_id, provider, session_id, workspace_root, max_turns, status, granted_by, granted_at)
                VALUES (:id, :runId, :provider, :sessionId, :workspaceRoot, :maxTurns, 'ACTIVE', :grantedBy, :now)`
@@ -269,7 +281,8 @@ export class LoopStore {
             maxIterations: input.maxIterations ?? null,
             stopAt: input.stopAt ?? null,
             maxCostUsd: input.maxCostUsd ?? null,
-            maxIdleTurns: input.maxIdleTurns ?? null
+            maxIdleTurns: input.maxIdleTurns ?? null,
+            autoResume: input.autoResumeOnLimit === true ? 1 : 0
           } : {}),
           grantedBy: input.grantedBy, id, now
         });
