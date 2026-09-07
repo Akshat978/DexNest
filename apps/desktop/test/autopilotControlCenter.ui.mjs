@@ -21,6 +21,11 @@ const report = { schemaVersion: 3, generatedAt: now, run, spec, provider: { id: 
     category: "input_protocol", exitCode: 1, signal: null,
     stderrTail: "Error: Input must be provided either through stdin or as a prompt argument when using --print",
     stdoutTail: "", stderrBytes: 40000, stdoutBytes: 0, stderrTruncated: true, stdoutTruncated: false, createdAt: now, categoryLabel: "input/protocol error" }],
+  usage: { totalUsd: 12.5, unreportedTurns: 1, growth: { first: 0.4, last: 3.6, ratio: 9 },
+    turns: [{ordinal:1,turnId:'t1',kind:'INITIAL',status:'VERIFIED',costUsd:0.4,cumulativeUsd:0.4,promptChars:4273},
+            {ordinal:2,turnId:'t2',kind:'INITIAL',status:'VERIFIED',costUsd:3.6,cumulativeUsd:4.0,promptChars:4400}],
+    phases: [{ordinal:1,status:'VERIFIED',summary:'lexer',turns:1,costUsd:0.4},
+             {ordinal:2,status:'VERIFIED',summary:'parser',turns:2,costUsd:8.2}] },
   loop: { turns: [], grants: [] }, checkpoints: [], workspace: { headSha: "abcdef123456", changedFiles: 1, capturedAt: now },
   humanActions: { interventionCount: 1 }, deniedOperations: [], acceptanceCriteria: [], eventCount: 3,
   outcome: { classification: "needs_review", reason: "Uncertain send" }, activity: [{ id: "a", label: "Context requested", at: now }],
@@ -104,6 +109,14 @@ await win.webContents.executeJavaScript("[...document.querySelectorAll('nav butt
 await new Promise(r=>setTimeout(r,100));
 await win.webContents.executeJavaScript("[...document.querySelectorAll('details.autopilot-mechanism')].forEach(d=>{d.open=true})");
 await new Promise(r=>setTimeout(r,100));
+
+// Which phase was expensive, and whether turns are getting dearer. The figure
+// is the provider's own and must never be dressed up as a percentage of a plan.
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('$12.50')"),true);
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('usage proxy on a subscription, not a bill')"),true);
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('9.0x the first')"),true,'growth is stated, not left to be inferred');
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('Dearest phase: 2')"),true);
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('1 turn(s) reported nothing')"),true,'silence is not counted as free');
 
 // Running out of capacity no longer retries by itself, so the operator needs a
 // way to say "it is back". Until this control existed, retryProviderLimit was

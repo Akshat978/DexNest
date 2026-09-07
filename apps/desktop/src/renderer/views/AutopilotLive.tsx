@@ -12,7 +12,7 @@
 // and it is doing this" view that a buffered run could never give.
 
 import React, { useEffect, useRef, useState } from "react";
-import type { ActivityEvent, AttachedSessionRecord, DirectionDecision, IterationRecord, MorningSummary, OperatorNoteRecord, PlanItemProgress, SessionCandidate } from "@dexnest/autopilot-runtime";
+import type { ActivityEvent, AttachedSessionRecord, DirectionDecision, IterationRecord, MorningSummary, OperatorNoteRecord, PlanItemProgress, SessionCandidate, UsageReport } from "@dexnest/autopilot-runtime";
 
 interface LiveBridge {
   autopilotActivity(runId: string): Promise<ActivityEvent[]>;
@@ -423,6 +423,87 @@ export function SessionAdoption({ runId, working, refreshedAt, onChanged }: { ru
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+
+// --- what the night cost ----------------------------------------------------
+
+/**
+ * Where the usage went, per phase.
+ *
+ * The provider's per-turn figure has been recorded since the cost budget
+ * existed and shown nowhere, so the obvious question after an expensive night —
+ * which phase was it? — had no answer, and the obvious theory ("we send too
+ * much context") could be neither confirmed nor ruled out.
+ *
+ * DexNest's own prompt sits beside the cost deliberately. It is about a
+ * thousand tokens, and seeing that next to a turn that cost real money is what
+ * shows the two are unrelated: the expense is the conversation being resumed,
+ * not the assignment being sent.
+ */
+export function UsagePanel({ usage }: { usage: UsageReport | null }) {
+  if (!usage || usage.turns.length === 0) return null;
+
+  const dearest = [...usage.phases]
+    .filter(phase => phase.costUsd !== null)
+    .sort((left, right) => (right.costUsd ?? 0) - (left.costUsd ?? 0))[0];
+
+  return (
+    <div className="card">
+      <h4>What it cost</h4>
+      <p>
+        <strong>${usage.totalUsd.toFixed(2)}</strong> across {usage.turns.length} turn(s),
+        as the provider reports it — a usage proxy on a subscription, not a bill.
+      </p>
+      {usage.unreportedTurns > 0 && (
+        <p className="technical">{usage.unreportedTurns} turn(s) reported nothing and are not counted.</p>
+      )}
+
+      {usage.growth && (
+        <p className={usage.growth.ratio >= 1.5 ? undefined : "technical"}>
+          {usage.growth.ratio >= 1.5
+            ? `The last turn cost ${usage.growth.ratio.toFixed(1)}x the first. A run whose turns get dearer is paying for its own history — every phase re-sends the ones before it.`
+            : `Cost per turn stayed roughly level (${usage.growth.first.toFixed(2)} then ${usage.growth.last.toFixed(2)}).`}
+        </p>
+      )}
+
+      {dearest && (
+        <p className="technical">
+          Dearest phase: {dearest.ordinal} — ${dearest.costUsd!.toFixed(2)} over {dearest.turns} turn(s).
+        </p>
+      )}
+
+      <details className="autopilot-mechanism">
+        <summary>Per phase, and per turn</summary>
+        <ol className="autopilot-usage">
+          {usage.phases.map(phase => (
+            <li key={phase.ordinal}>
+              Phase {phase.ordinal}
+              <span className="technical">
+                {" — "}{phase.costUsd === null ? "not reported" : `$${phase.costUsd.toFixed(2)}`}
+                {" over "}{phase.turns} turn(s){phase.summary ? ` · ${phase.summary}` : ""}
+              </span>
+            </li>
+          ))}
+        </ol>
+        <table className="autopilot-usage-turns">
+          <thead>
+            <tr><th>Turn</th><th>Cost</th><th>Cumulative</th><th>DexNest prompt</th></tr>
+          </thead>
+          <tbody>
+            {usage.turns.map(entry => (
+              <tr key={entry.turnId}>
+                <td>{entry.ordinal}</td>
+                <td>{entry.costUsd === null ? "—" : `$${entry.costUsd.toFixed(2)}`}</td>
+                <td>${entry.cumulativeUsd.toFixed(2)}</td>
+                <td>{entry.promptChars.toLocaleString()} chars</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </details>
     </div>
   );
 }

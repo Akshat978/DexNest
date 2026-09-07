@@ -29,6 +29,7 @@ import { evaluateRecovery, type RecoveryDecision, type PreflightProbe } from "./
 import { DirectionStore, DirectionAuthorityStore, type DirectionDecision, type DirectionSource, type DirectionAuthority } from "./direction.ts";
 import { IterationStore, type IterationRecord } from "./iterations.ts";
 import { PlanStore, type PlanView } from "./plan.ts";
+import { buildUsageReport, type UsageReport } from "./usage.ts";
 
 export const RUN_REPORT_SCHEMA_VERSION = 5;
 const ACTIVITY_LABELS: Record<string, string> = {
@@ -85,6 +86,8 @@ export interface ReportTurn {
   status: string;
   grantConsumed: boolean;
   promptLength: number;
+  /** What the provider said this turn cost. Null when it reported nothing. */
+  costUsd: number | null;
   sendId: string | null;
   sendStatus: string | null;
   sendFailure: string | null;
@@ -157,6 +160,8 @@ export interface RunReport {
     grants: Array<{ id: string; role: "PRIMARY"; maxTurns: number; turnsUsed: number; status: string; grantedBy: string; grantedAt: string; closedAt: string | null; closedReason: string | null }>;
     turns: ReportTurn[];
   };
+  /** What the night cost, per turn and per phase, as the provider reported it. */
+  usage: UsageReport;
   acceptanceCriteria: Array<{ id: string; text: string; kind: string; check: string | null; status: "passed" | "failed" | "not_evaluated" | "needs_human" }>;
   checkpoints: Array<{ turnOrdinal: number | null; status: string; commitSha: string | null; message: string; createdAt: string; detail: string | null }>;
   workspace: {
@@ -212,6 +217,7 @@ export function buildRunReport(ports: RuntimePorts, runId: string, preflight?: P
   const sends = workers.list(runId);
   const resolutions = workers.resolutions(runId);
   const turns = loops.turns(runId);
+  const iterationList = new IterationStore(ports).list(runId);
   const verifications = loops.verifications(runId);
   const allCheckpoints = checkpoints.list(runId);
   const snapshot = checkpoints.latestSnapshot(runId);
@@ -233,6 +239,8 @@ export function buildRunReport(ports: RuntimePorts, runId: string, preflight?: P
       grantConsumed: turn.grantConsumed,
       // Length only: the prompt itself already lives in the worker store.
       promptLength: turn.prompt.length,
+      // Recorded since the cost budget existed; shown here for the first time.
+      costUsd: turn.costUsd,
       sendId: turn.sendId,
       sendStatus: send?.status ?? null,
       sendFailure: send?.result?.failure ?? null,
@@ -320,7 +328,7 @@ export function buildRunReport(ports: RuntimePorts, runId: string, preflight?: P
     primaryProgress: latestPrimaryProgress(ports, runId),
     consultations: new ConsultationStore(ports).list(runId),
     recovery: evaluateRecovery(ports, runId, preflight),
-    iterations: new IterationStore(ports).list(runId),
+    iterations: iterationList,
     plan: new PlanStore(ports).view(runId, run.spec),
     direction: {
       source: new DirectionAuthorityStore(ports).current(runId),
@@ -390,6 +398,7 @@ export function buildRunReport(ports: RuntimePorts, runId: string, preflight?: P
       })),
       turns: reportTurns
     },
+    usage: buildUsageReport({ turns, iterations: iterationList }),
     acceptanceCriteria,
     checkpoints: allCheckpoints.map((checkpoint) => ({
       turnOrdinal: turnOrdinalById.get(checkpoint.turnId) ?? null,

@@ -173,3 +173,27 @@
 .autopilot-queue > li.queue-skipped,
 .autopilot-queue > li.queue-abandoned { opacity: 0.75; }
 .autopilot-queue p { margin: 0.2rem 0 0; }
+
+/* What the night cost. Read after the fact, so density beats decoration. */
+.autopilot-usage {
+  margin: 0.4rem 0 0;
+  padding-left: 1.2rem;
+}
+
+.autopilot-usage-turns {
+  width: 100%;
+  margin-top: 0.6rem;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.autopilot-usage-turns th,
+.autopilot-usage-turns td {
+  text-align: right;
+  padding: 0.2rem 0.5rem;
+  border-bottom: 1px solid rgba(127, 127, 127, 0.2);
+}
+
+.autopilot-usage-turns th:first-child,
+.autopilot-usage-turns td:first-child { text-align: left; }
+.autopilot-usage-turns th { opacity: 0.7; font-weight: 500; }

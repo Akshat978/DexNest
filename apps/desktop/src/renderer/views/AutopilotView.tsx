@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { ControlledWorkerTurns, RunSpecInput, RunReport } from "@dexnest/autopilot-runtime";
 import { AutopilotNewRun } from "./AutopilotNewRun";
-import { LiveActivityPanel, PlanProgress, IterationList, RunSummary, MorningPanel, SessionAdoption } from "./AutopilotLive";
+import { LiveActivityPanel, PlanProgress, IterationList, RunSummary, MorningPanel, SessionAdoption, UsagePanel } from "./AutopilotLive";
 import { AutopilotQueue } from "./AutopilotQueue";
 import "./Autopilot.css";
 import type { projectRun } from "@dexnest/autopilot-runtime";
@@ -301,6 +301,9 @@ export function AutopilotView() {
               so the explaining can happen there and the carrying-on here. */}
           <SessionAdoption runId={run.id} working={Boolean(worker?.busy || loop?.busy)} refreshedAt={refreshedAt} onChanged={() => void refresh(run.id)} />
           <MorningPanel runId={run.id} working={Boolean(worker?.busy || loop?.busy)} refreshedAt={refreshedAt} onChanged={() => void refresh(run.id)} />
+          {/* Measured, not assumed: which phase was expensive, and whether
+              the turns are getting dearer as the session grows. */}
+          <UsagePanel usage={report?.usage ?? null} />
           {report?.plan && <PlanProgress items={report.plan.items} />}
           {report?.iterations && <IterationList iterations={report.iterations} />}
 

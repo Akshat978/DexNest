@@ -71,6 +71,8 @@ export { PlanStore, PlanItemError, renderPlanProgress, renderPlanForWorker } fro
 export { renderRunDigest, MAX_DIGEST_ITERATIONS, MAX_DIGEST_ASSUMPTIONS } from "./digest.ts";
 export { OperatorNoteStore, renderOperatorNote, MAX_OPERATOR_NOTE_CHARS } from "./operatorNote.ts";
 export { RunQueueStore, QUEUE_OUTCOME } from "./runQueue.ts";
+export { buildUsageReport, renderUsageReport } from "./usage.ts";
+export type { UsageReport, TurnCost, PhaseCost } from "./usage.ts";
 export type { RunQueueRecord, RunQueueItemRecord, QueueItemInput, RunTemplate } from "./runQueue.ts";
 export type { QueueProgress, QueueStatus, QueueAction, QueueBudget, QueueStopReason } from "@dexnest/run-queue";
 export type { OperatorNoteRecord } from "./operatorNote.ts";

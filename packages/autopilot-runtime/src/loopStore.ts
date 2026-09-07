@@ -72,6 +72,14 @@ export interface TurnRecord {
   status: TurnStatus;
   grantConsumed: boolean;
   verificationId: string | null;
+  /**
+   * What the provider said this turn cost. Null when it reported nothing.
+   *
+   * Recorded since the cost budget existed, and until now surfaced nowhere —
+   * so "which phase was expensive" had no answer, and a run's usage could only
+   * be guessed at from the provider's own dashboard after the fact.
+   */
+  costUsd: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -97,6 +105,7 @@ interface GrantRow {
 interface TurnRow {
   id: string; run_id: string; grant_id: string; ordinal: number; kind: string; prompt_text: string;
   send_id: string | null; status: string; grant_consumed: number; verification_id: string | null;
+  cost_usd: number | null;
   created_at: string; updated_at: string;
 }
 interface VerificationRow {
@@ -385,6 +394,7 @@ export class LoopStore {
       status: row.status as TurnStatus,
       grantConsumed: row.grant_consumed === 1,
       verificationId: row.verification_id,
+      costUsd: typeof row.cost_usd === "number" ? row.cost_usd : null,
       createdAt: row.created_at,
       updatedAt: row.updated_at
     };
