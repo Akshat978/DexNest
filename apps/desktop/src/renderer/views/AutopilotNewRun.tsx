@@ -40,6 +40,10 @@ const initial: NewRunForm = {
   workspaceMode: "project-branch", workerProfile: "agentic",
   planText: "", director: null, model: "", effort: "",
   stopAt: "", maxIdleTurns: 3,
+  // Off: an operator watching their own quota knows better than a backoff
+  // table when it is worth trying again. On: the digest replaces the
+  // transcript, so a phase does not need to carry every phase before it.
+  autoResumeOnLimit: false, rotateSession: true,
   constraints: [], nonGoals: [], acceptance: [{ text: "Configured tests pass", tier: "test" }],
   verification: [
     { tier: "typecheck", enabled: false, executable: "node", args: ["node_modules/typescript/bin/tsc", "--noEmit"] },
@@ -281,6 +285,27 @@ export function AutopilotNewRun({ onCreated }: { onCreated(id: string): void }) 
           <label>Consecutive failure limit
             <input type="number" min={1} max={20} required value={form.maxFailures} onChange={event => update({ maxFailures: Number(event.target.value) })} />
           </label>
+          <label>
+            <input type="checkbox" checked={form.rotateSession !== false}
+              onChange={event => update({ rotateSession: event.target.checked })} />
+            Start each piece of work in a fresh conversation
+          </label>
+          <p className="technical">
+            On by default, and it is where the cost is. Resuming one conversation across a whole run makes every
+            model call carry every phase before it — measured at 14x growth across a single night. What carries
+            forward instead is the code on disk and the record of what was done. A repair always keeps its
+            conversation; only settled work starts fresh.
+          </p>
+          <label>
+            <input type="checkbox" checked={form.autoResumeOnLimit === true}
+              onChange={event => update({ autoResumeOnLimit: event.target.checked })} />
+            Wait and retry on its own when the provider runs out
+          </label>
+          <p className="technical">
+            Off by default: the run holds with its session and authorization intact until you press TRY AGAIN NOW.
+            Turn this on for a night nobody will be awake for, and it waits 15, 30, 60, 120 then 240 minutes before
+            giving up.
+          </p>
 
           <details><summary>Verification</summary>
             <p>Commands run in the workspace. Existing dependencies must be available; no packages are installed automatically. Enter each argument on its own line.</p>

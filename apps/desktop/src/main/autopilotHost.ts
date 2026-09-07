@@ -503,10 +503,16 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
       director: null,
       model: queue.template.model ?? "",
       effort: queue.template.effort ?? "",
-      // The queue owns the deadline and the spend cap, and they span every
-      // project. Giving each run its own copy would let three projects spend
-      // three times the budget.
-      stopAt: "",
+      // The spend cap stays at queue level: it is a budget, and giving each
+      // run its own copy would let three projects spend three times it.
+      //
+      // The deadline is NOT a budget and does not divide — 7am is 7am for
+      // every project — so each run gets it too. Left off, the queue's promise
+      // to stop between projects rather than mid-project is far too coarse: a
+      // project starting at 06:50 would run for hours past the time the
+      // operator asked it to stop. With it, the run also stops at 7am, at its
+      // own phase boundary, which is the granularity "stop at 7am" meant.
+      ...(queue.budget.deadline ? { stopAt: queue.budget.deadline } : { stopAt: "" }),
       constraints: [],
       nonGoals: [],
       acceptance: [{ text: "Configured tests pass", tier: "test" }],

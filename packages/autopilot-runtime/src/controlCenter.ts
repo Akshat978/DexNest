@@ -24,6 +24,10 @@ export interface NewRunForm {
   stopAt?: string;
   maxCostUsd?: number;
   maxIdleTurns?: number;
+  /** Wait and retry by itself when the provider runs out. Off by default. */
+  autoResumeOnLimit?: boolean;
+  /** Give each piece of work a fresh conversation. On by default. */
+  rotateSession?: boolean;
   /** The chat that writes assignments. Null keeps the agent self-directed. */
   director?: CodingProvider | null;
   /** Model alias or full name. Empty leaves the provider's own default. */
@@ -190,6 +194,8 @@ export class AutopilotControlCenter {
       ...(form.stopAt ? { stopAt: form.stopAt } : {}),
       ...(form.maxCostUsd !== undefined ? { maxCostUsd: form.maxCostUsd } : {}),
       ...(form.maxIdleTurns !== undefined ? { maxIdleTurns: form.maxIdleTurns } : {}),
+      ...(form.autoResumeOnLimit !== undefined ? { autoResumeOnLimit: form.autoResumeOnLimit } : {}),
+      ...(form.rotateSession !== undefined ? { rotateSession: form.rotateSession } : {}),
       grantedBy: "desktop_ui" }); }
       catch (error) {
         engine.store.appendEvent(id, { type: "RUN_FAILED", toState: "FAILED", failureReason: "Primary setup failed. Select a canonical primary Git repository root and check provider readiness." });
@@ -223,6 +229,8 @@ export class AutopilotControlCenter {
       ...(form.stopAt ? { stopAt: form.stopAt } : {}),
       ...(form.maxCostUsd !== undefined ? { maxCostUsd: form.maxCostUsd } : {}),
       ...(form.maxIdleTurns !== undefined ? { maxIdleTurns: form.maxIdleTurns } : {}),
+      ...(form.autoResumeOnLimit !== undefined ? { autoResumeOnLimit: form.autoResumeOnLimit } : {}),
+      ...(form.rotateSession !== undefined ? { rotateSession: form.rotateSession } : {}),
       grantedBy: "desktop_ui" }); }
     catch (error) {
       engine.store.appendEvent(id, { type: "RUN_FAILED", toState: "FAILED", failureReason: "Primary setup failed. Select a canonical primary Git repository root and check provider readiness." });
