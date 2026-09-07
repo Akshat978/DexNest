@@ -285,7 +285,7 @@ export function AutopilotNewRun({ onCreated }: { onCreated(id: string): void }) 
           <label>Consecutive failure limit
             <input type="number" min={1} max={20} required value={form.maxFailures} onChange={event => update({ maxFailures: Number(event.target.value) })} />
           </label>
-          <label>
+          <label className="checkbox-row">
             <input type="checkbox" checked={form.rotateSession !== false}
               onChange={event => update({ rotateSession: event.target.checked })} />
             Start each piece of work in a fresh conversation
@@ -296,7 +296,7 @@ export function AutopilotNewRun({ onCreated }: { onCreated(id: string): void }) 
             forward instead is the code on disk and the record of what was done. A repair always keeps its
             conversation; only settled work starts fresh.
           </p>
-          <label>
+          <label className="checkbox-row">
             <input type="checkbox" checked={form.autoResumeOnLimit === true}
               onChange={event => update({ autoResumeOnLimit: event.target.checked })} />
             Wait and retry on its own when the provider runs out

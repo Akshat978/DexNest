@@ -239,3 +239,18 @@
 
 .autopilot-devices > li.device-disabled { opacity: 0.6; }
 .autopilot-devices p { margin: 0.25rem 0 0; }
+
+/* A checkbox and its words belong on one line. Without this the label's
+   block layout drops the box onto its own row, which reads as a stray
+   square above an unrelated sentence. */
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.checkbox-row > input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  flex: 0 0 auto;
+}

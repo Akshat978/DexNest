@@ -130,6 +130,16 @@ assert.equal(await win.webContents.executeJavaScript("document.body.innerText.in
 assert.equal(await win.webContents.executeJavaScript("[...document.querySelectorAll('input[type=checkbox]')].some(c=>!c.checked)"),true,'push is off until turned on');
 assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('S24 Ultra')"),true,'a registered device is listed');
 assert.equal(await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(b=>b.textContent==='SEND A TEST').disabled"),true,'a test cannot be sent while push is off');
+// Ticking the box is not enough: sending reads the SAVED settings, so a
+// button enabled by an unsaved tick would fail for a reason the screen had
+// already contradicted.
+await win.webContents.executeJavaScript("document.querySelector('section[aria-label=\\"Notifications\\"] .checkbox-row input[type=checkbox]').click()");
+await new Promise(r=>setTimeout(r,120));
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('Not saved yet')"),true,'and it says so');
+assert.equal(await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(b=>b.textContent==='SEND A TEST').disabled"),true,'still disabled until saved');
+await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(b=>b.textContent==='SAVE').click()");
+await new Promise(r=>setTimeout(r,250));
+assert.equal(await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(b=>b.textContent==='SEND A TEST').disabled"),false,'saved, so a test can go');
 await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(b=>b.textContent==='CHECK CREDENTIALS').click()");
 await new Promise(r=>setTimeout(r,250));
 assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('Google accepted the service account')"),true);

@@ -41,6 +41,10 @@ const EMPTY: PushSettings = {
 
 export function AutopilotPush({ refreshedAt }: { refreshedAt: number }) {
   const [settings, setSettings] = useState<PushSettings>(EMPTY);
+  // What the HOST has, as distinct from what is on screen. Sending reads the
+  // saved file, so a ticked box that has not been saved would enable a button
+  // that then fails for a reason the screen had already contradicted.
+  const [saved, setSaved] = useState<PushSettings>(EMPTY);
   const [devices, setDevices] = useState<DeviceRecord[]>([]);
   const [busy, setBusy] = useState(false);
   const [pasteToken, setPasteToken] = useState("");
@@ -48,7 +52,9 @@ export function AutopilotPush({ refreshedAt }: { refreshedAt: number }) {
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
 
   const load = () => {
-    void api().autopilotPushSettings().then(value => setSettings(value ?? EMPTY)).catch(() => setSettings(EMPTY));
+    void api().autopilotPushSettings()
+      .then(value => { setSettings(value ?? EMPTY); setSaved(value ?? EMPTY); })
+      .catch(() => { setSettings(EMPTY); setSaved(EMPTY); });
     void api().autopilotDevices().then(setDevices).catch(() => setDevices([]));
   };
   useEffect(load, [refreshedAt]);
@@ -65,6 +71,10 @@ export function AutopilotPush({ refreshedAt }: { refreshedAt: number }) {
       .catch((cause: unknown) => setNote({ ok: false, text: cause instanceof Error ? cause.message : String(cause) }))
       .finally(() => setBusy(false));
   };
+
+  // Sending uses the saved settings, so both must agree before a test can go.
+  const unsaved = JSON.stringify(settings) !== JSON.stringify(saved);
+  const canSend = saved.enabled && !unsaved;
 
   return (
     <section className="view-stack" aria-label="Notifications">
@@ -111,11 +121,12 @@ export function AutopilotPush({ refreshedAt }: { refreshedAt: number }) {
           a quiet system is not a silent one.
         </p>
 
-        <label>
+        <label className="checkbox-row">
           <input type="checkbox" checked={settings.enabled} disabled={busy}
             onChange={event => setSettings({ ...settings, enabled: event.target.checked })} />
           Send notifications to registered devices
         </label>
+        {unsaved && <p className="technical">Not saved yet — press SAVE for this to take effect.</p>}
 
         {note && <p className={note.ok ? "technical" : "autopilot-error"}>{note.text}</p>}
 
@@ -186,8 +197,9 @@ export function AutopilotPush({ refreshedAt }: { refreshedAt: number }) {
               </span>
               {device.lastFailure && <p className="autopilot-error">{device.lastFailure}</p>}
               <div className="row">
-                <button type="button" disabled={busy || !settings.enabled}
-                  onClick={() => act(() => api().autopilotPushTest(device.id))}>
+                <button type="button" disabled={busy || !canSend}
+                  onClick={() => act(() => api().autopilotPushTest(device.id))}
+                  title={canSend ? undefined : "Tick \"Send notifications\" above and press SAVE first."}>
                   SEND A TEST
                 </button>
                 <button type="button" disabled={busy} onClick={() => act(() => api().autopilotDeviceRemove(device.id))}>
