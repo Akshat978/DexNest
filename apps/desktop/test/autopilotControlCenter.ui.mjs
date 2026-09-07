@@ -82,6 +82,7 @@ autopilotCancelConsultation:async()=>{Object.assign(report.consultations[0],{sta
 autopilotActivity:async()=>[{id:'e1',kind:'tool',text:'Read src/example.ts',at:'2026-09-05T12:00:00Z'}],
 __candidateCalls:async()=>candidateCalls,
 __retried:async()=>retried.value,
+autopilotAttention:async()=>({summary:'1 to send, 1 held.',deliver:[{groupKey:'g1',subject:'review-run',priority:'ACTION_REQUIRED',count:1,headline:'It says the work is done',latest:'Verification passed; a human decides whether the run is done.',outstanding:[]}],hold:[{groupKey:'g2',subject:'review-run',priority:'INFO',count:6,headline:'6 phases completed',latest:'All verification passed.',outstanding:[]}],reason:[{groupKey:'g2',reason:'cooling_down',coolsDownAt:'2026-09-05T13:00:00Z',quietEndsAt:null}]}),
 autopilotQueue:async()=>null,
 autopilotQueueCreate:async input=>{if(!input.items.length)throw Error('A run queue needs at least one project.');return {id:'q1'};},
 autopilotQueueClose:async()=>null,
@@ -109,6 +110,19 @@ await win.webContents.executeJavaScript("[...document.querySelectorAll('nav butt
 await new Promise(r=>setTimeout(r,100));
 await win.webContents.executeJavaScript("[...document.querySelectorAll('details.autopilot-mechanism')].forEach(d=>{d.open=true})");
 await new Promise(r=>setTimeout(r,100));
+
+// What needs a person, decided by the attention engine and shown on the desktop
+// before any phone exists. What is HELD is shown too, with the reason: a quiet
+// system must never be a silent one, and the only way to tell quiet from broken
+// is to see what is being held back.
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('What needs you')"),true);
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('It says the work is done')"),true);
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('needs an answer')"),true,'priority reads as words, not a code');
+assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('.autopilot-attention > li.attention-action_required').length"),1);
+await win.webContents.executeJavaScript("[...document.querySelectorAll('details.autopilot-mechanism')].forEach(d=>{d.open=true})");
+await new Promise(r=>setTimeout(r,80));
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('6 phases completed')"),true,'held items are visible');
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('already said recently')"),true,'and say why they wait');
 
 // Which phase was expensive, and whether turns are getting dearer. The figure
 // is the provider's own and must never be dressed up as a percentage of a plan.
@@ -161,7 +175,7 @@ await new Promise(r=>setTimeout(r,80));
 assert.equal(await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(b=>b.textContent.startsWith('REJECT')).disabled"),false);
 await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(b=>b.textContent.startsWith('REJECT')).click()");
 await new Promise(r=>setTimeout(r,200));
-assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('It says the work is done')"),false,'answered, so the question goes away');
+assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('.autopilot-decision').length"),0,'answered, so the question card goes away');
 assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('Waiting to be sent: The error paths have no tests.')"),true);
 
 // And a note written for its own sake, which reaches exactly one prompt.

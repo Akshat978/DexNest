@@ -986,6 +986,29 @@ export const AUTOPILOT_MIGRATIONS: readonly Migration[] = [
       -- morning summary describing work nobody can go back and read.
       ALTER TABLE autopilot_run_queues ADD COLUMN repeats_queue_id TEXT;
     `
+  },
+  {
+    id: 29,
+    name: "attention_deliveries",
+    up: `
+      -- What has already been said, so a cooldown means something.
+      --
+      -- The attention engine decides what deserves telling someone about, and
+      -- one of its rules is "I already told you twenty minutes ago". That rule
+      -- needs a memory surviving a restart, or every launch would repeat the
+      -- night's news.
+      --
+      -- Only the group key, the priority it went out at, and when. Not the
+      -- text: an item is re-derived from the run's own durable state, and
+      -- storing a rendered sentence would give the same truth two homes.
+      CREATE TABLE IF NOT EXISTS autopilot_attention_deliveries (
+        group_key    TEXT NOT NULL,
+        priority     TEXT NOT NULL CHECK(priority IN ('INFO','ATTENTION','ACTION_REQUIRED','URGENT')),
+        delivered_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_attention_deliveries_group
+        ON autopilot_attention_deliveries(group_key, delivered_at);
+    `
   }
 ];
 

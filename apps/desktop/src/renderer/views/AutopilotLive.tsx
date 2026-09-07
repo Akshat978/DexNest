@@ -12,7 +12,7 @@
 // and it is doing this" view that a buffered run could never give.
 
 import React, { useEffect, useRef, useState } from "react";
-import type { ActivityEvent, AttachedSessionRecord, DirectionDecision, IterationRecord, MorningSummary, OperatorNoteRecord, PlanItemProgress, SessionCandidate, UsageReport } from "@dexnest/autopilot-runtime";
+import type { ActivityEvent, AttachedSessionRecord, DirectionDecision, GroupDigest, IterationRecord, MorningSummary, OperatorNoteRecord, PlanItemProgress, SessionCandidate, UsageReport } from "@dexnest/autopilot-runtime";
 
 interface LiveBridge {
   autopilotActivity(runId: string): Promise<ActivityEvent[]>;
@@ -504,6 +504,97 @@ export function UsagePanel({ usage }: { usage: UsageReport | null }) {
           </tbody>
         </table>
       </details>
+    </div>
+  );
+}
+
+// --- what needs a person ----------------------------------------------------
+
+interface AttentionSnapshot {
+  deliver: GroupDigest[];
+  hold: GroupDigest[];
+  reason: Array<{ groupKey: string; reason: string; coolsDownAt: string | null; quietEndsAt: string | null }>;
+  summary: string;
+}
+
+interface AttentionBridge {
+  autopilotAttention(runId?: string): Promise<AttentionSnapshot>;
+}
+const attention = () => (window as unknown as { dexNest: AttentionBridge }).dexNest;
+
+const PRIORITY_WORD: Record<string, string> = {
+  INFO: "for information",
+  ATTENTION: "worth seeing soon",
+  ACTION_REQUIRED: "needs an answer",
+  URGENT: "urgent"
+};
+
+const HOLD_WORD: Record<string, string> = {
+  cooling_down: "already said recently",
+  quiet_hours: "held until quiet hours end",
+  "cooling_down+quiet_hours": "already said recently, and it is quiet hours"
+};
+
+/**
+ * What needs a person, decided by the attention engine.
+ *
+ * This is the desktop half of the mobile companion, and it exists before the
+ * phone on purpose. The engine's mapping from run states to priorities is the
+ * part most likely to feel wrong in practice — too much noise, or something
+ * important classed as routine. Getting that wrong on a screen you are already
+ * looking at costs nothing; getting it wrong on a phone at 3am costs trust in
+ * the whole thing.
+ *
+ * What is HELD is shown too, with the reason. A quiet system must never be a
+ * silent one, and the only way to know it is being quiet rather than broken is
+ * to be able to see what it is holding back.
+ */
+export function AttentionPanel({ refreshedAt }: { refreshedAt: number }) {
+  const [snapshot, setSnapshot] = useState<AttentionSnapshot | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void attention().autopilotAttention()
+      .then(value => { if (alive) setSnapshot(value); })
+      .catch(() => { if (alive) setSnapshot(null); });
+    return () => { alive = false; };
+  }, [refreshedAt]);
+
+  if (!snapshot || (snapshot.deliver.length === 0 && snapshot.hold.length === 0)) return null;
+  const reasonFor = (groupKey: string) => snapshot.reason.find(entry => entry.groupKey === groupKey);
+
+  return (
+    <div className="card">
+      <h4>What needs you</h4>
+      {snapshot.deliver.length === 0 && <p className="technical">Nothing right now.</p>}
+
+      <ul className="autopilot-attention">
+        {snapshot.deliver.map(group => (
+          <li key={group.groupKey} className={`attention-${group.priority.toLowerCase()}`}>
+            <strong>{group.headline}</strong>
+            <span className="technical"> — {PRIORITY_WORD[group.priority] ?? group.priority}</span>
+            {group.count > 1 && <span className="technical"> · {group.count} together</span>}
+            {group.latest && <p className="technical">{group.latest}</p>}
+          </li>
+        ))}
+      </ul>
+
+      {snapshot.hold.length > 0 && (
+        <details className="autopilot-mechanism">
+          <summary>Being held back ({snapshot.hold.length})</summary>
+          <ul className="autopilot-attention">
+            {snapshot.hold.map(group => {
+              const why = reasonFor(group.groupKey);
+              return (
+                <li key={group.groupKey} className="attention-held">
+                  {group.headline}
+                  <span className="technical"> — {why ? HOLD_WORD[why.reason] ?? why.reason : "waiting"}</span>
+                </li>
+              );
+            })}
+          </ul>
+        </details>
+      )}
     </div>
   );
 }

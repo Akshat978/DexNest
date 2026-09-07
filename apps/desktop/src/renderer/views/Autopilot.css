@@ -197,3 +197,26 @@
 .autopilot-usage-turns th:first-child,
 .autopilot-usage-turns td:first-child { text-align: left; }
 .autopilot-usage-turns th { opacity: 0.7; font-weight: 500; }
+
+/* What needs a person. Priority has to be readable before the words are. */
+.autopilot-attention {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.autopilot-attention > li {
+  padding: 0.45rem 0.6rem;
+  border-radius: 0.375rem;
+  background: rgba(127, 127, 127, 0.1);
+  border-left: 3px solid transparent;
+}
+
+.autopilot-attention > li.attention-urgent { border-left-color: #dc2626; }
+.autopilot-attention > li.attention-action_required { border-left-color: #f59e0b; }
+.autopilot-attention > li.attention-attention { border-left-color: #3b82f6; }
+.autopilot-attention > li.attention-info { border-left-color: rgba(127, 127, 127, 0.4); }
+.autopilot-attention > li.attention-held { opacity: 0.6; }
+.autopilot-attention p { margin: 0.2rem 0 0; }

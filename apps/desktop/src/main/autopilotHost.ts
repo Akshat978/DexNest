@@ -20,6 +20,7 @@ import {
   SessionDiscovery,
   RunQueueStore,
   QUEUE_OUTCOME,
+  AttentionStore,
   AutopilotControlCenter,
   ConsultationStore,
   DirectionAuthorityStore,
@@ -366,6 +367,7 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
     // queue, the queue may have another to start, and starting it changes what
     // there is to say.
     await advanceQueue(runId, outcome.reason);
+    recordAttention(runId, outcome.reason, outcome.detail);
     notifyIfNeeded(runId, outcome.reason);
     scheduleResumeTimer();
     scheduleQueueTimer();
@@ -525,6 +527,67 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
       ]
     };
   }
+
+  /**
+   * Decides what this settle deserves telling someone about, and remembers it.
+   *
+   * The judgement is the engine's; this only asks and records. Deciding and
+   * delivering stay separate acts, so a delivery is written after something has
+   * actually gone out rather than before — a record for a message that never
+   * arrived would silence the retry.
+   *
+   * Never fatal. A run whose notification could not be worked out is a run that
+   * told nobody, which is not a reason to fail the run itself.
+   */
+  function recordAttention(runId: string, reason: LoopStopReason, detail: string): void {
+    try {
+      const attention = new AttentionStore(ports);
+      if (!attention.available()) return;
+      const items = attention.itemsForRun({ runId, reason, detail });
+      if (items.length === 0) return;
+
+      const decision = attention.decide(items);
+      for (const group of decision.deliver) {
+        // Today the desktop is the only channel, and it shows everything —
+        // so a delivered group is recorded as delivered. When push exists the
+        // record moves to after the send.
+        attention.recordDelivery({ groupKey: group.groupKey, priority: group.priority, runId });
+      }
+      if (decision.deliver.length > 0 || decision.hold.length > 0) {
+        ports.logger.log("info", "Autopilot attention decided", {
+          runId, deliver: decision.deliver.length, hold: decision.hold.length
+        });
+      }
+    } catch (error) {
+      ports.logger.log("warn", "Autopilot could not decide attention", {
+        runId, error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  // What needs a person, decided by the engine and shown on the desktop first.
+  // The desktop is where the mapping gets proved: getting a priority wrong on a
+  // screen you are already looking at costs nothing, and getting it wrong on a
+  // phone at 3am costs trust in the whole thing.
+  handle("dexnest:autopilot-attention", (_event, runId?: string) => {
+    const attention = new AttentionStore(ports);
+    if (!attention.available()) return { deliver: [], hold: [], reason: [], summary: "" };
+
+    const runs = runId ? [runId] : engine.listRuns(50).map(run => run.id);
+    const items = runs.flatMap(id => {
+      const held = [...engine.store.listEvents(id)].reverse()
+        .find(event => event.type === "LOOP_HELD")?.payload as { reason?: string; detail?: string } | undefined;
+      if (!held?.reason) return [];
+      return attention.itemsForRun({
+        runId: id,
+        reason: held.reason as LoopStopReason,
+        detail: held.detail ?? ""
+      });
+    });
+
+    const decision = attention.decide(items);
+    return { ...decision, summary: attention.summarise(decision) };
+  });
 
   /** The summary an operator reads before opening the conversation. */
   function morningSummaryFor(runId: string) {

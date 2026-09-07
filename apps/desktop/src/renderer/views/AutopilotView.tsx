@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { ControlledWorkerTurns, RunSpecInput, RunReport } from "@dexnest/autopilot-runtime";
 import { AutopilotNewRun } from "./AutopilotNewRun";
-import { LiveActivityPanel, PlanProgress, IterationList, RunSummary, MorningPanel, SessionAdoption, UsagePanel } from "./AutopilotLive";
+import { LiveActivityPanel, PlanProgress, IterationList, RunSummary, MorningPanel, SessionAdoption, UsagePanel, AttentionPanel } from "./AutopilotLive";
 import { AutopilotQueue } from "./AutopilotQueue";
 import "./Autopilot.css";
 import type { projectRun } from "@dexnest/autopilot-runtime";
@@ -293,6 +293,9 @@ export function AutopilotView() {
 
           {/* What is happening, and what happened. The mechanism below is
               for when something has gone wrong; this is the run. */}
+          {/* What needs a person, on the desktop first. The engine's mapping
+              gets proved here, where being wrong is cheap. */}
+          <AttentionPanel refreshedAt={refreshedAt} />
           <LiveActivityPanel runId={run.id} working={Boolean(worker?.busy || loop?.busy)} />
           <RunSummary runId={run.id} working={Boolean(worker?.busy || loop?.busy)} refreshedAt={refreshedAt} onChanged={() => void refresh(run.id)} />
           {/* The morning: answer its claim to be finished, and say whatever

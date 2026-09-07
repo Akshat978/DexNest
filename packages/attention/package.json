@@ -1,0 +1,18 @@
+{
+  "name": "@dexnest/attention",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Decides what deserves a person's attention, at what priority, and whether it has already been said.",
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    }
+  },
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}

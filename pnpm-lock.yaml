@@ -154,8 +154,13 @@ importers:
         specifier: workspace:*
         version: link:../shared-types
 
+  packages/attention: {}
+
   packages/autopilot-runtime:
     dependencies:
+      '@dexnest/attention':
+        specifier: workspace:*
+        version: link:../attention
       '@dexnest/run-queue':
         specifier: workspace:*
         version: link:../run-queue
