@@ -243,12 +243,17 @@ export function AutopilotNewRun({ onCreated }: { onCreated(id: string): void }) 
             </select>
           </label>
           <label>Model
-            <select value={form.model ?? ""} onChange={event => update({ model: event.target.value })}>
-              <option value="">Provider default</option>
-              <option value="opus">Opus</option>
-              <option value="sonnet">Sonnet</option>
-              <option value="haiku">Haiku</option>
-            </select>
+            <input list="dexnest-model-aliases" value={form.model ?? ""} placeholder="Provider default"
+              onChange={event => update({ model: event.target.value })} />
+            {/* Suggestions rather than a closed set, because --model takes an
+                alias OR a full name like claude-fable-5. The old dropdown was
+                wrong in both directions: it offered an alias the CLI does not
+                document, and hid one it does. */}
+            <datalist id="dexnest-model-aliases">
+              <option value="fable" />
+              <option value="opus" />
+              <option value="sonnet" />
+            </datalist>
           </label>
           <label>Effort
             <select value={form.effort ?? ""} onChange={event => update({ effort: event.target.value })}>
@@ -256,8 +261,14 @@ export function AutopilotNewRun({ onCreated }: { onCreated(id: string): void }) 
               <option value="low">Low</option>
               <option value="medium">Medium</option>
               <option value="high">High</option>
+              <option value="xhigh">Extra high</option>
+              <option value="max">Max</option>
             </select>
           </label>
+          <p className="technical">
+            An alias picks the latest of a family; a full name like claude-fable-5 pins one. Both reach the CLI
+            whichever worker capability is selected. Left blank, the provider's own default stands.
+          </p>
           <label>Stop after this many turns with nothing verified
             <input type="number" min={1} max={20} value={form.maxIdleTurns ?? 3} onChange={event => update({ maxIdleTurns: Number(event.target.value) })} />
           </label>

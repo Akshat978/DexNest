@@ -2,7 +2,7 @@ import { evaluatePrimaryProgress, latestPrimaryProgress } from "./progress.ts";
 import { ClaudeCodeWorker } from "./claudeCodeWorker.ts";
 import { CodexWorker } from "./codexWorker.ts";
 import type { DurableWorker } from "./worker.ts";
-import { agenticCapabilities, assertAgenticWorkspace } from "./worker.ts";
+import { agenticCapabilities, mediatedCapabilities, assertAgenticWorkspace, type WorkerEffort } from "./worker.ts";
 import type { AutopilotEngine } from "./engine.ts";
 import type { RuntimePorts } from "./ports.ts";
 import { defaultCapabilityPolicy } from "./policy.ts";
@@ -630,15 +630,18 @@ export class ControlledWorkerTurns {
         // A fresh window per send, so the panel shows this turn and not the
         // last one. Purely additive; a worker with no channel is unchanged.
         onOutput: (id: string) => this.live.begin(id),
-        ...(agentic
-          ? {
-              capabilities: agenticCapabilities({
-                verificationExecutables: Object.values(run.spec.verification.structuredCommands ?? {}).map(command => command.executable),
-                ...(run.spec.model ? { model: run.spec.model } : {}),
-                ...(run.spec.effort ? { effort: run.spec.effort as "low" | "medium" | "high" | "xhigh" | "max" } : {})
-              })
-            }
-          : {})
+        // Model and effort are the operator's choice and reach the CLI in
+        // either profile. Only the tool surface differs between them.
+        capabilities: agentic
+          ? agenticCapabilities({
+              verificationExecutables: Object.values(run.spec.verification.structuredCommands ?? {}).map(command => command.executable),
+              ...(run.spec.model ? { model: run.spec.model } : {}),
+              ...(run.spec.effort ? { effort: run.spec.effort as WorkerEffort } : {})
+            })
+          : mediatedCapabilities({
+              ...(run.spec.model ? { model: run.spec.model } : {}),
+              ...(run.spec.effort ? { effort: run.spec.effort as WorkerEffort } : {})
+            })
       });
       this.workers.set(runId, worker);
       this.policies.set(runId, policy);

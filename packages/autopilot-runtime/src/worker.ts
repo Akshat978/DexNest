@@ -95,11 +95,30 @@ export interface AgenticCapabilities {
 
 export interface MediatedCapabilities {
   profile: "mediated";
+  /**
+   * Model and effort, exactly as the agentic profile carries them.
+   *
+   * A mediated turn has no tools, but it still runs on a model. Leaving these
+   * out meant an operator who chose Opus and low effort got neither, and
+   * nothing said so — the choice was silently discarded on the way to the CLI.
+   */
+  model?: string;
+  effort?: WorkerEffort;
 }
 
 export type WorkerCapabilities = AgenticCapabilities | MediatedCapabilities;
 
+/** The mediated profile with nothing chosen: the provider's own defaults. */
 export const MEDIATED: MediatedCapabilities = { profile: "mediated" };
+
+/** The mediated profile with the operator's model and effort, when they chose. */
+export function mediatedCapabilities(input: { model?: string; effort?: WorkerEffort } = {}): MediatedCapabilities {
+  return {
+    profile: "mediated",
+    ...(input.model?.trim() ? { model: input.model.trim() } : {}),
+    ...(input.effort ? { effort: input.effort } : {})
+  };
+}
 
 /**
  * Builds the agentic capability set for a run.

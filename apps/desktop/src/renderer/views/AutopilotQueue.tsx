@@ -140,12 +140,13 @@ export function AutopilotQueue({ refreshedAt, onChanged }: { refreshedAt: number
         <div className="row">
           <label>
             Model
-            <select value={model} disabled={busy} onChange={event => setModel(event.target.value)}>
-              <option value="">Provider default</option>
-              <option value="opus">Opus</option>
-              <option value="sonnet">Sonnet</option>
-              <option value="haiku">Haiku</option>
-            </select>
+            <input list="dexnest-queue-models" value={model} disabled={busy} placeholder="Provider default"
+              onChange={event => setModel(event.target.value)} />
+            <datalist id="dexnest-queue-models">
+              <option value="fable" />
+              <option value="opus" />
+              <option value="sonnet" />
+            </datalist>
           </label>
           <label>
             Effort
@@ -154,6 +155,8 @@ export function AutopilotQueue({ refreshedAt, onChanged }: { refreshedAt: number
               <option value="low">Low</option>
               <option value="medium">Medium</option>
               <option value="high">High</option>
+              <option value="xhigh">Extra high</option>
+              <option value="max">Max</option>
             </select>
           </label>
           <label>

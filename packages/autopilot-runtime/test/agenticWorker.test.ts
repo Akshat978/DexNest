@@ -17,7 +17,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  agenticCapabilities, assertAgenticWorkspace, AgenticWorkspaceError, MEDIATED,
+  agenticCapabilities, mediatedCapabilities, assertAgenticWorkspace, AgenticWorkspaceError, MEDIATED,
   DEFAULT_AGENTIC_TOOLS, DEFAULT_AGENTIC_DENIED, DEFAULT_AGENTIC_MAX_TURNS
 } from "../src/worker.ts";
 import type { WorkerCapabilities } from "../src/worker.ts";
@@ -187,6 +187,16 @@ test("model and effort are passed through when chosen, and absent when not", () 
   assert.equal(plain.includes("--model"), false);
   assert.equal(plain.includes("--effort"), false);
 
-  // The mediated profile never carries them: it is one turn with no tools.
+  // The bare mediated constant chooses nothing, so it sends nothing.
   assert.equal(argv(MEDIATED).includes("--model"), false);
+  assert.equal(argv(MEDIATED).includes("--effort"), false);
+
+  // But a mediated turn still runs on a model, and the operator's choice
+  // reaches the CLI in either profile. Leaving it out meant someone who picked
+  // Opus and low effort got neither, with nothing to tell them so.
+  const mediated = argv(mediatedCapabilities({ model: "opus", effort: "low" }));
+  assert.equal(value(mediated, "--model"), "opus");
+  assert.equal(value(mediated, "--effort"), "low");
+  assert.equal(mediated.includes("--tools"), true, "and it is still the no-tools profile");
+  assert.equal(value(mediated, "--tools"), "");
 });

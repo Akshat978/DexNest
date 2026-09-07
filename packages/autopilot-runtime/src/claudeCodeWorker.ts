@@ -99,6 +99,11 @@ export function claudeCodeProtocol(executable: string, capabilities: WorkerCapab
           // No tools at all: the worker emits files as text and DexNest writes
           // them, so every side effect passes through policy first.
           "--tools", "", "--permission-mode", "manual",
+          // A mediated turn has no tools, but it still runs on a model. Omitted
+          // rather than sent empty when the operator chose nothing, so the
+          // provider's own default stands.
+          ...(capabilities.model ? ["--model", capabilities.model] : []),
+          ...(capabilities.effort ? ["--effort", capabilities.effort] : []),
           ...identity,
           "--max-turns", "1"
         ], text);

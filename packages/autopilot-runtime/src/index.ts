@@ -199,7 +199,7 @@ export { HostileExecutor } from "./hostileExecutor.ts";
 export type { HostileAttempt, HostileExecutorOptions } from "./hostileExecutor.ts";
 
 export {
-  DurableWorker, MEDIATED, agenticCapabilities, assertAgenticWorkspace, AgenticWorkspaceError,
+  DurableWorker, MEDIATED, mediatedCapabilities, agenticCapabilities, assertAgenticWorkspace, AgenticWorkspaceError,
   DEFAULT_AGENTIC_TOOLS, DEFAULT_AGENTIC_ALLOWED, DEFAULT_AGENTIC_DENIED, DEFAULT_AGENTIC_MAX_TURNS
 } from "./worker.ts";
 export type { WorkerCapabilities, WorkerCapabilityProfile, AgenticCapabilities, MediatedCapabilities } from "./worker.ts";
