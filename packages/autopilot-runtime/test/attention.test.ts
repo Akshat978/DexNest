@@ -328,3 +328,23 @@ test("a push token can rotate without re-pairing", (t) => {
   assert.equal(devices.get(device.id)!.pushToken, "push-new");
   assert.equal(devices.byTokenHash("hash-e")!.id, device.id, "identity is the paired token, not the address");
 });
+
+test("a pairing lasts until the operator ends it, and nothing else", (t) => {
+  // The coupling this pins open. `status` says whether PUSH can reach a
+  // device, and it goes DISABLED on its own when FCM rejects a rotated token.
+  // If that also revoked authority, a phone would silently stop being able to
+  // read or answer because its delivery address went stale — and re-pairing,
+  // the apparent fix, would have nothing to do with the cause.
+  const h = fixture(t);
+  const devices = new DeviceStore(h.ports);
+  devices.openPairing("666666", 10);
+  const device = devices.completePairing({ code: "666666", tokenHash: "hash-f", label: "phone", pushToken: "push-f" });
+
+  devices.markFailed(device.id, "UNREGISTERED: the push token is gone");
+  assert.equal(devices.get(device.id)!.status, "DISABLED", "push knows it cannot reach it");
+  assert.equal(devices.byTokenHash("hash-f")!.id, device.id, "but the phone can still read and answer");
+
+  // And giving it a fresh address brings push back without re-pairing.
+  devices.setPushToken(device.id, "push-new");
+  assert.equal(devices.get(device.id)!.status, "ACTIVE");
+});

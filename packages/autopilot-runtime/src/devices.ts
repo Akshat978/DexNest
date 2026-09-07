@@ -262,11 +262,22 @@ export class DeviceStore {
     });
   }
 
-  /** The device holding this token hash, if it is still allowed to speak. */
+  /**
+   * The device holding this token hash.
+   *
+   * Deliberately NOT filtered on status. `status` is about whether push can
+   * reach the device, and it goes DISABLED when FCM permanently rejects a push
+   * token — which happens on its own, when Android rotates one. Treating that
+   * as a loss of authority would mean a phone silently stopped being able to
+   * read or answer because its *delivery address* went stale, and the fix
+   * (re-pair) would be nothing to do with the cause.
+   *
+   * A pairing ends when the operator ends it, and at no other time.
+   */
   byTokenHash(tokenHash: string): DeviceRecord | null {
     if (!this.pairingAvailable()) return null;
     const row = this.db
-      .prepare("SELECT * FROM autopilot_devices WHERE token_hash=:hash AND status='ACTIVE'")
+      .prepare("SELECT * FROM autopilot_devices WHERE token_hash=:hash")
       .get<DeviceRow>({ hash: tokenHash });
     return row ? toDevice(row) : null;
   }
