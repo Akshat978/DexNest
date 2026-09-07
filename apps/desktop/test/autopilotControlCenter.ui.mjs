@@ -236,6 +236,10 @@ assert.equal(await win.webContents.executeJavaScript("document.body.innerText.in
 // The budget spans the queue, and the page has to say so where it is set.
 assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('one shared budget')"),true);
 assert.equal(await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(b=>b.textContent.startsWith('START')).disabled"),true,'no projects yet, so nothing to start');
+// A queue can come back on its own, which is most of what "run this nightly"
+// was supposed to mean. Four forms that obviously work, offered as suggestions.
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('Repeat (optional)')"),true);
+assert.equal(await win.webContents.executeJavaScript("[...document.querySelectorAll('#dexnest-schedules option')].map(o=>o.value).join('|')"),'nightly at 01:00|weekdays at 23:30|weekends at 09:00|mon,thu at 22:00');
 await win.webContents.executeJavaScript("[...document.querySelectorAll('nav button')].find(b=>b.textContent==='Runs').click()");
 await win.webContents.executeJavaScript("(()=>{const s=[...document.querySelectorAll('select')].find(s=>s.parentElement.textContent.startsWith('Filter runs'));s.value='COMPLETED';s.dispatchEvent(new Event('change',{bubbles:true}));})()");
 await new Promise(r=>setTimeout(r,100));

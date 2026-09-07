@@ -27,6 +27,8 @@ import {
   buildQueue,
   nextAction,
   progress,
+  nextFire,
+  parseSchedule,
   recordsFor,
   renderQueueSummary,
   transition,
@@ -109,6 +111,10 @@ export interface RunQueueRecord {
   status: "ACTIVE" | "CLOSED";
   budget: QueueBudget;
   template: RunTemplate;
+  /** The operator's own words, e.g. "nightly at 01:00". Null runs once. */
+  schedule: string | null;
+  /** The queue this one repeats, when a schedule created it. */
+  repeatsQueueId: string | null;
   createdAt: string;
   closedAt: string | null;
   closedReason: string | null;
@@ -131,6 +137,8 @@ interface QueueRow {
   max_cost_usd: number | null;
   max_items: number | null;
   max_consecutive_failures: number | null;
+  schedule: string | null;
+  repeats_queue_id: string | null;
   model: string | null;
   effort: string | null;
   max_turns: number;
@@ -174,6 +182,8 @@ const toQueue = (row: QueueRow): RunQueueRecord => ({
     maxIdleTurns: row.max_idle_turns,
     maxFailures: row.max_failures
   },
+  schedule: row.schedule,
+  repeatsQueueId: row.repeats_queue_id,
   createdAt: row.created_at,
   closedAt: row.closed_at,
   closedReason: row.closed_reason
@@ -232,6 +242,9 @@ export class RunQueueStore {
     items: readonly QueueItemInput[];
     budget?: QueueBudget;
     template?: Partial<RunTemplate>;
+    /** e.g. "nightly at 01:00". Refused here if the engine cannot read it. */
+    schedule?: string | null;
+    repeatsQueueId?: string | null;
   }): RunQueueRecord {
     if (!this.available()) throw new Error("This database is too old to hold a run queue.");
     if (this.active()) throw new Error("A run queue is already active. Close it before starting another.");
@@ -253,13 +266,19 @@ export class RunQueueStore {
 
     const budget = input.budget ?? {};
     const template = input.template ?? {};
+    // Parsed now so a schedule nobody can read is refused while the operator
+    // is still looking at the form, rather than at 01:00 when it does not fire.
+    const schedule = input.schedule?.trim() ? input.schedule.trim() : null;
+    if (schedule) parseSchedule(schedule);
     return this.store.transaction(() => {
       this.db
         .prepare(
           `INSERT INTO autopilot_run_queues
              (id, status, deadline, max_cost_usd, max_items, max_consecutive_failures,
+              schedule, repeats_queue_id,
               model, effort, max_turns, max_iterations, max_idle_turns, max_failures, created_at)
            VALUES (:id, 'ACTIVE', :deadline, :maxCostUsd, :maxItems, :maxConsecutive,
+              :schedule, :repeats,
               :model, :effort, :maxTurns, :maxIterations, :maxIdleTurns, :maxFailures, :now)`
         )
         .run({
@@ -268,6 +287,8 @@ export class RunQueueStore {
           maxCostUsd: budget.maxCostUsd ?? null,
           maxItems: budget.maxItems ?? null,
           maxConsecutive: budget.maxConsecutiveFailures ?? null,
+          schedule,
+          repeats: input.repeatsQueueId ?? null,
           model: template.model ?? null,
           effort: template.effort ?? null,
           maxTurns: template.maxTurns ?? 50,
@@ -410,6 +431,90 @@ export class RunQueueStore {
       });
     }
     return this.requireItem(itemId);
+  }
+
+  /**
+   * When a finished, scheduled queue should come back.
+   *
+   * Measured from when it closed, not from when it was created: a queue that
+   * ran long and closed at 06:00 should still next fire at tonight's 01:00,
+   * not immediately because its creation time is a day behind.
+   *
+   * Null for a queue that has no schedule, has not closed, or is superseded —
+   * only the newest queue in a repeating chain is the live one, or every night
+   * would spawn one more queue than the night before.
+   */
+  nextFireAt(queueId: string, now: string): string | null {
+    const queue = this.get(queueId);
+    if (!queue?.schedule || queue.status !== "CLOSED" || !queue.closedAt) return null;
+    if (this.supersededBy(queueId)) return null;
+    // From when it closed, never from now. Computing it from now would put
+    // the answer permanently in the future, so a nightly queue would never
+    // once be due — and a queue closed days ago catches up exactly once,
+    // which is what you want after the machine was off.
+    void now;
+    return nextFire(parseSchedule(queue.schedule), queue.closedAt);
+  }
+
+  /** Every scheduled queue whose next firing has arrived. */
+  due(now: string): Array<{ queue: RunQueueRecord; at: string }> {
+    if (!this.available()) return [];
+    if (this.active()) return [];
+    const rows = this.db
+      .prepare("SELECT * FROM autopilot_run_queues WHERE status='CLOSED' AND schedule IS NOT NULL ORDER BY rowid")
+      .all<QueueRow>({})
+      .map(toQueue);
+    const due: Array<{ queue: RunQueueRecord; at: string }> = [];
+    for (const queue of rows) {
+      const at = this.nextFireAt(queue.id, now);
+      if (at !== null && Date.parse(at) <= Date.parse(now)) due.push({ queue, at });
+    }
+    return due;
+  }
+
+  /** The soonest a scheduled queue will come back, for a host timer to wait on. */
+  soonestFire(now: string): string | null {
+    if (!this.available() || this.active()) return null;
+    const times = this.db
+      .prepare("SELECT * FROM autopilot_run_queues WHERE status='CLOSED' AND schedule IS NOT NULL")
+      .all<QueueRow>({})
+      .map(row => this.nextFireAt(row.id, now))
+      .filter((value): value is string => value !== null)
+      .sort();
+    return times[0] ?? null;
+  }
+
+  private supersededBy(queueId: string): string | null {
+    const row = this.db
+      .prepare("SELECT id FROM autopilot_run_queues WHERE repeats_queue_id=:queueId ORDER BY rowid DESC LIMIT 1")
+      .get<{ id: string }>({ queueId });
+    return row?.id ?? null;
+  }
+
+  /**
+   * Tonight's run of a nightly queue.
+   *
+   * A new queue with the same projects rather than a reset of the old one. A
+   * queue that erased last night to run tonight would leave the morning
+   * summary describing work nobody can go back and read, and the cost report
+   * with nothing to compare against.
+   */
+  repeat(queueId: string): RunQueueRecord {
+    const previous = this.get(queueId);
+    if (!previous) throw new Error(`No such queue: ${queueId}.`);
+    if (!previous.schedule) throw new Error("That queue has no schedule, so there is nothing to repeat.");
+    return this.create({
+      items: this.items(queueId).map(item => ({
+        projectPath: item.projectPath,
+        goal: item.goal,
+        ...(item.planText ? { planText: item.planText } : {}),
+        ...(item.label ? { label: item.label } : {})
+      })),
+      budget: previous.budget,
+      template: previous.template,
+      schedule: previous.schedule,
+      repeatsQueueId: previous.id
+    });
   }
 
   close(queueId: string, reason: string): RunQueueRecord | null {

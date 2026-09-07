@@ -26,6 +26,7 @@ interface QueueBridge {
     items: Array<{ projectPath: string; goal: string; label?: string }>;
     budget?: { deadline?: string; maxCostUsd?: number; maxConsecutiveFailures?: number };
     template?: { model?: string | null; effort?: string | null };
+    schedule?: string | null;
   }): Promise<RunQueueRecord | null>;
   autopilotQueueClose(queueId: string): Promise<unknown>;
 }
@@ -55,6 +56,7 @@ export function AutopilotQueue({ refreshedAt, onChanged }: { refreshedAt: number
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const [spend, setSpend] = useState("");
+  const [schedule, setSchedule] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -95,6 +97,11 @@ export function AutopilotQueue({ refreshedAt, onChanged }: { refreshedAt: number
           </ol>
           {queue.budget.deadline && (
             <p className="technical">Stops at {new Date(queue.budget.deadline).toLocaleString()}, between projects — never mid-run.</p>
+          )}
+          {queue.schedule && (
+            <p className="technical">
+              Comes back {queue.schedule}. Tonight's run is its own queue, so this one stays readable afterwards.
+            </p>
           )}
           {error && <p className="autopilot-error">{error}</p>}
           <div className="row">
@@ -160,6 +167,20 @@ export function AutopilotQueue({ refreshedAt, onChanged }: { refreshedAt: number
             </select>
           </label>
           <label>
+            Repeat (optional)
+            <input list="dexnest-schedules" value={schedule} disabled={busy} placeholder="runs once"
+              onChange={event => setSchedule(event.target.value)} />
+            {/* Four forms that obviously work, rather than a cron expression
+                that might. The engine refuses anything else, and refuses it
+                now rather than at 01:00 when it fails to fire. */}
+            <datalist id="dexnest-schedules">
+              <option value="nightly at 01:00" />
+              <option value="weekdays at 23:30" />
+              <option value="weekends at 09:00" />
+              <option value="mon,thu at 22:00" />
+            </datalist>
+          </label>
+          <label>
             Spend limit for the whole night (optional)
             <input
               type="number"
@@ -188,7 +209,8 @@ export function AutopilotQueue({ refreshedAt, onChanged }: { refreshedAt: number
                 maxConsecutiveFailures: 3,
                 ...(spend ? { maxCostUsd: Number(spend) } : {})
               },
-              template: { model: model || null, effort: effort || null }
+              template: { model: model || null, effort: effort || null },
+              schedule: schedule.trim() || null
             }))}
           >
             {busy ? "Starting…" : `START ${projects.length || ""} PROJECT${projects.length === 1 ? "" : "S"}`.trim()}
@@ -197,6 +219,7 @@ export function AutopilotQueue({ refreshedAt, onChanged }: { refreshedAt: number
         <p className="technical">
           Stops at 7am, or when the spend limit is reached, or after three projects fail in a row — whichever comes
           first. A time or spend limit always waits for the project in flight to finish.
+          {schedule.trim() ? " It then comes back on its own, as a new queue, leaving tonight's readable." : ""}
         </p>
       </div>
     </section>

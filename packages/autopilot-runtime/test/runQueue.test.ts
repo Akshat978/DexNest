@@ -307,3 +307,78 @@ test("a project that cannot even start does not stall the rest of the night", (t
   assert.deepEqual(next, { kind: "start", itemId: items[1]!.id });
   assert.ok(h.store.summary(queue.id, null).includes("uncommitted changes"));
 });
+
+// --- coming back on its own -------------------------------------------------
+
+test("a scheduled queue is due again after it closes, not after it was made", (t) => {
+  // The mistake this pins: computing the next firing from "now" instead of
+  // from when the queue closed puts the answer permanently in the future, so a
+  // nightly queue is never once due and the schedule silently does nothing.
+  const h = fixture(t);
+  const queue = h.store.create({ items: THREE, schedule: "nightly at 01:00" });
+  assert.equal(h.store.nextFireAt(queue.id, NOW), null, "still running, so not due");
+
+  h.store.close(queue.id, "finished");
+  const at = h.store.nextFireAt(queue.id, NOW)!;
+  assert.ok(at, "a closed scheduled queue knows when it comes back");
+  assert.ok(Date.parse(at) > Date.parse(h.store.get(queue.id)!.closedAt!), "strictly after it closed");
+  assert.match(at, /T\d\d:00/, "at the hour it was asked for");
+});
+
+test("a schedule nobody can read is refused while the operator is still looking", (t) => {
+  const h = fixture(t);
+  assert.throws(() => h.store.create({ items: THREE, schedule: "every other tuesday" }), /Schedule not recognised/i);
+  assert.equal(h.store.active(), null, "and nothing was written");
+});
+
+test("a queue with no schedule runs once and never comes back", (t) => {
+  const h = fixture(t);
+  const queue = h.store.create({ items: THREE });
+  h.store.close(queue.id, "finished");
+  assert.equal(h.store.nextFireAt(queue.id, NOW), null);
+  assert.deepEqual(h.store.due("2099-01-01T02:00:00.000Z"), []);
+});
+
+test("tonight's run is a new queue, so last night stays readable", (t) => {
+  // A reset would leave the morning summary describing work nobody can go back
+  // and read, and the cost report with nothing to compare against.
+  const h = fixture(t);
+  const first = h.store.create({ items: THREE, schedule: "nightly at 01:00", budget: { maxCostUsd: 9 } });
+  h.store.start(h.store.items(first.id)[0]!.id, h.makeRun("run-1"));
+  h.store.settle(h.store.items(first.id)[0]!.id, "DONE", "green");
+  h.store.close(first.id, "finished");
+
+  const second = h.store.repeat(first.id);
+  assert.notEqual(second.id, first.id);
+  assert.equal(second.repeatsQueueId, first.id, "the chain is recorded");
+  assert.equal(second.schedule, "nightly at 01:00", "and it keeps coming back");
+  assert.equal(second.budget.maxCostUsd, 9, "on the same budget");
+  assert.deepEqual(h.store.items(second.id).map(item => item.status), ["PENDING", "PENDING", "PENDING"]);
+
+  // Last night is untouched.
+  assert.equal(h.store.items(first.id)[0]!.status, "DONE");
+  assert.equal(h.store.get(first.id)!.status, "CLOSED");
+});
+
+test("only the newest queue in a chain is the live one", (t) => {
+  // Otherwise every night would spawn one more queue than the night before.
+  const h = fixture(t);
+  const first = h.store.create({ items: THREE, schedule: "nightly at 01:00" });
+  h.store.close(first.id, "finished");
+  const second = h.store.repeat(first.id);
+  h.store.close(second.id, "finished");
+
+  assert.equal(h.store.nextFireAt(first.id, NOW), null, "superseded, so it does not fire again");
+  assert.ok(h.store.nextFireAt(second.id, NOW), "the newest one does");
+});
+
+test("nothing is due while a queue is still working", (t) => {
+  const h = fixture(t);
+  const first = h.store.create({ items: THREE, schedule: "nightly at 01:00" });
+  h.store.close(first.id, "finished");
+  assert.equal(h.store.due("2099-01-01T02:00:00.000Z").length, 1, "due once the time has passed");
+
+  h.store.create({ items: THREE });
+  assert.deepEqual(h.store.due("2099-01-01T02:00:00.000Z"), [], "but never beside a queue that is running");
+  assert.equal(h.store.soonestFire("2099-01-01T02:00:00.000Z"), null);
+});

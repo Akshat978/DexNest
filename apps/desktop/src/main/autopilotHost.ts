@@ -159,6 +159,7 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
   // Event-driven only. Autopilot adds no timers and no polling loops, so it is
   // dormant when no run is active (AGENTS.md idle-resource rule).
   let resumeTimer: ReturnType<typeof setTimeout> | null = null;
+  let queueTimer: ReturnType<typeof setTimeout> | null = null;
 
   const changed = (runId: string) => {
     const window = options.getWindow();
@@ -367,6 +368,7 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
     await advanceQueue(runId, outcome.reason);
     notifyIfNeeded(runId, outcome.reason);
     scheduleResumeTimer();
+    scheduleQueueTimer();
     return outcome;
   }
 
@@ -432,6 +434,56 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
       ports.logger.log("warn", "Autopilot queue could not start a project", { itemId: next.id, error: detail });
       await advanceQueue(runId, reason);
     }
+  }
+
+  /**
+   * Brings a scheduled queue back on its own.
+   *
+   * One timer for all of them, re-armed after every settle, so nothing is
+   * polled and a closed app simply picks up on next launch. Tonight's run is a
+   * NEW queue with the same projects rather than a reset of last night's,
+   * because a reset would leave the morning summary describing work nobody can
+   * go back and read.
+   */
+  function scheduleQueueTimer(): void {
+    if (queueTimer) { clearTimeout(queueTimer); queueTimer = null; }
+    const queues = new RunQueueStore(ports);
+    if (!queues.available()) return;
+    const soonest = queues.soonestFire(new Date().toISOString());
+    if (soonest === null) return;
+
+    // Capped, so a schedule a week out still re-checks rather than trusting a
+    // timer to survive that long.
+    const delay = Math.max(0, Math.min(Date.parse(soonest) - Date.now(), 30 * 60_000));
+    queueTimer = setTimeout(() => {
+      queueTimer = null;
+      void (async () => {
+        const now = new Date().toISOString();
+        const due = new RunQueueStore(ports).due(now);
+        for (const entry of due) {
+          try {
+            const tonight = new RunQueueStore(ports).repeat(entry.queue.id);
+            options.logEvent?.("Autopilot queue came back on schedule", {
+              actionId: "autopilot.queue_scheduled", queueId: tonight.id, repeats: entry.queue.id, schedule: tonight.schedule
+            });
+            const action = new RunQueueStore(ports).decide(tonight.id);
+            if (action.kind === "start") {
+              const next = new RunQueueStore(ports).items(tonight.id).find(item => item.id === action.itemId)!;
+              const run = await center.create(queuedRunForm(tonight, next));
+              new RunQueueStore(ports).start(next.id, run.id);
+              launchPrimary(run.id);
+            }
+          } catch (error) {
+            ports.logger.log("warn", "Autopilot could not start a scheduled queue", {
+              queueId: entry.queue.id, error: error instanceof Error ? error.message : String(error)
+            });
+          }
+        }
+        // Nothing was due yet, or a new night was started: re-arm either way.
+        if (due.length === 0) scheduleQueueTimer();
+      })();
+    }, delay);
+    queueTimer.unref?.();
   }
 
   /** One queue item, as the Run Spec form that creates its run. */
@@ -579,6 +631,7 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
     items: Array<{ projectPath: string; goal: string; planText?: string; label?: string }>;
     budget?: { deadline?: string; maxCostUsd?: number; maxItems?: number; maxConsecutiveFailures?: number };
     template?: { model?: string | null; effort?: string | null };
+    schedule?: string | null;
   }) => {
     const queues = new RunQueueStore(ports);
     const queue = queues.create(input);
@@ -595,10 +648,18 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
     }
     return queues.active();
   });
+  handle("dexnest:autopilot-queue-schedules", () => {
+    const queues = new RunQueueStore(ports);
+    const soonest = queues.soonestFire(new Date().toISOString());
+    return { soonestFire: soonest };
+  });
   handle("dexnest:autopilot-queue-close", (_event, queueId: string) => {
     const queues = new RunQueueStore(ports);
     options.logEvent?.("Autopilot queue closed by the operator", { actionId: "autopilot.queue_close", queueId });
-    return queues.close(queueId, "Closed by the operator.");
+    const closed = queues.close(queueId, "Closed by the operator.");
+    // Closing a scheduled queue is what makes it due again tonight.
+    scheduleQueueTimer();
+    return closed;
   });
 
   // --- continuing a session you primed --------------------------------------
@@ -735,6 +796,11 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
       // An activation interrupted by a crash resolves to exactly one owner.
       for (const run of engine.listRuns(10000)) new HandoffStore(ports).reconcileActivation(run.id);
       recovered = true;
+      // Arm both timers now rather than waiting for something to settle. A
+      // scheduled queue whose hour passed while the app was closed is due the
+      // moment it opens, and a run left waiting on a provider limit likewise.
+      scheduleResumeTimer();
+      scheduleQueueTimer();
       for (const outcome of outcomes) {
         options.logEvent?.(
           `Autopilot run reconciled after restart: ${outcome.previousState} -> ${outcome.resolvedState}`,
@@ -742,6 +808,13 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
         );
       }
     },
-    dispose() { unsubscribe(); for (const channel of channels) ipcMain.removeHandler(channel); }
+    dispose() {
+      // A pending timer must never hold the app open, and must never fire
+      // into a host whose handlers have already gone.
+      if (resumeTimer) { clearTimeout(resumeTimer); resumeTimer = null; }
+      if (queueTimer) { clearTimeout(queueTimer); queueTimer = null; }
+      unsubscribe();
+      for (const channel of channels) ipcMain.removeHandler(channel);
+    }
   };
 }

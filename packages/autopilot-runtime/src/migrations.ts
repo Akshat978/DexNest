@@ -963,6 +963,29 @@ export const AUTOPILOT_MIGRATIONS: readonly Migration[] = [
       -- keeps its session, because repairing needs the failure in context.
       ALTER TABLE autopilot_loop_grants ADD COLUMN rotate_session INTEGER NOT NULL DEFAULT 1;
     `
+  },
+  {
+    id: 28,
+    name: "queue_schedule",
+    up: `
+      -- When a queue comes back on its own.
+      --
+      -- The engine could already parse "nightly at 01:00" and work out when it
+      -- next fires; nothing called either function, so a queue still needed a
+      -- person to press start every evening. That is most of what "run this
+      -- automation nightly" was supposed to mean.
+      --
+      -- Stored as the operator's own words rather than a parsed shape: it is
+      -- what they typed, it is what the UI shows back, and re-parsing it costs
+      -- nothing. A queue with no schedule runs once, exactly as before.
+      ALTER TABLE autopilot_run_queues ADD COLUMN schedule TEXT;
+
+      -- Which queue this one repeats. Set on every queue a schedule created,
+      -- so a night's history is its own row rather than a reset of the last
+      -- one -- a queue that erased last night to run tonight would leave the
+      -- morning summary describing work nobody can go back and read.
+      ALTER TABLE autopilot_run_queues ADD COLUMN repeats_queue_id TEXT;
+    `
   }
 ];
 

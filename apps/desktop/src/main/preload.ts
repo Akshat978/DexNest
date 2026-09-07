@@ -169,6 +169,7 @@ contextBridge.exposeInMainWorld("dexNest", {
   autopilotQueue: () => ipcRenderer.invoke("dexnest:autopilot-queue"),
   autopilotQueueCreate: (input: unknown) => ipcRenderer.invoke("dexnest:autopilot-queue-create", input),
   autopilotQueueClose: (queueId: string) => ipcRenderer.invoke("dexnest:autopilot-queue-close", queueId),
+  autopilotQueueSchedules: () => ipcRenderer.invoke("dexnest:autopilot-queue-schedules"),
   autopilotSessionCandidates: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-session-candidates", runId),
   autopilotAttachedSession: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-session-attached", runId),
   autopilotAttachSession: (input: { runId: string; sessionId: string }) => ipcRenderer.invoke("dexnest:autopilot-session-attach", input),
