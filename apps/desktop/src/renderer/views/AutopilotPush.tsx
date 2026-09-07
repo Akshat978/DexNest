@@ -22,6 +22,7 @@ interface PushSettings {
 
 interface PushBridge {
   autopilotDevices(): Promise<DeviceRecord[]>;
+  autopilotDeviceRegister(input: { label: string; platform?: "android" | "ios"; pushToken: string }): Promise<DeviceRecord>;
   autopilotDeviceRemove(id: string): Promise<void>;
   autopilotPushSettings(): Promise<PushSettings | null>;
   autopilotPushSettingsSave(settings: PushSettings): Promise<PushSettings | null>;
@@ -42,6 +43,8 @@ export function AutopilotPush({ refreshedAt }: { refreshedAt: number }) {
   const [settings, setSettings] = useState<PushSettings>(EMPTY);
   const [devices, setDevices] = useState<DeviceRecord[]>([]);
   const [busy, setBusy] = useState(false);
+  const [pasteToken, setPasteToken] = useState("");
+  const [pasteLabel, setPasteLabel] = useState("");
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
 
   const load = () => {
@@ -133,11 +136,45 @@ export function AutopilotPush({ refreshedAt }: { refreshedAt: number }) {
       <div className="card">
         <h3>Devices</h3>
         {devices.length === 0 && (
-          <p className="technical">
-            No devices yet. One registers itself the first time the phone app runs and asks for notification
-            permission — there is nothing to type here.
-          </p>
+          <p className="technical">No devices yet.</p>
         )}
+
+        {/* Until the phone can reach DexNest over Tailscale it cannot register
+            itself, so the token is carried across by hand. Deliberately a
+            stopgap, and labelled as one — a permanent copy-paste step would be
+            a design that gave up. */}
+        <details className="autopilot-mechanism" open={devices.length === 0}>
+          <summary>Add a device by pasting its token</summary>
+          <p className="technical">
+            The phone app shows a token and a COPY button. Paste it here. Once the control path exists the phone
+            will register itself and this goes away.
+          </p>
+          <label>
+            What to call it
+            <input value={pasteLabel} disabled={busy} placeholder="e.g. Akshat's S24 Ultra"
+              onChange={event => setPasteLabel(event.target.value)} />
+          </label>
+          <label>
+            Token
+            <textarea rows={3} value={pasteToken} disabled={busy} placeholder="paste the token from the phone"
+              onChange={event => setPasteToken(event.target.value)} />
+          </label>
+          <div className="row">
+            <button type="button" disabled={busy || !pasteToken.trim()}
+              onClick={() => act(async () => {
+                await api().autopilotDeviceRegister({
+                  label: pasteLabel.trim() || "a phone",
+                  platform: "android",
+                  pushToken: pasteToken.trim()
+                });
+                setPasteToken("");
+                setPasteLabel("");
+                return { ok: true, detail: "Device registered." };
+              })}>
+              REGISTER DEVICE
+            </button>
+          </div>
+        </details>
         <ul className="autopilot-devices">
           {devices.map(device => (
             <li key={device.id} className={device.status === "ACTIVE" ? undefined : "device-disabled"}>
