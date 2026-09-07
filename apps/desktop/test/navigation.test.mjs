@@ -71,7 +71,7 @@ test("there is exactly one Autopilot Control Center", () => {
   assert.match(autopilotSource, /title="Autopilot Control Center"/);
   // Every area stays on the one canonical page rather than becoming a second
   // Autopilot screen somewhere in the shell.
-  assert.match(autopilotSource, /\["New Run", "Queue", "Runs", "Selected Run"\]/);
+  assert.match(autopilotSource, /\["New Run", "Queue", "Runs", "Selected Run", "Notifications"\]/);
   // No second, simplified copy of the page anywhere in the renderer.
   const copies = [...shellSource.matchAll(/Autopilot Control Center/g)].length;
   assert.equal(copies, 0, "the shell does not re-implement the Control Center");

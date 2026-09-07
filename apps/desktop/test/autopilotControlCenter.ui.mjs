@@ -56,6 +56,9 @@ const tokens = resolve(desktop, "../../packages/shared-ui/src/tokens.css").repla
 writeFileSync(join(scratch, "entry.tsx"), `import React from 'react'; import {createRoot} from 'react-dom/client'; import {AutopilotView} from ${JSON.stringify(view)}; import ${JSON.stringify(tokens)}; import ${JSON.stringify(css)}; createRoot(document.getElementById('root')).render(<main style={{padding:24,maxWidth:1200,margin:'auto'}}><AutopilotView/></main>);`);
 writeFileSync(join(scratch, "preload.cjs"), `const {contextBridge}=require('electron'); const report=${JSON.stringify(report)}, snapshot=${JSON.stringify(snapshot)}, dashboard=${JSON.stringify(dashboard)};
 const notes=[];
+const pushSettings={value:{serviceAccountPath:'',projectId:'',quietStart:'23:00',quietEnd:'08:00',enabled:false}};
+const devices={value:[{id:'d1',label:"Akshat's S24 Ultra",platform:'android',pushToken:'tok',status:'ACTIVE',registeredAt:'2026-09-05T12:00:00Z',lastSentAt:null,lastFailure:null}]};
+
 const retried={value:false};
 let candidateCalls=0;
 const attached={value:null};
@@ -82,6 +85,12 @@ autopilotCancelConsultation:async()=>{Object.assign(report.consultations[0],{sta
 autopilotActivity:async()=>[{id:'e1',kind:'tool',text:'Read src/example.ts',at:'2026-09-05T12:00:00Z'}],
 __candidateCalls:async()=>candidateCalls,
 __retried:async()=>retried.value,
+autopilotDevices:async()=>devices.value,
+autopilotDeviceRemove:async id=>{devices.value=devices.value.filter(d=>d.id!==id);},
+autopilotPushSettings:async()=>pushSettings.value,
+autopilotPushSettingsSave:async s=>{pushSettings.value=s;return s;},
+autopilotPushVerify:async()=>({ok:true,detail:'Google accepted the service account for project dexnest-f1036.'}),
+autopilotPushTest:async()=>({ok:true,detail:'Sent.'}),
 autopilotAttention:async()=>({summary:'1 to send, 1 held.',deliver:[{groupKey:'g1',subject:'review-run',priority:'ACTION_REQUIRED',count:1,headline:'It says the work is done',latest:'Verification passed; a human decides whether the run is done.',outstanding:[]}],hold:[{groupKey:'g2',subject:'review-run',priority:'INFO',count:6,headline:'6 phases completed',latest:'All verification passed.',outstanding:[]}],reason:[{groupKey:'g2',reason:'cooling_down',coolsDownAt:'2026-09-05T13:00:00Z',quietEndsAt:null}]}),
 autopilotQueue:async()=>null,
 autopilotQueueCreate:async input=>{if(!input.items.length)throw Error('A run queue needs at least one project.');return {id:'q1'};},
@@ -110,6 +119,22 @@ await win.webContents.executeJavaScript("[...document.querySelectorAll('nav butt
 await new Promise(r=>setTimeout(r,100));
 await win.webContents.executeJavaScript("[...document.querySelectorAll('details.autopilot-mechanism')].forEach(d=>{d.open=true})");
 await new Promise(r=>setTimeout(r,100));
+
+// Where notifications go. The service account PATH is configuration; its
+// contents are never shown, stored, or logged, so the screen only ever holds a
+// path — and push stays off until someone turns it on.
+await win.webContents.executeJavaScript("[...document.querySelectorAll('nav button')].find(b=>b.textContent==='Notifications').click()");
+await new Promise(r=>setTimeout(r,150));
+assert.equal(await win.webContents.executeJavaScript("document.querySelectorAll('section[aria-label=\\"Notifications\\"]').length"),1,'the Notifications area renders');
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('never copied anywhere')"),true);
+assert.equal(await win.webContents.executeJavaScript("[...document.querySelectorAll('input[type=checkbox]')].some(c=>!c.checked)"),true,'push is off until turned on');
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('S24 Ultra')"),true,'a registered device is listed');
+assert.equal(await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(b=>b.textContent==='SEND A TEST').disabled"),true,'a test cannot be sent while push is off');
+await win.webContents.executeJavaScript("[...document.querySelectorAll('button')].find(b=>b.textContent==='CHECK CREDENTIALS').click()");
+await new Promise(r=>setTimeout(r,250));
+assert.equal(await win.webContents.executeJavaScript("document.body.innerText.includes('Google accepted the service account')"),true);
+await win.webContents.executeJavaScript("[...document.querySelectorAll('nav button')].find(b=>b.textContent==='Selected Run').click()");
+await new Promise(r=>setTimeout(r,150));
 
 // What needs a person, decided by the attention engine and shown on the desktop
 // before any phone exists. What is HELD is shown too, with the reason: a quiet

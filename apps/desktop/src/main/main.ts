@@ -186,6 +186,9 @@ const nudgeSettingsPath = join(settingsRoot, "nudge-settings.json");
 const finderItemsPath = join(settingsRoot, "finder-items.json");
 const financeTransactionsPath = join(settingsRoot, "finance-transactions.json");
 const financeRecurringPath = join(settingsRoot, "finance-recurring.json");
+// Where Autopilot sends notifications, and when it keeps quiet. Holds the
+// PATH to a Firebase service account, never its contents.
+const autopilotPushSettingsPath = join(settingsRoot, "autopilot-push.json");
 const financeSettingsPath = join(settingsRoot, "finance-settings.json");
 const financeProfilesPath = join(settingsRoot, "finance-profiles.json");
 const captureItemsPath = join(settingsRoot, "capture-items.json");
@@ -246,6 +249,16 @@ function startAutopilotHost(): void {
       // Autopilot runs while nobody is looking at DexNest, so a run that needs
       // a person has to say so. Best effort: a missing toast must never fail a
       // run, and the runtime itself never touches Electron.
+      readPushSettings: () => readJsonFile(autopilotPushSettingsPath, {
+        serviceAccountPath: "",
+        projectId: "",
+        quietStart: "23:00",
+        quietEnd: "08:00",
+        // Off until a device exists and the operator turns it on. A default
+        // that sends before anyone asked would be the wrong kind of surprise.
+        enabled: false
+      }),
+      writePushSettings: (settings) => { writeJsonFile(autopilotPushSettingsPath, settings); },
       notify: ({ title, body }) => {
         try {
           if (Notification.isSupported()) new Notification({ title, body }).show();

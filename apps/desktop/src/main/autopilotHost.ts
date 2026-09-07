@@ -14,6 +14,7 @@ import type { BrowserWindow, IpcMain } from "electron";
 
 import { createAutopilotPlatformPorts } from "./autopilotPlatform.ts";
 import { claudeExecutable, codexExecutable, validateClaudeWorkspace } from "./autopilotWorkerConfig.ts";
+import { PushSender } from "./push.ts";
 import {
   AutopilotEngine,
   ControlledWorkerTurns,
@@ -21,6 +22,7 @@ import {
   RunQueueStore,
   QUEUE_OUTCOME,
   AttentionStore,
+  DeviceStore,
   AutopilotControlCenter,
   ConsultationStore,
   DirectionAuthorityStore,
@@ -101,6 +103,28 @@ export interface AutopilotHostOptions {
   logEvent?: (summary: string, metadata: Record<string, unknown>) => void;
   /** Shows the operator a native notification. Injected, so this file stays testable. */
   notify?: (message: { title: string; body: string }) => void;
+  /**
+   * Where push settings live, and how to read and write them.
+   *
+   * Injected rather than resolved here: the path is under the app's data root,
+   * which this file deliberately knows nothing about. The settings hold the
+   * PATH to a service account, never its contents — the credential is read at
+   * the moment of sending and never copied anywhere.
+   */
+  readPushSettings?: () => PushSettings;
+  writePushSettings?: (settings: PushSettings) => void;
+}
+
+export interface PushSettings {
+  /** Absolute path to the Firebase service account JSON. */
+  serviceAccountPath: string;
+  /** e.g. "dexnest-f1036". */
+  projectId: string;
+  /** Local wall-clock, e.g. "23:00". */
+  quietStart: string;
+  quietEnd: string;
+  /** Send notifications to phones at all. Off until a device is registered. */
+  enabled: boolean;
 }
 
 export interface AutopilotHost {
@@ -546,12 +570,19 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
       const items = attention.itemsForRun({ runId, reason, detail });
       if (items.length === 0) return;
 
-      const decision = attention.decide(items);
+      const settings = options.readPushSettings?.();
+      const decision = attention.decide(
+        items,
+        settings ? { quietHours: { start: settings.quietStart, end: settings.quietEnd } } : {}
+      );
+
       for (const group of decision.deliver) {
-        // Today the desktop is the only channel, and it shows everything —
-        // so a delivered group is recorded as delivered. When push exists the
-        // record moves to after the send.
-        attention.recordDelivery({ groupKey: group.groupKey, priority: group.priority, runId });
+        // Recorded only after something has actually gone out. A delivery
+        // written first would silence the retry for a message that never
+        // arrived — the cooldown would believe the operator had been told.
+        void pushGroup(group, runId).then(() => {
+          attention.recordDelivery({ groupKey: group.groupKey, priority: group.priority, runId });
+        });
       }
       if (decision.deliver.length > 0 || decision.hold.length > 0) {
         ports.logger.log("info", "Autopilot attention decided", {
@@ -564,6 +595,93 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
       });
     }
   }
+
+  /** The sender, rebuilt when settings change so a new path takes effect. */
+  function sender(): PushSender | null {
+    const settings = options.readPushSettings?.();
+    if (!settings?.enabled || !settings.serviceAccountPath || !settings.projectId) return null;
+    return new PushSender({ serviceAccountPath: settings.serviceAccountPath, projectId: settings.projectId });
+  }
+
+  /**
+   * Sends one decided group to every active device.
+   *
+   * Best effort by design. A phone that cannot be reached is not a reason to
+   * fail a run, and the desktop has already shown the same thing — push is an
+   * extra channel, never the only one. A token FCM rejects permanently
+   * disables its device rather than being retried into a loop.
+   */
+  async function pushGroup(group: { groupKey: string; priority: string; headline: string; latest: string }, runId: string): Promise<void> {
+    const push = sender();
+    if (!push) return;
+    const devices = new DeviceStore(ports).active();
+    if (devices.length === 0) return;
+
+    for (const device of devices) {
+      const result = await push.send({
+        token: device.pushToken,
+        title: group.headline,
+        body: group.latest || "Open DexNest to see what happened.",
+        // Only something that cannot continue without a person earns a phone
+        // waking up. Routine news arrives whenever the phone next looks.
+        highPriority: group.priority === "ACTION_REQUIRED" || group.priority === "URGENT",
+        channelId: group.priority === "URGENT" ? "urgent" : "attention",
+        data: { groupKey: group.groupKey, priority: group.priority, runId }
+      });
+      const store = new DeviceStore(ports);
+      if (result.ok) store.markSent(device.id);
+      else {
+        store.markFailed(device.id, `${result.status ?? "unknown"}: ${result.detail ?? ""}`);
+        ports.logger.log("warn", "Autopilot could not push to a device", {
+          deviceId: device.id, status: result.status
+        });
+      }
+    }
+  }
+
+  // --- devices and push settings ---------------------------------------------
+  handle("dexnest:autopilot-devices", () => new DeviceStore(ports).list());
+  handle("dexnest:autopilot-device-register", (_event, input: { label: string; platform?: "android" | "ios"; pushToken: string }) => {
+    const device = new DeviceStore(ports).register(input);
+    options.logEvent?.("Autopilot registered a device for notifications", {
+      actionId: "autopilot.device_register", deviceId: device.id, label: device.label
+    });
+    return device;
+  });
+  handle("dexnest:autopilot-device-remove", (_event, id: string) => {
+    new DeviceStore(ports).remove(id);
+    options.logEvent?.("Autopilot forgot a device", { actionId: "autopilot.device_remove", deviceId: id });
+  });
+  handle("dexnest:autopilot-push-settings", () => options.readPushSettings?.() ?? null);
+  handle("dexnest:autopilot-push-settings-save", (_event, settings: PushSettings) => {
+    options.writePushSettings?.(settings);
+    return options.readPushSettings?.() ?? null;
+  });
+  handle("dexnest:autopilot-push-verify", async () => {
+    const settings = options.readPushSettings?.();
+    if (!settings?.serviceAccountPath || !settings.projectId) {
+      return { ok: false, detail: "Set the service account path and the Firebase project id first." };
+    }
+    return new PushSender({ serviceAccountPath: settings.serviceAccountPath, projectId: settings.projectId }).verify();
+  });
+  handle("dexnest:autopilot-push-test", async (_event, deviceId: string) => {
+    const push = sender();
+    if (!push) return { ok: false, detail: "Push is off, or the settings are incomplete." };
+    const device = new DeviceStore(ports).get(deviceId);
+    if (!device) return { ok: false, detail: "No such device." };
+    const result = await push.send({
+      token: device.pushToken,
+      title: "DexNest",
+      body: "This is a test notification. Nothing needs you.",
+      highPriority: false,
+      channelId: "attention",
+      data: { groupKey: "test", priority: "INFO", runId: "" }
+    });
+    const store = new DeviceStore(ports);
+    if (result.ok) store.markSent(device.id);
+    else store.markFailed(device.id, `${result.status ?? "unknown"}: ${result.detail ?? ""}`);
+    return { ok: result.ok, detail: result.ok ? "Sent." : `${result.status ?? "failed"}: ${result.detail ?? ""}` };
+  });
 
   // What needs a person, decided by the engine and shown on the desktop first.
   // The desktop is where the mapping gets proved: getting a priority wrong on a

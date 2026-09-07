@@ -3,6 +3,7 @@ import type { ControlledWorkerTurns, RunSpecInput, RunReport } from "@dexnest/au
 import { AutopilotNewRun } from "./AutopilotNewRun";
 import { LiveActivityPanel, PlanProgress, IterationList, RunSummary, MorningPanel, SessionAdoption, UsagePanel, AttentionPanel } from "./AutopilotLive";
 import { AutopilotQueue } from "./AutopilotQueue";
+import { AutopilotPush } from "./AutopilotPush";
 import "./Autopilot.css";
 import type { projectRun } from "@dexnest/autopilot-runtime";
 import { PageHeader } from "../components/shared";
@@ -228,12 +229,14 @@ export function AutopilotView() {
       {error && <p className="empty-state" role="alert">{error}</p>}
 
       <nav className="autopilot-areas" aria-label="Autopilot areas">
-        {["New Run", "Queue", "Runs", "Selected Run"].map(value => <button type="button" key={value} aria-pressed={area === value} disabled={value === "Selected Run" && !run} onClick={() => setArea(value)}>{value}</button>)}
+        {["New Run", "Queue", "Runs", "Selected Run", "Notifications"].map(value => <button type="button" key={value} aria-pressed={area === value} disabled={value === "Selected Run" && !run} onClick={() => setArea(value)}>{value}</button>)}
       </nav>
       <div hidden={area !== "New Run"}><AutopilotNewRun onCreated={id => { selected.current = id; setArea("Selected Run"); void refresh(id); }} /></div>
       {/* Several projects in one night, on one budget. The New Run form
           asks the same three questions about a single project. */}
       <div hidden={area !== "Queue"}><AutopilotQueue refreshedAt={refreshedAt} onChanged={() => void refresh()} /></div>
+      {/* Where what needs you actually reaches you. */}
+      <div hidden={area !== "Notifications"}><AutopilotPush refreshedAt={refreshedAt} /></div>
       <section hidden={area !== "Runs"} aria-label="Runs dashboard">
       <h2>Runs</h2>
       <label>Filter runs<select value={filter} onChange={event => setFilter(event.target.value)}>

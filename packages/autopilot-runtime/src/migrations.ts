@@ -1009,6 +1009,36 @@ export const AUTOPILOT_MIGRATIONS: readonly Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_attention_deliveries_group
         ON autopilot_attention_deliveries(group_key, delivered_at);
     `
+  },
+  {
+    id: 30,
+    name: "devices",
+    up: `
+      -- The phones DexNest may speak to.
+      --
+      -- A push token names one installation of one app on one device. It is
+      -- issued by the device, rotates on reinstall, and is useless without the
+      -- sending credentials -- but it still names a device the operator owns,
+      -- so it is durable state with a history rather than a value in memory.
+      --
+      -- Registering grants nothing. It says "send notifications here". Reading
+      -- a run or answering a question happens over the control path, with its
+      -- own token and its own capabilities, which is a separate decision made
+      -- later and deliberately not this one.
+      CREATE TABLE IF NOT EXISTS autopilot_devices (
+        id            TEXT PRIMARY KEY,
+        label         TEXT NOT NULL,
+        platform      TEXT NOT NULL,
+        -- Unique: two records for one device would double every notification.
+        push_token    TEXT NOT NULL UNIQUE,
+        status        TEXT NOT NULL CHECK(status IN ('ACTIVE','DISABLED')),
+        registered_at TEXT NOT NULL,
+        last_sent_at  TEXT,
+        -- Why FCM last refused it. A rejected token is evidence, not noise, so
+        -- a dead device is disabled rather than deleted.
+        last_failure  TEXT
+      );
+    `
   }
 ];
 

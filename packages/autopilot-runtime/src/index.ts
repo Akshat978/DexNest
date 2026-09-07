@@ -72,6 +72,8 @@ export { renderRunDigest, MAX_DIGEST_ITERATIONS, MAX_DIGEST_ASSUMPTIONS } from "
 export { OperatorNoteStore, renderOperatorNote, MAX_OPERATOR_NOTE_CHARS } from "./operatorNote.ts";
 export { RunQueueStore, QUEUE_OUTCOME } from "./runQueue.ts";
 export { AttentionStore, ATTENTION_REASON, DEFAULT_QUIET_HOURS, toLocalIso } from "./attention.ts";
+export { DeviceStore } from "./devices.ts";
+export type { DeviceRecord } from "./devices.ts";
 export type { AttentionItem, Decision, GroupDigest, Priority, QuietHours, DeliveryRecord } from "@dexnest/attention";
 export { buildUsageReport, renderUsageReport } from "./usage.ts";
 export type { UsageReport, TurnCost, PhaseCost } from "./usage.ts";
