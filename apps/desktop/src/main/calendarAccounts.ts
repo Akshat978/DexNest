@@ -125,12 +125,16 @@ export const whoAmI = {
 const isoDate = (date: Date): string =>
   `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 
+/** Local "HH:MM" from a Date. */
+const localClock = (at: Date): string =>
+  `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+
 /** Local "HH:MM" from a provider's instant. */
 function localTime(value: string | undefined | null): string | null {
   if (!value) return null;
   const at = new Date(value);
   if (!Number.isFinite(at.getTime())) return null;
-  return `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+  return localClock(at);
 }
 
 /**
@@ -210,10 +214,10 @@ export const fetchEvents = {
         const start = item.start as { dateTime?: string; timeZone?: string } | undefined;
         const end = item.end as { dateTime?: string; timeZone?: string } | undefined;
         const allDay = Boolean(item.isAllDay);
-        // Graph returns a naive local-to-the-calendar string with the zone in a
-        // sibling field; appending Z is wrong, so it is parsed as given and the
-        // Date is trusted to be in the machine's zone, which is the same zone
-        // the operator is in.
+        // Graph returns a naive datetime string plus the zone in a sibling
+        // field, and without a Prefer: outlook.timezone header that zone is
+        // UTC. So appending Z is correct — it names the instant — and the
+        // local parts are then read off it below.
         const startAt = start?.dateTime ? new Date(`${start.dateTime}Z`) : null;
         const endAt = end?.dateTime ? new Date(`${end.dateTime}Z`) : null;
         const location = (item.location as { displayName?: string } | undefined)?.displayName;
@@ -224,8 +228,12 @@ export const fetchEvents = {
           uid: item.iCalUId ? String(item.iCalUId) : null,
           title: String(item.subject ?? "(no title)"),
           date: startAt ? isoDate(startAt) : "",
-          startTime: allDay || !startAt ? null : `${String(startAt.getUTCHours()).padStart(2, "0")}:${String(startAt.getUTCMinutes()).padStart(2, "0")}`,
-          endTime: allDay || !endAt ? null : `${String(endAt.getUTCHours()).padStart(2, "0")}:${String(endAt.getUTCMinutes()).padStart(2, "0")}`,
+          // Local getters, matching isoDate above. Reading UTC parts here while
+          // the date came from local ones put a 3pm meeting on screen at 21:00
+          // for anyone not on UTC, and made the time disagree with its own date
+          // across midnight.
+          startTime: allDay || !startAt ? null : localClock(startAt),
+          endTime: allDay || !endAt ? null : localClock(endAt),
           allDay,
           sourceModule: "outlook",
           notes: location ? String(location) : null,

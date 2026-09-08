@@ -48,7 +48,6 @@ import { AppHealthView } from "./views/AppHealthView";
 import { ToolsView } from "./views/ToolsView";
 import { DropView } from "./views/DropView";
 import { ProviderLimitsCard } from "./views/ProviderLimitsCard";
-import { WeatherCard } from "./views/WeatherCard";
 import { CalendarAccountsCard } from "./views/CalendarAccountsCard";
 import { PinButton, PinsContext, setActivePinContext, activePinContext, pinModuleToView, computePinId } from "./components/pins";
 import type { PinInput, PinsContextValue } from "./components/pins";
@@ -2001,7 +2000,6 @@ export interface DexNestBridge {
   getDropState: () => Promise<DropState>;
   /** Mints a one-time link that pairs a phone's browser with Drop. */
   createDropLink: () => Promise<{ ok: true; url: string; expiresAt: string } | { ok: false; error: string }>;
-  getWeather: () => Promise<unknown>;
   getCalendarAccounts: () => Promise<{
     accounts: Array<{
       id: string; provider: "google" | "microsoft"; email: string;
@@ -2015,9 +2013,6 @@ export interface DexNestBridge {
     => Promise<{ ok: true } | { ok: false; error: string }>;
   syncCalendars: () => Promise<{ accounts: DexNestBridgeCalendarAccount[] }>;
   disconnectCalendar: (accountId: string) => Promise<{ accounts: DexNestBridgeCalendarAccount[] }>;
-  setWeatherLocation: (query: string) => Promise<
-    { ok: true; location: { latitude: number; longitude: number; label: string } } | { ok: false; error: string }
-  >;
   getToolsState: () => Promise<ToolsState>;
   getVaultState: () => Promise<VaultState>;
   getSearchState: () => Promise<SearchState>;
@@ -8166,7 +8161,6 @@ function CommandView({
               which makes it the thing worth reading before anything else. */}
           <ProviderLimitsCard />
 
-          <WeatherCard />
 
           <CalendarAccountsCard />
 

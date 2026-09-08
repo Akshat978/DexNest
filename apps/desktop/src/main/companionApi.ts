@@ -69,8 +69,14 @@ export interface CompanionDeps {
   planUsage?: () => Promise<unknown>;
   /** A short verdict on whether DexNest itself is well. */
   health?: () => unknown;
-  /** Today's forecast, or an unconfigured location. */
-  weather?: () => Promise<unknown>;
+  /**
+   * Today's forecast, read from DexNest's own weather module.
+   *
+   * Synchronous because nothing is fetched here — the module keeps its own
+   * cache and its own refresh schedule, and the phone asking must not become a
+   * third thing that decides when to call a weather service.
+   */
+  weather?: () => unknown;
 }
 
 /** The verbs a phone may use. Anything not listed is not reachable. */
@@ -278,7 +284,7 @@ export function createCompanionApi(deps: CompanionDeps) {
       if (request.method === "GET" && url.pathname === "/companion/weather") {
         const auth = authorise(request, "read");
         if ("error" in auth) { json(response, auth.status, { ok: false, error: auth.error }); return true; }
-        json(response, 200, { ok: true, weather: deps.weather ? await deps.weather() : null });
+        json(response, 200, { ok: true, weather: deps.weather ? deps.weather() : null });
         return true;
       }
 

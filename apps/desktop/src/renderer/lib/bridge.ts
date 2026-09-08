@@ -505,13 +505,11 @@ export const fallbackBridge: DexNestBridge = {
     slotsPath: "./local-data/settings/clipboard-slots.json"
   }),
   createDropLink: async () => ({ ok: false as const, error: "DexNest desktop is not running." }),
-  getWeather: async () => ({ configured: false, location: null, now: null, high: null, low: null, rainChance: null, hourly: [], unit: "C", fetchedAt: null, problem: null }),
   getCalendarAccounts: async () => ({ accounts: [], configured: { google: false, microsoft: false } }),
   setCalendarApp: async () => ({ ok: false as const, error: "DexNest desktop is not running." }),
   connectCalendar: async () => ({ ok: false as const, error: "DexNest desktop is not running." }),
   syncCalendars: async () => ({ accounts: [] }),
   disconnectCalendar: async () => ({ accounts: [] }),
-  setWeatherLocation: async () => ({ ok: false as const, error: "DexNest desktop is not running." }),
   getDropState: async () => ({
     shelf: [],
     outgoing: [],

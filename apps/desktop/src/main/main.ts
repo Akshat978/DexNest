@@ -24,7 +24,6 @@ import {
   type CalendarAccount, type CalendarProviderId, type SyncedEvent
 } from "./calendarAccounts.js";
 import { createProviderLimitsService } from "./providerLimits.js";
-import { createWeatherService } from "./weather.js";
 import type { MessageBoxOptions, MessageBoxSyncOptions, OpenDialogOptions, OpenDialogSyncOptions } from "electron";
 import type { DexNestActionDefinition, DexNestActionTrigger, DexNestEventStatus, DexNestPin, DexNestPinType } from "@dexnest/shared-types";
 import { formatLocalDateTime, getLocalTodayDateString, parseLocalDateInput, resolveRelativeLocalDate, toLocalDateInputValue } from "@dexnest/shared-types";
@@ -199,7 +198,6 @@ const financeRecurringPath = join(settingsRoot, "finance-recurring.json");
 // PATH to a Firebase service account, never its contents.
 const autopilotPushSettingsPath = join(settingsRoot, "autopilot-push.json");
 const providerLimits = createProviderLimitsService({ budgetsPath: join(settingsRoot, "provider-limits.json") });
-const weather = createWeatherService({ settingsPath: join(settingsRoot, "weather.json") });
 const financeSettingsPath = join(settingsRoot, "finance-settings.json");
 const financeProfilesPath = join(settingsRoot, "finance-profiles.json");
 const captureItemsPath = join(settingsRoot, "capture-items.json");
@@ -314,7 +312,7 @@ async function companionRoutes(request: IncomingMessage, response: ServerRespons
       host: autopilotHost,
       today: () => todayAgenda(),
       planUsage: () => providerLimits.snapshot(),
-      weather: () => weather.snapshot(),
+      weather: () => phoneWeather(),
       // Only the verdict, not the whole health report. That report names file
       // paths and check internals, which is a debugging surface — and a phone
       // is not somewhere anyone can debug.
@@ -2052,6 +2050,41 @@ function todayAgenda(): TodayAgenda {
   });
 }
 
+/**
+ * Today's forecast, in the shape the phone renders.
+ *
+ * Reads DexNest's own weather module rather than fetching anything. There was
+ * briefly a second weather service here with its own location setting and its
+ * own cache, which meant two places to configure it, two ways to be stale, and
+ * two answers to the same question. The module that was already here wins.
+ *
+ * No hourly series: the existing cache keeps current conditions and a daily
+ * high and low, not a curve. The phone renders no sparkline rather than one
+ * drawn from numbers nobody measured.
+ */
+function phoneWeather(): Record<string, unknown> {
+  const settings = loadWeatherSettings();
+  const cache = loadWeatherCache();
+  const configured = settings.weatherEnabled && settings.latitude !== null && settings.longitude !== null;
+
+  return {
+    configured,
+    location: configured ? { label: settings.locationName } : null,
+    now: cache.temperature === null ? null : {
+      temperature: Math.round(cache.temperature),
+      feelsLike: cache.feelsLike === null ? Math.round(cache.temperature) : Math.round(cache.feelsLike),
+      description: cache.condition || "—"
+    },
+    high: cache.high === null ? null : Math.round(cache.high),
+    low: cache.low === null ? null : Math.round(cache.low),
+    rainChance: cache.precipitationChance,
+    hourly: [],
+    unit: settings.units === "imperial" ? "F" : "C",
+    fetchedAt: cache.fetchedAt,
+    problem: cache.error
+  };
+}
+
 // --- connected calendars ------------------------------------------------------
 
 /** How far ahead to pull. Today needs one day; a little more costs nothing. */
@@ -2167,6 +2200,36 @@ async function syncCalendarAccount(accountId: string): Promise<void> {
 async function syncCalendarAccounts(): Promise<void> {
   for (const account of loadCalendarAccounts().filter(item => item.enabled)) {
     await syncCalendarAccount(account.id);
+  }
+}
+
+let calendarSyncTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Keeps connected calendars current.
+ *
+ * Without this the events fetched when an account was connected are the only
+ * ones there will ever be: Today would look right on the day it was set up and
+ * quietly show a stale day for ever after, which is worse than showing nothing
+ * because nothing announces itself.
+ *
+ * Fifteen minutes because a calendar changes on human timescales, and the
+ * providers' quotas are generous but not infinite. Nothing runs when no account
+ * is connected.
+ */
+function startCalendarSyncTimer(): void {
+  if (calendarSyncTimer) clearInterval(calendarSyncTimer);
+  calendarSyncTimer = setInterval(() => {
+    if (loadCalendarAccounts().some(account => account.enabled)) {
+      void syncCalendarAccounts();
+    }
+  }, 15 * 60 * 1000);
+  calendarSyncTimer.unref?.();
+
+  // And once now, because the app may have been closed for days and the first
+  // thing the operator does after opening it is look at Today.
+  if (loadCalendarAccounts().some(account => account.enabled)) {
+    void syncCalendarAccounts();
   }
 }
 
@@ -21033,16 +21096,6 @@ function registerIpcHandlers(): void {
   ipcMain.handle("dexnest:get-weather-state", () => weatherState());
   ipcMain.handle("dexnest:provider-limits", () => providerLimits.snapshot());
 
-  ipcMain.handle("dexnest:weather", () => weather.snapshot());
-
-  ipcMain.handle("dexnest:set-weather-location", async (_event, query: string) => {
-    try {
-      return { ok: true as const, location: await weather.setLocation(String(query ?? "")) };
-    } catch (error) {
-      return { ok: false as const, error: error instanceof Error ? error.message : "Could not find that place." };
-    }
-  });
-
   ipcMain.handle("dexnest:get-news-state", () => newsState());
 
   ipcMain.handle("dexnest:get-finder-state", () => finderState());
@@ -21617,6 +21670,7 @@ app.whenReady().then(() => {
   refreshNudges("system", false);
   ensureHeatmapAlwaysOn();
   startHeatmapTimer();
+  startCalendarSyncTimer();
   scheduleWeatherAutoRefresh();
   scheduleNewsAutoRefresh();
   startClipboardListener();
