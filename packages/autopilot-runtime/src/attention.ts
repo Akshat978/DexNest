@@ -40,6 +40,7 @@ import {
 import type { RuntimePorts, SqlDatabase } from "./ports.ts";
 import { AutopilotStore } from "./store.ts";
 import type { LoopStopReason } from "./loop.ts";
+import { isTerminal, type RunState } from "./states.ts";
 
 /**
  * What each way a run can stop means to a person.
@@ -82,6 +83,28 @@ export const ATTENTION_REASON: Readonly<Record<LoopStopReason, AttentionStopReas
 
 /** Quiet hours nobody has configured. Sensible, and overridable. */
 export const DEFAULT_QUIET_HOURS: QuietHours = Object.freeze({ start: "23:00", end: "08:00" });
+
+/**
+ * Whether a held question still stands, given what the run is doing now.
+ *
+ * Attention items are derived from the last LOOP_HELD event a run recorded,
+ * and that event is never retracted — stopping a run, or resuming it, writes
+ * no second LOOP_HELD. So without this the desktop and the phone go on asking
+ * "does this run look finished to you?" about a run the operator stopped days
+ * ago, and the one list that is supposed to mean "these need you" fills with
+ * things that do not.
+ *
+ * Terminal is obvious: a stopped, completed or failed run has no question left
+ * to answer. RUNNING is the subtler one — it means the run was resumed after
+ * the hold, so the operator has already answered by carrying on.
+ *
+ * Deliberately a denylist rather than an allowlist of "waiting" states. Being
+ * wrong here should mean showing an item that no longer matters, not silently
+ * withholding one that does.
+ */
+export function attentionStands(state: RunState): boolean {
+  return !isTerminal(state) && state !== "RUNNING";
+}
 
 interface DeliveryRow {
   group_key: string;

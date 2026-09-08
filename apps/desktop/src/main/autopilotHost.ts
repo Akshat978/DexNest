@@ -23,6 +23,7 @@ import {
   RunQueueStore,
   QUEUE_OUTCOME,
   AttentionStore,
+  attentionStands,
   DeviceStore,
   AutopilotControlCenter,
   ConsultationStore,
@@ -767,6 +768,11 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
     if (!attention.available()) return { deliver: [], hold: [], reason: [], summary: "" };
     const settings = options.readPushSettings?.();
     const items = engine.listRuns(50).flatMap(run => {
+      // A held question only stands while the run is still holding it. The
+      // LOOP_HELD event is never retracted — stopping or resuming writes no
+      // second one — so without this check the list goes on asking about runs
+      // the operator dealt with days ago, and "needs you" stops meaning it.
+      if (!attentionStands(run.state)) return [];
       const held = [...engine.store.listEvents(run.id)].reverse()
         .find(event => event.type === "LOOP_HELD")?.payload as { reason?: string; detail?: string } | undefined;
       if (!held?.reason) return [];

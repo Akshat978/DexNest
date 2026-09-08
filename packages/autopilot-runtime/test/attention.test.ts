@@ -14,7 +14,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
-import { AttentionStore, ATTENTION_REASON, DEFAULT_QUIET_HOURS, toLocalIso } from "../src/attention.ts";
+import { AttentionStore, ATTENTION_REASON, DEFAULT_QUIET_HOURS, attentionStands, toLocalIso } from "../src/attention.ts";
 import { DeviceStore } from "../src/devices.ts";
 import { runAutopilotMigrations } from "../src/migrations.ts";
 import { AutopilotStore } from "../src/store.ts";
@@ -410,4 +410,26 @@ test("the backfill does not confer authority on a device that never paired", (t)
   `);
 
   assert.equal(devices.get(pushOnly.id)!.capabilities.includes("drop"), false);
+});
+
+test("a held question stops standing once the run moves on", () => {
+  // The bug: attention items are derived from the last LOOP_HELD event, and
+  // that event is never retracted. Stopping a run writes no second LOOP_HELD,
+  // so "Run proposes it is done" went on being asked about runs the operator
+  // had already stopped — and the one list meant to say "these need you"
+  // filled with things that did not.
+  for (const state of ["STOPPED", "COMPLETED", "FAILED"] as const) {
+    assert.equal(attentionStands(state), false, state);
+  }
+
+  // Resumed is an answer too: carrying on is how you say "no, keep going".
+  assert.equal(attentionStands("RUNNING"), false);
+});
+
+test("a run that is genuinely waiting still asks", () => {
+  // The other half. Being wrong here means withholding something that matters,
+  // so anything not demonstrably finished or running keeps its question.
+  for (const state of ["PAUSED", "AWAITING_APPROVAL", "NEEDS_REVIEW", "PAUSE_REQUESTED"] as const) {
+    assert.equal(attentionStands(state), true, state);
+  }
 });
