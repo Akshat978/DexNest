@@ -13,7 +13,8 @@
     "package:win:all": "corepack pnpm build && electron-builder --win",
     "dist:win": "corepack pnpm build && electron-builder --win",
     "rebuild:native": "electron-rebuild -f -w better-sqlite3",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
+    "test": "node --experimental-strip-types --test test/*.test.ts test/*.test.mjs"
   },
   "build": {
     "appId": "com.dexnest.desktop",

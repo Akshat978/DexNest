@@ -14,7 +14,7 @@
     "dist:win": "corepack pnpm --filter @dexnest/desktop dist:win",
     "rebuild:native": "corepack pnpm --filter @dexnest/desktop rebuild:native",
     "typecheck": "corepack pnpm -r typecheck",
-    "test": "corepack pnpm --filter @dexnest/autopilot-runtime test"
+    "test": "corepack pnpm --filter @dexnest/autopilot-runtime test && corepack pnpm --filter @dexnest/today test && corepack pnpm --filter @dexnest/action-registry test && corepack pnpm --filter @dexnest/desktop test"
   },
   "devDependencies": {
     "typescript": "^5.8.3"
