@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld("dexNest", {
   unpinById: (id: string) => ipcRenderer.invoke("dexnest:unpin-by-id", id),
   getClipboardState: () => ipcRenderer.invoke("dexnest:get-clipboard-state"),
   getDropState: () => ipcRenderer.invoke("dexnest:get-drop-state"),
+  createDropLink: () => ipcRenderer.invoke("dexnest:create-drop-link"),
   getToolsState: () => ipcRenderer.invoke("dexnest:get-tools-state"),
   getVaultState: () => ipcRenderer.invoke("dexnest:get-vault-state"),
   getSearchState: () => ipcRenderer.invoke("dexnest:get-search-state"),

@@ -504,6 +504,7 @@ export const fallbackBridge: DexNestBridge = {
     activeMultiCopyPath: "./local-data/settings/clipboard-active-multicopy.json",
     slotsPath: "./local-data/settings/clipboard-slots.json"
   }),
+  createDropLink: async () => ({ ok: false as const, error: "DexNest desktop is not running." }),
   getDropState: async () => ({
     shelf: [],
     outgoing: [],

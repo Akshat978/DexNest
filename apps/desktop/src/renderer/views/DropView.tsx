@@ -22,6 +22,11 @@ export function DropView({
 }) {
   const [dropText, setDropText] = useState("");
   const [qrDataUrl, setQrDataUrl] = useState("");
+  // A one-time link, once the operator asks for one. Held only in memory: it
+  // is a credential with a ten-minute life, and writing it anywhere durable
+  // would outlive the reason it existed.
+  const [pairingLink, setPairingLink] = useState<{ url: string; expiresAt: string } | null>(null);
+  const [linkBusy, setLinkBusy] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [toasts, setToasts] = useState<Array<{ id: string; message: string; tone: "success" | "error" }>>([]);
   // Files the user has selected but NOT yet sent. Nothing leaves the PC until
@@ -29,14 +34,44 @@ export function DropView({
   const [pendingFiles, setPendingFiles] = useState<string[]>([]);
   const [sending, setSending] = useState(false);
 
+  // The QR shows the pairing link when there is one, and the plain address
+  // otherwise. The plain address only works from this machine or with LAN
+  // exposure on; the link is what makes a phone work over the tailnet.
+  const qrTarget = pairingLink?.url ?? dropState.phoneUrl;
+
   useEffect(() => {
-    if (!dropState.phoneUrl) {
+    if (!qrTarget) {
       setQrDataUrl("");
       return;
     }
 
-    void QRCode.toDataURL(dropState.phoneUrl, { margin: 1, width: 180 }).then(setQrDataUrl);
-  }, [dropState.phoneUrl]);
+    void QRCode.toDataURL(qrTarget, { margin: 1, width: 180 }).then(setQrDataUrl);
+  }, [qrTarget]);
+
+  // A link is single-use and short-lived, so a stale one on screen is a QR that
+  // will fail when scanned. Clearing it on expiry keeps the card honest.
+  useEffect(() => {
+    if (!pairingLink) return;
+    const remaining = Date.parse(pairingLink.expiresAt) - Date.now();
+    if (remaining <= 0) { setPairingLink(null); return; }
+    const timer = window.setTimeout(() => setPairingLink(null), remaining);
+    return () => window.clearTimeout(timer);
+  }, [pairingLink]);
+
+  const createPairingLink = async () => {
+    setLinkBusy(true);
+    try {
+      const result = await getBridge().createDropLink();
+      if (result.ok) {
+        setPairingLink({ url: result.url, expiresAt: result.expiresAt });
+        showToast("Scan within ten minutes", "success");
+      } else {
+        showToast(result.error ?? "Could not create a link", "error");
+      }
+    } finally {
+      setLinkBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (!autoRefresh) {
@@ -279,7 +314,21 @@ export function DropView({
               {qrDataUrl ? <img src={qrDataUrl} alt="Drop phone URL QR code" className="h-36 w-36 rounded-lg" /> : <QrCode className="h-28 w-28 text-[#525252]" strokeWidth={1} />}
               <span className="pointer-events-none absolute inset-0 rounded-2xl" style={{ boxShadow: `inset 0 0 26px ${ACCENT_DROP}1f` }} />
             </div>
-            <p className="mt-2 text-xs text-[#A3A3A3]">{dropConnected ? "Scan with your phone to connect" : "Scan with phone to connect"}</p>
+            <p className="mt-2 text-xs text-[#A3A3A3]">
+              {pairingLink
+                ? "Scan within ten minutes — this link works once"
+                : "Scan to connect, or create a link for a phone off this network"}
+            </p>
+            <ActionButton
+              icon={Smartphone}
+              accent={ACCENT_DROP}
+              variant={pairingLink ? "soft" : "solid"}
+              className="mt-3 w-full justify-center"
+              disabled={linkBusy}
+              onClick={() => void createPairingLink()}
+            >
+              {linkBusy ? "Creating…" : pairingLink ? "New link" : "Connect a phone"}
+            </ActionButton>
           </div>
           <div className="mt-4 space-y-2">
             <div className="glass-card flex items-center gap-2.5 p-2.5">

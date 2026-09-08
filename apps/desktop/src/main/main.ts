@@ -16,7 +16,7 @@ import { Jimp } from "jimp";
 import { createActionRegistry, createStreamDeckActionCatalog, seededActions, streamDeckCatalogItems } from "@dexnest/action-registry";
 import { createLocalDb } from "@dexnest/local-db";
 import { createAutopilotHost, type AutopilotHost } from "./autopilotHost.js";
-import { createCompanionApi, openPairing } from "./companionApi.js";
+import { createCompanionApi, hashToken, openPairing } from "./companionApi.js";
 import { createProviderLimitsService } from "./providerLimits.js";
 import type { MessageBoxOptions, MessageBoxSyncOptions, OpenDialogOptions, OpenDialogSyncOptions } from "electron";
 import type { DexNestActionDefinition, DexNestActionTrigger, DexNestEventStatus, DexNestPin, DexNestPinType } from "@dexnest/shared-types";
@@ -1986,6 +1986,82 @@ function dropLocalUrl(): string {
 function dropPhoneUrl(): string {
   const lanIp = getLanIp();
   return `http://${lanIp ?? "127.0.0.1"}:${actionPort}/drop`;
+}
+
+/**
+ * How a phone proves it may use Drop.
+ *
+ * WHY A COOKIE AND NOT A HEADER
+ *
+ * Drop's client is a web page. A browser cannot attach an Authorization header
+ * to a top-level navigation, and EventSource — which is what makes Drop feel
+ * instant — cannot send one either. So a header-only scheme would authenticate
+ * the API calls and lock out the page and the live stream, which is most of
+ * Drop. A cookie is sent on all three.
+ *
+ * The native app has no such limit and sends a Bearer token, so both are
+ * accepted and the header is checked first.
+ *
+ * WHY THE LINK IS SINGLE-USE
+ *
+ * The cookie's value is a real device token, and a token in a URL is a token in
+ * browser history, in a QR photo, and in anything that logs a query string. So
+ * the URL never carries the durable secret: it carries a one-time pairing code
+ * that is redeemed for one, exactly as the phone app's six-digit flow does. The
+ * code dies on first use; the cookie it mints does not expire, because the
+ * operator asked that a paired device stay paired.
+ */
+const DROP_COOKIE = "dexnest_drop";
+/** Ten years. Pairing ends when the operator ends it, not on a timer. */
+const DROP_COOKIE_MAX_AGE = 60 * 60 * 24 * 3650;
+
+function cookieFromRequest(request: IncomingMessage, name: string): string | null {
+  const header = request.headers.cookie;
+  if (!header) return null;
+  for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq < 0) continue;
+    if (part.slice(0, eq).trim() !== name) continue;
+    try {
+      return decodeURIComponent(part.slice(eq + 1).trim());
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function bearerFromRequest(request: IncomingMessage): string | null {
+  const header = request.headers.authorization ?? "";
+  const match = /^Bearer\s+(.+)$/i.exec(Array.isArray(header) ? header[0] ?? "" : header);
+  return match ? match[1]!.trim() : null;
+}
+
+/** The paired device behind this token, if it is allowed to use Drop. */
+function dropDeviceFor(token: string | null): { id: string } | null {
+  if (!token || !autopilotHost) return null;
+  const device = autopilotHost.devices.byTokenHash(hashToken(token));
+  if (!device || !device.capabilities.includes("drop")) return null;
+  autopilotHost.devices.markSeen(device.id);
+  return { id: device.id };
+}
+
+/**
+ * Mints a one-time link that turns a phone's browser into a paired Drop client.
+ *
+ * Long and random rather than six digits: a six-digit code is fine when a
+ * person is typing it under time pressure, but this one travels in a URL where
+ * length costs nothing and guessability is the only thing that matters.
+ */
+function createDropLink(): { url: string; expiresAt: string } {
+  if (!autopilotHost) throw new Error("Autopilot is not running, so Drop cannot pair a phone yet.");
+  const code = randomBytes(32).toString("base64url");
+  const pairing = autopilotHost.devices.openPairing(code, 10);
+  const lanIp = getLanIp();
+  return {
+    url: `http://${lanIp ?? "127.0.0.1"}:${actionPort}/drop?link=${encodeURIComponent(code)}`,
+    expiresAt: pairing.expiresAt
+  };
 }
 
 function readJsonFile<T>(path: string, fallback: T): T {
@@ -20078,10 +20154,54 @@ function startActionEndpoint(): void {
       // operator has enabled it, and a token when they have set one.
       const dropUrl = new URL(request.url ?? "/", `http://${request.headers.host ?? "127.0.0.1"}`);
       if (dropUrl.pathname === "/drop" || dropUrl.pathname.startsWith("/drop/")) {
-        const dropAuth = authorizeControlEndpoint(request, dropUrl);
-        if (!dropAuth.ok) {
-          sendJson(response, dropAuth.statusCode, { ok: false, error: dropAuth.error });
+        // Redeeming a link: swap the one-time code for a device token, park it
+        // in a cookie, and redirect to a clean URL so the code does not survive
+        // in history or in a screenshot of the address bar.
+        const link = dropUrl.searchParams.get("link");
+        if (link && dropUrl.pathname === "/drop" && autopilotHost) {
+          try {
+            const token = randomBytes(32).toString("base64url");
+            autopilotHost.devices.completePairing({
+              code: link,
+              tokenHash: hashToken(token),
+              label: "Drop in a browser",
+              platform: "android"
+            });
+            response.writeHead(302, {
+              // Path-scoped so this cookie is never sent to /companion: a
+              // cookie rides along automatically, and a credential that
+              // authenticates more than it was handed out for is how a
+              // narrow grant quietly becomes a wide one.
+              //
+              // Not Secure, because this is http over a tailnet — the network
+              // is the encryption here, and marking it Secure would simply
+              // stop the cookie being set at all.
+              "Set-Cookie": `${DROP_COOKIE}=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/drop; Max-Age=${DROP_COOKIE_MAX_AGE}`,
+              Location: "/drop",
+              "Cache-Control": "no-store"
+            });
+            response.end();
+          } catch (error) {
+            sendJson(response, 400, {
+              ok: false,
+              error: error instanceof Error ? error.message : "That Drop link could not be used."
+            });
+          }
           return;
+        }
+
+        // A paired device — the native app by header, the browser by cookie —
+        // is allowed through without LAN exposure being on, which is the whole
+        // point: the operator wants Drop reachable from their phone and from
+        // nothing else on the network.
+        const paired = dropDeviceFor(bearerFromRequest(request))
+          ?? dropDeviceFor(cookieFromRequest(request, DROP_COOKIE));
+        if (!paired) {
+          const dropAuth = authorizeControlEndpoint(request, dropUrl);
+          if (!dropAuth.ok) {
+            sendJson(response, dropAuth.statusCode, { ok: false, error: dropAuth.error });
+            return;
+          }
         }
       }
       if (await handleDropRoutes(request, response)) {
@@ -20637,6 +20757,23 @@ function registerIpcHandlers(): void {
   ipcMain.handle("dexnest:get-clipboard-state", () => clipboardState());
 
   ipcMain.handle("dexnest:get-drop-state", () => dropState());
+
+  ipcMain.handle("dexnest:create-drop-link", () => {
+    try {
+      const link = createDropLink();
+      localDb.appendActionEvent({
+        module: "drop",
+        eventType: "drop_link_created",
+        status: "success",
+        source: "desktop_ui",
+        // The URL carries the one-time code, so only its shape is recorded.
+        summary: "A one-time Drop link was created for a phone"
+      });
+      return { ok: true as const, ...link };
+    } catch (error) {
+      return { ok: false as const, error: error instanceof Error ? error.message : "Could not create a Drop link." };
+    }
+  });
 
   ipcMain.handle("dexnest:get-tools-state", () => toolsState());
 

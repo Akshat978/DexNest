@@ -1987,6 +1987,8 @@ export interface DexNestBridge {
   unpinById: (id: string) => Promise<{ ok: boolean; pins: DexNestPin[] }>;
   getClipboardState: () => Promise<ClipboardState>;
   getDropState: () => Promise<DropState>;
+  /** Mints a one-time link that pairs a phone's browser with Drop. */
+  createDropLink: () => Promise<{ ok: true; url: string; expiresAt: string } | { ok: false; error: string }>;
   getToolsState: () => Promise<ToolsState>;
   getVaultState: () => Promise<VaultState>;
   getSearchState: () => Promise<SearchState>;

@@ -29,7 +29,16 @@ import { AutopilotStore } from "./store.ts";
  * pairing code. A device starts with read; control is granted afterwards, at
  * the desktop, deliberately.
  */
-export type DeviceCapability = "read" | "control";
+/**
+ * What a paired device may do.
+ *
+ * Three, not two, because Drop and Autopilot control are different kinds of
+ * trust. Drop writes files into a folder the operator already treats as an
+ * inbox; control pauses overnight work and answers questions on their behalf.
+ * Folding Drop into `control` would mean a phone that can receive a photo can
+ * also stop a run, and the operator would have to choose both or neither.
+ */
+export type DeviceCapability = "read" | "control" | "drop";
 
 export interface DeviceRecord {
   id: string;
@@ -78,7 +87,7 @@ const toDevice = (row: DeviceRow): DeviceRecord => ({
   capabilities: String(row.capabilities ?? "")
     .split(",")
     .map(value => value.trim())
-    .filter((value): value is DeviceCapability => value === "read" || value === "control"),
+    .filter((value): value is DeviceCapability => value === "read" || value === "control" || value === "drop"),
   pairedAt: row.paired_at,
   lastSeenAt: row.last_seen_at,
   // Never the hash itself: this record reaches the renderer, and a value that
@@ -251,7 +260,7 @@ export class DeviceStore {
       this.db
         .prepare(
           `UPDATE autopilot_devices
-              SET token_hash=:hash, capabilities='read', paired_at=:now, last_seen_at=:now
+              SET token_hash=:hash, capabilities='read,drop', paired_at=:now, last_seen_at=:now
             WHERE id=:id`
         )
         .run({ id: device.id, hash: input.tokenHash, now });
@@ -306,6 +315,8 @@ export class DeviceStore {
   setCapabilities(id: string, capabilities: readonly DeviceCapability[]): DeviceRecord | null {
     if (!this.pairingAvailable()) return null;
     // Read is implied by holding a token at all; control is the real decision.
+    // Drop is neither — it is granted at pairing and revoked here, so it is
+    // only present if the caller passed it.
     const unique = [...new Set(["read", ...capabilities])].join(",");
     this.db.prepare("UPDATE autopilot_devices SET capabilities=:capabilities WHERE id=:id").run({ id, capabilities: unique });
     return this.get(id);

@@ -265,16 +265,21 @@ test("a code this machine never issued is refused", (t) => {
   );
 });
 
-test("pairing grants read, never control", (t) => {
+test("pairing grants read and drop, never control", (t) => {
   // Seeing that a run is blocked is a far smaller thing to hand a phone than
   // being able to stop one, and bundling them would mean deciding both while
   // someone is fumbling with a pairing code.
+  //
+  // Drop is granted here because exchanging files is the reason most pairings
+  // happen at all, and it writes into a folder the operator already treats as
+  // an inbox. Control is the one that waits for a second, deliberate decision.
   const h = fixture(t);
   const devices = new DeviceStore(h.ports);
   devices.openPairing("111111", 10);
   const device = devices.completePairing({ code: "111111", tokenHash: "hash-a", label: "phone", pushToken: "push-a" });
 
-  assert.deepEqual(device.capabilities, ["read"]);
+  assert.deepEqual(device.capabilities, ["read", "drop"]);
+  assert.equal(device.capabilities.includes("control"), false, "control is never granted by pairing alone");
   assert.equal(device.paired, true);
   assert.equal(devices.byTokenHash("hash-a")!.id, device.id);
   assert.equal(devices.byTokenHash("some-other-hash"), null);
@@ -347,4 +352,20 @@ test("a pairing lasts until the operator ends it, and nothing else", (t) => {
   // And giving it a fresh address brings push back without re-pairing.
   devices.setPushToken(device.id, "push-new");
   assert.equal(devices.get(device.id)!.status, "ACTIVE");
+});
+
+test("drop can be revoked without unpairing, and control stays its own decision", (t) => {
+  // The two grants have to move independently or the operator is forced to
+  // choose between a phone that can do everything and one that can do nothing.
+  const h = fixture(t);
+  const devices = new DeviceStore(h.ports);
+  devices.openPairing("777777", 10);
+  const device = devices.completePairing({ code: "777777", tokenHash: "hash-g", label: "phone", pushToken: "push-g" });
+
+  devices.setCapabilities(device.id, []);
+  assert.deepEqual(devices.get(device.id)!.capabilities, ["read"], "drop is gone, the pairing is not");
+  assert.equal(devices.byTokenHash("hash-g")!.id, device.id, "still paired, still able to read");
+
+  devices.setCapabilities(device.id, ["control", "drop"]);
+  assert.deepEqual(devices.get(device.id)!.capabilities.sort(), ["control", "drop", "read"]);
 });
