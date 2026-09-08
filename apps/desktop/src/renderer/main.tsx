@@ -49,6 +49,7 @@ import { ToolsView } from "./views/ToolsView";
 import { DropView } from "./views/DropView";
 import { ProviderLimitsCard } from "./views/ProviderLimitsCard";
 import { WeatherCard } from "./views/WeatherCard";
+import { CalendarAccountsCard } from "./views/CalendarAccountsCard";
 import { PinButton, PinsContext, setActivePinContext, activePinContext, pinModuleToView, computePinId } from "./components/pins";
 import type { PinInput, PinsContextValue } from "./components/pins";
 import { ClipboardView } from "./views/ClipboardView";
@@ -1897,6 +1898,16 @@ interface HealthGroup {
   checks: HealthCheckResult[];
 }
 
+export interface DexNestBridgeCalendarAccount {
+  id: string;
+  provider: "google" | "microsoft";
+  email: string;
+  lastSyncAt: string | null;
+  lastError: string | null;
+  eventCount: number;
+  enabled: boolean;
+}
+
 export interface AppHealthState {
   overallStatus: HealthStatus;
   checkedAt: string;
@@ -1991,6 +2002,19 @@ export interface DexNestBridge {
   /** Mints a one-time link that pairs a phone's browser with Drop. */
   createDropLink: () => Promise<{ ok: true; url: string; expiresAt: string } | { ok: false; error: string }>;
   getWeather: () => Promise<unknown>;
+  getCalendarAccounts: () => Promise<{
+    accounts: Array<{
+      id: string; provider: "google" | "microsoft"; email: string;
+      lastSyncAt: string | null; lastError: string | null; eventCount: number; enabled: boolean;
+    }>;
+    configured: { google: boolean; microsoft: boolean };
+  }>;
+  setCalendarApp: (provider: "google" | "microsoft", clientId: string, clientSecret: string | null)
+    => Promise<{ ok: true } | { ok: false; error: string }>;
+  connectCalendar: (provider: "google" | "microsoft")
+    => Promise<{ ok: true } | { ok: false; error: string }>;
+  syncCalendars: () => Promise<{ accounts: DexNestBridgeCalendarAccount[] }>;
+  disconnectCalendar: (accountId: string) => Promise<{ accounts: DexNestBridgeCalendarAccount[] }>;
   setWeatherLocation: (query: string) => Promise<
     { ok: true; location: { latitude: number; longitude: number; label: string } } | { ok: false; error: string }
   >;
@@ -8143,6 +8167,8 @@ function CommandView({
           <ProviderLimitsCard />
 
           <WeatherCard />
+
+          <CalendarAccountsCard />
 
           <GlassCard accent="#06B6D4" hover={false} className="flex items-center gap-4">
             <AssistantOrb size={72} state="idle" />

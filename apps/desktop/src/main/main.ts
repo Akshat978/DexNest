@@ -18,6 +18,11 @@ import { createLocalDb } from "@dexnest/local-db";
 import { createAutopilotHost, type AutopilotHost } from "./autopilotHost.js";
 import { createCompanionApi, hashToken, openPairing } from "./companionApi.js";
 import { buildAgenda, localDate, weekdayOf, type TodayAgenda } from "@dexnest/today";
+import { authorise as oauthAuthorise, refresh as oauthRefresh } from "./oauth.js";
+import {
+  dedupe, fetchEvents, PROVIDERS, whoAmI,
+  type CalendarAccount, type CalendarProviderId, type SyncedEvent
+} from "./calendarAccounts.js";
 import { createProviderLimitsService } from "./providerLimits.js";
 import { createWeatherService } from "./weather.js";
 import type { MessageBoxOptions, MessageBoxSyncOptions, OpenDialogOptions, OpenDialogSyncOptions } from "electron";
@@ -212,6 +217,8 @@ const externalDevicesCachePath = join(settingsRoot, "external-devices-cache.json
 const externalDevicesGroupsPath = join(settingsRoot, "external-devices-groups.json");
 const goveeLocalApiKeyPath = join(settingsRoot, "govee-api-key.local.json");
 const integrationKeychainPath = join(settingsRoot, "integration-keychain.json");
+const calendarAccountsPath = join(settingsRoot, "calendar-accounts.json");
+const syncedEventsPath = join(settingsRoot, "calendar-synced-events.json");
 const performanceModeSettingsPath = join(settingsRoot, "performance-mode-settings.json");
 const appLifecycleSettingsPath = join(settingsRoot, "app-lifecycle-settings.json");
 const searchIndexStatusPath = join(settingsRoot, "search-index-status.json");
@@ -2028,14 +2035,148 @@ function todayAgenda(): TodayAgenda {
   const now = new Date();
   const file = loadTimetableFile();
   const template = file.templates.find(item => item.id === file.activeTemplateId) ?? file.templates[0];
+  const enabled = new Set(loadCalendarAccounts().filter(account => account.enabled).map(account => account.id));
   return buildAgenda({
     date: localDate(now),
     weekday: weekdayOf(now),
-    events: loadCalendarEvents(),
+    // The operator's own events, then whatever the connected accounts brought.
+    // Deduped by the shared UID both providers issue, so a meeting invited to
+    // two addresses appears once rather than making one 3pm look like two.
+    events: [
+      ...loadCalendarEvents(),
+      ...dedupe(loadSyncedEvents().filter(event => enabled.has(event.accountId)))
+    ],
     blocks: template?.blocks ?? [],
     nudges: loadNudges(),
     now: now.toISOString()
   });
+}
+
+// --- connected calendars ------------------------------------------------------
+
+/** How far ahead to pull. Today needs one day; a little more costs nothing. */
+const CALENDAR_SYNC_DAYS = 7;
+
+const loadCalendarAccounts = (): CalendarAccount[] =>
+  readJsonFile<CalendarAccount[]>(calendarAccountsPath, []);
+const saveCalendarAccounts = (items: CalendarAccount[]): CalendarAccount[] =>
+  writeJsonFile(calendarAccountsPath, items);
+const loadSyncedEvents = (): SyncedEvent[] =>
+  readJsonFile<SyncedEvent[]>(syncedEventsPath, []);
+const saveSyncedEvents = (items: SyncedEvent[]): SyncedEvent[] =>
+  writeJsonFile(syncedEventsPath, items);
+
+/** The app registration for a provider, as configured by the operator. */
+function calendarProviderConfig(provider: CalendarProviderId): { clientId: string; clientSecret: string | null } | null {
+  const credential = findIntegrationCredential(`calendar_${provider}`);
+  if (!credential) return null;
+  try {
+    const parsed = JSON.parse(decryptIntegrationCredential(credential)) as { clientId?: string; clientSecret?: string };
+    if (!parsed.clientId) return null;
+    return { clientId: parsed.clientId, clientSecret: parsed.clientSecret ?? null };
+  } catch {
+    return null;
+  }
+}
+
+function oauthConfigFor(provider: CalendarProviderId) {
+  const config = calendarProviderConfig(provider);
+  if (!config) {
+    throw new Error(`No ${PROVIDERS[provider].label} app is configured yet. Add its client ID in Settings first.`);
+  }
+  const meta = PROVIDERS[provider];
+  return {
+    authUrl: meta.authUrl,
+    tokenUrl: meta.tokenUrl,
+    clientId: config.clientId,
+    clientSecret: config.clientSecret,
+    scopes: meta.scopes,
+    ...(meta.extraAuthParams ? { extraAuthParams: meta.extraAuthParams } : {})
+  };
+}
+
+const refreshTokenKey = (accountId: string) => `calendar_token_${accountId}`;
+
+/** Signs in, records the account, and pulls its first events. */
+async function connectCalendarAccount(provider: CalendarProviderId): Promise<CalendarAccount> {
+  const config = oauthConfigFor(provider);
+  const tokens = await oauthAuthorise(config);
+  if (!tokens.refreshToken) {
+    // Without one the account works for an hour and then silently stops, which
+    // is worse than refusing to connect at all.
+    throw new Error(`${PROVIDERS[provider].label} returned no refresh token. Remove DexNest from that account and connect again.`);
+  }
+
+  const email = await whoAmI[provider](tokens.accessToken);
+  const accounts = loadCalendarAccounts();
+  // Reconnecting the same address replaces it rather than adding a twin.
+  const existing = accounts.find(account => account.provider === provider && account.email === email);
+  const account: CalendarAccount = {
+    id: existing?.id ?? createId("cal-account"),
+    provider,
+    email,
+    connectedAt: existing?.connectedAt ?? new Date().toISOString(),
+    lastSyncAt: null,
+    lastError: null,
+    eventCount: 0,
+    enabled: true
+  };
+
+  setIntegrationCredential(refreshTokenKey(account.id), `${PROVIDERS[provider].label} calendar token`, tokens.refreshToken);
+  saveCalendarAccounts(existing
+    ? accounts.map(item => (item.id === account.id ? account : item))
+    : [...accounts, account]);
+
+  await syncCalendarAccount(account.id);
+  return loadCalendarAccounts().find(item => item.id === account.id) ?? account;
+}
+
+async function syncCalendarAccount(accountId: string): Promise<void> {
+  const account = loadCalendarAccounts().find(item => item.id === accountId);
+  if (!account) return;
+
+  const record = (patch: Partial<CalendarAccount>) => {
+    saveCalendarAccounts(loadCalendarAccounts().map(item => (item.id === accountId ? { ...item, ...patch } : item)));
+  };
+
+  try {
+    const credential = findIntegrationCredential(refreshTokenKey(accountId));
+    if (!credential) throw new Error("This account has no stored token. Connect it again.");
+
+    const tokens = await oauthRefresh(oauthConfigFor(account.provider), decryptIntegrationCredential(credential));
+    // Providers may rotate the refresh token; storing the new one is what keeps
+    // a long-lived connection alive.
+    if (tokens.refreshToken) {
+      setIntegrationCredential(refreshTokenKey(accountId), `${PROVIDERS[account.provider].label} calendar token`, tokens.refreshToken);
+    }
+
+    const fresh = await fetchEvents[account.provider](tokens.accessToken, accountId, CALENDAR_SYNC_DAYS);
+    // Replace this account's window wholesale rather than merging into it. The
+    // refetch is the truth for that window, and merging would leave deleted
+    // events on screen for ever.
+    saveSyncedEvents([...loadSyncedEvents().filter(event => event.accountId !== accountId), ...fresh]);
+    record({ lastSyncAt: new Date().toISOString(), lastError: null, eventCount: fresh.length });
+  } catch (error) {
+    // The account stays connected and its last events stay on screen. A failed
+    // sync is usually a network blip, and disconnecting would turn that into a
+    // re-authorisation the operator has to notice and perform.
+    record({ lastError: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+async function syncCalendarAccounts(): Promise<void> {
+  for (const account of loadCalendarAccounts().filter(item => item.enabled)) {
+    await syncCalendarAccount(account.id);
+  }
+}
+
+function disconnectCalendarAccount(accountId: string): void {
+  saveCalendarAccounts(loadCalendarAccounts().filter(account => account.id !== accountId));
+  saveSyncedEvents(loadSyncedEvents().filter(event => event.accountId !== accountId));
+  const credential = findIntegrationCredential(refreshTokenKey(accountId));
+  if (credential) {
+    saveIntegrationKeychain(loadIntegrationKeychain().filter(item => item.id !== credential.id));
+  }
 }
 
 function dropPhoneUrl(): string {
@@ -20814,6 +20955,49 @@ function registerIpcHandlers(): void {
   ipcMain.handle("dexnest:get-drop-state", () => dropState());
 
   ipcMain.handle("dexnest:get-today-agenda", () => todayAgenda());
+
+  ipcMain.handle("dexnest:calendar-accounts", () => ({
+    accounts: loadCalendarAccounts(),
+    configured: {
+      google: Boolean(calendarProviderConfig("google")),
+      microsoft: Boolean(calendarProviderConfig("microsoft"))
+    }
+  }));
+
+  ipcMain.handle("dexnest:calendar-set-app", (_event, provider: CalendarProviderId, clientId: string, clientSecret: string | null) => {
+    try {
+      if (!String(clientId ?? "").trim()) throw new Error("A client ID is required.");
+      if (PROVIDERS[provider].needsSecret && !String(clientSecret ?? "").trim()) {
+        throw new Error(`${PROVIDERS[provider].label} desktop apps also need a client secret.`);
+      }
+      setIntegrationCredential(
+        `calendar_${provider}`,
+        `${PROVIDERS[provider].label} calendar app`,
+        JSON.stringify({ clientId: String(clientId).trim(), clientSecret: String(clientSecret ?? "").trim() || null })
+      );
+      return { ok: true as const };
+    } catch (error) {
+      return { ok: false as const, error: error instanceof Error ? error.message : "Could not save that." };
+    }
+  });
+
+  ipcMain.handle("dexnest:calendar-connect", async (_event, provider: CalendarProviderId) => {
+    try {
+      return { ok: true as const, account: await connectCalendarAccount(provider) };
+    } catch (error) {
+      return { ok: false as const, error: error instanceof Error ? error.message : "Could not connect that account." };
+    }
+  });
+
+  ipcMain.handle("dexnest:calendar-sync", async () => {
+    await syncCalendarAccounts();
+    return { ok: true as const, accounts: loadCalendarAccounts() };
+  });
+
+  ipcMain.handle("dexnest:calendar-disconnect", (_event, accountId: string) => {
+    disconnectCalendarAccount(String(accountId));
+    return { ok: true as const, accounts: loadCalendarAccounts() };
+  });
 
   ipcMain.handle("dexnest:create-drop-link", () => {
     try {
