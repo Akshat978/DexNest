@@ -16788,11 +16788,41 @@ async function handleDropRoutes(request: IncomingMessage, response: ServerRespon
   }
 
   if (request.method === "POST" && url.pathname === "/drop/api/text") {
-    const body = await readBody(request) as { text?: string };
+    const body = await readBody(request) as { text?: string; toClipboard?: boolean };
     const text = String(body.text ?? "").trim();
     if (!text) {
       sendJson(response, 400, { ok: false, error: "Text is required." });
       return true;
+    }
+
+    /**
+     * Onto the PC's clipboard, when the phone asked for that.
+     *
+     * The shelf item below is still written either way, so nothing is lost and
+     * there is still a record of what arrived. This only adds the step the
+     * operator would otherwise take by hand: send from the phone, walk to the
+     * desk, press Copy on the item they just sent.
+     *
+     * Routed through saveClipboardText rather than clipboard.writeText alone,
+     * because that is where DexNest refuses text belonging to the Secure Vault
+     * and where history is recorded. A second path onto the clipboard that
+     * skipped those checks would be a way around them.
+     */
+    let clipboardOutcome: { ok: boolean; reason?: string } | null = null;
+    if (body.toClipboard === true) {
+      clipboardOutcome = saveClipboardText(text, "manual");
+      if (clipboardOutcome.ok) clipboard.writeText(text);
+      localDb.appendActionEvent({
+        module: "DexNest Drop",
+        actionId: "drop.phone_text_to_clipboard",
+        eventType: "drop.phone_text_to_clipboard",
+        status: clipboardOutcome.ok ? "success" : "skipped",
+        source: "phone_pwa",
+        summary: clipboardOutcome.ok
+          ? "Phone text placed on the PC clipboard."
+          : `Phone text not placed on the clipboard (${clipboardOutcome.reason ?? "refused"}).`,
+        metadataJson: { byteLength: byteLength(text), reason: clipboardOutcome.reason ?? null }
+      });
     }
 
     const item = createDropTextItem(text, "phone", "incoming");
@@ -16814,7 +16844,14 @@ async function handleDropRoutes(request: IncomingMessage, response: ServerRespon
       metadataJson: { dropId: item.id, byteLength: item.byteLength }
     });
     broadcastDropUpdate("Text received from phone.", "drop.incoming_text_created");
-    sendJson(response, 200, { ok: true, itemId: item.id });
+    sendJson(response, 200, {
+      ok: true,
+      itemId: item.id,
+      // Reported rather than assumed: the phone said what it wanted, and
+      // "refused because it looked like a vault secret" is something the
+      // operator should see on the phone rather than discover by pasting.
+      ...(clipboardOutcome ? { clipboard: clipboardOutcome.ok, clipboardReason: clipboardOutcome.reason ?? null } : {})
+    });
     return true;
   }
 
