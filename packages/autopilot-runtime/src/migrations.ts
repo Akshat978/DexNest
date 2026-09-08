@@ -1075,6 +1075,26 @@ export const AUTOPILOT_MIGRATIONS: readonly Migration[] = [
         device_id  TEXT REFERENCES autopilot_devices(id)
       );
     `
+  },
+  {
+    id: 32,
+    name: "existing_pairings_keep_drop",
+    up: `
+      -- Drop became its own capability after these devices had already paired.
+      --
+      -- New pairings are granted 'read,drop', but a phone paired before that
+      -- change still says only 'read' — so the Drop gate refused it and fell
+      -- through to the localhost-only rule, telling the operator to enable LAN
+      -- exposure to fix something that was not a network problem at all.
+      --
+      -- Only devices that actually hold a token are touched. A row with no
+      -- token_hash is a push target that was never paired, and granting it a
+      -- capability would be inventing authority nobody conferred.
+      UPDATE autopilot_devices
+         SET capabilities = capabilities || ',drop'
+       WHERE token_hash IS NOT NULL
+         AND capabilities NOT LIKE '%drop%';
+    `
   }
 ];
 

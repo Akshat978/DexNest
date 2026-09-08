@@ -369,3 +369,45 @@ test("drop can be revoked without unpairing, and control stays its own decision"
   devices.setCapabilities(device.id, ["control", "drop"]);
   assert.deepEqual(devices.get(device.id)!.capabilities.sort(), ["control", "drop", "read"]);
 });
+
+test("a device paired before Drop had a capability still gets one", (t) => {
+  // The bug this pins: Drop became its own capability after devices had
+  // already paired, so an existing phone held only "read". The Drop gate found
+  // no "drop", fell through to the localhost-only rule, and told the operator
+  // to enable LAN exposure — advice that would have widened their network
+  // exposure to fix something that was never a network problem.
+  const h = fixture(t);
+  const devices = new DeviceStore(h.ports);
+  devices.openPairing("424242", 10);
+  const device = devices.completePairing({ code: "424242", tokenHash: "hash-old", label: "phone", pushToken: "push-old" });
+
+  // Put the row back the way a pre-migration pairing looked.
+  h.ports.db.prepare("UPDATE autopilot_devices SET capabilities='read' WHERE id=:id").run({ id: device.id });
+  assert.equal(devices.get(device.id)!.capabilities.includes("drop"), false, "precondition: the old shape");
+
+  h.ports.db.exec(`
+    UPDATE autopilot_devices
+       SET capabilities = capabilities || ',drop'
+     WHERE token_hash IS NOT NULL
+       AND capabilities NOT LIKE '%drop%';
+  `);
+
+  assert.deepEqual(devices.get(device.id)!.capabilities, ["read", "drop"]);
+});
+
+test("the backfill does not confer authority on a device that never paired", (t) => {
+  // A row with no token is a push target, not a paired device. Granting it a
+  // capability would be inventing authority nobody conferred.
+  const h = fixture(t);
+  const devices = new DeviceStore(h.ports);
+  const pushOnly = devices.register({ label: "push only", pushToken: "push-x" });
+
+  h.ports.db.exec(`
+    UPDATE autopilot_devices
+       SET capabilities = capabilities || ',drop'
+     WHERE token_hash IS NOT NULL
+       AND capabilities NOT LIKE '%drop%';
+  `);
+
+  assert.equal(devices.get(pushOnly.id)!.capabilities.includes("drop"), false);
+});
