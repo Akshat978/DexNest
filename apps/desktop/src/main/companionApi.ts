@@ -65,6 +65,12 @@ export interface CompanionDeps {
   };
   /** One day's agenda, already assembled and already provider-agnostic. */
   today?: () => TodayAgenda;
+  /** Claude and Codex plan usage, exactly as the desktop card shows it. */
+  planUsage?: () => Promise<unknown>;
+  /** A short verdict on whether DexNest itself is well. */
+  health?: () => unknown;
+  /** Today's forecast, or an unconfigured location. */
+  weather?: () => Promise<unknown>;
 }
 
 interface Caller {
@@ -242,6 +248,40 @@ export function createCompanionApi(deps: CompanionDeps) {
         if ("error" in auth) { json(response, auth.status, { ok: false, error: auth.error }); return true; }
         if (!deps.today) { json(response, 503, { ok: false, error: "DexNest cannot build today's agenda right now." }); return true; }
         json(response, 200, { ok: true, today: deps.today() });
+        return true;
+      }
+
+      /**
+       * Plan usage, as the desktop computes it.
+       *
+       * The phone does no arithmetic of its own — not even the percentage.
+       * Two surfaces that each derive a number from the same logs will
+       * eventually disagree by a point, and then the operator has to work out
+       * which one to believe at the exact moment they wanted a quick answer.
+       *
+       * That includes the staleness. Whether a reading is live or reckoned is
+       * part of the reading, and a phone that showed the figure without it
+       * would be the same wrong-looking rings on a smaller screen.
+       */
+      if (request.method === "GET" && url.pathname === "/companion/usage") {
+        const auth = authorise(request, "read");
+        if ("error" in auth) { json(response, auth.status, { ok: false, error: auth.error }); return true; }
+        if (!deps.planUsage) { json(response, 503, { ok: false, error: "DexNest cannot read plan usage right now." }); return true; }
+        json(response, 200, { ok: true, usage: await deps.planUsage() });
+        return true;
+      }
+
+      if (request.method === "GET" && url.pathname === "/companion/weather") {
+        const auth = authorise(request, "read");
+        if ("error" in auth) { json(response, auth.status, { ok: false, error: auth.error }); return true; }
+        json(response, 200, { ok: true, weather: deps.weather ? await deps.weather() : null });
+        return true;
+      }
+
+      if (request.method === "GET" && url.pathname === "/companion/health") {
+        const auth = authorise(request, "read");
+        if ("error" in auth) { json(response, auth.status, { ok: false, error: auth.error }); return true; }
+        json(response, 200, { ok: true, health: deps.health ? deps.health() : null });
         return true;
       }
 

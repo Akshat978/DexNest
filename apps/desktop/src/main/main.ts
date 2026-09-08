@@ -19,6 +19,7 @@ import { createAutopilotHost, type AutopilotHost } from "./autopilotHost.js";
 import { createCompanionApi, hashToken, openPairing } from "./companionApi.js";
 import { buildAgenda, localDate, weekdayOf, type TodayAgenda } from "@dexnest/today";
 import { createProviderLimitsService } from "./providerLimits.js";
+import { createWeatherService } from "./weather.js";
 import type { MessageBoxOptions, MessageBoxSyncOptions, OpenDialogOptions, OpenDialogSyncOptions } from "electron";
 import type { DexNestActionDefinition, DexNestActionTrigger, DexNestEventStatus, DexNestPin, DexNestPinType } from "@dexnest/shared-types";
 import { formatLocalDateTime, getLocalTodayDateString, parseLocalDateInput, resolveRelativeLocalDate, toLocalDateInputValue } from "@dexnest/shared-types";
@@ -193,6 +194,7 @@ const financeRecurringPath = join(settingsRoot, "finance-recurring.json");
 // PATH to a Firebase service account, never its contents.
 const autopilotPushSettingsPath = join(settingsRoot, "autopilot-push.json");
 const providerLimits = createProviderLimitsService({ budgetsPath: join(settingsRoot, "provider-limits.json") });
+const weather = createWeatherService({ settingsPath: join(settingsRoot, "weather.json") });
 const financeSettingsPath = join(settingsRoot, "finance-settings.json");
 const financeProfilesPath = join(settingsRoot, "finance-profiles.json");
 const captureItemsPath = join(settingsRoot, "capture-items.json");
@@ -304,6 +306,27 @@ async function companionRoutes(request: IncomingMessage, response: ServerRespons
     companionApi = createCompanionApi({
       host: autopilotHost,
       today: () => todayAgenda(),
+      planUsage: () => providerLimits.snapshot(),
+      weather: () => weather.snapshot(),
+      // Only the verdict, not the whole health report. That report names file
+      // paths and check internals, which is a debugging surface — and a phone
+      // is not somewhere anyone can debug.
+      health: () => {
+        const health = cachedAppHealthState();
+        if (!health) return { status: "unknown", checkedAt: null, summary: null, failing: [] };
+        return {
+          status: health.overallStatus,
+          checkedAt: health.checkedAt,
+          summary: health.summary,
+          // The label and status only. `detail` and `suggestion` name file
+          // paths and internals, which belong at the desk where they can be
+          // acted on, not in a payload sent across a network.
+          failing: health.groups
+            .flatMap(group => group.checks)
+            .filter(check => check.status !== "pass")
+            .map(check => ({ id: check.id, label: check.label, status: check.status }))
+        };
+      },
       actions: {
         list: () => [...actionRegistry.list(), ...getProjectActionDefinitions()],
         // Runs through the same path as every other trigger, with "phone" as
@@ -20825,6 +20848,16 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("dexnest:get-weather-state", () => weatherState());
   ipcMain.handle("dexnest:provider-limits", () => providerLimits.snapshot());
+
+  ipcMain.handle("dexnest:weather", () => weather.snapshot());
+
+  ipcMain.handle("dexnest:set-weather-location", async (_event, query: string) => {
+    try {
+      return { ok: true as const, location: await weather.setLocation(String(query ?? "")) };
+    } catch (error) {
+      return { ok: false as const, error: error instanceof Error ? error.message : "Could not find that place." };
+    }
+  });
 
   ipcMain.handle("dexnest:get-news-state", () => newsState());
 

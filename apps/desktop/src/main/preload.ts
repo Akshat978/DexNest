@@ -18,6 +18,8 @@ contextBridge.exposeInMainWorld("dexNest", {
   getClipboardState: () => ipcRenderer.invoke("dexnest:get-clipboard-state"),
   getDropState: () => ipcRenderer.invoke("dexnest:get-drop-state"),
   createDropLink: () => ipcRenderer.invoke("dexnest:create-drop-link"),
+  getWeather: () => ipcRenderer.invoke("dexnest:weather"),
+  setWeatherLocation: (query: string) => ipcRenderer.invoke("dexnest:set-weather-location", query),
   getToolsState: () => ipcRenderer.invoke("dexnest:get-tools-state"),
   getVaultState: () => ipcRenderer.invoke("dexnest:get-vault-state"),
   getSearchState: () => ipcRenderer.invoke("dexnest:get-search-state"),
