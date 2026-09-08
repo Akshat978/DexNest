@@ -43,6 +43,24 @@ export interface NewRunForm {
   /** The written plan, parsed into ordered items. Optional. */
   planText?: string;
 }
+/**
+ * The verification tiers a new run starts from.
+ *
+ * Here rather than in the UI because two places now build this list — the New
+ * Run form and rerunForm() — and a default that differed between them would
+ * mean cloning a run silently changed what it is judged by.
+ *
+ * Only `test` is on. The others are real checks that many projects do not have
+ * configured, and a run that fails on a missing linter has failed at nothing.
+ */
+export const DEFAULT_VERIFICATION_TIERS: ReadonlyArray<{ tier: string; enabled: boolean; executable: string; args: string[] }> = [
+  { tier: "typecheck", enabled: false, executable: "node", args: ["node_modules/typescript/bin/tsc", "--noEmit"] },
+  { tier: "lint", enabled: false, executable: "node", args: ["node_modules/eslint/bin/eslint.js", "."] },
+  { tier: "test", enabled: true, executable: "node", args: ["--test"] },
+  { tier: "integration", enabled: false, executable: "node", args: ["--test", "test/integration.test.js"] },
+  { tier: "build", enabled: false, executable: "node", args: ["node_modules/vite/bin/vite.js", "build"] }
+];
+
 export function validateNewRun(form: NewRunForm): NewRunForm {
   validateRoles(form?.primary, form?.consultant);
   if (typeof form.goal !== "string" || !form.goal.trim() || form.goal.length > 16000) throw new Error("Describe the task (up to 16000 characters).");
@@ -141,6 +159,95 @@ export class AutopilotControlCenter {
     }
     await engine.requestStop(probe.id);
     return result;
+  }
+
+  /**
+   * The form that would produce a run like this one.
+   *
+   * The inverse of create(), and deliberately a *form* rather than a new run:
+   * re-running is almost never "do exactly that again". It is "same project,
+   * same verification, same bounds — different goal", or "that failed, try it
+   * once more". Handing back an editable form keeps the decision where it
+   * belongs and costs nothing, because create() still validates everything.
+   *
+   * Two fields come from the loop grant rather than the spec, because that is
+   * where the operator's bounds actually live: turns, iterations, spend, the
+   * idle ceiling, and the two switches. A run whose grant was never issued —
+   * one that failed during setup — falls back to the same defaults New Run
+   * offers, so a broken run is still worth cloning.
+   *
+   * WHAT DOES NOT COME BACK
+   *
+   * stopAt. "Stop at 7am" was a time on the night it was chosen, and carrying
+   * an instant that has already passed into a new run would either be refused
+   * or, worse, quietly accepted as a deadline in the past.
+   */
+  rerunForm(runId: string): NewRunForm {
+    const { engine, workers } = this.options;
+    const spec = engine.store.requireRun(runId).spec;
+    const grant = workers.loopSnapshot(runId).grant;
+
+    // structuredCommands is keyed by tier and holds only the enabled ones, so
+    // the full tier list is rebuilt from it: present means enabled, absent
+    // means the operator had turned it off.
+    const structured = spec.verification?.structuredCommands ?? {};
+    const verification = DEFAULT_VERIFICATION_TIERS.map((tier): { tier: string; enabled: boolean; executable: string; args: string[] } => {
+      const configured = structured[tier.tier];
+      return configured
+        ? { tier: tier.tier, enabled: true, executable: configured.executable, args: [...configured.args] }
+        : { ...tier, enabled: false, args: [...tier.args] };
+    });
+    // A tier the operator added that is not one of the defaults still comes
+    // back, or a re-run would silently drop a check the original was judged by.
+    for (const [tier, command] of Object.entries(structured)) {
+      if (!verification.some(item => item.tier === tier)) {
+        verification.push({ tier, enabled: true, executable: command.executable, args: [...command.args] });
+      }
+    }
+
+    return {
+      goal: spec.goal,
+      projectPath: spec.projectPath ?? "",
+      ...(spec.projectId ? { projectId: spec.projectId } : {}),
+      primary: (spec.workers?.primary ?? "claude") as CodingProvider,
+      consultant: (spec.workers?.consultant ?? null) as CodingProvider | null,
+      constraints: [...(spec.constraints ?? [])],
+      nonGoals: [...(spec.nonGoals ?? [])],
+      acceptance: (spec.acceptanceCriteria ?? []).map((item: { text: string; checkCommand?: unknown }) => ({
+        text: item.text,
+        // A criterion checked by a command is tied to the tier that runs it;
+        // one judged by reading is not tied to anything.
+        tier: item.checkCommand
+          ? Object.keys(structured).find(tier => structured[tier] === item.checkCommand) ?? null
+          : null
+      })),
+      verification,
+      maxFailures: spec.failurePolicy?.maxConsecutiveFailures ?? 3,
+      maxTurns: grant?.maxTurns ?? 50,
+      // With a grant, carry exactly what it bounded — including "not bounded
+      // by iterations at all", which is a real choice and is stored as null.
+      // Defaulting that to 25 invented a ceiling the operator never set, and
+      // against a lower turn ceiling it made the clone fail validation: the
+      // button would produce a form that could not be submitted.
+      ...(grant
+        ? (grant.maxIterations != null ? { maxIterations: grant.maxIterations } : {})
+        : { maxIterations: 25 }),
+      ...(grant?.maxCostUsd != null ? { maxCostUsd: grant.maxCostUsd } : {}),
+      ...(grant?.maxIdleTurns != null ? { maxIdleTurns: grant.maxIdleTurns } : { maxIdleTurns: 3 }),
+      autoResumeOnLimit: grant?.autoResumeOnLimit ?? false,
+      rotateSession: grant?.rotateSession ?? true,
+      ...(spec.workspaceMode ? { workspaceMode: spec.workspaceMode } : {}),
+      ...(spec.workerProfile ? { workerProfile: spec.workerProfile } : {}),
+      director: (spec.supervisor?.provider && spec.supervisor.provider !== "none"
+        ? spec.supervisor.provider
+        : null) as CodingProvider | null,
+      model: spec.model ?? "",
+      effort: spec.effort ?? "",
+      // Rendered back from the parsed items, so it is the plan's shape rather
+      // than the operator's original prose. Titles are what Autopilot acts on;
+      // anything they wrote around them was context for a night that is over.
+      planText: (spec.plan ?? []).map((item, index) => `${index + 1}. ${item.title}`).join("\n")
+    };
   }
 
   async create(form: NewRunForm) {

@@ -363,6 +363,7 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
     * only in tests. Someone who primed a conversation in their editor has to be
     * able to create the run, attach it, and only then start.
     */
+  handle("dexnest:autopilot-rerun-form", (_event, runId: string) => center.rerunForm(runId));
   handle("dexnest:autopilot-create-automation", async (_event, form: NewRunForm, input?: { start?: boolean }) => {
     const run = await center.create(form);
     const start = input?.start !== false;

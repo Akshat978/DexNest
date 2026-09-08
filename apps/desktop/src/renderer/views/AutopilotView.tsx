@@ -140,6 +140,9 @@ const HANDOFF_STATUS_LABELS: Record<string, string> = {
 
 export function AutopilotView() {
   const [area, setArea] = useState("Runs");
+  // A run whose settings the New Run form should start from. Set by "Run
+  // again", cleared by the form once it has read it.
+  const [cloneOf, setCloneOf] = useState<string | null>(null);
   const [filter, setFilter] = useState("ALL");
   const [runs, setRuns] = useState<DashboardRun[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -231,7 +234,13 @@ export function AutopilotView() {
       <nav className="autopilot-areas" aria-label="Autopilot areas">
         {["New Run", "Queue", "Runs", "Selected Run", "Notifications"].map(value => <button type="button" key={value} aria-pressed={area === value} disabled={value === "Selected Run" && !run} onClick={() => setArea(value)}>{value}</button>)}
       </nav>
-      <div hidden={area !== "New Run"}><AutopilotNewRun onCreated={id => { selected.current = id; setArea("Selected Run"); void refresh(id); }} /></div>
+      <div hidden={area !== "New Run"}>
+        <AutopilotNewRun
+          cloneOf={cloneOf}
+          onCloned={() => setCloneOf(null)}
+          onCreated={id => { selected.current = id; setArea("Selected Run"); void refresh(id); }}
+        />
+      </div>
       {/* Several projects in one night, on one budget. The New Run form
           asks the same three questions about a single project. */}
       <div hidden={area !== "Queue"}><AutopilotQueue refreshedAt={refreshedAt} onChanged={() => void refresh()} /></div>
@@ -285,6 +294,13 @@ export function AutopilotView() {
               <button type="button" disabled={run.state !== "RUNNING"} onClick={() => void guard(() => bridge().autopilotPauseRun(run.id))}>Pause</button>
               <button type="button" disabled={run.state !== "PAUSED"} onClick={() => void guard(() => bridge().autopilotResumeRun(run.id))}>Resume</button>
             </>}
+            {/* Available in any state, including mid-run. "Same project, same
+                checks, different goal" is a thing to want while watching one
+                work, and it starts a form rather than a run — so it cannot
+                disturb what is already going. */}
+            <button type="button" onClick={() => { setCloneOf(run.id); setArea("New Run"); }}>
+              Run again
+            </button>
             <button
               type="button"
               disabled={["STOPPED", "COMPLETED", "FAILED"].includes(run.state)}

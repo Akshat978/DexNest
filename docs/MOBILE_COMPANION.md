@@ -244,10 +244,12 @@ polling and stays 429 for hours, so it would not work anyway. `ccusage` does not
 solve this either — it counts tokens and estimates dollars, and never knows the
 plan percentage.
 
-**Untested idea, parked by the operator:** launching `claude` in a real Windows
-console (a true TTY) may trigger the startup prefetch that refreshes the cache,
-with no credentials and no native dependency. Worth 60 seconds if usage accuracy
-becomes urgent again.
+**That idea is now tested and dead.** Launching `claude` in a real Windows
+console (a true TTY, via `Start-Process`) and leaving the interactive UI running
+for 45 seconds does **not** refresh `cachedUsageUtilization`. Together with the
+earlier results — `claude doctor`, `claude auth` and a headless `-p` turn all
+leave it untouched — nothing DexNest is allowed to do can refresh Claude's
+anchor. The card says so rather than suggesting a fix that does not work.
 
 **Design requirement:** staleness is a first-class state, not a caption. A stale
 percentage at 3am is worse than no percentage, because it will be acted on.

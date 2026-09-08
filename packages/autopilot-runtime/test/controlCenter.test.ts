@@ -214,3 +214,103 @@ test("a failed workspace preparation reports the reason the runtime recorded", a
   assert.ok(failed.failureReason!.length <= 460, "the reason stays bounded");
   assert.ok(worktree.path.includes("dexnest-worktrees"), "the intent itself was never corrupted");
 });
+
+// --- re-running -------------------------------------------------------------
+
+test("a re-run form reproduces the run it was cloned from", async t => {
+  // The whole value of "Run again" is not retyping. Anything that silently
+  // fails to carry across is worse than no button: the operator believes the
+  // new run is judged the way the old one was, and it is not.
+  const f = await setup(t);
+  const input = form(f.repo, "claude");
+  input.constraints = ["Keep APIs stable", "No new dependencies"];
+  input.nonGoals = ["Rewriting the parser"];
+  input.model = "opus";
+  input.effort = "high";
+  input.maxTurns = 12;
+  input.maxIterations = 7;
+  input.maxIdleTurns = 4;
+  input.rotateSession = false;
+  input.autoResumeOnLimit = true;
+  input.verification = [
+    { tier: "test", enabled: true, executable: "node", args: ["--test"] },
+    { tier: "typecheck", enabled: true, executable: "node", args: ["tsc", "--noEmit"] }
+  ];
+
+  const run = await f.center.create(input);
+  const again = f.center.rerunForm(run.id);
+
+  assert.equal(again.goal, input.goal);
+  assert.equal(again.projectPath, input.projectPath);
+  assert.equal(again.primary, "claude");
+  assert.deepEqual(again.constraints, input.constraints);
+  assert.deepEqual(again.nonGoals, input.nonGoals);
+  assert.equal(again.model, "opus");
+  assert.equal(again.effort, "high");
+  assert.equal(again.maxFailures, input.maxFailures);
+
+  // The bounds live on the loop grant, not the spec, so these are the ones
+  // most likely to be quietly dropped.
+  assert.equal(again.maxTurns, input.maxTurns);
+  assert.equal(again.maxIterations, 7);
+  assert.equal(again.maxIdleTurns, 4);
+  assert.equal(again.rotateSession, false);
+  assert.equal(again.autoResumeOnLimit, true);
+
+  // Both enabled tiers survive, with their commands, and nothing the operator
+  // had turned off comes back on.
+  const enabled = again.verification.filter(item => item.enabled);
+  assert.deepEqual(enabled.map(item => item.tier).sort(), ["test", "typecheck"]);
+  assert.deepEqual(enabled.find(item => item.tier === "typecheck")!.args, ["tsc", "--noEmit"]);
+  assert.equal(again.verification.some(item => item.tier === "lint" && item.enabled), false);
+});
+
+test("a cloned form is valid input to create, and produces an equivalent run", async t => {
+  // The round trip that matters: the form must not merely look right, it must
+  // be something create() accepts without the operator editing anything.
+  const f = await setup(t);
+  const first = await f.center.create(form(f.repo, "claude"));
+  const cloned = f.center.rerunForm(first.id);
+
+  assert.doesNotThrow(() => validateNewRun(cloned));
+  const second = await f.center.create(cloned);
+  assert.notEqual(second.id, first.id, "cloning starts a new run, it does not resume the old one");
+
+  const before = buildRunReport(f.h.ports, first.id);
+  const after = buildRunReport(f.h.ports, second.id);
+  assert.equal(after.roles.primary.provider, before.roles.primary.provider);
+  assert.equal(after.loop.grants[0]!.maxTurns, before.loop.grants[0]!.maxTurns);
+  assert.deepEqual(
+    Object.keys(after.spec.verification.structuredCommands ?? {}).sort(),
+    Object.keys(before.spec.verification.structuredCommands ?? {}).sort()
+  );
+});
+
+test("a run that never got a grant is still worth cloning", async t => {
+  // A run that failed during setup has no loop grant, and reading bounds off a
+  // missing grant is exactly where this would throw. Falling back to the same
+  // defaults New Run offers means the failure is recoverable by cloning it.
+  const f = await setup(t);
+  const run = await f.center.create(form(f.repo, "claude"));
+  f.h.ports.db.prepare("DELETE FROM autopilot_loop_grants WHERE run_id=:id").run({ id: run.id });
+
+  const again = f.center.rerunForm(run.id);
+  assert.equal(again.maxTurns, 50, "the New Run default, not a crash");
+  assert.equal(again.rotateSession, true);
+  assert.doesNotThrow(() => validateNewRun(again));
+});
+
+test("cloning a run with no iteration bound does not invent one", async t => {
+  // The bug this pins. A grant can legitimately bound by turns alone, stored
+  // as maxIterations null. Defaulting that to 25 on the way back produced a
+  // form whose iteration ceiling exceeded its turn ceiling — so "Run again"
+  // handed the operator something that refused to submit.
+  const f = await setup(t);
+  const input = form(f.repo, "claude");
+  delete input.maxIterations;
+  const run = await f.center.create(input);
+
+  const again = f.center.rerunForm(run.id);
+  assert.equal(again.maxIterations, undefined, "unbounded stays unbounded");
+  assert.doesNotThrow(() => validateNewRun(again));
+});

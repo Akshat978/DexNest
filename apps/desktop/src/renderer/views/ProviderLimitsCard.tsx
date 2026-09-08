@@ -121,7 +121,7 @@ function ProviderBlock({ provider: p, elapsed }: { provider: ProviderLimitsProvi
       ) : p.buckets.length === 0 ? (
         <p className="text-xs text-[#525252]">
           {p.provider === "claude"
-            ? "Open Claude Code once so it writes its usage cache; the rest is automatic."
+            ? "No usage cache yet. Claude Code writes one when it signs in."
             : "No Codex session found in the last week."}
         </p>
       ) : (
@@ -136,7 +136,8 @@ function ProviderBlock({ provider: p, elapsed }: { provider: ProviderLimitsProvi
       {p.provider === "claude" && p.buckets.some((b) => !b.deltaTrusted) && (
         <p className="mt-2 text-[10px] text-[#F59E0B]">
           Reading is {anchorAge !== null ? ago(anchorAge) : "old"} — these are floors, not totals.
-          Only Claude Code writes this file; run <span className="font-mono">claude</span> in a terminal once to re-read it.
+          {" "}Nothing here can refresh it: Claude Code writes this cache on its own schedule, and
+          neither a headless turn nor opening the terminal UI updates it. Both were tested.
         </p>
       )}
     </div>

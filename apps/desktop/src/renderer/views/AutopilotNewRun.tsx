@@ -23,6 +23,7 @@ interface CreationBridge {
   chooseToolsOutputFolder(): Promise<{ ok: boolean; path?: string }>;
   autopilotReadiness(project: string): Promise<Readiness[]>;
   autopilotCreateAutomation(form: NewRunForm, options?: { start?: boolean }): Promise<{ id: string }>;
+  autopilotRerunForm(runId: string): Promise<NewRunForm>;
 }
 const api = () => (window as unknown as { dexNest: CreationBridge }).dexNest;
 
@@ -83,8 +84,32 @@ function stopPresets(now: Date): Array<{ label: string; iso: string }> {
   ];
 }
 
-export function AutopilotNewRun({ onCreated }: { onCreated(id: string): void }) {
+export function AutopilotNewRun({ onCreated, cloneOf, onCloned }: {
+  onCreated(id: string): void;
+  /** A finished run to start from, or null for a blank form. */
+  cloneOf?: string | null;
+  /** Cleared once the clone has been loaded, so it happens exactly once. */
+  onCloned?(): void;
+}) {
   const [form, setForm] = useState<NewRunForm>(initial);
+  const [clonedFrom, setClonedFrom] = useState<string | null>(null);
+
+  // Loading a clone replaces the form wholesale rather than merging into it.
+  // A half-applied clone — this run's verification against that run's project
+  // — is a run nobody configured, and it would look deliberate.
+  useEffect(() => {
+    if (!cloneOf) return;
+    let cancelled = false;
+    void api().autopilotRerunForm(cloneOf)
+      .then(loaded => {
+        if (cancelled) return;
+        setForm(loaded);
+        setClonedFrom(cloneOf);
+      })
+      .catch(() => { /* the form simply stays blank; nothing was lost */ })
+      .finally(() => { if (!cancelled) onCloned?.(); });
+    return () => { cancelled = true; };
+  }, [cloneOf, onCloned]);
   const [projects, setProjects] = useState<Array<{ id: string; name: string; path: string }>>([]);
   const [providers, setProviders] = useState<Readiness[]>([]);
   const [checkedPath, setCheckedPath] = useState("");
