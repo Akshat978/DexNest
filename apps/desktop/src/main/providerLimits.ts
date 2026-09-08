@@ -176,6 +176,8 @@ const toProvider = (report: LiveReport): Omit<ProviderLimitsProvider, "error"> =
     anchorAgeMs: b.anchorAgeMs,
     anchorStale: b.anchorStale,
     idle: b.idle,
+    deltaTrusted: b.deltaTrusted,
+    turnsSinceAnchor: b.turnsSinceAnchor,
     resetsAt: b.resetsAt,
     resetsInMs: b.resetsInMs,
     windowMinutes: b.windowMinutes,

@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  calibrate, describeResetsIn, liveBucket, liveReport,
+  calibrate, describeResetsIn, liveBucket, liveReport, DELTA_TRUST_MS,
   parseClaudeAnchor, parseClaudeSamples, parseCodexAnchor, parseCodexSamples,
   weightOf, DEFAULT_WEIGHTS, type LimitBucket, type Anchor
 } from "../src/providerLimits.ts";
@@ -170,7 +170,7 @@ test("live = measured + spend since the anchor, as a share of the budget", () =>
     sample("2026-09-06T11:30:00Z", 500), // 25% of a 2000 budget
     sample("2026-09-06T12:30:00Z", 300)  // 15%
   ];
-  const live = liveBucket(session, anchor, samples, "2026-09-06T13:00:00Z");
+  const live = liveBucket(session, anchor, samples, "2026-09-06T13:00:00Z", { deltaTrustMs: Infinity });
   assert.equal(live.confidence, "calibrated");
   assert.equal(live.measuredPercent, 20);
   assert.equal(live.deltaPercent, 40);
@@ -182,7 +182,7 @@ test("live = measured + spend since the anchor, as a share of the budget", () =>
 
 test("the estimate is clamped at 100 and never hides an anchor that read high", () => {
   const samples = [sample("2026-09-06T10:00:00Z", 400), sample("2026-09-06T12:00:00Z", 5000)];
-  const live = liveBucket(session, anchor, samples, "2026-09-06T13:00:00Z");
+  const live = liveBucket(session, anchor, samples, "2026-09-06T13:00:00Z", { deltaTrustMs: Infinity });
   assert.equal(live.estimatedPercent, 100);
   assert.equal(live.measuredPercent, 20);
 });
@@ -192,7 +192,7 @@ test("a rolled-over window starts from zero, keeps its budget, and admits the gu
     sample("2026-09-06T10:00:00Z", 400),   // calibrates to 2000
     sample("2026-09-06T15:00:00Z", 200)    // first turn after the 14:00 reset: opens 15:00–20:00, 10% spent
   ];
-  const live = liveBucket(session, anchor, samples, "2026-09-06T16:00:00Z");
+  const live = liveBucket(session, anchor, samples, "2026-09-06T16:00:00Z", { deltaTrustMs: Infinity });
   assert.equal(live.confidence, "rolled");
   assert.equal(live.measuredPercent, 0);
   assert.equal(live.estimatedPercent, 10);
@@ -204,7 +204,7 @@ test("a rolled-over window starts from zero, keeps its budget, and admits the gu
 test("a weekly window rolls forward as many times as it must", () => {
   const weekly: LimitBucket = { ...session, id: "weekly", windowMinutes: 10_080, resetsAt: "2026-09-08T05:00:00Z", percent: 9 };
   const weekAnchor: Anchor = { ...anchor, buckets: [weekly] };
-  const live = liveBucket(weekly, weekAnchor, [sample("2026-09-05T00:00:00Z", 90)], "2026-09-30T00:00:00Z");
+  const live = liveBucket(weekly, weekAnchor, [sample("2026-09-05T00:00:00Z", 90)], "2026-09-30T00:00:00Z", { deltaTrustMs: Infinity });
   assert.equal(live.resetsAt, "2026-10-06T05:00:00.000Z");
   assert.equal(live.confidence, "rolled");
   assert.equal(live.anchorStale, true);
@@ -215,17 +215,17 @@ test("an anchor older than its window is flagged stale even if unrolled", () => 
   // what's compared; staleness is about the anchor's age, not the window.
   const weekly: LimitBucket = { ...session, id: "weekly", windowMinutes: 10_080, resetsAt: "2026-09-20T05:00:00Z", percent: 9 };
   const weekAnchor: Anchor = { ...anchor, fetchedAt: "2026-09-01T00:00:00Z", buckets: [weekly] };
-  const live = liveBucket(weekly, weekAnchor, [], "2026-09-15T00:00:00Z");
+  const live = liveBucket(weekly, weekAnchor, [], "2026-09-15T00:00:00Z", { deltaTrustMs: Infinity });
   assert.equal(live.anchorStale, true);
   assert.equal(live.confidence, "uncalibrated");
   assert.equal(live.measuredPercent, 9, "the anchor's own figure is still shown");
 });
 
 test("liveReport prefers a fresh solution, then a remembered budget, then nothing", () => {
-  const fresh = liveReport("claude", anchor, [sample("2026-09-06T10:00:00Z", 400), sample("2026-09-06T12:00:00Z", 200)], "2026-09-06T13:00:00Z", { session: 99_999 });
+  const fresh = liveReport("claude", anchor, [sample("2026-09-06T10:00:00Z", 400), sample("2026-09-06T12:00:00Z", 200)], "2026-09-06T13:00:00Z", { session: 99_999 }, { deltaTrustMs: Infinity });
   assert.equal(fresh.buckets[0]!.budget, 2000, "solved from the anchor, not remembered");
 
-  const remembered = liveReport("claude", anchor, [sample("2026-09-06T12:00:00Z", 200)], "2026-09-06T13:00:00Z", { session: 4000 });
+  const remembered = liveReport("claude", anchor, [sample("2026-09-06T12:00:00Z", 200)], "2026-09-06T13:00:00Z", { session: 4000 }, { deltaTrustMs: Infinity });
   assert.equal(remembered.buckets[0]!.budget, 4000);
   assert.equal(remembered.buckets[0]!.estimatedPercent, 25);
 
@@ -256,7 +256,7 @@ test("a session window reopens at the first turn after its reset, not on a sched
     sample("2026-09-06T16:30:00Z", 300),   // first turn after the reset: opens the window
     sample("2026-09-06T18:00:00Z", 100)
   ];
-  const live = liveBucket(session, anchor, samples, "2026-09-06T19:00:00Z");
+  const live = liveBucket(session, anchor, samples, "2026-09-06T19:00:00Z", { deltaTrustMs: Infinity });
   assert.equal(live.confidence, "rolled");
   assert.equal(live.windowStart, "2026-09-06T16:30:00.000Z");
   assert.equal(live.resetsAt, "2026-09-06T21:30:00.000Z");
@@ -264,7 +264,7 @@ test("a session window reopens at the first turn after its reset, not on a sched
 });
 
 test("a session with no turn since its reset is idle: nothing open, nothing pending", () => {
-  const live = liveBucket(session, anchor, [sample("2026-09-06T10:00:00Z", 400)], "2026-09-06T19:00:00Z");
+  const live = liveBucket(session, anchor, [sample("2026-09-06T10:00:00Z", 400)], "2026-09-06T19:00:00Z", { deltaTrustMs: Infinity });
   assert.equal(live.confidence, "rolled");
   assert.equal(live.idle, true);
   assert.equal(live.estimatedPercent, 0);
@@ -279,8 +279,53 @@ test("a session window that has expired more than once is walked turn by turn", 
     sample("2026-09-06T22:00:00Z", 500),
     sample("2026-09-06T23:00:00Z", 500)
   ];
-  const live = liveBucket(session, anchor, samples, "2026-09-07T00:00:00Z");
+  const live = liveBucket(session, anchor, samples, "2026-09-07T00:00:00Z", { deltaTrustMs: Infinity });
   assert.equal(live.windowStart, "2026-09-06T22:00:00.000Z");
   assert.equal(live.resetsAt, "2026-09-07T03:00:00.000Z");
   assert.equal(live.estimatedPercent, 50);
+});
+
+// --- the delta is only reported while the anchor is fresh --------------------
+//
+// Measured, not chosen. Against a 39-hour-old anchor this machine's logs
+// accounted for +3.5 points of a true +14; the rest was usage that never
+// touched the machine. A budget solved from a window containing invisible
+// usage is inflated, so every delta divided by it under-reports for good.
+
+test("a stale anchor reports no delta, and says what it logged instead", () => {
+  const samples = [
+    sample("2026-09-06T10:00:00Z", 400),   // calibrates the budget to 2000
+    sample("2026-09-06T11:30:00Z", 500),
+    sample("2026-09-06T12:30:00Z", 300)
+  ];
+  // Anchor is 11:00; "now" is 13:00, so the anchor is two hours old.
+  const live = liveBucket(session, anchor, samples, "2026-09-06T13:00:00Z");
+  assert.equal(live.deltaTrusted, false);
+  assert.equal(live.deltaPercent, 0, "no lower bound dressed up as a total");
+  assert.equal(live.estimatedPercent, 20, "the anchor's own figure, unchanged");
+  assert.equal(live.measuredPercent, 20);
+  assert.equal(live.turnsSinceAnchor, 2, "but it still says what it saw");
+  assert.equal(live.budget, 2000, "the budget is still solved, for when it is usable");
+});
+
+test("a fresh anchor does add the delta", () => {
+  const now = new Date(Date.parse(anchor.fetchedAt) + DELTA_TRUST_MS - 60_000).toISOString();
+  const samples = [
+    sample("2026-09-06T10:00:00Z", 400),   // budget 2000
+    sample("2026-09-06T11:10:00Z", 200)    // 10%, inside the trust window
+  ];
+  const live = liveBucket(session, anchor, samples, now);
+  assert.equal(live.deltaTrusted, true);
+  assert.equal(live.deltaPercent, 10);
+  assert.equal(live.estimatedPercent, 30);
+});
+
+test("a rolled window with a stale anchor shows nothing rather than a lower bound", () => {
+  // The whole figure of a rolled window is delta, so staleness voids all of it.
+  const samples = [sample("2026-09-06T10:00:00Z", 400), sample("2026-09-06T15:00:00Z", 200)];
+  const live = liveBucket(session, anchor, samples, "2026-09-06T16:00:00Z");
+  assert.equal(live.confidence, "rolled");
+  assert.equal(live.deltaTrusted, false);
+  assert.equal(live.estimatedPercent, 0);
+  assert.equal(live.turnsSinceAnchor, 1);
 });

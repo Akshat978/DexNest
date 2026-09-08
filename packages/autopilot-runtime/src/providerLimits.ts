@@ -114,6 +114,24 @@ export type Confidence =
   /** No anchor at all. */
   | "none";
 
+/**
+ * How old an anchor may be before its delta stops being reported.
+ *
+ * MEASURED, NOT CHOSEN. Against a 39-hour-old anchor, this machine's logs
+ * accounted for +3.5 points of a true +14. The shortfall is usage that never
+ * touched this machine — claude.ai on the web, the desktop app, a phone — and
+ * no token weighting reconciles it: the logged-token ratio between the two
+ * periods sits at 0.37–0.93 under every weighting, where 1.56 would be needed.
+ *
+ * So a budget solved from a window containing invisible usage is inflated, and
+ * every delta divided by it under-reports, permanently and silently.
+ *
+ * The delta is only sound while the invisible share is small, which means
+ * while the anchor is recent. Half an hour is the point where a wrong number
+ * is worse than an admittedly old one.
+ */
+export const DELTA_TRUST_MS = 30 * 60_000;
+
 export interface LiveBucket extends LimitBucket {
   /** The anchor's figure, as read. */
   measuredPercent: number;
@@ -128,6 +146,17 @@ export interface LiveBucket extends LimitBucket {
   anchorStale: boolean;
   /** A session window that has expired with no turn since: nothing is open. */
   idle: boolean;
+  /**
+   * Whether `deltaPercent` is reported at all.
+   *
+   * False once the anchor is older than DELTA_TRUST_MS: the delta would be a
+   * lower bound presented as a total. When false, the estimate equals the
+   * measured figure and `turnsSinceAnchor` says what was logged instead.
+   */
+  deltaTrusted: boolean;
+  /** Turns this machine logged since the anchor — true whether or not the
+   *  delta is trusted, and the honest thing to show when it is not. */
+  turnsSinceAnchor: number;
   resetsInMs: number;
   windowStart: string;
   /** Weighted spend inside the current window, per the logs. */
@@ -405,20 +434,28 @@ export function calibrate(bucket: LimitBucket, fetchedAt: string, samples: reado
   return spent / (bucket.percent / 100);
 }
 
-/**
- * The live figure for one bucket.
- *
- * `budget` may be passed in from an earlier, better calibration — a bucket
- * that has rolled over keeps the budget it solved before the rollover, since
- * a fresh window has no anchor of its own yet.
- */
+export interface LiveOptions {
+  /**
+   * A budget from an earlier, better calibration.
+   *
+   * A bucket that has rolled over keeps the budget it solved before the
+   * rollover, since a fresh window has no anchor of its own yet.
+   */
+  budget?: number | null;
+  /** Overrides DELTA_TRUST_MS. Infinity exercises the maths without the policy. */
+  deltaTrustMs?: number;
+}
+
+/** The live figure for one bucket. */
 export function liveBucket(
   bucket: LimitBucket,
   anchor: Anchor,
   samples: readonly Sample[],
   nowIso: string,
-  budget: number | null = calibrate(bucket, anchor.fetchedAt, samples)
+  options: LiveOptions = {}
 ): LiveBucket {
+  const budget = options.budget !== undefined ? options.budget : calibrate(bucket, anchor.fetchedAt, samples);
+  const deltaTrustMs = options.deltaTrustMs ?? DELTA_TRUST_MS;
   const now = Date.parse(nowIso);
   const fetched = Date.parse(anchor.fetchedAt);
   const anchorAgeMs = Math.max(0, now - fetched);
@@ -453,6 +490,8 @@ export function liveBucket(
   let confidence: Confidence;
   let measured: number;
   let delta = 0;
+  const deltaTrusted = anchorAgeMs <= deltaTrustMs;
+  const turnsSinceAnchor = sorted.filter(s => s.at > anchor.fetchedAt && s.at <= nowIso).length;
   const windowSpend = idle ? 0 : spendBetween(sorted, windowStartIso, nowIso);
 
   if (idle) {
@@ -466,11 +505,13 @@ export function liveBucket(
   } else if (rolled) {
     confidence = "rolled";
     measured = 0;
-    delta = (windowSpend / budget) * 100;
+    // A rolled window's whole figure is the delta, so a stale anchor makes the
+    // entire number a lower bound rather than only its added part.
+    delta = deltaTrusted ? (windowSpend / budget) * 100 : 0;
   } else {
     confidence = "calibrated";
     measured = bucket.percent;
-    delta = (spendBetween(sorted, anchor.fetchedAt, nowIso) / budget) * 100;
+    delta = deltaTrusted ? (spendBetween(sorted, anchor.fetchedAt, nowIso) / budget) * 100 : 0;
   }
 
   return {
@@ -484,6 +525,8 @@ export function liveBucket(
     anchorAgeMs,
     anchorStale: anchorAgeMs > windowMs,
     idle,
+    deltaTrusted,
+    turnsSinceAnchor,
     resetsInMs: idle ? 0 : Math.max(0, resetsAt - now),
     windowStart: windowStartIso,
     windowSpend,
@@ -497,7 +540,8 @@ export function liveReport(
   samples: readonly Sample[],
   nowIso: string,
   /** Budgets remembered from earlier calibrations, by bucket id. */
-  rememberedBudgets: Readonly<Record<string, number>> = {}
+  rememberedBudgets: Readonly<Record<string, number>> = {},
+  options: Pick<LiveOptions, "deltaTrustMs"> = {}
 ): LiveReport {
   const sorted = [...samples].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
   const lastSampleAt = sorted.length ? sorted[sorted.length - 1]!.at : null;
@@ -508,7 +552,7 @@ export function liveReport(
     const solved = calibrate(bucket, anchor.fetchedAt, sorted);
     // A fresh solution beats a remembered one; a remembered one beats nothing.
     const budget = solved ?? rememberedBudgets[bucket.id] ?? null;
-    return liveBucket(bucket, anchor, sorted, nowIso, budget);
+    return liveBucket(bucket, anchor, sorted, nowIso, { budget, ...options });
   });
   return {
     provider, plan: anchor.plan, notices: anchor.notices, buckets,

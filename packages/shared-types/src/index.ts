@@ -237,6 +237,11 @@ export interface ProviderLimitBucket {
   anchorAgeMs: number;
   anchorStale: boolean;
   idle: boolean;
+  /** False once the anchor is too old for its delta to be sound; the estimate
+   *  then equals the measured figure. */
+  deltaTrusted: boolean;
+  /** Turns this machine logged since the anchor — shown when the delta is not. */
+  turnsSinceAnchor: number;
   resetsAt: string;
   resetsInMs: number;
   windowMinutes: number;

@@ -87,7 +87,8 @@ export function ProviderLimitsCard() {
 
       <p className="mt-3 text-[10px] leading-relaxed text-[#525252]">
         Read from the official clients' own logs on this machine. Nothing is sent anywhere.
-        Usage on claude.ai (web, phone) is not visible here until Claude Code next refreshes.
+        Usage on claude.ai — web, phone, the desktop app — is invisible here, so a figure is only
+        added to while its reading is recent; after that it is shown as a floor.
       </p>
     </GlassCard>
   );
@@ -132,9 +133,10 @@ function ProviderBlock({ provider: p, elapsed }: { provider: ProviderLimitsProvi
       {p.notices.map((n) => (
         <p key={n} className="mt-2 text-[10px] text-[#A3A3A3]">{n}</p>
       ))}
-      {staleBucket && p.provider === "claude" && (
+      {p.provider === "claude" && p.buckets.some((b) => !b.deltaTrusted) && (
         <p className="mt-2 text-[10px] text-[#F59E0B]">
-          Last true reading is {ago(staleBucket.anchorAgeMs)} old. Open Claude Code interactively once to re-read it.
+          Reading is {anchorAge !== null ? ago(anchorAge) : "old"} — these are floors, not totals.
+          Only Claude Code writes this file; run <span className="font-mono">claude</span> in a terminal once to re-read it.
         </p>
       )}
     </div>
@@ -143,8 +145,12 @@ function ProviderBlock({ provider: p, elapsed }: { provider: ProviderLimitsProvi
 
 function Bucket({ bucket: b, accent, elapsed }: { bucket: ProviderLimitBucket; accent: string; elapsed: number }) {
   const value = Math.round(b.estimatedPercent);
-  const colour = b.idle ? "#525252" : value >= 90 ? "#EF4444" : value >= 75 ? "#F59E0B" : accent;
-  const reckoned = b.confidence !== "calibrated" && b.confidence !== "none";
+  // A figure the delta could not be added to is a floor, not a total, and it
+  // is drawn muted so it never reads as a live measurement.
+  const trusted = b.deltaTrusted && !b.idle;
+  const colour = b.idle ? "#525252"
+    : !trusted ? "#6b7280"
+      : value >= 90 ? "#EF4444" : value >= 75 ? "#F59E0B" : accent;
   const resetsIn = b.idle ? null : Math.max(0, b.resetsInMs - elapsed);
 
   return (
@@ -154,21 +160,24 @@ function Bucket({ bucket: b, accent, elapsed }: { bucket: ProviderLimitBucket; a
         size={64}
         stroke={5}
         color={colour}
-        label={b.idle ? "—" : `${value}%`}
-        sub={b.confidence === "calibrated" ? "live" : reckoned ? "est." : undefined}
+        label={b.idle ? "—" : trusted ? `${value}%` : `${value}%+`}
+        sub={b.idle ? undefined : trusted ? "live" : "at least"}
       />
       <p className="mt-1.5 truncate text-[11px] font-medium text-[#F5F5F5]" title={b.label}>{b.label}</p>
       <p className="font-mono text-[10px] text-[#A3A3A3]">
         {b.idle ? "no open session" : resetsIn !== null ? describeResetsIn(resetsIn) : ""}
       </p>
-      <p className="mt-0.5 font-mono text-[9px] text-[#525252]" title="read by the official client · added from local logs since">
+      <p
+        className="mt-0.5 font-mono text-[9px] text-[#525252]"
+        title={trusted
+          ? "read by the official client, plus what this machine logged since"
+          : "the reading is too old to add to: usage elsewhere (web, phone, desktop app) is not visible here"}
+      >
         {b.idle
           ? "0% since reset"
-          : b.confidence === "calibrated"
+          : trusted
             ? `read ${Math.round(b.measuredPercent)}% · +${b.deltaPercent.toFixed(1)}%`
-            : b.confidence === "rolled"
-              ? "since reset, from logs"
-              : `read ${Math.round(b.measuredPercent)}% · not calibrated`}
+            : `${b.turnsSinceAnchor} turns logged since`}
       </p>
     </div>
   );
