@@ -77,6 +77,11 @@ export type { DeviceRecord, DeviceCapability } from "./devices.ts";
 export type { AttentionItem, Decision, GroupDigest, Priority, QuietHours, DeliveryRecord } from "@dexnest/attention";
 export { buildUsageReport, renderUsageReport } from "./usage.ts";
 export type { UsageReport, TurnCost, PhaseCost } from "./usage.ts";
+export {
+  parseClaudeAnchor, parseCodexAnchor, parseClaudeSamples, parseCodexSamples,
+  calibrate, liveBucket, liveReport, weightOf, describeResetsIn, DEFAULT_WEIGHTS
+} from "./providerLimits.ts";
+export type { Provider, LimitBucket, Anchor, Sample, TokenWeights, Confidence, LiveBucket, LiveReport } from "./providerLimits.ts";
 export type { RunQueueRecord, RunQueueItemRecord, QueueItemInput, RunTemplate } from "./runQueue.ts";
 export type { QueueProgress, QueueStatus, QueueAction, QueueBudget, QueueStopReason } from "@dexnest/run-queue";
 export type { OperatorNoteRecord } from "./operatorNote.ts";
