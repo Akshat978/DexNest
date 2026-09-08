@@ -154,6 +154,12 @@ export const RUN_EVENT_TYPES = [
   "DIRECTION_REQUESTED",
   "DIRECTION_AUTHORITY_CHANGED",
   "DIRECTOR_SESSION_STARTED",
+  // Drafting a plan is a provider send like any other, and its record belongs
+  // with the run it was drafted for — including the failures, so an operator
+  // pressing the button twice can see why the first attempt produced nothing.
+  "PLAN_DRAFT_REQUESTED",
+  "PLAN_DRAFTED",
+  "PLAN_DRAFT_FAILED",
   "ASSUMPTION_RECORDED",
   "RESUME_SCHEDULED",
   "RESUME_ABANDONED",

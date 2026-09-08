@@ -364,6 +364,14 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
     * able to create the run, attach it, and only then start.
     */
   handle("dexnest:autopilot-rerun-form", (_event, runId: string) => center.rerunForm(runId));
+  handle("dexnest:autopilot-draft-plan", async (_event, runId: string) => {
+    const draft = await workers.draftPlan(runId);
+    options.logEvent?.(
+      draft.problem ? "Autopilot could not draft a plan" : `Autopilot drafted a ${draft.phases}-phase plan`,
+      { actionId: "autopilot.draft_plan", runId, phases: draft.phases, problem: draft.problem }
+    );
+    return draft;
+  });
   handle("dexnest:autopilot-create-automation", async (_event, form: NewRunForm, input?: { start?: boolean }) => {
     const run = await center.create(form);
     const start = input?.start !== false;

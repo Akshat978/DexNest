@@ -282,6 +282,7 @@ export type { ContextRequest, ContextRequestStatus } from "./contextRequests.ts"
 export { MAX_REQUESTED_BYTES, MAX_REQUESTED_FILES, parseRequests, renderRequestOutcomes } from "./workerOutput.ts";
 export { validateRoles, rolesFor, assertPrimary } from "./roles.ts";
 export type { WorkerRole, WorkerRoles, CodingProvider } from "./roles.ts";
+export { PlanDrafter, planDraftPrompt, PHASE_SIZING_RULE, type PlanDraft } from "./planDrafter.ts";
 export { AutopilotControlCenter, DEFAULT_VERIFICATION_TIERS, validateNewRun, readiness, dashboardCategory, projectRun, CONTROL_TIERS } from "./controlCenter.ts";
 export type { NewRunForm, Readiness } from "./controlCenter.ts";
 

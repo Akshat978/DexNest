@@ -84,10 +84,17 @@ function stopPresets(now: Date): Array<{ label: string; iso: string }> {
   ];
 }
 
-export function AutopilotNewRun({ onCreated, cloneOf, onCloned }: {
+export function AutopilotNewRun({ onCreated, cloneOf, clonePlan, onCloned }: {
   onCreated(id: string): void;
   /** A finished run to start from, or null for a blank form. */
   cloneOf?: string | null;
+  /**
+   * A plan to use instead of the cloned run's own.
+   *
+   * Separate because a drafted plan has not been written to any run — the run
+   * it was drafted for still has none, which is the reason it was drafted.
+   */
+  clonePlan?: string | null;
   /** Cleared once the clone has been loaded, so it happens exactly once. */
   onCloned?(): void;
 }) {
@@ -103,13 +110,13 @@ export function AutopilotNewRun({ onCreated, cloneOf, onCloned }: {
     void api().autopilotRerunForm(cloneOf)
       .then(loaded => {
         if (cancelled) return;
-        setForm(loaded);
+        setForm(clonePlan ? { ...loaded, planText: clonePlan } : loaded);
         setClonedFrom(cloneOf);
       })
       .catch(() => { /* the form simply stays blank; nothing was lost */ })
       .finally(() => { if (!cancelled) onCloned?.(); });
     return () => { cancelled = true; };
-  }, [cloneOf, onCloned]);
+  }, [cloneOf, clonePlan, onCloned]);
   const [projects, setProjects] = useState<Array<{ id: string; name: string; path: string }>>([]);
   const [providers, setProviders] = useState<Readiness[]>([]);
   const [checkedPath, setCheckedPath] = useState("");

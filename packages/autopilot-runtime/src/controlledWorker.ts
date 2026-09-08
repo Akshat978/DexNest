@@ -16,6 +16,7 @@ import type { ConsultationScope } from "./consultations.ts";
 import { rolesFor, type CodingProvider } from "./roles.ts";
 import { AutonomousLoop } from "./loop.ts";
 import { ChatDirector } from "./chatDirector.ts";
+import { PlanDrafter, type PlanDraft } from "./planDrafter.ts";
 import { LiveActivity, type ActivityEvent } from "./liveActivity.ts";
 import type { CapabilityPolicy } from "./policy.ts";
 import { buildRunReport } from "./report.ts";
@@ -158,6 +159,60 @@ export class ControlledWorkerTurns {
     });
     this.directors.set(runId, director);
     return director;
+  }
+
+  /**
+   * Asks a provider to draft this run's plan.
+   *
+   * Uses the same posture as the director — a fresh session, no workspace, no
+   * tools — because a drafter that could read the project would be a worker,
+   * and would need everything a worker needs. It proposes; the operator edits
+   * and decides.
+   *
+   * The provider is the run's own primary rather than its director. A run may
+   * have no director configured at all, and drafting a plan should not require
+   * setting one up; the primary is the provider the operator has already
+   * chosen for this work.
+   */
+  async draftPlan(runId: string): Promise<PlanDraft> {
+    const { engine, ports } = this.options;
+    const run = engine.store.requireRun(runId);
+    const provider = run.spec.workers?.primary;
+    if (provider !== "claude" && provider !== "codex") {
+      return { text: "", phases: 0, problem: "This run has no coding provider to ask." };
+    }
+
+    // Building the worker first is what guarantees the workspace was validated
+    // and the per-run policy exists — the same order the director uses.
+    this.worker(runId);
+    const policy = this.policies.get(runId)!;
+    const executable = this.options.executableFor?.(provider)
+      ?? (provider === "codex" ? this.options.codexExecutable : this.options.executable);
+    if (!executable) return { text: "", phases: 0, problem: `${provider} native installation was not found.` };
+    if (!engine.effects) return { text: "", phases: 0, problem: "Worker platform is unavailable." };
+
+    const draftPolicy: CapabilityPolicy = {
+      ...policy,
+      allowedCommands: [
+        ...policy.allowedCommands,
+        ...(provider === "codex" ? ["--version", "login", "mcp"] : ["--version", "auth"]).map(subcommand => ({
+          executable: provider, subcommand, decision: "ALLOW" as const,
+          reason: "Inspect provider CLI availability", risk: "low" as const
+        })),
+        {
+          executable: provider, subcommand: provider === "codex" ? "app-server" : "--print",
+          decision: "ALLOW" as const,
+          reason: "Ask the provider to draft this run's plan; it has no tools and writes nothing.",
+          risk: "high" as const
+        }
+      ]
+    };
+
+    return new PlanDrafter({
+      ports, effects: engine.effects, policy: draftPolicy, provider,
+      protocol: provider === "codex" ? codexProtocol(executable) : claudeCodeProtocol(executable),
+      cwd: run.spec.capabilities.workspaceRoot ?? ""
+    }).draft(runId);
   }
 
   loopSnapshot(runId: string) {

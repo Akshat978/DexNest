@@ -123,6 +123,7 @@ interface AutopilotBridge {
   autopilotPauseRun(runId: string): Promise<RunRecord>;
   autopilotResumeRun(runId: string): Promise<RunRecord>;
   autopilotStopRun(runId: string): Promise<RunRecord>;
+  autopilotDraftPlan(runId: string): Promise<{ text: string; phases: number; problem: string | null }>;
   autopilotResolveUncertain(input: { runId: string; stepKey: string; resolution: "completed" | "not_performed" }): Promise<RunRecord>;
   autopilotResolveApproval(input: { approvalId: string; decision: "APPROVED" | "REJECTED" }): Promise<ApprovalRecord>;
   onAutopilotChanged(callback: (payload: { runId: string }) => void): () => void;
@@ -143,6 +144,16 @@ export function AutopilotView() {
   // A run whose settings the New Run form should start from. Set by "Run
   // again", cleared by the form once it has read it.
   const [cloneOf, setCloneOf] = useState<string | null>(null);
+  // A drafted plan, held here until the operator accepts or discards it. Never
+  // written straight into the run: a model asked to break up work it has not
+  // seen will produce confident phases for some of it, and only the person who
+  // chose the goal can tell which.
+  const [draft, setDraft] = useState<{ text: string; phases: number; problem: string | null } | null>(null);
+  const [drafting, setDrafting] = useState(false);
+  // Carried alongside cloneOf, because a drafted plan is not yet on the run —
+  // rerunForm reads the run's stored plan, which is empty, since being empty is
+  // why it was drafted at all.
+  const [clonePlan, setClonePlan] = useState<string | null>(null);
   const [filter, setFilter] = useState("ALL");
   const [runs, setRuns] = useState<DashboardRun[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -237,7 +248,8 @@ export function AutopilotView() {
       <div hidden={area !== "New Run"}>
         <AutopilotNewRun
           cloneOf={cloneOf}
-          onCloned={() => setCloneOf(null)}
+          clonePlan={clonePlan}
+          onCloned={() => { setCloneOf(null); setClonePlan(null); }}
           onCreated={id => { selected.current = id; setArea("Selected Run"); void refresh(id); }}
         />
       </div>
@@ -326,6 +338,64 @@ export function AutopilotView() {
           {/* Measured, not assumed: which phase was expensive, and whether
               the turns are getting dearer as the session grows. */}
           <UsagePanel usage={report?.usage ?? null} />
+          {/* Offered only while the run has no plan and has not started. A
+              plan arriving mid-run would describe work already done, and
+              accepting it would renumber phases the worker is referring to. */}
+          {!report?.plan?.items?.length && ["READY", "CREATED"].includes(run.state) && (
+            <div className="card">
+              <h4>Plan</h4>
+              <p>This run has no plan. It will work from the goal alone, or you can have one drafted and edit it.</p>
+              <div className="event-row" style={{ gap: "0.5rem" }}>
+                <button
+                  type="button"
+                  disabled={drafting}
+                  onClick={() => {
+                    setDrafting(true);
+                    setDraft(null);
+                    void bridge().autopilotDraftPlan(run.id)
+                      .then(setDraft)
+                      .catch((error: unknown) => setDraft({
+                        text: "", phases: 0,
+                        problem: error instanceof Error ? error.message : String(error)
+                      }))
+                      .finally(() => setDrafting(false));
+                  }}
+                >
+                  {drafting ? "Drafting…" : "Draft a plan"}
+                </button>
+              </div>
+              <p className="technical">
+                One turn, no tools, no workspace. It reads nothing — it plans from the goal, the
+                constraints and how the run is verified.
+              </p>
+
+              {draft?.problem && <p className="autopilot-error">{draft.problem}</p>}
+              {draft && !draft.problem && (
+                <>
+                  <p><strong>{draft.phases} phase{draft.phases === 1 ? "" : "s"}</strong> — edit before accepting.</p>
+                  <textarea
+                    rows={14}
+                    value={draft.text}
+                    onChange={event => setDraft({ ...draft, text: event.target.value })}
+                    aria-label="Drafted plan"
+                  />
+                  <div className="event-row" style={{ gap: "0.5rem" }}>
+                    <button
+                      type="button"
+                      onClick={() => { setClonePlan(draft.text); setCloneOf(run.id); setArea("New Run"); }}
+                    >
+                      Use it in a new run
+                    </button>
+                    <button type="button" onClick={() => setDraft(null)}>Discard</button>
+                  </div>
+                  <p className="technical">
+                    A plan belongs to a run before it starts, so accepting one means creating the run
+                    with it. "Use it in a new run" carries this run's settings and the plan across.
+                  </p>
+                </>
+              )}
+            </div>
+          )}
           {report?.plan && <PlanProgress items={report.plan.items} />}
           {report?.iterations && <IterationList iterations={report.iterations} />}
 
