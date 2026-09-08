@@ -148,6 +148,19 @@ export interface AutopilotHost {
   attentionSnapshot: () => { deliver: unknown[]; hold: unknown[]; reason: unknown[]; summary: string };
   /** Puts an attention group off until a time. */
   snoozeAttention: (input: { groupKey: string; question: string; until: string; runId?: string }) => void;
+  /**
+   * What a phone may queue against, and where.
+   *
+   * Projects come from runs that already exist, and that is the whole security
+   * property: a phone chooses among paths the operator configured at the desk
+   * and cannot introduce a new one. A path arriving over the network and being
+   * handed to a worker is the thing this shape makes impossible.
+   */
+  queueableProjects: () => Array<{ projectPath: string; label: string; lastUsedAt: string }>;
+  openQueues: () => Array<{ id: string; schedule: string | null; pending: number; nextFireAt: string | null }>;
+  /** Appends one project to an open queue. Returns what was added. */
+  queueProject: (input: { queueId: string; projectPath: string; goal: string; label?: string })
+    => { id: string; ordinal: number; label: string | null };
   /** Runs in the shape a phone screen needs, not the desk-sized report. */
   runsForPhone: () => Array<Record<string, unknown>>;
   /** Pending approvals across all runs, for the UI and the Stream Deck. */
@@ -1121,6 +1134,52 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
       });
     },
     runsForPhone,
+    queueableProjects() {
+      // Newest use wins, so the list is ordered the way the operator thinks
+      // about their projects rather than by when each was first created.
+      const seen = new Map<string, { projectPath: string; label: string; lastUsedAt: string }>();
+      for (const run of engine.listRuns(200)) {
+        const path = run.spec.projectPath;
+        if (!path) continue;
+        const existing = seen.get(path);
+        if (existing && existing.lastUsedAt >= run.createdAt) continue;
+        seen.set(path, {
+          projectPath: path,
+          label: path.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? path,
+          lastUsedAt: run.createdAt
+        });
+      }
+      return [...seen.values()].sort((a, b) => b.lastUsedAt.localeCompare(a.lastUsedAt));
+    },
+    openQueues() {
+      const queues = new RunQueueStore(ports);
+      if (!queues.available()) return [];
+      const active = queues.active();
+      if (!active) return [];
+      return [{
+        id: active.id,
+        schedule: active.schedule,
+        pending: queues.items(active.id).filter(item => item.status === "PENDING").length,
+        nextFireAt: queues.nextFireAt(active.id, ports.clock.now())
+      }];
+    },
+    queueProject(input) {
+      const queues = new RunQueueStore(ports);
+      // Checked here rather than trusted from the request: the caller names a
+      // path, and the only paths that may be named are ones a run already used.
+      const known = engine.listRuns(200).some(run => run.spec.projectPath === input.projectPath);
+      if (!known) throw new Error("That project is not one DexNest has run before.");
+
+      const added = queues.addItem(input.queueId, {
+        projectPath: input.projectPath,
+        goal: input.goal,
+        ...(input.label ? { label: input.label } : {})
+      });
+      options.logEvent?.(`Autopilot queued ${added.label ?? input.projectPath} from a phone`, {
+        actionId: "autopilot.queue_project", queueId: input.queueId, itemId: added.id, source: "phone"
+      });
+      return { id: added.id, ordinal: added.ordinal, label: added.label ?? null };
+    },
     control: {
       pause(runId: string) {
         engine.requestPause(runId);

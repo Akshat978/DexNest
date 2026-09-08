@@ -382,3 +382,67 @@ test("nothing is due while a queue is still working", (t) => {
   assert.deepEqual(h.store.due("2099-01-01T02:00:00.000Z"), [], "but never beside a queue that is running");
   assert.equal(h.store.soonestFire("2099-01-01T02:00:00.000Z"), null);
 });
+
+// --- appending to a queue that is already open --------------------------------
+
+test("a project can be added to an open queue, after everything already in it", (t) => {
+  // The case this exists for: the operator is away, thinks of something, and
+  // wants tonight's run to include it.
+  const h = fixture(t);
+  const queue = h.store.create({ items: THREE });
+  const before = h.store.items(queue.id);
+
+  const added = h.store.addItem(queue.id, { projectPath: "D:/late-idea", goal: "Fix the importer", label: "late" });
+
+  // Ordinals are 0-based and assigned by the engine, so the appended item's is
+  // the count of what was already there.
+  assert.equal(added.ordinal, before.length, "appended, never inserted");
+  assert.equal(added.status, "PENDING");
+  const after = h.store.items(queue.id);
+  assert.equal(after.length, before.length + 1);
+  assert.deepEqual(
+    after.slice(0, before.length).map(item => item.id),
+    before.map(item => item.id),
+    "nothing already in the queue moved"
+  );
+});
+
+test("appending does not disturb an item that has already run", (t) => {
+  // Ordinals are the order work was authorised in, not a priority. Reordering
+  // around a running queue would change which item the budget stops at.
+  const h = fixture(t);
+  const queue = h.store.create({ items: THREE });
+  const first = h.store.items(queue.id)[0]!;
+  h.store.start(first.id, h.makeRun("run-a"));
+  h.store.settle(first.id, "DONE", null);
+
+  h.store.addItem(queue.id, { projectPath: "D:/late-idea", goal: "Fix the importer" });
+
+  const settled = h.store.items(queue.id).find(item => item.id === first.id)!;
+  assert.equal(settled.status, "DONE", "the finished item is untouched");
+  assert.equal(settled.ordinal, first.ordinal);
+});
+
+test("a closed queue refuses new work rather than swallowing it", (t) => {
+  // Its items will never start, so accepting one would be discarding it while
+  // telling the operator it was queued.
+  const h = fixture(t);
+  const queue = h.store.create({ items: THREE });
+  h.store.close(queue.id, "done for tonight");
+
+  assert.throws(() => h.store.addItem(queue.id, { projectPath: "D:/late", goal: "too late" }), /closed/);
+});
+
+test("a queue that does not exist is refused", (t) => {
+  const h = fixture(t);
+  assert.throws(() => h.store.addItem("queue-nope", { projectPath: "D:/x", goal: "y" }), /does not exist/);
+});
+
+test("an added item is validated the way the queue validates its own", (t) => {
+  // The same builder create() uses, so a goal this queue would have refused at
+  // the desk is refused here too.
+  const h = fixture(t);
+  const queue = h.store.create({ items: THREE });
+  assert.throws(() => h.store.addItem(queue.id, { projectPath: "", goal: "no project" }));
+  assert.throws(() => h.store.addItem(queue.id, { projectPath: "D:/x", goal: "" }));
+});

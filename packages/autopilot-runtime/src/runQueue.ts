@@ -313,6 +313,61 @@ export class RunQueueStore {
     });
   }
 
+  /**
+   * Adds one project to the end of an open queue.
+   *
+   * create() takes every item at once because a queue is normally written in
+   * one sitting at a desk. This is the other case: the operator is away, thinks
+   * of something, and wants tonight's run to include it.
+   *
+   * Appended after everything already there, including items that have already
+   * run. Ordinals are a record of the order work was authorised in, not a
+   * priority — reordering around a running queue would change which item the
+   * budget stops at, and the operator did not ask for that.
+   *
+   * Refused on a closed queue. A closed queue's items will never start, so
+   * accepting one would be silently discarding it.
+   */
+  addItem(queueId: string, item: QueueItemInput): RunQueueItemRecord {
+    if (!this.available()) throw new Error("This database is too old to hold a run queue.");
+    const queue = this.get(queueId);
+    if (!queue) throw new Error("That queue does not exist.");
+    if (queue.status !== "ACTIVE") throw new Error("That queue is closed; nothing more will run from it.");
+
+    const existing = this.items(queueId);
+    // Validated by the same builder create() uses, so a goal or path this
+    // queue would have refused at the desk is refused here too.
+    const built = buildQueue([
+      ...existing.map(entry => ({
+        id: entry.id, projectPath: entry.projectPath, goal: entry.goal,
+        ...(entry.planText ? { planText: entry.planText } : {}),
+        ...(entry.label ? { label: entry.label } : {})
+      })),
+      {
+        id: `${queueId}-item-${existing.length + 1}`,
+        projectPath: item.projectPath,
+        goal: item.goal,
+        ...(item.planText ? { planText: item.planText } : {}),
+        ...(item.label ? { label: item.label } : {})
+      }
+    ]);
+    const added = built.at(-1)!;
+
+    this.db
+      .prepare(
+        `INSERT INTO autopilot_run_queue_items
+           (id, queue_id, ordinal, project_path, goal, plan_text, label, status)
+         VALUES (:id, :queueId, :ordinal, :projectPath, :goal, :planText, :label, 'PENDING')`
+      )
+      .run({
+        id: added.id, queueId, ordinal: added.ordinal,
+        projectPath: added.projectPath, goal: added.goal,
+        planText: added.planText ?? null, label: added.label ?? null
+      });
+
+    return this.items(queueId).find(entry => entry.id === added.id)!;
+  }
+
   get(queueId: string): RunQueueRecord | null {
     if (!this.available()) return null;
     const row = this.db.prepare("SELECT * FROM autopilot_run_queues WHERE id=:id").get<QueueRow>({ id: queueId });

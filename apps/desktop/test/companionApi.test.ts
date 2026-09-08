@@ -361,3 +361,79 @@ test("a host with nothing to offer says so rather than pretending", async () => 
   assert.equal((await call(api, "GET", "/companion/today", { token: TOKEN })).status, 503);
   assert.equal((await call(api, "GET", "/companion/usage", { token: TOKEN })).status, 503);
 });
+
+// --- queueing ----------------------------------------------------------------
+
+function queueHost(over: Record<string, unknown> = {}) {
+  const queued: unknown[] = [];
+  return makeHost(paired(["read", "control"]), {
+    queueableProjects: () => [{ projectPath: "D:/known", label: "known", lastUsedAt: "2026-09-01" }],
+    openQueues: () => [{ id: "queue-1", schedule: "nightly at 01:00", pending: 2, nextFireAt: null }],
+    queueProject: (input: unknown) => {
+      queued.push(input);
+      const path = (input as { projectPath: string }).projectPath;
+      if (path !== "D:/known") throw new Error("That project is not one DexNest has run before.");
+      return { id: "queue-1-item-3", ordinal: 3, label: "known" };
+    },
+    ...over
+  });
+}
+
+test("the queue listing needs only read, so a phone can look before it can act", async () => {
+  const { host } = makeHost(paired(["read"]), {
+    queueableProjects: () => [{ projectPath: "D:/known", label: "known", lastUsedAt: "2026-09-01" }],
+    openQueues: () => []
+  });
+  const api = createCompanionApi({ host: host as never });
+  const result = await call(api, "GET", "/companion/queue", { token: TOKEN });
+
+  assert.equal(result.status, 200);
+  assert.equal((result.body.projects as unknown[]).length, 1);
+});
+
+test("queueing needs control, because it causes work and spends money", async () => {
+  // Unlike snooze, which only changes whether the operator is interrupted.
+  const { host } = queueHost();
+  const readOnly = makeHost(paired(["read", "drop"]), {
+    queueProject: () => { throw new Error("should not be reached"); }
+  });
+
+  const api = createCompanionApi({ host: readOnly.host as never });
+  const refused = await call(api, "POST", "/companion/queue", {
+    token: TOKEN, body: { queueId: "q", projectPath: "D:/known", goal: "do the thing" }
+  });
+  assert.equal(refused.status, 403);
+
+  const allowed = createCompanionApi({ host: host as never });
+  const ok = await call(allowed, "POST", "/companion/queue", {
+    token: TOKEN, body: { queueId: "queue-1", projectPath: "D:/known", goal: "do the thing" }
+  });
+  assert.equal(ok.status, 200);
+  assert.equal((ok.body.item as { ordinal: number }).ordinal, 3);
+});
+
+test("a phone cannot queue a project path DexNest has never run", async () => {
+  // The property that keeps an arbitrary filesystem path off the wire: the
+  // phone chooses among paths configured at the desk, it does not name one.
+  const { host } = queueHost();
+  const api = createCompanionApi({ host: host as never });
+  const result = await call(api, "POST", "/companion/queue", {
+    token: TOKEN, body: { queueId: "queue-1", projectPath: "C:/Windows/System32", goal: "anything" }
+  });
+
+  assert.equal(result.status, 409);
+  assert.match(String(result.body.error), /not one DexNest has run before/);
+});
+
+test("queueing without a goal, a project or a queue is refused", async () => {
+  const { host } = queueHost();
+  const api = createCompanionApi({ host: host as never });
+  for (const body of [
+    { projectPath: "D:/known", goal: "g" },
+    { queueId: "queue-1", goal: "g" },
+    { queueId: "queue-1", projectPath: "D:/known" },
+    { queueId: "queue-1", projectPath: "D:/known", goal: "   " }
+  ]) {
+    assert.equal((await call(api, "POST", "/companion/queue", { token: TOKEN, body })).status, 400, JSON.stringify(body));
+  }
+});

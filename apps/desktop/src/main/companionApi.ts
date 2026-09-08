@@ -391,6 +391,68 @@ export function createCompanionApi(deps: CompanionDeps) {
         return true;
       }
 
+      /**
+       * What could be queued, and where it would go.
+       *
+       * Read-only, so a phone can show the choice before asking for the grant
+       * it needs to act on it.
+       */
+      if (request.method === "GET" && url.pathname === "/companion/queue") {
+        const auth = authorise(request, "read");
+        if ("error" in auth) { json(response, auth.status, { ok: false, error: auth.error }); return true; }
+        json(response, 200, {
+          ok: true,
+          projects: host.queueableProjects ? host.queueableProjects() : [],
+          queues: host.openQueues ? host.openQueues() : []
+        });
+        return true;
+      }
+
+      /**
+       * Adds a project to tonight's queue.
+       *
+       * Needs control, unlike snooze: this causes work to happen and money to
+       * be spent, even though it happens later and through the scheduler's own
+       * gates rather than immediately.
+       *
+       * The project must be one DexNest has run before. The phone chooses among
+       * paths configured at the desk; it cannot name a new one, which is what
+       * keeps an arbitrary filesystem path off the wire.
+       */
+      if (request.method === "POST" && url.pathname === "/companion/queue") {
+        const auth = authorise(request, "control");
+        if ("error" in auth) { json(response, auth.status, { ok: false, error: auth.error }); return true; }
+        if (!host.queueProject) {
+          json(response, 503, { ok: false, error: "DexNest cannot queue anything right now." });
+          return true;
+        }
+
+        const body = await readBody(request);
+        const queueId = String(body.queueId ?? "").trim();
+        const projectPath = String(body.projectPath ?? "").trim();
+        const goal = String(body.goal ?? "").trim();
+        if (!queueId || !projectPath || !goal) {
+          json(response, 400, { ok: false, error: "Choose a project and a queue, and say what to do." });
+          return true;
+        }
+
+        try {
+          const added = host.queueProject({
+            queueId, projectPath, goal,
+            ...(body.label ? { label: String(body.label) } : {})
+          });
+          deps.logEvent?.("A phone queued a project", {
+            actionId: "autopilot.phone_queue", deviceId: auth.caller.device.id, queueId, itemId: added.id
+          });
+          json(response, 200, { ok: true, item: added });
+        } catch (error) {
+          // The store's own words: a closed queue, an unknown project, a goal
+          // the queue builder refused. All are things the operator can fix.
+          json(response, 409, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+        return true;
+      }
+
       if (request.method === "GET" && url.pathname === "/companion/actions") {
         const auth = authorise(request, "read");
         if ("error" in auth) { json(response, auth.status, { ok: false, error: auth.error }); return true; }
