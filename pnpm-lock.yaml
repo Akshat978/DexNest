@@ -32,6 +32,9 @@ importers:
       '@dexnest/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types
+      '@dexnest/today':
+        specifier: workspace:*
+        version: link:../../packages/today
       adm-zip:
         specifier: ^0.5.17
         version: 0.5.17
@@ -190,6 +193,12 @@ importers:
   packages/shared-types: {}
 
   packages/shared-ui: {}
+
+  packages/today:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.13.14
+        version: 22.20.0
 
 packages:
 

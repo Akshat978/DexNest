@@ -96,7 +96,8 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "sonner": "^2",
-    "tailwind-merge": "^3"
+    "tailwind-merge": "^3",
+    "@dexnest/today": "workspace:*"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.0.4",

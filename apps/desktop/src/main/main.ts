@@ -17,6 +17,7 @@ import { createActionRegistry, createStreamDeckActionCatalog, seededActions, str
 import { createLocalDb } from "@dexnest/local-db";
 import { createAutopilotHost, type AutopilotHost } from "./autopilotHost.js";
 import { createCompanionApi, hashToken, openPairing } from "./companionApi.js";
+import { buildAgenda, localDate, weekdayOf, type TodayAgenda } from "@dexnest/today";
 import { createProviderLimitsService } from "./providerLimits.js";
 import type { MessageBoxOptions, MessageBoxSyncOptions, OpenDialogOptions, OpenDialogSyncOptions } from "electron";
 import type { DexNestActionDefinition, DexNestActionTrigger, DexNestEventStatus, DexNestPin, DexNestPinType } from "@dexnest/shared-types";
@@ -302,6 +303,7 @@ async function companionRoutes(request: IncomingMessage, response: ServerRespons
   if (!companionApi) {
     companionApi = createCompanionApi({
       host: autopilotHost,
+      today: () => todayAgenda(),
       actions: {
         list: () => [...actionRegistry.list(), ...getProjectActionDefinitions()],
         // Runs through the same path as every other trigger, with "phone" as
@@ -1988,6 +1990,29 @@ function getLanIp(): string | null {
 
 function dropLocalUrl(): string {
   return `http://127.0.0.1:${actionPort}/drop`;
+}
+
+/**
+ * One day, from every source DexNest has.
+ *
+ * The loaders are the desktop's; the assembling is not. Keeping the shaping in
+ * @dexnest/today means the rule that an item never carries provider vocabulary
+ * is enforced by tests rather than by whoever edits this file next — which
+ * matters most on the day a Google sync lands and its forty fields are right
+ * there, one destructure away.
+ */
+function todayAgenda(): TodayAgenda {
+  const now = new Date();
+  const file = loadTimetableFile();
+  const template = file.templates.find(item => item.id === file.activeTemplateId) ?? file.templates[0];
+  return buildAgenda({
+    date: localDate(now),
+    weekday: weekdayOf(now),
+    events: loadCalendarEvents(),
+    blocks: template?.blocks ?? [],
+    nudges: loadNudges(),
+    now: now.toISOString()
+  });
 }
 
 function dropPhoneUrl(): string {
@@ -20764,6 +20789,8 @@ function registerIpcHandlers(): void {
   ipcMain.handle("dexnest:get-clipboard-state", () => clipboardState());
 
   ipcMain.handle("dexnest:get-drop-state", () => dropState());
+
+  ipcMain.handle("dexnest:get-today-agenda", () => todayAgenda());
 
   ipcMain.handle("dexnest:create-drop-link", () => {
     try {

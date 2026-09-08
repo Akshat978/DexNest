@@ -30,6 +30,7 @@ import type { AutopilotHost } from "./autopilotHost.ts";
 import type { DeviceCapability, DeviceRecord } from "@dexnest/autopilot-runtime";
 import { canPhoneRun, phoneActions } from "@dexnest/action-registry";
 import type { DexNestActionDefinition } from "@dexnest/shared-types";
+import type { TodayAgenda } from "@dexnest/today";
 
 /** Long enough that guessing is hopeless; short enough to fit in a QR later. */
 const TOKEN_BYTES = 32;
@@ -62,6 +63,8 @@ export interface CompanionDeps {
     list: () => DexNestActionDefinition[];
     run: (actionId: string, params: Record<string, unknown>) => Promise<unknown>;
   };
+  /** One day's agenda, already assembled and already provider-agnostic. */
+  today?: () => TodayAgenda;
 }
 
 interface Caller {
@@ -227,6 +230,21 @@ export function createCompanionApi(deps: CompanionDeps) {
        * can never disagree with what actually happens — a listing built from a
        * different rule is a UI that offers buttons the server refuses.
        */
+      /**
+       * Today, in one call.
+       *
+       * One payload rather than three endpoints for events, timetable and
+       * nudges, because the phone wants one ordered day — and three calls
+       * would let it render a morning assembled from three different moments.
+       */
+      if (request.method === "GET" && url.pathname === "/companion/today") {
+        const auth = authorise(request, "read");
+        if ("error" in auth) { json(response, auth.status, { ok: false, error: auth.error }); return true; }
+        if (!deps.today) { json(response, 503, { ok: false, error: "DexNest cannot build today's agenda right now." }); return true; }
+        json(response, 200, { ok: true, today: deps.today() });
+        return true;
+      }
+
       if (request.method === "GET" && url.pathname === "/companion/actions") {
         const auth = authorise(request, "read");
         if ("error" in auth) { json(response, auth.status, { ok: false, error: auth.error }); return true; }
