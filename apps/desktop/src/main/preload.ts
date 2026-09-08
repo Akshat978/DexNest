@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld("dexNest", {
   getTimetableState: () => ipcRenderer.invoke("dexnest:get-timetable-state"),
   getUtilitiesState: () => ipcRenderer.invoke("dexnest:get-utilities-state"),
   getWeatherState: () => ipcRenderer.invoke("dexnest:get-weather-state"),
+  getProviderLimits: () => ipcRenderer.invoke("dexnest:provider-limits"),
   getNewsState: () => ipcRenderer.invoke("dexnest:get-news-state"),
   getFinderState: () => ipcRenderer.invoke("dexnest:get-finder-state"),
   getFinanceState: () => ipcRenderer.invoke("dexnest:get-finance-state"),

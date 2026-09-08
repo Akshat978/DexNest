@@ -610,6 +610,7 @@ export const fallbackBridge: DexNestBridge = {
   getTimetableState: async () => defaultTimetableState,
   getUtilitiesState: async () => defaultUtilitiesState,
   getWeatherState: async () => defaultWeatherState,
+  getProviderLimits: async () => ({ generatedAt: new Date().toISOString(), providers: [] }),
   getNewsState: async () => defaultNewsState,
   getFinderState: async () => ({
     items: [],

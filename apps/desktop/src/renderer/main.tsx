@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExtern
 import { createRoot } from "react-dom/client";
 import QRCode from "qrcode";
 import { formatLocalDate, formatLocalDateTime, getLocalTodayDateString, parseLocalDateInput, resolveRelativeLocalDate, toLocalDateInputValue } from "@dexnest/shared-types";
-import type { DexNestPin } from "@dexnest/shared-types";
+import type { DexNestPin, ProviderLimitsSnapshot } from "@dexnest/shared-types";
 import { createStreamDeckActionCatalog } from "@dexnest/action-registry";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -47,6 +47,7 @@ import { HeatmapView } from "./views/HeatmapView";
 import { AppHealthView } from "./views/AppHealthView";
 import { ToolsView } from "./views/ToolsView";
 import { DropView } from "./views/DropView";
+import { ProviderLimitsCard } from "./views/ProviderLimitsCard";
 import { PinButton, PinsContext, setActivePinContext, activePinContext, pinModuleToView, computePinId } from "./components/pins";
 import type { PinInput, PinsContextValue } from "./components/pins";
 import { ClipboardView } from "./views/ClipboardView";
@@ -1994,6 +1995,7 @@ export interface DexNestBridge {
   getTimetableState: () => Promise<TimetableState>;
   getUtilitiesState: () => Promise<UtilitiesState>;
   getWeatherState: () => Promise<WeatherState>;
+  getProviderLimits: () => Promise<ProviderLimitsSnapshot>;
   getNewsState: () => Promise<NewsState>;
   getFinderState: () => Promise<FinderState>;
   getFinanceState: () => Promise<FinanceState>;
@@ -8164,6 +8166,8 @@ function CommandView({
               </div>
             </div>
           </GlassCard>
+
+          <ProviderLimitsCard />
 
           <GlassCard accent="#A855F7" hover={false}>
             <SectionTitle action={<span className="flex items-center gap-1 text-[10px] text-[#22C55E]"><Wifi className="h-3 w-3" />local</span>}>Stream Deck</SectionTitle>

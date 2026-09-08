@@ -17,6 +17,7 @@ import { createActionRegistry, createStreamDeckActionCatalog, seededActions, str
 import { createLocalDb } from "@dexnest/local-db";
 import { createAutopilotHost, type AutopilotHost } from "./autopilotHost.js";
 import { createCompanionApi, openPairing } from "./companionApi.js";
+import { createProviderLimitsService } from "./providerLimits.js";
 import type { MessageBoxOptions, MessageBoxSyncOptions, OpenDialogOptions, OpenDialogSyncOptions } from "electron";
 import type { DexNestActionDefinition, DexNestActionTrigger, DexNestEventStatus, DexNestPin, DexNestPinType } from "@dexnest/shared-types";
 import { formatLocalDateTime, getLocalTodayDateString, parseLocalDateInput, resolveRelativeLocalDate, toLocalDateInputValue } from "@dexnest/shared-types";
@@ -190,6 +191,7 @@ const financeRecurringPath = join(settingsRoot, "finance-recurring.json");
 // Where Autopilot sends notifications, and when it keeps quiet. Holds the
 // PATH to a Firebase service account, never its contents.
 const autopilotPushSettingsPath = join(settingsRoot, "autopilot-push.json");
+const providerLimits = createProviderLimitsService({ budgetsPath: join(settingsRoot, "provider-limits.json") });
 const financeSettingsPath = join(settingsRoot, "finance-settings.json");
 const financeProfilesPath = join(settingsRoot, "finance-profiles.json");
 const captureItemsPath = join(settingsRoot, "capture-items.json");
@@ -20651,6 +20653,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle("dexnest:get-utilities-state", () => utilitiesState());
 
   ipcMain.handle("dexnest:get-weather-state", () => weatherState());
+  ipcMain.handle("dexnest:provider-limits", () => providerLimits.snapshot());
 
   ipcMain.handle("dexnest:get-news-state", () => newsState());
 

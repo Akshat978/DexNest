@@ -217,3 +217,45 @@ export function resolveRelativeLocalDate(phrase: string, baseDate: Date = new Da
 
   return null;
 }
+
+// --- provider plan limits (Claude / Codex), read from local logs ---------------
+
+export type ProviderLimitsProviderId = "claude" | "codex";
+export type ProviderLimitConfidence = "calibrated" | "rolled" | "uncalibrated" | "none";
+
+export interface ProviderLimitBucket {
+  id: string;
+  label: string;
+  /** The provider's own figure, as last read by its official client. */
+  measuredPercent: number;
+  /** Spend since that reading, as a share of the solved budget. */
+  deltaPercent: number;
+  /** What the bar shows: measured + delta, clamped. */
+  estimatedPercent: number;
+  confidence: ProviderLimitConfidence;
+  anchorFetchedAt: string;
+  anchorAgeMs: number;
+  anchorStale: boolean;
+  idle: boolean;
+  resetsAt: string;
+  resetsInMs: number;
+  windowMinutes: number;
+  severity: string | null;
+  budget: number | null;
+}
+
+export interface ProviderLimitsProvider {
+  provider: ProviderLimitsProviderId;
+  plan: string | null;
+  notices: string[];
+  anchorFetchedAt: string | null;
+  lastSampleAt: string | null;
+  sampleCount: number;
+  buckets: ProviderLimitBucket[];
+  error: string | null;
+}
+
+export interface ProviderLimitsSnapshot {
+  generatedAt: string;
+  providers: ProviderLimitsProvider[];
+}
