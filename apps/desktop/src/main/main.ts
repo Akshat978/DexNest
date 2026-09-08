@@ -302,6 +302,13 @@ async function companionRoutes(request: IncomingMessage, response: ServerRespons
   if (!companionApi) {
     companionApi = createCompanionApi({
       host: autopilotHost,
+      actions: {
+        list: () => [...actionRegistry.list(), ...getProjectActionDefinitions()],
+        // Runs through the same path as every other trigger, with "phone" as
+        // the origin, so a phone-run action is journalled exactly as a
+        // desk-run one is and shows its true source in the audit view.
+        run: (actionId, params) => runRegisteredAction(actionId, "phone", params)
+      },
       logEvent: (summary, metadata) => {
         localDb.appendActionEvent({
           module: "autopilot",
@@ -20765,7 +20772,7 @@ function registerIpcHandlers(): void {
         module: "drop",
         eventType: "drop_link_created",
         status: "success",
-        source: "desktop_ui",
+        source: "module_ui",
         // The URL carries the one-time code, so only its shape is recorded.
         summary: "A one-time Drop link was created for a phone"
       });

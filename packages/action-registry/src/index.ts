@@ -248,7 +248,10 @@ export const seededActions = [
     undoActionId: null,
     handlerType: "internal_function",
     handlerRef: "command.refresh_stats",
-    allowedTriggers: ["command", "deck", "module_ui"],
+    allowedTriggers: ["command", "deck", "module_ui", "phone"],
+    // Recomputes local counters and returns them. Reads nothing sensitive and
+    // leaves nothing behind, which is the bar for "read".
+    phone: "read",
     enabled: true,
     status: "available"
   },
@@ -2534,7 +2537,10 @@ export const seededActions = [
     undoActionId: null,
     handlerType: "internal_function",
     handlerRef: "calendar.nudge.refresh",
-    allowedTriggers: ["command", "deck", "module_ui"],
+    allowedTriggers: ["command", "deck", "module_ui", "phone"],
+    // Regenerates nudges from local sources. Writes only DexNest's own derived
+    // list, so a phone triggering it cannot lose anything the operator wrote.
+    phone: "read",
     enabled: true,
     status: "available"
   },
@@ -3461,3 +3467,6 @@ export function createActionRegistry(initialActions: DexNestActionDefinition[] =
     }
   };
 }
+
+export { canPhoneRun, phoneActions, phoneExposureOf } from "./phoneExposure.ts";
+export type { ExposureVerdict, PhoneCapability } from "./phoneExposure.ts";

@@ -28,6 +28,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { AutopilotHost } from "./autopilotHost.ts";
 import type { DeviceCapability, DeviceRecord } from "@dexnest/autopilot-runtime";
+import { canPhoneRun, phoneActions } from "@dexnest/action-registry";
+import type { DexNestActionDefinition } from "@dexnest/shared-types";
 
 /** Long enough that guessing is hopeless; short enough to fit in a QR later. */
 const TOKEN_BYTES = 32;
@@ -49,6 +51,17 @@ export interface CompanionDeps {
   host: AutopilotHost;
   /** Best effort, for the audit view. */
   logEvent?: (summary: string, metadata: Record<string, unknown>) => void;
+  /**
+   * The action registry and its runner, injected rather than imported.
+   *
+   * Keeps this file ignorant of how an action actually runs — it decides only
+   * whether one may be reached from a phone, which is a rule worth being able
+   * to read in one place.
+   */
+  actions?: {
+    list: () => DexNestActionDefinition[];
+    run: (actionId: string, params: Record<string, unknown>) => Promise<unknown>;
+  };
 }
 
 interface Caller {
@@ -204,6 +217,84 @@ export function createCompanionApi(deps: CompanionDeps) {
         const auth = authorise(request, "read");
         if ("error" in auth) { json(response, auth.status, { ok: false, error: auth.error }); return true; }
         json(response, 200, { ok: true, ...host.attentionSnapshot() });
+        return true;
+      }
+
+      /**
+       * What this device may run.
+       *
+       * Filtered by the same predicate that gates the POST below, so the list
+       * can never disagree with what actually happens — a listing built from a
+       * different rule is a UI that offers buttons the server refuses.
+       */
+      if (request.method === "GET" && url.pathname === "/companion/actions") {
+        const auth = authorise(request, "read");
+        if ("error" in auth) { json(response, auth.status, { ok: false, error: auth.error }); return true; }
+        const available = deps.actions
+          ? phoneActions(deps.actions.list(), auth.caller.device.capabilities)
+          : [];
+        json(response, 200, {
+          ok: true,
+          actions: available.map(action => ({
+            id: action.id,
+            title: action.title,
+            module: action.moduleId,
+            description: action.description,
+            requires: action.phone
+          }))
+        });
+        return true;
+      }
+
+      /**
+       * Runs one action.
+       *
+       * Two gates, in this order: the device must be paired (authorise), and
+       * the action must have opted in to being reachable from a phone. The
+       * second is not a filter on the first — a device holding every
+       * capability still cannot reach an action that never declared itself
+       * available, which is what stops this route from being a key to the
+       * whole registry.
+       */
+      if (request.method === "POST" && url.pathname === "/companion/action") {
+        const auth = authorise(request, "read");
+        if ("error" in auth) { json(response, auth.status, { ok: false, error: auth.error }); return true; }
+        if (!deps.actions) {
+          json(response, 503, { ok: false, error: "DexNest cannot run actions right now." });
+          return true;
+        }
+
+        const body = await readBody(request);
+        const actionId = String(body.actionId ?? "").trim();
+        const action = deps.actions.list().find(candidate => candidate.id === actionId);
+
+        // An unknown id and a non-exposed id answer identically. Otherwise the
+        // difference between the two is a way to enumerate the registry from
+        // a device that is not allowed to use it.
+        const verdict = action
+          ? canPhoneRun(action, auth.caller.device.capabilities)
+          : ({ ok: false, reason: "not_exposed", message: "That action is not available from a phone." } as const);
+
+        if (!verdict.ok) {
+          deps.logEvent?.("A phone was refused an action", {
+            actionId: "autopilot.phone_action_refused",
+            deviceId: auth.caller.device.id,
+            requestedActionId: actionId,
+            reason: verdict.reason
+          });
+          json(response, verdict.reason === "needs_control" ? 403 : 404, { ok: false, error: verdict.message });
+          return true;
+        }
+
+        deps.logEvent?.(`A phone ran ${actionId}`, {
+          actionId: "autopilot.phone_action_ran",
+          deviceId: auth.caller.device.id,
+          requestedActionId: actionId
+        });
+        const params = typeof body.params === "object" && body.params !== null
+          ? body.params as Record<string, unknown>
+          : {};
+        json(response, 200, { ok: true, result: await deps.actions.run(actionId, params) });
         return true;
       }
 

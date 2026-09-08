@@ -44,7 +44,8 @@ export type DexNestActionTrigger =
   | "push_to_talk"
   | "voice"
   | "routine"
-  | "module_ui";
+  | "module_ui"
+  | "phone";
 export type DexNestEventStatus = "success" | "failed" | "skipped" | "cancelled" | "pending";
 export type DexNestEventSource = DexNestActionTrigger | "system" | "phone_pwa";
 
@@ -92,7 +93,25 @@ export interface DexNestActionDefinition {
   allowedTriggers: DexNestActionTrigger[];
   enabled: boolean;
   status: DexNestActionStatus;
+  /**
+   * Whether a paired phone may run this, and what it must hold to do so.
+   *
+   * ABSENT MEANS UNREACHABLE. Not hidden, not filtered from a list — refused.
+   * This is an allowlist because the alternatives have all been tried and all
+   * fail the same way: `dangerLevel: "safe"` includes `vault.secure.copy_username`
+   * and `finance.open`, so risk level does not describe phone-appropriateness,
+   * and a denylist means every action added in future is exposed by default by
+   * whoever forgot this file existed.
+   *
+   * "read" means it returns something and changes nothing the operator would
+   * mind. "control" means it acts, and the device needs that capability
+   * granted separately at the desktop.
+   */
+  phone?: DexNestPhoneExposure;
 }
+
+/** What a paired phone must hold to reach an action. */
+export type DexNestPhoneExposure = "read" | "control";
 
 export interface DexNestActionInvocation {
   actionId: string;
