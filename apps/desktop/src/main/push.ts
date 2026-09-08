@@ -220,7 +220,15 @@ export class PushSender {
             ...(message.channelId ? { channel_id: message.channelId } : {}),
             // So a second notification about the same thing replaces the first
             // rather than stacking. The engine already decided one is enough.
-            ...(message.data?.groupKey ? { tag: message.data.groupKey } : {})
+            ...(message.data?.groupKey ? { tag: message.data.groupKey } : {}),
+            // PRIVATE: on a locked screen Android shows that DexNest said
+            // something, not what. The body names projects, phases and what a
+            // run proposed — none of it for whoever can see a phone on a desk.
+            // Unlocked, the shade shows everything as before.
+            visibility: "PRIVATE",
+            // Waking a phone is for things that cannot wait for it to be picked
+            // up. Everything else arrives silently and is there next time.
+            notification_priority: message.highPriority ? "PRIORITY_HIGH" : "PRIORITY_DEFAULT"
           }
         },
         ...(message.data ? { data: message.data } : {})

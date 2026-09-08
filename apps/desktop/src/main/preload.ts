@@ -184,7 +184,7 @@ contextBridge.exposeInMainWorld("dexNest", {
   autopilotDeviceRemove: (id: string) => ipcRenderer.invoke("dexnest:autopilot-device-remove", id),
   autopilotPairingOpen: () => ipcRenderer.invoke("dexnest:autopilot-pairing-open"),
   autopilotPairingCurrent: () => ipcRenderer.invoke("dexnest:autopilot-pairing-current"),
-  autopilotDeviceCapabilities: (input: { id: string; control: boolean }) => ipcRenderer.invoke("dexnest:autopilot-device-capabilities", input),
+  autopilotDeviceCapabilities: (input: { id: string; control?: boolean; drop?: boolean }) => ipcRenderer.invoke("dexnest:autopilot-device-capabilities", input),
   autopilotDeviceUnpair: (id: string) => ipcRenderer.invoke("dexnest:autopilot-device-unpair", id),
   autopilotPushSettings: () => ipcRenderer.invoke("dexnest:autopilot-push-settings"),
   autopilotPushSettingsSave: (settings: unknown) => ipcRenderer.invoke("dexnest:autopilot-push-settings-save", settings),

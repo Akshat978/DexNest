@@ -102,6 +102,8 @@ export const DEFAULT_QUIET_HOURS: QuietHours = Object.freeze({ start: "23:00", e
  * wrong here should mean showing an item that no longer matters, not silently
  * withholding one that does.
  */
+const snoozeKey = (groupKey: string, question: string): string => `${groupKey}\n${question}`;
+
 export function attentionStands(state: RunState): boolean {
   return !isTerminal(state) && state !== "RUNNING";
 }
@@ -148,6 +150,14 @@ export class AttentionStore {
   }
 
   /** Older databases have no delivery log; a host without one simply has none. */
+  private snoozesAvailable(): boolean {
+    return this.available() && Boolean(
+      this.db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='autopilot_attention_snoozes'")
+        .get()
+    );
+  }
+
   available(): boolean {
     return Boolean(
       this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='autopilot_attention_deliveries'").get()
@@ -187,9 +197,48 @@ export class AttentionStore {
    * Records nothing: deciding and delivering are separate so a caller that
    * fails to send has not already claimed it did.
    */
+  /**
+   * Puts a group off until a time.
+   *
+   * Idempotent on the key: snoozing again replaces the earlier deadline rather
+   * than stacking, because "snooze for an hour" pressed twice means an hour
+   * from the second press, not two.
+   */
+  snooze(input: { groupKey: string; question: string; until: string; runId?: string }): void {
+    if (!this.snoozesAvailable()) return;
+    this.db
+      .prepare(
+        `INSERT INTO autopilot_attention_snoozes (group_key, question, run_id, until, created_at)
+         VALUES (:key, :question, :runId, :until, :now)
+         ON CONFLICT(group_key, question) DO UPDATE SET until=excluded.until, created_at=excluded.created_at`
+      )
+      .run({ key: input.groupKey, question: input.question, runId: input.runId ?? null, until: input.until, now: this.ports.clock.now() });
+  }
+
+  /**
+   * Questions whose snooze has not yet run out, as "groupKey\nquestion".
+   *
+   * The pair, not the group: a run is one group, and a run can ask more than
+   * one thing. Only the thing that was heard and put off stays quiet.
+   */
+  snoozed(now = this.ports.clock.now()): Set<string> {
+    if (!this.snoozesAvailable()) return new Set();
+    return new Set(
+      this.db
+        .prepare("SELECT group_key, question FROM autopilot_attention_snoozes WHERE until > :now")
+        .all<{ group_key: string; question: string }>({ now })
+        .map(row => snoozeKey(row.group_key, row.question))
+    );
+  }
+
   decide(items: readonly AttentionItem[], options: { quietHours?: QuietHours; cooldownMinutes?: number } = {}): Decision {
+    // Snoozed groups leave before the engine sees them. The engine's own rules
+    // — cooldown, quiet hours, escalation — are about whether to *say* a thing;
+    // a snooze is the operator having already heard it and said "later", and
+    // nothing the engine knows should override that.
+    const snoozed = this.snoozed();
     return decide({
-      items: [...items],
+      items: items.filter(item => !snoozed.has(snoozeKey(item.groupKey, item.title))),
       delivered: this.deliveries(),
       quietHours: options.quietHours ?? DEFAULT_QUIET_HOURS,
       // The conversion the whole quiet-hours design depends on.

@@ -364,6 +364,33 @@ export function createCompanionApi(deps: CompanionDeps) {
         return true;
       }
 
+      /**
+       * "Not now."
+       *
+       * Needs only read, not control: putting a question off is a preference
+       * about being interrupted, not an act on the run. The run holds exactly
+       * as it did; the phone has simply asked not to be told again for a while.
+       */
+      if (request.method === "POST" && url.pathname === "/companion/snooze") {
+        const auth = authorise(request, "read");
+        if ("error" in auth) { json(response, auth.status, { ok: false, error: auth.error }); return true; }
+        const body = await readBody(request);
+        const groupKey = String(body.groupKey ?? "").trim();
+        const question = String(body.question ?? "").trim();
+        const minutes = Number(body.minutes);
+        if (!groupKey || !question || !Number.isFinite(minutes) || minutes <= 0 || minutes > 24 * 60) {
+          json(response, 400, { ok: false, error: "Say which item, and for how long (up to a day)." });
+          return true;
+        }
+        const until = new Date(Date.now() + minutes * 60_000).toISOString();
+        host.snoozeAttention({ groupKey, question, until, ...(body.runId ? { runId: String(body.runId) } : {}) });
+        deps.logEvent?.("A phone snoozed an item", {
+          actionId: "autopilot.phone_snooze", deviceId: auth.caller.device.id, groupKey, minutes
+        });
+        json(response, 200, { ok: true, until });
+        return true;
+      }
+
       if (request.method === "GET" && url.pathname === "/companion/actions") {
         const auth = authorise(request, "read");
         if ("error" in auth) { json(response, auth.status, { ok: false, error: auth.error }); return true; }

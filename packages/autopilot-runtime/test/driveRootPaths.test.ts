@@ -34,7 +34,21 @@ test("a path whose nearest existing ancestor is a drive root keeps every charact
 
   // The whole chain below the drive root is missing, which is the failing case.
   assert.equal(fs.exists(resolve(root, first)), false, "precondition: the parent does not exist");
-  assert.equal(fs.realPath(target), target, "realPath must not rewrite a non-existent path");
+
+  // Compared case-insensitively on Windows. realpathSync.native canonicalises
+  // the drive letter ("D:\\") while process.cwd() keeps whatever case the shell
+  // launched with ("d:\DeskNest" from MSYS bash) — and the filesystem treats
+  // those as the same place. A case-sensitive equality here was asserting
+  // something the OS does not promise, and it flickered with the launch
+  // context rather than with the code under test. The corruption this test
+  // exists for is the *missing character*, asserted separately below.
+  const resolved = fs.realPath(target);
+  const same = process.platform === "win32"
+    ? resolved.toLowerCase() === target.toLowerCase()
+    : resolved === target;
+  assert.ok(same, `realPath must not rewrite a non-existent path
+  got:      ${resolved}
+  expected: ${target}`);
 
   // The specific corruption: the first segment losing its leading character.
   assert.equal(fs.realPath(target).includes(first), true, "the full first segment must survive");

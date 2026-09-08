@@ -433,3 +433,42 @@ test("a run that is genuinely waiting still asks", () => {
     assert.equal(attentionStands(state), true, state);
   }
 });
+
+// --- snoozing ---------------------------------------------------------------
+
+test("a snoozed group leaves the decision until its time is up", (t) => {
+  const h = fixture(t);
+  const items = h.store.itemsForRun({ runId: "run-1", reason: "plan_complete_proposed" });
+  const key = items[0]!.groupKey;
+
+  assert.equal(h.store.decide(items, { quietHours: NO_QUIET_WINDOW }).deliver.length, 1, "precondition: it would go out");
+
+  h.store.snooze({ groupKey: key, question: items[0]!.title, until: "2026-09-07T13:00:00.000Z", runId: "run-1" });
+  const during = h.store.decide(items, { quietHours: NO_QUIET_WINDOW });
+  assert.equal(during.deliver.length + during.hold.length, 0, "while snoozed it is neither sent nor held — it is simply not asked");
+
+  // Snoozing does not survive its own deadline.
+  const later = fixture(t, "2026-09-07T13:00:01.000Z");
+  later.store.snooze({ groupKey: key, question: items[0]!.title, until: "2026-09-07T13:00:00.000Z" });
+  assert.equal(later.store.decide(later.store.itemsForRun({ runId: "run-1", reason: "plan_complete_proposed" }), { quietHours: NO_QUIET_WINDOW }).deliver.length, 1);
+});
+
+test("snoozing again replaces the deadline rather than stacking", (t) => {
+  // "Snooze an hour" pressed twice means an hour from the second press.
+  const h = fixture(t);
+  h.store.snooze({ groupKey: "g", question: "q", until: "2026-09-07T14:00:00.000Z" });
+  h.store.snooze({ groupKey: "g", question: "q", until: "2026-09-07T12:30:00.000Z" });
+  assert.equal(h.store.snoozed("2026-09-07T12:45:00.000Z").size, 0, "the later, shorter snooze won");
+});
+
+test("a snooze does not silence a different question on the same run", (t) => {
+  // The hazard this pins. A group key is one per run, so keyed on it alone a
+  // "not now" to a completion proposal would also swallow a worker failure an
+  // hour later — a different question the operator never heard. The question
+  // is part of the key; only the one that was heard and put off stays quiet.
+  const h = fixture(t);
+  const proposed = h.store.itemsForRun({ runId: "run-1", reason: "plan_complete_proposed" });
+  h.store.snooze({ groupKey: proposed[0]!.groupKey, question: proposed[0]!.title, until: "2026-09-07T20:00:00.000Z" });
+  const failed = h.store.itemsForRun({ runId: "run-1", reason: "worker_failed" });
+  assert.equal(h.store.decide(failed, { quietHours: NO_QUIET_WINDOW }).deliver.length, 1);
+});

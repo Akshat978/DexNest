@@ -1095,6 +1095,33 @@ export const AUTOPILOT_MIGRATIONS: readonly Migration[] = [
        WHERE token_hash IS NOT NULL
          AND capabilities NOT LIKE '%drop%';
     `
+  },
+  {
+    id: 33,
+    name: "attention_snoozes",
+    up: `
+      -- "Not now" as a durable fact.
+      --
+      -- A snooze is per QUESTION, not per run. A group key is one per run,
+      -- so keying on it alone meant "not now" to a completion proposal also
+      -- silenced a worker failure that arrived an hour later on the same run
+      -- — a different question the operator never heard. The question text
+      -- is part of the key: the same question re-asked stays quiet, anything
+      -- new gets through.
+      --
+      -- Kept here rather than on the phone so the desktop panel and every
+      -- paired device agree about what has been put off. A snooze only one
+      -- screen knew about would be a notification that arrived anyway on the
+      -- other.
+      CREATE TABLE IF NOT EXISTS autopilot_attention_snoozes (
+        group_key  TEXT NOT NULL,
+        question   TEXT NOT NULL,
+        run_id     TEXT,
+        until      TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (group_key, question)
+      );
+    `
   }
 ];
 

@@ -17,6 +17,7 @@ interface PushSettings {
   projectId: string;
   quietStart: string;
   quietEnd: string;
+  minPushPriority?: "INFO" | "ATTENTION" | "ACTION_REQUIRED";
   enabled: boolean;
 }
 
@@ -26,7 +27,7 @@ interface PushBridge {
   autopilotDeviceRemove(id: string): Promise<void>;
   autopilotPairingOpen(): Promise<{ code: string; expiresAt: string }>;
   autopilotPairingCurrent(): Promise<{ code: string; expiresAt: string } | null>;
-  autopilotDeviceCapabilities(input: { id: string; control: boolean }): Promise<DeviceRecord | null>;
+  autopilotDeviceCapabilities(input: { id: string; control?: boolean; drop?: boolean }): Promise<DeviceRecord | null>;
   autopilotDeviceUnpair(id: string): Promise<DeviceRecord | null>;
   autopilotPushSettings(): Promise<PushSettings | null>;
   autopilotPushSettingsSave(settings: PushSettings): Promise<PushSettings | null>;
@@ -121,6 +122,15 @@ export function AutopilotPush({ refreshedAt }: { refreshedAt: number }) {
             until
             <input type="time" value={settings.quietEnd} disabled={busy}
               onChange={event => setSettings({ ...settings, quietEnd: event.target.value })} />
+          </label>
+          <label>
+            Wake the phone for
+            <select value={settings.minPushPriority ?? "INFO"} disabled={busy}
+              onChange={event => setSettings({ ...settings, minPushPriority: event.target.value as PushSettings["minPushPriority"] })}>
+              <option value="INFO">Everything, including finished runs</option>
+              <option value="ATTENTION">Only things that changed the night</option>
+              <option value="ACTION_REQUIRED">Only things that need an answer</option>
+            </select>
           </label>
         </div>
         <p className="technical">
@@ -245,11 +255,21 @@ export function AutopilotPush({ refreshedAt }: { refreshedAt: number }) {
                   : "Not paired — it can be sent to, but cannot read or answer anything."}
               </p>
               {device.paired && (
-                <label className="checkbox-row">
-                  <input type="checkbox" checked={device.capabilities.includes("control")} disabled={busy}
-                    onChange={event => act(() => api().autopilotDeviceCapabilities({ id: device.id, control: event.target.checked }))} />
-                  May pause, resume and answer
-                </label>
+                <>
+                  {/* Two grants, two boxes. Receiving a photo and stopping a
+                      night's work are different kinds of trust, and one box
+                      would force the operator to hand over both or neither. */}
+                  <label className="checkbox-row">
+                    <input type="checkbox" checked={device.capabilities.includes("drop")} disabled={busy}
+                      onChange={event => act(() => api().autopilotDeviceCapabilities({ id: device.id, drop: event.target.checked }))} />
+                    May send and receive files through Drop
+                  </label>
+                  <label className="checkbox-row">
+                    <input type="checkbox" checked={device.capabilities.includes("control")} disabled={busy}
+                      onChange={event => act(() => api().autopilotDeviceCapabilities({ id: device.id, control: event.target.checked }))} />
+                    May pause, resume and answer
+                  </label>
+                </>
               )}
               <div className="row">
                 {device.paired && (

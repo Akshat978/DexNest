@@ -127,7 +127,17 @@ export interface PushSettings {
   quietEnd: string;
   /** Send notifications to phones at all. Off until a device is registered. */
   enabled: boolean;
+  /**
+   * The quietest thing worth waking a phone for.
+   *
+   * Everything the engine decides still reaches the desktop panel and the
+   * phone's Today list; this only decides what is *pushed*. INFO means every
+   * finished run buzzes; ATTENTION means only things that changed the night.
+   */
+  minPushPriority?: "INFO" | "ATTENTION" | "ACTION_REQUIRED";
 }
+
+const PRIORITY_RANK: Record<string, number> = { INFO: 0, ATTENTION: 1, ACTION_REQUIRED: 2, URGENT: 3 };
 
 export interface AutopilotHost {
   engine: AutopilotEngine;
@@ -136,6 +146,8 @@ export interface AutopilotHost {
   devices: DeviceStore;
   /** What needs a person — the same decision the desktop panel shows. */
   attentionSnapshot: () => { deliver: unknown[]; hold: unknown[]; reason: unknown[]; summary: string };
+  /** Puts an attention group off until a time. */
+  snoozeAttention: (input: { groupKey: string; question: string; until: string; runId?: string }) => void;
   /** Runs in the shape a phone screen needs, not the desk-sized report. */
   runsForPhone: () => Array<Record<string, unknown>>;
   /** Pending approvals across all runs, for the UI and the Stream Deck. */
@@ -602,7 +614,13 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
         settings ? { quietHours: { start: settings.quietStart, end: settings.quietEnd } } : {}
       );
 
+      const floor = PRIORITY_RANK[settings?.minPushPriority ?? "INFO"] ?? 0;
       for (const group of decision.deliver) {
+        // Below the operator's floor it is still decided, still on every
+        // screen, just not pushed — and not recorded as delivered, or the
+        // cooldown would later believe a phone had been told something it had
+        // not.
+        if ((PRIORITY_RANK[group.priority] ?? 0) < floor) continue;
         // Recorded only after something has actually gone out. A delivery
         // written first would silence the retry for a message that never
         // arrived — the cooldown would believe the operator had been told.
@@ -673,21 +691,25 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
     return pairing;
   });
   handle("dexnest:autopilot-pairing-current", () => new DeviceStore(ports).openPairingCode());
-  handle("dexnest:autopilot-device-capabilities", (_event, input: { id: string; control: boolean }) => {
-    // Control is granted here and nowhere else. A phone can ask to pair; it
+  handle("dexnest:autopilot-device-capabilities", (_event, input: { id: string; control?: boolean; drop?: boolean }) => {
+    // Grants are edited here and nowhere else. A phone can ask to pair; it
     // cannot ask to be trusted further.
     //
-    // Drop is carried across rather than recomputed. It is a separate grant,
-    // and rebuilding the list from the control flag alone would silently
-    // revoke file sharing every time control was toggled.
+    // Each grant is a separate decision, so each is changed only when the
+    // caller names it and otherwise carried across as it was. Rebuilding the
+    // list from one flag is how toggling control once silently revoked Drop.
     const devices = new DeviceStore(ports);
-    const keepDrop = devices.get(input.id)?.capabilities.includes("drop") ?? false;
+    const current = devices.get(input.id)?.capabilities ?? [];
+    const control = input.control ?? current.includes("control");
+    const drop = input.drop ?? current.includes("drop");
     const device = devices.setCapabilities(input.id, [
-      ...(input.control ? ["control" as const] : []),
-      ...(keepDrop ? ["drop" as const] : [])
+      ...(control ? ["control" as const] : []),
+      ...(drop ? ["drop" as const] : [])
     ]);
-    options.logEvent?.(input.control ? "Autopilot granted a device control" : "Autopilot withdrew a device's control", {
-      actionId: "autopilot.device_capabilities", deviceId: input.id, control: input.control
+    const changed = input.control !== undefined ? "control" : "drop";
+    const granted = input.control !== undefined ? input.control : input.drop;
+    options.logEvent?.(`Autopilot ${granted ? "granted" : "withdrew"} a device's ${changed}`, {
+      actionId: "autopilot.device_capabilities", deviceId: input.id, control, drop
     });
     return device;
   });
@@ -1083,6 +1105,12 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
     },
     devices: new DeviceStore(ports),
     attentionSnapshot,
+    snoozeAttention(input) {
+      new AttentionStore(ports).snooze(input);
+      options.logEvent?.("Autopilot attention snoozed", {
+        actionId: "autopilot.attention_snooze", groupKey: input.groupKey, question: input.question, until: input.until, runId: input.runId ?? null
+      });
+    },
     runsForPhone,
     control: {
       pause(runId: string) {
