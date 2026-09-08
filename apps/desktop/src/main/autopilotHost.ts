@@ -141,6 +141,24 @@ export interface AutopilotHost {
   pendingApprovals: () => ApprovalRecord[];
   /** Resolves one approval. The only granter of gated authority. */
   resolveApproval: (input: { approvalId: string; decision: "APPROVED" | "REJECTED"; source: string }) => ApprovalRecord;
+  /**
+   * The few things a phone may do.
+   *
+   * A deliberately short list, and it is short because runs are started at the
+   * desk. Everything here either answers a question the run already asked or
+   * stops it — nothing here begins work, spends money, or changes a plan.
+   *
+   * Each goes through the same engine call the desktop button uses and
+   * journals with "phone" as its origin, so the audit view shows where a
+   * decision actually came from rather than attributing it to the desk.
+   */
+  control: {
+    pause: (runId: string) => void;
+    resume: (runId: string) => Promise<void>;
+    approve: (approvalId: string, decision: "APPROVED" | "REJECTED") => ApprovalRecord;
+    acceptPlanComplete: (runId: string) => void;
+    rejectPlanComplete: (runId: string, reason: string) => void;
+  };
   /** Reconciles any run left mid-flight by a previous crash. */
   recover: () => Promise<void>;
   dispose: () => void;
@@ -657,7 +675,16 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
   handle("dexnest:autopilot-device-capabilities", (_event, input: { id: string; control: boolean }) => {
     // Control is granted here and nowhere else. A phone can ask to pair; it
     // cannot ask to be trusted further.
-    const device = new DeviceStore(ports).setCapabilities(input.id, input.control ? ["read", "control"] : ["read"]);
+    //
+    // Drop is carried across rather than recomputed. It is a separate grant,
+    // and rebuilding the list from the control flag alone would silently
+    // revoke file sharing every time control was toggled.
+    const devices = new DeviceStore(ports);
+    const keepDrop = devices.get(input.id)?.capabilities.includes("drop") ?? false;
+    const device = devices.setCapabilities(input.id, [
+      ...(input.control ? ["control" as const] : []),
+      ...(keepDrop ? ["drop" as const] : [])
+    ]);
     options.logEvent?.(input.control ? "Autopilot granted a device control" : "Autopilot withdrew a device's control", {
       actionId: "autopilot.device_capabilities", deviceId: input.id, control: input.control
     });
@@ -1051,6 +1078,35 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
     devices: new DeviceStore(ports),
     attentionSnapshot,
     runsForPhone,
+    control: {
+      pause(runId: string) {
+        engine.requestPause(runId);
+        options.logEvent?.("Autopilot paused from a phone", { actionId: "autopilot.pause_run", runId, source: "phone" });
+      },
+      async resume(runId: string) {
+        options.logEvent?.("Autopilot resumed from a phone", { actionId: "autopilot.loop_run", runId, source: "phone" });
+        await engine.resume(runId);
+      },
+      approve(approvalId: string, decision: "APPROVED" | "REJECTED") {
+        const resolved = engine.resolveApproval({ approvalId, decision, source: "phone" });
+        options.logEvent?.(`Autopilot approval ${resolved.status.toLowerCase()} from a phone: ${resolved.summary}`, {
+          approvalId: resolved.id, runId: resolved.runId, risk: resolved.risk, source: "phone"
+        });
+        return resolved;
+      },
+      acceptPlanComplete(runId: string) {
+        workers.acceptPlanComplete(runId);
+        options.logEvent?.("Autopilot plan completion accepted from a phone", {
+          actionId: "autopilot.plan_complete_accept", runId, source: "phone"
+        });
+      },
+      rejectPlanComplete(runId: string, reason: string) {
+        const note = workers.rejectPlanComplete({ runId, reason });
+        options.logEvent?.("Autopilot plan completion rejected from a phone", {
+          actionId: "autopilot.plan_complete_reject", runId, noteId: note.id, source: "phone"
+        });
+      }
+    },
     async recover(): Promise<void> {
       // autoResume is deliberately absent: after an unexplained restart the safe
       // default is to hold, not to resume autonomous work unattended.

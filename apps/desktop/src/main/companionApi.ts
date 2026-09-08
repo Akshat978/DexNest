@@ -73,6 +73,10 @@ export interface CompanionDeps {
   weather?: () => Promise<unknown>;
 }
 
+/** The verbs a phone may use. Anything not listed is not reachable. */
+const CONTROL_VERBS = ["pause", "resume", "approve", "reject", "accept_plan", "reject_plan"] as const;
+type ControlVerb = (typeof CONTROL_VERBS)[number];
+
 interface Caller {
   device: DeviceRecord;
   token: string;
@@ -282,6 +286,75 @@ export function createCompanionApi(deps: CompanionDeps) {
         const auth = authorise(request, "read");
         if ("error" in auth) { json(response, auth.status, { ok: false, error: auth.error }); return true; }
         json(response, 200, { ok: true, health: deps.health ? deps.health() : null });
+        return true;
+      }
+
+      /**
+       * The few things a phone may do to a run.
+       *
+       * Requires the control capability, which pairing does not grant — it is
+       * a second, deliberate decision made at the desk. Every verb here either
+       * answers a question the run already asked or stops it. None of them
+       * starts work, spends money, or edits a plan, because those belong where
+       * there is a keyboard and the full picture.
+       *
+       * The verb list is a closed set rather than a method name taken from the
+       * body: a string from the network used to pick a function is a way to
+       * call functions nobody meant to expose.
+       */
+      if (request.method === "POST" && url.pathname === "/companion/control") {
+        const auth = authorise(request, "control");
+        if ("error" in auth) { json(response, auth.status, { ok: false, error: auth.error }); return true; }
+
+        const body = await readBody(request);
+        const verb = String(body.verb ?? "") as ControlVerb;
+        const runId = String(body.runId ?? "").trim();
+
+        if (!CONTROL_VERBS.includes(verb)) {
+          json(response, 400, { ok: false, error: "That is not something a phone can do." });
+          return true;
+        }
+        if (!host.control) {
+          json(response, 503, { ok: false, error: "DexNest cannot act on runs right now." });
+          return true;
+        }
+
+        try {
+          switch (verb) {
+            case "pause":
+              host.control.pause(runId);
+              break;
+            case "resume":
+              await host.control.resume(runId);
+              break;
+            case "approve":
+            case "reject":
+              host.control.approve(String(body.approvalId ?? ""), verb === "approve" ? "APPROVED" : "REJECTED");
+              break;
+            case "accept_plan":
+              host.control.acceptPlanComplete(runId);
+              break;
+            case "reject_plan":
+              // A rejection without a reason leaves the worker no way to do
+              // better, so one is required rather than defaulted.
+              if (!String(body.reason ?? "").trim()) {
+                json(response, 400, { ok: false, error: "Say what is still missing." });
+                return true;
+              }
+              host.control.rejectPlanComplete(runId, String(body.reason).trim());
+              break;
+          }
+
+          deps.logEvent?.(`A phone ran ${verb}`, {
+            actionId: "autopilot.phone_control", deviceId: auth.caller.device.id, verb, runId
+          });
+          json(response, 200, { ok: true });
+        } catch (error) {
+          // The engine refuses transitions that do not make sense — pausing
+          // something already finished, approving twice. Its words are more
+          // useful than a generic failure, and it has already refused.
+          json(response, 409, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
         return true;
       }
 
