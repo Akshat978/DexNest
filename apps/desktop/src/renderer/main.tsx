@@ -8129,6 +8129,12 @@ function CommandView({
 
         {/* Right rail */}
         <div className="space-y-5 lg:col-span-4">
+          {/* First on the rail, and the rail starts at the top of the page, so
+              this is the one card that needs no scrolling. It is here because
+              knowing how much of the plan is left changes what you do next —
+              which makes it the thing worth reading before anything else. */}
+          <ProviderLimitsCard />
+
           <GlassCard accent="#06B6D4" hover={false} className="flex items-center gap-4">
             <AssistantOrb size={72} state="idle" />
             <div className="flex-1">
@@ -8166,8 +8172,6 @@ function CommandView({
               </div>
             </div>
           </GlassCard>
-
-          <ProviderLimitsCard />
 
           <GlassCard accent="#A855F7" hover={false}>
             <SectionTitle action={<span className="flex items-center gap-1 text-[10px] text-[#22C55E]"><Wifi className="h-3 w-3" />local</span>}>Stream Deck</SectionTitle>
