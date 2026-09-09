@@ -7,6 +7,10 @@ export interface StreamDeckCatalogProject {
   name: string;
   commands?: {
     start?: string;
+    build?: string;
+    test?: string;
+    typecheck?: string;
+    custom?: string;
   };
 }
 
@@ -197,19 +201,68 @@ export function createStreamDeckActionCatalog(projects: StreamDeckCatalogProject
   }));
   const devItems: StreamDeckCatalogItem[] = projects.flatMap((project) => {
     const hasStart = Boolean(project.commands?.start?.trim());
-    return [
+    const items: StreamDeckCatalogItem[] = [
       hasStart
         ? { category: "Dev", file: `start-${project.id}`, title: `Start ${project.name}`, actionId: `dev.project.${project.id}.run_start`, params: {}, description: `Start ${project.name}.` }
         : { category: "Dev", file: `start-${project.id}`, title: `Start ${project.name}`, placeholder: true, description: `No start command configured for ${project.name}.`, note: `Set a start command for ${project.name} in DexNest Dev, then re-export.` },
       { category: "Dev", file: `stop-${project.id}`, title: `Stop ${project.name}`, actionId: `dev.project.${project.id}.stop`, params: { confirmedDangerous: true }, description: `Stop ${project.name}.`, note: "Stops the project using stop command, Docker, or configured ports." }
     ];
+
+    // The other four commands were runnable all along and had no button, so a
+    // project's test command could be started from the palette but not from the
+    // hardware the palette exists to avoid reaching past.
+    //
+    // Unlike start, an unconfigured one produces nothing rather than a
+    // placeholder. Start is the command a Dev project is expected to have, so
+    // its absence is worth a card that says to set it; four placeholder buttons
+    // per project for commands most projects never define would bury the real
+    // ones under blanks.
+    for (const key of ["build", "test", "typecheck", "custom"] as const) {
+      if (!project.commands?.[key]?.trim()) continue;
+      items.push({
+        category: "Dev",
+        file: `${key}-${project.id}`,
+        title: `${key === "custom" ? "Custom" : key[0]!.toUpperCase() + key.slice(1)} ${project.name}`,
+        actionId: `dev.project.${project.id}.run_${key}`,
+        params: {},
+        description: `Run the ${key} command for ${project.name}.`
+      });
+    }
+
+    items.push({
+      category: "Dev",
+      file: `push-${project.id}`,
+      title: `Push ${project.name}`,
+      actionId: `dev.project.${project.id}.git_push`,
+      params: {},
+      description: `Push ${project.name}'s existing commits to its upstream.`,
+      // Said on the card because the button gives no other chance to say it:
+      // someone pressing "Push" reasonably expects their current work to go,
+      // and what actually goes is whatever was already committed.
+      note: "Pushes commits that already exist. Never commits, never forces, and refuses a diverged or conflicted branch."
+    });
+
+    return items;
   });
+  // One button that answers "is anything unpushed anywhere", which is the
+  // question actually asked at the end of a day and the one that otherwise
+  // costs a visit to every project in turn.
+  const statusItem: StreamDeckCatalogItem = {
+    category: "Dev",
+    file: "git-status-all",
+    title: "Git status (all projects)",
+    actionId: "dev.git_status_all",
+    params: {},
+    description: "Show branch, unpushed commits and uncommitted files for every Dev project.",
+    note: "Reports in a desktop notification; changes nothing."
+  };
+
   groups.push({
     id: "dev",
     title: "Dev",
     description: "Per-project Dev controls generated from saved DexNest projects.",
     items: devItems.length > 0
-      ? devItems
+      ? [statusItem, ...devItems]
       : [{ category: "Dev", file: "no-projects", title: "No Dev projects configured", placeholder: true, description: "Add a Dev project in DexNest, then re-export to get Start/Stop buttons." }]
   });
   return groups;
@@ -352,6 +405,25 @@ export const seededActions = [
     enabled: true,
     status: "available" as const
   })),
+  {
+    id: "dev.git_status_all",
+    title: "Git Status (All Projects)",
+    moduleId: "dev",
+    module: "dev",
+    description: "Report branch, unpushed commits and uncommitted files for every Dev project.",
+    category: "diagnostics",
+    // Reads git and writes nothing. The only thing it produces is a sentence.
+    dangerLevel: "safe",
+    requiresConfirmation: false,
+    confirmationRule: null,
+    reversible: false,
+    undoActionId: null,
+    handlerType: "internal_function",
+    handlerRef: "dev.git_status_all",
+    allowedTriggers: ["command", "deck", "module_ui"],
+    enabled: true,
+    status: "available"
+  },
   {
     id: "dev.open_dashboard",
     title: "Open Dev Dashboard",

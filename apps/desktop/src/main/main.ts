@@ -19307,6 +19307,40 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
     return navigationResult;
   }
 
+  if (actionId === "dev.git_status_all") {
+    const projects = loadProjects();
+    if (projects.length === 0) {
+      return { ok: true, actionId: action.id, message: "No Dev projects configured.", projects: [] };
+    }
+
+    const snapshots = await projectsGit();
+    const rows = projects.map(project => ({ id: project.id, name: project.name, git: snapshots[project.id]! }));
+
+    // Only the projects that want something. A button pressed to ask "is
+    // anything outstanding" is answered by the exceptions; listing eight
+    // repositories to say seven are fine buries the one that is not.
+    const wanting = rows.filter(row => {
+      const git = row.git;
+      return git.repo && (((git.ahead ?? 0) > 0) || !(git.clean ?? true) || (git.conflicted ?? 0) > 0);
+    });
+
+    const message = wanting.length === 0
+      ? `All ${projects.length} project${projects.length === 1 ? "" : "s"} clean and pushed.`
+      : wanting.map(row => `${row.name}: ${row.git.summary}`).join("\n");
+
+    logActionEvent(action, "success", source, `Read git status for ${projects.length} project(s).`, {
+      projects: projects.length,
+      wanting: wanting.length
+    });
+    // A Stream Deck press has no screen of its own, and the generated script
+    // discards the response. Without this the button would be indistinguishable
+    // from one that does nothing.
+    if (source === "stream_deck_http" || source === "keyboard_shortcut") {
+      notifyHotkeyOutcome(message, wanting.length === 0 ? "success" : "error");
+    }
+    return { ok: true, actionId: action.id, message, projects: rows };
+  }
+
   const projectMatch = actionId.match(/^dev\.project\.([a-z0-9-]+)\.(.+)$/);
   if (projectMatch) {
     return runProjectAction(actionId, projectMatch[1], projectMatch[2], source, payload);
@@ -20513,6 +20547,9 @@ async function runProjectAction(actionId: string, projectId: string, operation: 
         metadataJson: { ...projectMetadata(project), branch: snapshot.repo ? snapshot.branch : null, reason: verdict.reason },
         durationMs: Date.now() - startedAt
       });
+      if (source === "stream_deck_http" || source === "keyboard_shortcut") {
+        notifyHotkeyOutcome(`${project.name}: ${verdict.reason}`, "error");
+      }
       return { ok: false, actionId, error: verdict.reason, git: snapshot };
     }
 
@@ -20556,6 +20593,9 @@ async function runProjectAction(actionId: string, projectId: string, operation: 
         errorMessage: reason,
         durationMs
       });
+      if (source === "stream_deck_http" || source === "keyboard_shortcut") {
+        notifyHotkeyOutcome(`${project.name} push failed: ${reason}`, "error");
+      }
       return { ok: false, actionId, error: reason, git: await projectGit(project) };
     }
 
@@ -20576,6 +20616,9 @@ async function runProjectAction(actionId: string, projectId: string, operation: 
       },
       durationMs
     });
+    if (source === "stream_deck_http" || source === "keyboard_shortcut") {
+      notifyHotkeyOutcome(message, "success");
+    }
     // Re-read rather than assume: the push is the reason the counts changed,
     // and reporting the pre-push snapshot back would leave the card claiming
     // commits are still waiting.
