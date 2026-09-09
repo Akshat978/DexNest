@@ -9015,6 +9015,8 @@ function DevView({
   onAction: (actionId: string, source?: string, params?: unknown) => Promise<{
     ok: boolean;
     error?: string;
+    /** What happened, when the action says so in its own words. */
+    message?: string;
     output?: string | ToolsOutputItem;
     stdout?: string;
     stderr?: string;
@@ -9206,10 +9208,25 @@ function DevView({
     await loadGit();
   }
 
+  // A push reports why it declined, and that reason is always the next thing
+  // to do - "pull first", "no upstream", "finish the merge". Dropping it for a
+  // generic failure would throw away the only useful part.
+  async function pushProject(project: DexNestProject): Promise<void> {
+    setDevStatus({ projectId: project.id, text: "Pushing…" });
+    const result = await onAction(`dev.project.${project.id}.git_push`, "module_ui", {});
+    setDevStatus({ projectId: project.id, text: result.ok ? (result.message ?? "Pushed.") : (result.error ?? "Push failed.") });
+    await loadGit();
+  }
+
   // Read when the view opens and after anything that could move the tree,
   // rather than on the app-wide refresh. Shelling out to git once per project
   // is cheap here and pure waste on every other screen.
   const [git, setGit] = useState<Record<string, ProjectGit>>({});
+  // The last thing a push said, tied to the project it said it about.
+  // Refusals live here too - "main has diverged, pull first" is the answer,
+  // not an error to swallow - and keying it prevents one project's message
+  // sitting under another after the selection moves.
+  const [devStatus, setDevStatus] = useState<{ projectId: string; text: string } | null>(null);
   const loadGit = useCallback(async () => {
     try {
       setGit(await getBridge().getProjectsGit());
@@ -9294,6 +9311,32 @@ function DevView({
                     ))}
                   </div>
                 )}
+                {(() => {
+                  const g = git[selProject.id];
+                  if (!g?.repo) return null;
+                  const ahead = g.ahead ?? 0;
+                  return (
+                    <div className="rounded-lg border border-[#1f1f1f] bg-[#0a0a0a] p-2">
+                      <p className="mb-1.5 truncate px-1 font-mono text-[10px] text-[#525252]">{g.summary}</p>
+                      <ActionButton
+                        accent={ahead > 0 ? "#F59E0B" : ACCENT_DEV}
+                        variant="ghost"
+                        icon={GitBranch}
+                        className="w-full text-xs"
+                        // Left enabled when there is nothing to push, because
+                        // pressing it then returns the reason - which is the
+                        // information wanted - while a greyed-out button just
+                        // withholds it.
+                        onClick={() => void pushProject(selProject)}
+                      >
+                        {ahead > 0 ? `Push ${ahead} commit${ahead === 1 ? "" : "s"}` : "Push"}
+                      </ActionButton>
+                      {devStatus?.projectId === selProject.id && (
+                        <p className="mt-1.5 px-1 font-mono text-[10px] text-[#A3A3A3]">{devStatus.text}</p>
+                      )}
+                    </div>
+                  );
+                })()}
                 <div className="flex items-center gap-2">
                   <PinButton input={{ type: "project", module: "dev", entityId: selProject.id, title: selProject.name, subtitle: "Dev project", actionId: `dev.project.${selProject.id}.open_folder` }} />
                   <button type="button" onClick={() => startEditProject(selProject)} className="min-h-0 flex-1 rounded-lg border border-[#262626] bg-transparent px-3 py-1.5 text-xs text-[#A3A3A3] hover:border-[#3B82F6]/40 hover:text-[#F5F5F5]">Edit</button>

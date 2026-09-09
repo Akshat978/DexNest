@@ -9,7 +9,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 
-import { describe as describeStatus, parseCommit, parseStatus } from "../src/main/gitStatus.ts";
+import { canPush, describe as describeStatus, parseCommit, parseStatus, type GitPresent } from "../src/main/gitStatus.ts";
 
 const CLEAN_AHEAD = [
   "# branch.oid b9b73c36c1da68e1cc78da33b7a4f5b00afdee2d",
@@ -126,4 +126,88 @@ test("clean is not appended to a line that already lists problems", () => {
 test("a project that is not a repository says so", () => {
   assert.equal(describeStatus({ repo: false }), "not a git repository");
   assert.equal(describeStatus({ repo: false, problem: "git is not installed" }), "git is not installed");
+});
+
+
+// --- whether to push ----------------------------------------------------------
+//
+// Every case here is a state where pushing would either fail at git or succeed
+// at something that was not asked for. The predicate exists so those are
+// decided once, in one place, rather than in whichever surface pressed the
+// button.
+
+const repo = (over: Partial<GitPresent> = {}): GitPresent => ({
+  repo: true,
+  branch: "main",
+  upstream: "origin/main",
+  ahead: 2,
+  behind: 0,
+  changed: 0,
+  untracked: 0,
+  conflicted: 0,
+  clean: true,
+  ...over
+});
+
+test("commits ahead of a clean upstream are pushed", () => {
+  const verdict = canPush(repo());
+  assert.equal(verdict.push, true);
+  assert.match(verdict.reason, /2 commits to origin\/main/);
+});
+
+test("uncommitted work does not block the push, but is named", () => {
+  // The line this feature is built on: it pushes what is committed and does
+  // not commit for you. Staying silent about the rest would let "pushed" read
+  // as "everything here is on the remote".
+  const verdict = canPush(repo({ changed: 3, untracked: 1, clean: false }));
+  assert.equal(verdict.push, true);
+  assert.match(verdict.reason, /4 uncommitted files stay behind/);
+});
+
+test("a diverged branch is refused rather than forced", () => {
+  // git rejects this, and the only thing that would make it succeed is a
+  // force-push - which would discard whatever is on the remote.
+  const verdict = canPush(repo({ ahead: 2, behind: 3 }));
+  assert.equal(verdict.push, false);
+  assert.match(verdict.reason, /diverged/);
+  assert.match(verdict.reason, /Pull first/);
+});
+
+test("a branch level with its upstream has nothing to push", () => {
+  const verdict = canPush(repo({ ahead: 0 }));
+  assert.equal(verdict.push, false);
+  assert.match(verdict.reason, /already level/);
+});
+
+test("a branch behind but not ahead is nothing to push, not a divergence", () => {
+  const verdict = canPush(repo({ ahead: 0, behind: 4 }));
+  assert.equal(verdict.push, false);
+  assert.match(verdict.reason, /already level/);
+});
+
+test("a branch with no upstream is refused rather than given one", () => {
+  // Choosing a remote and a remote branch name is a decision, not a step.
+  const verdict = canPush(repo({ upstream: null, ahead: null, behind: null }));
+  assert.equal(verdict.push, false);
+  assert.match(verdict.reason, /no upstream/);
+});
+
+test("a conflicted tree is refused even when commits are ahead", () => {
+  // Ahead and conflicted at once: pushing here publishes half a resolution.
+  const verdict = canPush(repo({ conflicted: 2, clean: false }));
+  assert.equal(verdict.push, false);
+  assert.match(verdict.reason, /conflicted/);
+});
+
+test("a detached HEAD is refused rather than resolved to a branch", () => {
+  const verdict = canPush(repo({ branch: null }));
+  assert.equal(verdict.push, false);
+  assert.match(verdict.reason, /detached/);
+});
+
+test("something that is not a repository is refused with its own reason", () => {
+  assert.deepEqual(
+    canPush({ repo: false, problem: "Project folder not found." }),
+    { push: false, reason: "Project folder not found." }
+  );
 });

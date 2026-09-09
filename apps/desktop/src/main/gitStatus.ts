@@ -121,6 +121,64 @@ export function parseCommit(stdout: string): GitCommit | null {
   return { sha: parts[0], subject: parts[1], authoredAt: parts[2] };
 }
 
+/** Whether a push should be attempted, and what to say either way. */
+export interface PushVerdict {
+  push: boolean;
+  reason: string;
+}
+
+/**
+ * Whether DexNest should push this repository.
+ *
+ * The rule the whole feature rests on: this pushes commits that already exist
+ * and does nothing else. It does not stage, does not commit, does not set an
+ * upstream, and never force-pushes. A button that commits for you is a button
+ * that puts unreviewed work on a remote under your name, and the first you
+ * would know of it is reading it back later.
+ *
+ * Every refusal below is a state where pushing would either fail at git or
+ * succeed at something the operator did not ask for.
+ */
+export function canPush(snapshot: GitSnapshot): PushVerdict {
+  if (!snapshot.repo) return { push: false, reason: snapshot.problem ?? "Not a git repository." };
+
+  if (snapshot.branch === null) {
+    // A detached HEAD has no branch for a plain push to resolve, and guessing
+    // one would be choosing a destination on the operator's behalf.
+    return { push: false, reason: "HEAD is detached, so there is no branch to push." };
+  }
+  if (snapshot.conflicted > 0) {
+    // A merge in progress is not ordinary uncommitted work. Pushing mid-merge
+    // publishes half of a resolution.
+    return { push: false, reason: `${snapshot.conflicted} file${snapshot.conflicted === 1 ? " is" : "s are"} still conflicted. Finish the merge first.` };
+  }
+  if (!snapshot.upstream) {
+    // Setting an upstream picks a remote and a remote branch name. That is a
+    // decision, not a step, so it is left to the operator.
+    return { push: false, reason: `${snapshot.branch} has no upstream. Push it once yourself with -u to choose where it goes.` };
+  }
+  if ((snapshot.behind ?? 0) > 0 && (snapshot.ahead ?? 0) > 0) {
+    // Diverged. git would reject this, and the only thing that would make it
+    // succeed is a force-push, which is exactly what this must never do.
+    return { push: false, reason: `${snapshot.branch} has diverged from ${snapshot.upstream}: ${snapshot.ahead} ahead, ${snapshot.behind} behind. Pull first.` };
+  }
+  if ((snapshot.ahead ?? 0) === 0) {
+    return { push: false, reason: `${snapshot.branch} is already level with ${snapshot.upstream}.` };
+  }
+
+  const commits = `${snapshot.ahead} commit${snapshot.ahead === 1 ? "" : "s"}`;
+  const uncommitted = snapshot.changed + snapshot.untracked;
+  return {
+    push: true,
+    // The uncommitted count is named on the way out rather than treated as a
+    // problem. It does not block pushing what is already committed, but
+    // "pushed" should never be read as "everything here is now on the remote".
+    reason: uncommitted > 0
+      ? `${commits} to ${snapshot.upstream}. ${uncommitted} uncommitted file${uncommitted === 1 ? "" : "s"} stay behind.`
+      : `${commits} to ${snapshot.upstream}.`
+  };
+}
+
 /** How the status reads in one line, for a card that has room for one. */
 export function describe(snapshot: GitSnapshot): string {
   if (!snapshot.repo) return snapshot.problem ?? "not a git repository";

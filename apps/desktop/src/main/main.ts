@@ -1,6 +1,6 @@
 import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, safeStorage, screen, shell, Tray } from "electron";
 import { exec, execFile, execFileSync } from "node:child_process";
-import { describe as describeGit, parseCommit, parseStatus, type GitCommit, type GitSnapshot } from "./gitStatus.ts";
+import { canPush, describe as describeGit, parseCommit, parseStatus, type GitCommit, type GitSnapshot } from "./gitStatus.ts";
 import { copyFileSync, cpSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, get as httpGet, type IncomingMessage, type ServerResponse } from "node:http";
 import { get as httpsGet } from "node:https";
@@ -11024,6 +11024,24 @@ function getProjectActionDefinitions(projects = loadProjects()): DexNestActionDe
     const actions: DexNestActionDefinition[] = [
       {
         ...baseAction,
+        id: `${base}.git_push`,
+        title: `Push ${project.name}`,
+        description: `Push ${project.name}'s existing commits to its upstream. Never commits, never forces.`,
+        // caution, not danger, and deliberately without a confirmation step.
+        //
+        // What makes a push dangerous is force-pushing or committing first,
+        // and this does neither: it sends commits that already exist to an
+        // upstream that already exists, and refuses every state where that
+        // would not be a plain fast-forward. Requiring a dialog would also
+        // make it useless as a Stream Deck button, which is most of the point.
+        dangerLevel: "caution",
+        requiresConfirmation: false,
+        confirmationRule: null,
+        handlerType: "local_command",
+        handlerRef: "git push"
+      },
+      {
+        ...baseAction,
         id: `${base}.open_folder`,
         title: `Open ${project.name} Folder`,
         description: `Open ${project.name} in File Explorer.`,
@@ -12704,9 +12722,9 @@ function journalState() {
  * Rejection is not exceptional here. A project that is not a repository is an
  * ordinary state, so the caller distinguishes rather than this throwing.
  */
-function runGit(cwd: string, args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+function runGit(cwd: string, args: string[], timeout = 10_000): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   return new Promise(resolve => {
-    execFile("git", args, { cwd, timeout: 10_000, windowsHide: true, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile("git", args, { cwd, timeout, windowsHide: true, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
       resolve({ ok: !error, stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
     });
   });
@@ -20341,7 +20359,10 @@ function openProjectLogs(project: DexNestProject, source: DexNestActionTrigger, 
   return finishLifecycle(project, actionId, "open_logs", source, "failed", "No log path or log command configured.", "", "", startedAt, {});
 }
 
-function runProjectAction(actionId: string, projectId: string, operation: string, source: DexNestActionTrigger, payload: unknown) {
+// async because git_push waits on git twice - once to decide, once to push.
+// The only caller is already async and restart already returned a promise from
+// here, so every existing path is unchanged.
+async function runProjectAction(actionId: string, projectId: string, operation: string, source: DexNestActionTrigger, payload: unknown) {
   const projects = loadProjects();
   const project = projects.find((item) => item.id === projectId);
 
@@ -20474,6 +20495,91 @@ function runProjectAction(actionId: string, projectId: string, operation: string
       metadataJson: { ...projectMetadata(project), url: link }
     });
     return { ok: true, actionId, message: `Opened ${project.name} link.` };
+  }
+
+  if (operation === "git_push") {
+    const startedAt = Date.now();
+    const snapshot = await projectGit(project);
+    const verdict = canPush(snapshot);
+
+    if (!verdict.push) {
+      localDb.appendActionEvent({
+        module: "DexNest Dev",
+        actionId,
+        eventType: "project_push_refused",
+        status: "skipped",
+        source,
+        summary: `${project.name} was not pushed: ${verdict.reason}`,
+        metadataJson: { ...projectMetadata(project), branch: snapshot.repo ? snapshot.branch : null, reason: verdict.reason },
+        durationMs: Date.now() - startedAt
+      });
+      return { ok: false, actionId, error: verdict.reason, git: snapshot };
+    }
+
+    // Journalled before the network call, not after. A push that reaches the
+    // remote and then loses its record is the one case where DexNest's log
+    // would disagree with what the world actually holds.
+    localDb.appendActionEvent({
+      module: "DexNest Dev",
+      actionId,
+      eventType: "project_push_started",
+      status: "pending",
+      source,
+      summary: `Pushing ${project.name}: ${verdict.reason}`,
+      metadataJson: {
+        ...projectMetadata(project),
+        branch: snapshot.repo ? snapshot.branch : null,
+        upstream: snapshot.repo ? snapshot.upstream : null,
+        ahead: snapshot.repo ? snapshot.ahead : null
+      }
+    });
+
+    // No arguments beyond the verb. Every flag that would change where this
+    // goes or what it overwrites is one this must never pass, and the upstream
+    // has already been confirmed to exist.
+    const result = await runGit(project.path, ["push"], 120_000);
+    const durationMs = Date.now() - startedAt;
+
+    if (!result.ok) {
+      // git writes its progress and its refusals both to stderr, so the last
+      // non-empty line is the reason far more often than the first.
+      const lines = result.stderr.trim().split("\n").map(line => line.trim()).filter(Boolean);
+      const reason = lines[lines.length - 1] || "git push failed.";
+      localDb.appendActionEvent({
+        module: "DexNest Dev",
+        actionId,
+        eventType: "project_push_failed",
+        status: "failed",
+        source,
+        summary: `${project.name} push failed.`,
+        metadataJson: { ...projectMetadata(project), branch: snapshot.repo ? snapshot.branch : null },
+        errorMessage: reason,
+        durationMs
+      });
+      return { ok: false, actionId, error: reason, git: await projectGit(project) };
+    }
+
+    touchProject(project);
+    const message = `Pushed ${project.name}. ${verdict.reason}`;
+    localDb.appendActionEvent({
+      module: "DexNest Dev",
+      actionId,
+      eventType: "project_push_completed",
+      status: "success",
+      source,
+      summary: message,
+      metadataJson: {
+        ...projectMetadata(project),
+        branch: snapshot.repo ? snapshot.branch : null,
+        upstream: snapshot.repo ? snapshot.upstream : null,
+        pushed: snapshot.repo ? snapshot.ahead : null
+      },
+      durationMs
+    });
+    // Re-read rather than assume: the push is the reason the counts changed,
+    // and reporting the pre-push snapshot back would leave the card claiming
+    // commits are still waiting.
+    return { ok: true, actionId, message, git: await projectGit(project) };
   }
 
   if (operation === "open_urls") {
