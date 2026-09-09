@@ -2,6 +2,7 @@ import { app, BrowserWindow, clipboard, desktopCapturer, dialog, globalShortcut,
 import { exec, execFile, execFileSync } from "node:child_process";
 import { canPush, describe as describeGit, parseCommit, parseStatus, type GitCommit, type GitSnapshot } from "./gitStatus.ts";
 import { overlayHtml, rectFromDrag, SELECTION_SCRIPT, type DragPoints } from "./captureRegion.ts";
+import { activeBlockIds, hasEffects, minutesOf, resolveTransitions, type BlockEffect, type BlockMoment } from "./blockEffects.ts";
 import { copyFileSync, cpSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, get as httpGet, type IncomingMessage, type ServerResponse } from "node:http";
 import { get as httpsGet } from "node:https";
@@ -1314,6 +1315,8 @@ interface TimetableBlock {
   // The date (YYYY-MM-DD) the status was last set. done/skipped auto-reset to
   // "planned" on a new day so a repeating weekly plan starts fresh each day.
   statusDate?: string | null;
+  /** What this block changes when it starts and when it ends. */
+  effects?: BlockEffect[];
   createdAt: string;
   updatedAt: string;
 }
@@ -1344,6 +1347,9 @@ interface TimetableBlockInput {
   notes?: string;
   status?: TimetableBlockStatus;
   statusDate?: string | null;
+  // Ids and defaults are filled in on save, so a row from the editor may carry
+  // only a when and an action.
+  effects?: Array<Partial<BlockEffect>>;
   fromDay?: TimetableDay;
   toDay?: TimetableDay;
   templateId?: string;
@@ -17651,6 +17657,17 @@ function normalizeTimetableBlock(input: TimetableBlockInput, existing?: Timetabl
     notes: input.notes ?? existing?.notes ?? "",
     status: input.status ?? existing?.status ?? "planned",
     statusDate: input.statusDate ?? existing?.statusDate ?? null,
+    // Ids are assigned here so an effect stays addressable across a reorder,
+    // and blank rows are dropped rather than stored - an effect naming no
+    // action would sit in the list looking configured and do nothing.
+    effects: (input.effects ?? existing?.effects ?? [])
+      .filter(effect => typeof effect?.actionId === "string" && effect.actionId.trim())
+      .map(effect => ({
+        id: typeof effect.id === "string" && effect.id.trim() ? effect.id : createId("effect"),
+        when: effect.when === "exit" ? "exit" as const : "enter" as const,
+        actionId: effect.actionId!.trim(),
+        params: effect.params && typeof effect.params === "object" ? { ...effect.params } : {}
+      })),
     createdAt: existing?.createdAt ?? now,
     updatedAt: now
   };
@@ -21611,6 +21628,45 @@ function registerIpcHandlers(): void {
   // Awaited per call rather than cached: git is cheap, and the alternative is
   // a dashboard that reports the tree as it was when the app started.
   ipcMain.handle("dexnest:projects-git", () => projectsGit());
+
+  /**
+   * What a timetable block may be told to do.
+   *
+   * Offered as a list rather than a free-text action id, because a mistyped id
+   * would sit in a saved block looking configured and fail silently at the
+   * moment the block starts - which is exactly when nobody is watching.
+   *
+   * Curated rather than "the whole registry filtered by danger level". Most
+   * actions make no sense on a schedule: opening a view at 09:00 while
+   * somebody is using another one is an interruption, not an effect. These are
+   * the ones that change the environment and then stay changed.
+   */
+  ipcMain.handle("dexnest:effect-action-choices", () => {
+    const wanted = new Set([
+      "system.performance.enable",
+      "system.performance.disable",
+      "system.lifecycle.lock_sensitive_session",
+      "clipboard.toggle_listener",
+      "external.govee.turn_on",
+      "external.govee.turn_off",
+      "external.govee.apply_scene"
+    ]);
+    const choices = actionRegistry.list()
+      .filter(action => wanted.has(action.id) && action.enabled)
+      .map(action => ({ id: action.id, title: action.title, module: action.module, dangerLevel: action.dangerLevel }));
+
+    // Stopping a project at the end of the working day is the per-project case
+    // worth having, and it exists only once a project does.
+    for (const project of loadProjects()) {
+      choices.push({
+        id: `dev.project.${project.id}.stop`,
+        title: `Stop ${project.name}`,
+        module: "dev",
+        dangerLevel: "danger"
+      });
+    }
+    return choices;
+  });
 
   ipcMain.handle("dexnest:calendar-accounts", () => ({
     // canWrite travels with the account rather than being recomputed in the

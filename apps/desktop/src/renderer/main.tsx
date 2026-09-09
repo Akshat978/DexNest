@@ -1404,6 +1404,22 @@ interface CalendarState {
 export type TimetableDay = "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
 type TimetableBlockStatus = "planned" | "done" | "skipped" | "moved";
 
+/** Something a block does when it starts or when it ends. */
+export interface BlockEffect {
+  id?: string;
+  when: "enter" | "exit";
+  actionId: string;
+  params?: Record<string, unknown>;
+}
+
+/** An action a block may be told to run, as the main process curated it. */
+export interface EffectActionChoice {
+  id: string;
+  title: string;
+  module: string;
+  dangerLevel: string;
+}
+
 interface TimetableBlock {
   id: string;
   day: TimetableDay;
@@ -1415,6 +1431,7 @@ interface TimetableBlock {
   notes: string;
   status: TimetableBlockStatus;
   statusDate?: string | null;
+  effects?: BlockEffect[];
   createdAt: string;
   updatedAt: string;
 }
@@ -2041,6 +2058,7 @@ export interface DexNestBridge {
   listActions: () => Promise<ActionDefinition[]>;
   listProjects: () => Promise<DexNestProject[]>;
   getProjectsGit: () => Promise<Record<string, ProjectGit>>;
+  getEffectActionChoices: () => Promise<EffectActionChoice[]>;
   listCommandResults: () => Promise<Record<string, ProjectCommandResult>>;
   clearCommandResult: (actionId: string) => Promise<void>;
   listPinnedActions: () => Promise<string[]>;
@@ -11780,7 +11798,17 @@ function TimetableView({
   function resetForm(day: TimetableDay = selectedDay): void {
     setEditingId(null);
     setForm({ title: "", day, startTime: "09:00", endTime: "10:00", category: "Focus", notes: "" });
+    setEffects([]);
   }
+
+  // The actions a block may be told to run. Loaded once: the list changes only
+  // when a Dev project is added, and a fetch per editor opening would be a
+  // round trip for an answer that is almost always the same.
+  const [effects, setEffects] = useState<BlockEffect[]>([]);
+  const [effectChoices, setEffectChoices] = useState<EffectActionChoice[]>([]);
+  useEffect(() => {
+    void getBridge().getEffectActionChoices().then(setEffectChoices).catch(() => setEffectChoices([]));
+  }, []);
 
   function openAddBlock(day: TimetableDay = selectedDay): void {
     resetForm(day);
@@ -11798,6 +11826,7 @@ function TimetableView({
       category: block.category,
       notes: block.notes
     });
+    setEffects((block.effects ?? []).map(effect => ({ ...effect })));
     setEditorOpen(true);
   }
 
@@ -11813,6 +11842,9 @@ function TimetableView({
     const result = await onAction(editingId ? "timetable.update_block" : "timetable.create_block", "module_ui", {
       blockId: editingId ?? undefined,
       ...form,
+      // Rows naming no action are dropped here rather than saved and filtered
+      // later, so a half-finished row does not survive a reopen looking real.
+      effects: effects.filter(effect => effect.actionId),
       accent: ACCENT
     });
     setMessage(result.ok === false ? result.error ?? "Timetable save failed." : result.message ?? "Timetable block saved.");
@@ -12249,6 +12281,55 @@ function TimetableView({
                 </div>
               </div>
               <label>Notes<textarea value={form.notes} onChange={(event) => setForm((current) => ({ ...current, notes: event.target.value }))} placeholder="Optional routine notes" /></label>
+
+              <div>
+                <div className="mb-1.5 flex items-center justify-between gap-2">
+                  <p className="text-sm" style={{ color: "var(--text-muted)" }}>When this block starts and ends</p>
+                  <button
+                    type="button"
+                    disabled={effectChoices.length === 0}
+                    onClick={() => setEffects((current) => [...current, { when: "enter", actionId: "" }])}
+                  >
+                    Add
+                  </button>
+                </div>
+                <p className="mb-2 text-xs" style={{ color: "var(--text-disabled)" }}>
+                  Nothing runs yet — this records what the block should do. Applying it comes next.
+                </p>
+                {effects.length === 0 ? (
+                  <p className="text-xs" style={{ color: "var(--text-disabled)" }}>Nothing. This block only shows on the schedule.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {effects.map((effect, index) => (
+                      <div key={effect.id ?? `new-${index}`} className="flex flex-wrap items-center gap-2 rounded-lg border p-2" style={{ borderColor: "var(--border)", background: "var(--surface-2)" }}>
+                        <select
+                          value={effect.when}
+                          onChange={(event) => setEffects((current) => current.map((item, at) => at === index ? { ...item, when: event.target.value as "enter" | "exit" } : item))}
+                        >
+                          <option value="enter">On start</option>
+                          <option value="exit">On end</option>
+                        </select>
+                        <select
+                          className="flex-1"
+                          value={effect.actionId}
+                          onChange={(event) => setEffects((current) => current.map((item, at) => at === index ? { ...item, actionId: event.target.value } : item))}
+                        >
+                          {/* Chosen from a list rather than typed: a mistyped
+                              action id would sit in a saved block looking
+                              configured and fail at the moment the block
+                              starts, which is when nobody is watching. */}
+                          <option value="">Choose an action…</option>
+                          {effectChoices.map((choice) => (
+                            <option key={choice.id} value={choice.id}>{choice.title}</option>
+                          ))}
+                        </select>
+                        <button type="button" onClick={() => setEffects((current) => current.filter((_, at) => at !== index))}>Remove</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               <div className="flex flex-wrap gap-2">
                 <ActionButton accent={ACCENT} icon={Save} onClick={() => void saveBlock()}>{editingId ? "Update block" : "Save block"}</ActionButton>
                 <button type="button" onClick={() => resetForm(form.day)}>Reset</button>
