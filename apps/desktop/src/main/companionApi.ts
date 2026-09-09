@@ -79,6 +79,8 @@ export interface CompanionDeps {
   weather?: () => unknown;
   /** What a run changed, phase by phase. Numbers, never the patch. */
   runChanges?: (runId: string) => unknown;
+  /** Last night, across every run that moved. */
+  morningBrief?: () => unknown;
 }
 
 /** The verbs a phone may use. Anything not listed is not reachable. */
@@ -407,6 +409,21 @@ export function createCompanionApi(deps: CompanionDeps) {
        * which is what decides whether to open a laptop. A diff on a phone is a
        * code review on a phone, and that is not what a glance is for.
        */
+      /**
+       * Last night, in one answer.
+       *
+       * The question actually asked at 8am is not about one run, so this is
+       * not three requests the phone stitches together — the desktop already
+       * knows which runs moved and what each needs.
+       */
+      if (request.method === "GET" && url.pathname === "/companion/morning") {
+        const auth = authorise(request, "read");
+        if ("error" in auth) { json(response, auth.status, { ok: false, error: auth.error }); return true; }
+        if (!deps.morningBrief) { json(response, 503, { ok: false, error: "DexNest cannot build a brief right now." }); return true; }
+        json(response, 200, { ok: true, brief: deps.morningBrief() });
+        return true;
+      }
+
       if (request.method === "GET" && url.pathname.startsWith("/companion/changes/")) {
         const auth = authorise(request, "read");
         if ("error" in auth) { json(response, auth.status, { ok: false, error: auth.error }); return true; }

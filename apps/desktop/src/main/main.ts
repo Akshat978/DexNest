@@ -312,6 +312,7 @@ async function companionRoutes(request: IncomingMessage, response: ServerRespons
       host: autopilotHost,
       today: () => todayAgenda(),
       runChanges: (runId: string) => autopilotHost!.runChanges(runId),
+      morningBrief: () => autopilotHost!.morningBrief(),
       planUsage: () => providerLimits.snapshot(),
       weather: () => phoneWeather(),
       // Only the verdict, not the whole health report. That report names file

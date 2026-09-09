@@ -24,6 +24,35 @@ type RunState =
   | "COMPLETED" | "FAILED";
 
 /** Mirrors RunChanges, kept here because the renderer imports no runtime types. */
+/** One run's line in the brief. Mirrors MorningBriefEntry. */
+interface BriefEntry {
+  runId: string;
+  label: string;
+  goal: string;
+  state: string;
+  headline: string;
+  action: string;
+  detail: string;
+  phasesDone: number;
+  phasesTotal: number;
+  costUsd: number;
+  assumptions: number;
+  filesChanged: number;
+  insertions: number;
+  deletions: number;
+  finishedItself: boolean;
+  lastActivityAt: string;
+}
+
+interface MorningBriefView {
+  sinceHours: number;
+  generatedAt: string;
+  runs: BriefEntry[];
+  needsYou: number;
+  costUsd: number;
+  filesChanged: number;
+}
+
 interface RunChangesView {
   files: number;
   insertions: number;
@@ -143,6 +172,7 @@ interface AutopilotBridge {
   autopilotStopRun(runId: string): Promise<RunRecord>;
   autopilotDraftPlan(runId: string): Promise<{ text: string; phases: number; problem: string | null }>;
   autopilotRunChanges(runId: string): Promise<RunChangesView>;
+  autopilotMorningBrief(options?: { sinceHours?: number }): Promise<MorningBriefView>;
   autopilotResolveUncertain(input: { runId: string; stepKey: string; resolution: "completed" | "not_performed" }): Promise<RunRecord>;
   autopilotResolveApproval(input: { approvalId: string; decision: "APPROVED" | "REJECTED" }): Promise<ApprovalRecord>;
   onAutopilotChanged(callback: (payload: { runId: string }) => void): () => void;
@@ -175,6 +205,7 @@ export function AutopilotView() {
   const [clonePlan, setClonePlan] = useState<string | null>(null);
   const [changes, setChanges] = useState<RunChangesView | null>(null);
   const [changesFor, setChangesFor] = useState<string | null>(null);
+  const [brief, setBrief] = useState<MorningBriefView | null>(null);
   const [filter, setFilter] = useState("ALL");
   const [runs, setRuns] = useState<DashboardRun[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -190,6 +221,18 @@ export function AutopilotView() {
   // panels showing whatever they read when they mounted. A counter is stable
   // between refreshes and changes exactly once per refresh.
   const [refreshedAt, setRefreshedAt] = useState(0);
+
+  // Loaded whenever the dashboard is refreshed, because this is the first
+  // thing looked at and a button between the operator and it would be one
+  // press every morning for information they always want.
+  useEffect(() => {
+    if (area !== "Runs") return;
+    let cancelled = false;
+    void bridge().autopilotMorningBrief()
+      .then(loaded => { if (!cancelled) setBrief(loaded); })
+      .catch(() => { /* the panel simply does not appear */ });
+    return () => { cancelled = true; };
+  }, [area, refreshedAt]);
   const [exported, setExported] = useState<string | null>(null);
   const [evidence, setEvidence] = useState("");
   const [busy, setBusy] = useState(false);
@@ -280,6 +323,43 @@ export function AutopilotView() {
       {/* Where what needs you actually reaches you. */}
       <div hidden={area !== "Notifications"}><AutopilotPush refreshedAt={refreshedAt} /></div>
       <section hidden={area !== "Runs"} aria-label="Runs dashboard">
+        {brief && brief.runs.length > 0 && (
+          <div className="card">
+            <h3>Last night</h3>
+            <p>
+              {brief.needsYou === 0
+                ? "Nothing needs you."
+                : <strong>{brief.needsYou} run{brief.needsYou === 1 ? "" : "s"} need{brief.needsYou === 1 ? "s" : ""} you.</strong>}
+              {" "}
+              {brief.runs.length} run{brief.runs.length === 1 ? "" : "s"} moved in the last {brief.sinceHours} hours
+              {brief.filesChanged > 0 ? `, touching ${brief.filesChanged} file${brief.filesChanged === 1 ? "" : "s"}` : ""}
+              {brief.costUsd > 0 ? ` for $${brief.costUsd.toFixed(2)}` : ""}.
+            </p>
+            <ul className="autopilot-devices">
+              {brief.runs.map(entry => (
+                <li key={entry.runId}>
+                  <button
+                    type="button"
+                    className="link-button"
+                    onClick={() => { setArea("Selected Run"); void refresh(entry.runId); }}
+                  >
+                    <strong>{entry.label}</strong>
+                  </button>
+                  {" — "}{entry.headline}
+                  {entry.finishedItself && <span className="technical"> · finished itself</span>}
+                  <p className="technical">
+                    {entry.phasesTotal > 0 ? `${entry.phasesDone}/${entry.phasesTotal} phases · ` : ""}
+                    {entry.filesChanged} file{entry.filesChanged === 1 ? "" : "s"}
+                    {" "}+{entry.insertions} −{entry.deletions}
+                    {entry.costUsd > 0 ? ` · $${entry.costUsd.toFixed(2)}` : ""}
+                    {entry.assumptions > 0 ? ` · ${entry.assumptions} assumption${entry.assumptions === 1 ? "" : "s"}` : ""}
+                  </p>
+                  {entry.action === "decide" && <p>{entry.detail}</p>}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       <h2>Runs</h2>
       <label>Filter runs<select value={filter} onChange={event => setFilter(event.target.value)}>
         {["ACTIVE", "NEEDS ATTENTION", "COMPLETED", "STOPPED / FAILED", "ALL"].map(value => <option key={value}>{value}</option>)}

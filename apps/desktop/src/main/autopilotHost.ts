@@ -144,6 +144,37 @@ export interface PushSettings {
 
 const PRIORITY_RANK: Record<string, number> = { INFO: 0, ATTENTION: 1, ACTION_REQUIRED: 2, URGENT: 3 };
 
+/** One run's line in the morning brief. */
+export interface MorningBriefEntry {
+  runId: string;
+  label: string;
+  goal: string;
+  state: string;
+  headline: string;
+  action: string;
+  detail: string;
+  phasesDone: number;
+  phasesTotal: number;
+  costUsd: number;
+  assumptions: number;
+  filesChanged: number;
+  insertions: number;
+  deletions: number;
+  /** True when auto-accept completed it without anyone looking. */
+  finishedItself: boolean;
+  lastActivityAt: string;
+}
+
+export interface MorningBrief {
+  /** The window this covers, in hours. */
+  sinceHours: number;
+  generatedAt: string;
+  runs: MorningBriefEntry[];
+  needsYou: number;
+  costUsd: number;
+  filesChanged: number;
+}
+
 export interface AutopilotHost {
   engine: AutopilotEngine;
   workers: ControlledWorkerTurns;
@@ -168,6 +199,8 @@ export interface AutopilotHost {
     => { id: string; ordinal: number; label: string | null };
   /** What a run changed, phase by phase. Numbers, never the patch. */
   runChanges: (runId: string) => RunChanges;
+  /** Every run that moved recently, with what it needs. */
+  morningBrief: (options?: { sinceHours?: number }) => MorningBrief;
   /** Runs in the shape a phone screen needs, not the desk-sized report. */
   runsForPhone: () => Array<Record<string, unknown>>;
   /** Pending approvals across all runs, for the UI and the Stream Deck. */
@@ -385,6 +418,7 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
     */
   handle("dexnest:autopilot-rerun-form", (_event, runId: string) => center.rerunForm(runId));
   handle("dexnest:autopilot-run-changes", (_event, runId: string) => runChanges(runId));
+  handle("dexnest:autopilot-morning-brief", (_event, options?: { sinceHours?: number }) => morningBrief(options));
   handle("dexnest:autopilot-draft-plan", async (_event, runId: string) => {
     const draft = await workers.draftPlan(runId);
     options.logEvent?.(
@@ -867,6 +901,73 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
     });
   }
 
+  /**
+   * Last night, across every run.
+   *
+   * The per-run morning summary already existed and is good; what was missing
+   * was the question actually asked at 8am, which is not about one run. Three
+   * projects ran, and the useful answer is which of them wants something —
+   * not three visits to find out that two are fine.
+   *
+   * A run belongs here if it MOVED in the window, not if it was created in it.
+   * A run started on Monday that finished at 4am on Wednesday is Wednesday's
+   * news, and one created last night that never ran is not news at all.
+   */
+  function morningBrief(options: { sinceHours?: number } = {}): MorningBrief {
+    const hours = Math.max(1, Math.min(options.sinceHours ?? 24, 24 * 14));
+    const cutoff = new Date(Date.parse(ports.clock.now()) - hours * 3600_000).toISOString();
+
+    const runs = engine.listRuns(100).filter(run => (run.updatedAt ?? run.createdAt) >= cutoff);
+    const entries: MorningBriefEntry[] = runs.map(run => {
+      const summary = morningSummaryFor(run.id);
+      const report = workers.report(run.id);
+      const plan = report.plan;
+      // Changes are read per run, and reading git is the expensive part of
+      // this call. Worth it: "what did it write" is half of what makes the
+      // brief answerable without opening anything.
+      const changes = runChanges(run.id);
+
+      return {
+        runId: run.id,
+        label: new RunQueueStore(ports).itemForRun(run.id)?.label
+          ?? (run.spec.projectPath ?? "").replace(/\\/g, "/").split("/").filter(Boolean).pop()
+          ?? run.id,
+        goal: run.spec.goal,
+        state: run.state,
+        headline: summary.headline,
+        action: summary.action,
+        detail: summary.detail,
+        phasesDone: plan.items.filter(item => item.status === "DONE").length,
+        phasesTotal: plan.items.length,
+        costUsd: report.usage.totalUsd,
+        assumptions: summary.assumptions.length,
+        filesChanged: changes.files,
+        insertions: changes.insertions,
+        deletions: changes.deletions,
+        // Whether it finished itself, which is the one thing an operator who
+        // turned that on will look for first.
+        finishedItself: [...engine.store.listEvents(run.id)]
+          .some(event => event.type === "PLAN_COMPLETE_ACCEPTED"
+            && (event.payload as { by?: string } | null)?.by === "autopilot"),
+        lastActivityAt: run.updatedAt ?? run.createdAt
+      };
+    });
+
+    // The ones that want something first, then by when they last moved. An
+    // operator reads until nothing needs them and stops.
+    const wants = (entry: MorningBriefEntry) => (entry.action === "decide" ? 0 : entry.action === "resume" ? 1 : 2);
+    entries.sort((a, b) => wants(a) - wants(b) || b.lastActivityAt.localeCompare(a.lastActivityAt));
+
+    return {
+      sinceHours: hours,
+      generatedAt: ports.clock.now(),
+      runs: entries,
+      needsYou: entries.filter(entry => entry.action === "decide").length,
+      costUsd: entries.reduce((sum, entry) => sum + (entry.costUsd || 0), 0),
+      filesChanged: entries.reduce((sum, entry) => sum + entry.filesChanged, 0)
+    };
+  }
+
   function runsForPhone() {
     const queues = new RunQueueStore(ports);
     return engine.listRuns(20).map(run => {
@@ -1166,6 +1267,7 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
     },
     runsForPhone,
     runChanges,
+    morningBrief,
     queueableProjects() {
       // Newest use wins, so the list is ordered the way the operator thinks
       // about their projects rather than by when each was first created.
