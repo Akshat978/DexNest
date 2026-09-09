@@ -11,6 +11,7 @@ import { execFile, execFileSync, spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { dirname, resolve, basename } from "node:path";
 import type {
+  FileChange,
   CommandOutcome,
   EnvironmentPort,
   FileSystemPort,
@@ -220,6 +221,31 @@ function createGitPort(): GitPort {
     repositoryRoot: (dir: string) => git(["rev-parse", "--show-toplevel"], dir),
     head: (dir: string) => git(["rev-parse", "HEAD"], dir),
     isDirty: (dir: string) => git(["status", "--porcelain"], dir).length > 0,
+    diffStat({ dir, from, to }): FileChange[] {
+      try {
+        // --numstat is the machine-readable form: two counts and a path per
+        // line, tab separated, with "-" for binary files. --no-renames keeps
+        // one path per line, since a rename shown as "old => new" would have
+        // to be parsed differently and says nothing extra about the change.
+        const raw = git(["diff", "--numstat", "--no-renames", `${from}..${to}`], dir);
+        if (!raw) return [];
+        return raw.split("\n").flatMap(line => {
+          const [insertions, deletions, ...rest] = line.split("\t");
+          const path = rest.join("\t").trim();
+          if (!path) return [];
+          return [{
+            path,
+            insertions: insertions === "-" ? null : Number(insertions),
+            deletions: deletions === "-" ? null : Number(deletions)
+          }];
+        });
+      } catch {
+        // An unknown commit — garbage-collected, rebased away, or a checkpoint
+        // from a worktree that no longer exists. Normal in an old run, and not
+        // a reason to break the phases around it.
+        return [];
+      }
+    },
     listWorktrees(repoRoot: string): WorktreeInfo[] {
       const entries: WorktreeInfo[] = [];
       let current: Partial<WorktreeInfo> = {};

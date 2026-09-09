@@ -143,6 +143,7 @@ contextBridge.exposeInMainWorld("dexNest", {
   autopilotDashboard: () => ipcRenderer.invoke("dexnest:autopilot-dashboard"),
   autopilotReadiness: (project: string) => ipcRenderer.invoke("dexnest:autopilot-readiness", project),
   autopilotRerunForm: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-rerun-form", runId),
+  autopilotRunChanges: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-run-changes", runId),
   autopilotDraftPlan: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-draft-plan", runId),
   autopilotCreateAutomation: (input: unknown, options?: { start?: boolean }) => ipcRenderer.invoke("dexnest:autopilot-create-automation", input, options),
   autopilotRunPrimary: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-run-primary", runId),

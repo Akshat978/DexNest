@@ -77,6 +77,8 @@ export interface CompanionDeps {
    * third thing that decides when to call a weather service.
    */
   weather?: () => unknown;
+  /** What a run changed, phase by phase. Numbers, never the patch. */
+  runChanges?: (runId: string) => unknown;
 }
 
 /** The verbs a phone may use. Anything not listed is not reachable. */
@@ -397,6 +399,32 @@ export function createCompanionApi(deps: CompanionDeps) {
        * Read-only, so a phone can show the choice before asking for the grant
        * it needs to act on it.
        */
+      /**
+       * What a run changed.
+       *
+       * Numbers and filenames, never the patch. The question this answers is
+       * "is this the size of change I expected, in the places I expected" —
+       * which is what decides whether to open a laptop. A diff on a phone is a
+       * code review on a phone, and that is not what a glance is for.
+       */
+      if (request.method === "GET" && url.pathname.startsWith("/companion/changes/")) {
+        const auth = authorise(request, "read");
+        if ("error" in auth) { json(response, auth.status, { ok: false, error: auth.error }); return true; }
+        const runId = decodeURIComponent(url.pathname.slice("/companion/changes/".length));
+        if (!runId || !deps.runChanges) {
+          json(response, 404, { ok: false, error: "No changes are available for that run." });
+          return true;
+        }
+        try {
+          json(response, 200, { ok: true, changes: deps.runChanges(runId) });
+        } catch {
+          // requireRun throws for an id the phone no longer has. Answering 404
+          // rather than 500 says which of us is confused.
+          json(response, 404, { ok: false, error: "That run is not one DexNest knows about." });
+        }
+        return true;
+      }
+
       if (request.method === "GET" && url.pathname === "/companion/queue") {
         const auth = authorise(request, "read");
         if ("error" in auth) { json(response, auth.status, { ok: false, error: auth.error }); return true; }

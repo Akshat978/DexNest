@@ -30,7 +30,12 @@ import {
   DirectionAuthorityStore,
   UnattendedStore,
   buildMorningSummary,
+  buildRunChanges,
+  CheckpointStore,
+  IterationStore,
+  PlanStore,
   HandoffStore,
+  type RunChanges,
   type ConsultationScope,
   type NewRunForm,
   type LoopStopReason,
@@ -161,6 +166,8 @@ export interface AutopilotHost {
   /** Appends one project to an open queue. Returns what was added. */
   queueProject: (input: { queueId: string; projectPath: string; goal: string; label?: string })
     => { id: string; ordinal: number; label: string | null };
+  /** What a run changed, phase by phase. Numbers, never the patch. */
+  runChanges: (runId: string) => RunChanges;
   /** Runs in the shape a phone screen needs, not the desk-sized report. */
   runsForPhone: () => Array<Record<string, unknown>>;
   /** Pending approvals across all runs, for the UI and the Stream Deck. */
@@ -377,6 +384,7 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
     * able to create the run, attach it, and only then start.
     */
   handle("dexnest:autopilot-rerun-form", (_event, runId: string) => center.rerunForm(runId));
+  handle("dexnest:autopilot-run-changes", (_event, runId: string) => runChanges(runId));
   handle("dexnest:autopilot-draft-plan", async (_event, runId: string) => {
     const draft = await workers.draftPlan(runId);
     options.logEvent?.(
@@ -836,6 +844,29 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
    * output, send history, workspace evidence — and shipping it to a phone
    * would be shipping a debugging surface to somewhere nobody can debug.
    */
+  /**
+   * What a run changed, phase by phase.
+   *
+   * Reads git through the port at call time rather than storing counts. A
+   * stored count is a number that was true once: the branch can be rebased,
+   * amended or reset after the fact, and a stale diff stat is worse than none
+   * because it looks like evidence.
+   */
+  function runChanges(runId: string): RunChanges {
+    const run = engine.store.requireRun(runId);
+    // A runtime without platform ports cannot reach git, and a run with no
+    // workspace has nothing to diff. Both are answered with an empty summary
+    // rather than an error: "nothing to show" is the truth in either case.
+    if (!ports.platform) return { phases: [], files: 0, insertions: 0, deletions: 0 };
+    return buildRunChanges({
+      git: ports.platform.git,
+      workspaceRoot: run.spec.capabilities.workspaceRoot ?? null,
+      iterations: new IterationStore(ports).list(runId),
+      checkpoints: new CheckpointStore(ports).list(runId),
+      planItems: new PlanStore(ports).view(runId, run.spec).items
+    });
+  }
+
   function runsForPhone() {
     const queues = new RunQueueStore(ports);
     return engine.listRuns(20).map(run => {
@@ -1134,6 +1165,7 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
       });
     },
     runsForPhone,
+    runChanges,
     queueableProjects() {
       // Newest use wins, so the list is ordered the way the operator thinks
       // about their projects rather than by when each was first created.

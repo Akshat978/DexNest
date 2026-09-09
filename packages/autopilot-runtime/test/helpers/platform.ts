@@ -163,6 +163,27 @@ export function createGitPort(): GitPort {
     repositoryRoot: (dir: string) => git(["rev-parse", "--show-toplevel"], dir),
     head: (dir: string) => git(["rev-parse", "HEAD"], dir),
     isDirty: (dir: string) => git(["status", "--porcelain"], dir).length > 0,
+    // Real git, like the rest of this helper: the tests that care run against
+    // an actual repository, and a stub returning nothing would prove nothing.
+    diffStat({ dir, from, to }: { dir: string; from: string; to: string }) {
+      try {
+        const raw = execFileSync("git", ["diff", "--numstat", "--no-renames", `${from}..${to}`],
+          { cwd: dir, encoding: "utf8" }).trim();
+        if (!raw) return [];
+        return raw.split(/\r?\n/).flatMap((line: string) => {
+          const [insertions, deletions, ...rest] = line.split("\t");
+          const path = rest.join("\t").trim();
+          if (!path) return [];
+          return [{
+            path,
+            insertions: insertions === "-" ? null : Number(insertions),
+            deletions: deletions === "-" ? null : Number(deletions)
+          }];
+        });
+      } catch {
+        return [];
+      }
+    },
     listWorktrees(repoRoot: string): WorktreeInfo[] {
       const output = git(["worktree", "list", "--porcelain"], repoRoot);
       const entries: WorktreeInfo[] = [];

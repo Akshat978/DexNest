@@ -193,12 +193,33 @@ export interface WorktreeInfo {
   head: string | null;
 }
 
+/** One file's share of a diff. Renames arrive as the destination path. */
+export interface FileChange {
+  path: string;
+  /** Null for a binary file, where lines are not the unit. */
+  insertions: number | null;
+  deletions: number | null;
+}
+
 export interface GitPort {
   isRepository(dir: string): boolean;
   /** Canonical top-level directory of the repository containing `dir`. */
   repositoryRoot(dir: string): string;
   head(dir: string): string;
   isDirty(dir: string): boolean;
+  /**
+   * What changed between two commits, per file.
+   *
+   * Read-only, like head() and isDirty(), so it sits here rather than going
+   * through the effects gateway: nothing is written, nothing is approved, and
+   * a diff nobody can read is not a side effect anyone needs to account for.
+   *
+   * Returns an empty list rather than throwing when either commit is unknown.
+   * A checkpoint whose commit was garbage-collected or rebased away is a
+   * normal thing to find in an old run, and it must not break the view of the
+   * phases around it.
+   */
+  diffStat(input: { dir: string; from: string; to: string }): FileChange[];
   listWorktrees(repoRoot: string): WorktreeInfo[];
   addWorktree(input: { repoRoot: string; worktreePath: string; branch: string; baseRef: string }): void;
   removeWorktree(input: { repoRoot: string; worktreePath: string; force: boolean }): void;

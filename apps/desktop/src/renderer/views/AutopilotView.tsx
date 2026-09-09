@@ -23,6 +23,24 @@ type RunState =
   | "STOP_REQUESTED" | "STOPPED" | "RECONCILING" | "AWAITING_APPROVAL" | "NEEDS_REVIEW"
   | "COMPLETED" | "FAILED";
 
+/** Mirrors RunChanges, kept here because the renderer imports no runtime types. */
+interface RunChangesView {
+  files: number;
+  insertions: number;
+  deletions: number;
+  phases: Array<{
+    planItemId: string | null;
+    title: string;
+    ordinal: number;
+    status: string;
+    commitSha: string | null;
+    files: Array<{ path: string; insertions: number | null; deletions: number | null }>;
+    insertions: number;
+    deletions: number;
+    binaryFiles: number;
+  }>;
+}
+
 interface RunRecord {
   spec: { workers: { primary: string } };
   id: string;
@@ -124,6 +142,7 @@ interface AutopilotBridge {
   autopilotResumeRun(runId: string): Promise<RunRecord>;
   autopilotStopRun(runId: string): Promise<RunRecord>;
   autopilotDraftPlan(runId: string): Promise<{ text: string; phases: number; problem: string | null }>;
+  autopilotRunChanges(runId: string): Promise<RunChangesView>;
   autopilotResolveUncertain(input: { runId: string; stepKey: string; resolution: "completed" | "not_performed" }): Promise<RunRecord>;
   autopilotResolveApproval(input: { approvalId: string; decision: "APPROVED" | "REJECTED" }): Promise<ApprovalRecord>;
   onAutopilotChanged(callback: (payload: { runId: string }) => void): () => void;
@@ -154,6 +173,8 @@ export function AutopilotView() {
   // rerunForm reads the run's stored plan, which is empty, since being empty is
   // why it was drafted at all.
   const [clonePlan, setClonePlan] = useState<string | null>(null);
+  const [changes, setChanges] = useState<RunChangesView | null>(null);
+  const [changesFor, setChangesFor] = useState<string | null>(null);
   const [filter, setFilter] = useState("ALL");
   const [runs, setRuns] = useState<DashboardRun[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -396,6 +417,66 @@ export function AutopilotView() {
               )}
             </div>
           )}
+          {/* What it actually wrote. Loaded on request rather than with the
+              run: it shells out to git once per phase, and most visits to a
+              run are not a review. */}
+          <div className="card">
+            <h4>What changed</h4>
+            {changesFor !== run.id ? (
+              <>
+                <p>The files each phase touched, and how much of each.</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setChangesFor(run.id);
+                    setChanges(null);
+                    void bridge().autopilotRunChanges(run.id).then(setChanges).catch(() => setChanges(null));
+                  }}
+                >
+                  Show changes
+                </button>
+              </>
+            ) : !changes ? (
+              <p className="technical">Reading the repository…</p>
+            ) : changes.phases.length === 0 ? (
+              <p className="empty-state">Nothing has been checkpointed yet.</p>
+            ) : (
+              <>
+                <p>
+                  <strong>{changes.files} file{changes.files === 1 ? "" : "s"}</strong>
+                  {" · "}<span style={{ color: "#22C55E" }}>+{changes.insertions}</span>
+                  {" "}<span style={{ color: "#EF4444" }}>−{changes.deletions}</span>
+                </p>
+                {changes.phases.map(phase => (
+                  <details key={`${phase.planItemId ?? phase.ordinal}`} className="autopilot-mechanism">
+                    <summary>
+                      {phase.ordinal}. {phase.title}
+                      {" — "}
+                      {phase.commitSha
+                        ? `${phase.files.length} file${phase.files.length === 1 ? "" : "s"} +${phase.insertions} −${phase.deletions}`
+                        : "no checkpoint"}
+                    </summary>
+                    {phase.files.length === 0 ? (
+                      <p className="technical">
+                        {phase.commitSha ? "The commit is no longer readable." : "This phase never earned a checkpoint."}
+                      </p>
+                    ) : (
+                      <ul className="autopilot-devices">
+                        {phase.files.map(file => (
+                          <li key={file.path}>
+                            <span className="technical">{file.path}</span>
+                            {file.insertions === null
+                              ? <span className="technical"> — binary</span>
+                              : <span className="technical"> — +{file.insertions} −{file.deletions}</span>}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </details>
+                ))}
+              </>
+            )}
+          </div>
           {report?.plan && <PlanProgress items={report.plan.items} />}
           {report?.iterations && <IterationList iterations={report.iterations} />}
 

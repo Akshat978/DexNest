@@ -198,6 +198,7 @@ export type { RunWorkspace, WorkspaceManagerOptions } from "./workspace.ts";
 export type {
   CommandOutcome,
   EnvironmentPort,
+  FileChange,
   FileSystemPort,
   GitPort,
   OwnedProcess,
@@ -284,6 +285,8 @@ export { validateRoles, rolesFor, assertPrimary } from "./roles.ts";
 export type { WorkerRole, WorkerRoles, CodingProvider } from "./roles.ts";
 export { PlanDrafter, planDraftPrompt, PHASE_SIZING_RULE, type PlanDraft } from "./planDrafter.ts";
 export { canAutoAccept } from "./autoAccept.ts";
+export { buildRunChanges, totalsOf } from "./changes.ts";
+export type { RunChanges, PhaseChanges } from "./changes.ts";
 export type { AutoAcceptFacts, AutoAcceptVerdict } from "./autoAccept.ts";
 export { AutopilotControlCenter, DEFAULT_VERIFICATION_TIERS, validateNewRun, readiness, dashboardCategory, projectRun, CONTROL_TIERS } from "./controlCenter.ts";
 export type { NewRunForm, Readiness } from "./controlCenter.ts";
