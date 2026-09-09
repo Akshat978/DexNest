@@ -473,6 +473,28 @@ export const seededActions = [
     status: "available" as const
   })),
   {
+    id: "journal.draft_worklog",
+    title: "Draft Today's Worklog",
+    moduleId: "journal",
+    module: "journal",
+    description: "Write what DexNest observed today into the journal entry, without touching your own text.",
+    category: "journal",
+    // Invoked, never automatic. The journal holds the only text in DexNest
+    // that cannot be regenerated, and a scheduled job writing into it
+    // unasked - however carefully fenced - is the wrong default for the one
+    // file where being wrong is unrecoverable.
+    dangerLevel: "caution",
+    requiresConfirmation: false,
+    confirmationRule: null,
+    reversible: false,
+    undoActionId: null,
+    handlerType: "internal_function",
+    handlerRef: "journal.draft_worklog",
+    allowedTriggers: ["command", "deck", "module_ui"],
+    enabled: true,
+    status: "available"
+  },
+  {
     id: "finance.log_receipt_from_drop",
     title: "Log Drop File As Expense",
     moduleId: "finance",

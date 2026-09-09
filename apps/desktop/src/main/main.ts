@@ -4,6 +4,7 @@ import { canPush, describe as describeGit, parseCommit, parseStatus, type GitCom
 import { overlayHtml, rectFromDrag, SELECTION_SCRIPT, type DragPoints } from "./captureRegion.ts";
 import { activeBlockIds, step as stepBlockEffects, type BlockEffect, type BlockMoment } from "./blockEffects.ts";
 import { buildEffectChoices, EFFECT_PRESETS, type EffectChoice } from "./effectChoices.ts";
+import { draftWorklog, mergeWorklog, type WorklogInput } from "./worklog.ts";
 import { copyFileSync, cpSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, get as httpGet, type IncomingMessage, type ServerResponse } from "node:http";
 import { get as httpsGet } from "node:https";
@@ -13091,6 +13092,74 @@ function startBlockEffectsTimer(): void {
   void applyBlockEffectsNow();
 }
 
+
+// --- a day, gathered ----------------------------------------------------------
+
+/** Subjects of the commits made in one project on one local date. */
+async function commitsOnDate(project: DexNestProject, date: string): Promise<string[]> {
+  if (!project.path || !existsSync(project.path)) return [];
+  // --branches rather than the default HEAD: work done on another branch is
+  // still work, and this repository in particular keeps Autopilot runs on
+  // their own branches that would otherwise never appear in a day's account.
+  // Local branches only, so commits fetched from a remote are not reported as
+  // something the operator did.
+  const result = await runGit(project.path, [
+    "log",
+    "--branches",
+    `--since=${date} 00:00:00`,
+    `--until=${date} 23:59:59`,
+    "--format=%s"
+  ], 15_000);
+  if (!result.ok) return [];
+  return result.stdout.split("\n").map(line => line.trim()).filter(Boolean);
+}
+
+/**
+ * Everything DexNest watched on one day, in the shape the draft wants.
+ *
+ * Read at the moment it is asked for. A stored digest would be a claim about a
+ * day that could no longer be checked against the things it was drawn from.
+ */
+async function gatherWorklog(date: string): Promise<WorklogInput> {
+  const appSeconds = new Map<string, number>();
+  let activeSeconds = 0;
+  let idleSeconds = 0;
+  for (const event of loadHeatmapEvents()) {
+    if (localDateStringFromTimestamp(event.timestamp) !== date) continue;
+    const seconds = Math.max(0, event.durationSeconds || 0);
+    appSeconds.set(event.appName, (appSeconds.get(event.appName) ?? 0) + seconds);
+    if (event.active) activeSeconds += seconds; else idleSeconds += seconds;
+  }
+
+  const file = loadTimetableFile();
+  const template = file.templates.find(item => item.id === file.activeTemplateId) ?? file.templates[0];
+  const weekday = timetableDays[(parseLocalDateInput(date).getDay() + 6) % 7];
+  const blocks = (template?.blocks ?? [])
+    .filter(block => block.day === weekday)
+    .map(block => ({
+      title: block.title,
+      startTime: block.startTime,
+      endTime: block.endTime,
+      // done and skipped belong to the day they were set. Without this check a
+      // block marked done on Monday would still read as done in Tuesday's
+      // write-up, which is the schedule repeating rather than the day.
+      status: block.statusDate === date ? block.status : "planned"
+    }))
+    .sort((left, right) => left.startTime.localeCompare(right.startTime));
+
+  const projects = loadProjects();
+  const subjects = await Promise.all(projects.map(project => commitsOnDate(project, date)));
+
+  return {
+    date,
+    apps: [...appSeconds].map(([name, seconds]) => ({ name, seconds })),
+    activeSeconds,
+    idleSeconds,
+    blocks,
+    commits: projects.map((project, index) => ({ project: project.name, subjects: subjects[index]! }))
+  };
+}
+
 function calendarState() {
   refreshNudges("system", false);
   const events = loadCalendarEvents().sort((a, b) => a.date.localeCompare(b.date) || (a.startTime ?? "").localeCompare(b.startTime ?? ""));
@@ -19871,6 +19940,56 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
       if (imagePath) {
         try { rmSync(dirname(imagePath), { recursive: true, force: true }); } catch { /* temp */ }
       }
+    }
+  }
+
+  if (actionId === "journal.draft_worklog") {
+    const startedAt = Date.now();
+    const params = typeof payload === "object" && payload !== null ? payload as { date?: unknown } : {};
+    const rawDate = String(params.date ?? "").trim();
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : todayDateString();
+
+    try {
+      const gathered = await gatherWorklog(date);
+      const draft = draftWorklog(gathered);
+
+      const entries = loadJournalEntries();
+      const existing = entries.find((entry) => entry.date === date);
+      const nextText = mergeWorklog(existing?.rawText ?? "", draft);
+      const now = new Date().toISOString();
+      // Built the same way journal.create_entry builds one. There is no shared
+      // normaliser to call, and an entry assembled differently here would be
+      // one the Journal view renders differently for no visible reason.
+      const nextEntry: JournalEntry = {
+        id: existing?.id ?? createId("journal-entry"),
+        date,
+        title: existing?.title ?? "",
+        rawText: nextText,
+        cleanedText: cleanJournalText(nextText),
+        mood: existing?.mood ?? "",
+        productivity: existing?.productivity ?? "",
+        tags: existing?.tags ?? [],
+        peopleTags: existing?.peopleTags ?? [],
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+        extractedItems: extractCalendarCandidatesFromText(nextText, date)
+      };
+      saveJournalEntries([nextEntry, ...entries.filter((entry) => entry.id !== nextEntry.id)]);
+
+      // Counts, never the text. The draft can contain window titles and commit
+      // subjects, and the journal is already the durable home for those - the
+      // audit log does not need a second copy.
+      logJournalEvent(actionId, "success", source, `Drafted a worklog for ${date}.`, {
+        date,
+        replacedExisting: Boolean(existing),
+        blocks: gathered.blocks.length,
+        commits: gathered.commits.reduce((total, entry) => total + entry.subjects.length, 0)
+      }, startedAt);
+      return { ok: true, actionId, message: `Worklog written into ${date}.`, journalState: journalState() };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Could not draft a worklog.";
+      logJournalEvent(actionId, "failed", source, "Worklog draft failed.", { date }, startedAt, reason);
+      return { ok: false, actionId, error: reason };
     }
   }
 

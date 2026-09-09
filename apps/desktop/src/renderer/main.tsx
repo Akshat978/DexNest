@@ -10680,6 +10680,8 @@ function JournalView({
   onAction: (actionId: string, source?: string, params?: unknown) => Promise<{
     ok: boolean;
     error?: string;
+    /** What happened, when the action says so in its own words. */
+    message?: string;
     entry?: JournalEntry;
     candidates?: ExtractedCalendarCandidate[];
   }>;
@@ -10737,6 +10739,22 @@ function JournalView({
     } else {
       setStatus(result.error ?? "Journal save failed.");
     }
+  }
+
+  /**
+   * Writes what DexNest watched into today's entry.
+   *
+   * Refreshes afterwards rather than merging into the editor's own state: the
+   * action writes to disk, and reconciling that against unsaved text in the
+   * textarea would risk one of the two silently winning.
+   */
+  async function draftWorklog(): Promise<void> {
+    if (rawText.trim() && !window.confirm("Add DexNest's summary of the day to this entry? Your own text is kept.")) {
+      return;
+    }
+    const result = await onAction("journal.draft_worklog", "module_ui", { date });
+    setStatus(result.ok ? (result.message ?? "Worklog drafted.") : (result.error ?? "Worklog draft failed."));
+    if (result.ok) await onRefresh();
   }
 
   async function extractEvents(): Promise<void> {
@@ -10821,6 +10839,7 @@ function JournalView({
               })}
               <button type="button" onClick={() => void saveEntry()} className="ml-auto rounded-md border border-[#262626] px-3 py-1 text-xs text-[#A3A3A3] hover:text-[#F5F5F5]">Save</button>
               <button type="button" onClick={() => void extractEvents()} className="rounded-md border border-[#262626] px-3 py-1 text-xs text-[#A3A3A3] hover:text-[#F5F5F5]">Extract events</button>
+              <button type="button" title="Add app time, timetable and commits for this date. Your own writing is untouched." onClick={() => void draftWorklog()} className="rounded-md border border-[#262626] px-3 py-1 text-xs text-[#A3A3A3] hover:text-[#F5F5F5]">Draft from activity</button>
             </div>
             {status && <p className="mt-2 text-xs text-[#A3A3A3]">{status}</p>}
             <div className="mt-4 border-t border-[#1a1a1a] pt-4">
