@@ -16,6 +16,12 @@ export interface StreamDeckCatalogProject {
   commandList?: Array<{ id: string; label: string; command: string; requiresConfirmation?: boolean }>;
 }
 
+/** A saved clipboard snippet, for its own button. */
+export interface StreamDeckCatalogSnippet {
+  id: string;
+  title: string;
+}
+
 export interface StreamDeckCatalogItem {
   category: string;
   file: string;
@@ -196,7 +202,10 @@ export function streamDeckCatalogItems(groups: StreamDeckCatalogGroup[]): Stream
   return groups.flatMap((group) => group.items);
 }
 
-export function createStreamDeckActionCatalog(projects: StreamDeckCatalogProject[] = []): StreamDeckCatalogGroup[] {
+export function createStreamDeckActionCatalog(
+  projects: StreamDeckCatalogProject[] = [],
+  snippets: StreamDeckCatalogSnippet[] = []
+): StreamDeckCatalogGroup[] {
   const groups: StreamDeckCatalogGroup[] = baseStreamDeckCatalog.map((group) => ({
     ...group,
     items: group.items.map((item) => ({ ...item, params: item.params ? { ...item.params } : undefined }))
@@ -279,6 +288,31 @@ export function createStreamDeckActionCatalog(projects: StreamDeckCatalogProject
     description: "Select a region of the screen and copy the text in it.",
     note: "Opens a selection overlay on the display the pointer is on. Esc cancels."
   });
+
+  // A button per snippet. Snippets are the things typed most often and worst
+  // remembered - an address, a licence key, a block of boilerplate - and until
+  // now the only way to reach one was to open Clipboard and find it.
+  const snippetItems: StreamDeckCatalogItem[] = snippets
+    .filter(snippet => snippet.id && snippet.title.trim())
+    .map(snippet => ({
+      category: "Clipboard",
+      file: `snippet-${snippet.id}`,
+      title: snippet.title.trim(),
+      actionId: "clipboard.copy_snippet",
+      params: { snippetId: snippet.id },
+      // The snippet's text is deliberately not in the description. These files
+      // are written to disk in the repo folder and are the sort of thing that
+      // gets shared when someone asks how the deck is set up.
+      description: `Copy the "${snippet.title.trim()}" snippet to the clipboard.`
+    }));
+  if (snippetItems.length > 0) {
+    groups.push({
+      id: "clipboard-snippets",
+      title: "Clipboard snippets",
+      description: "One button per saved DexNest snippet. Re-export after adding or renaming snippets.",
+      items: snippetItems
+    });
+  }
 
   const statusItem: StreamDeckCatalogItem = {
     category: "Dev",
@@ -438,6 +472,28 @@ export const seededActions = [
     enabled: true,
     status: "available" as const
   })),
+  {
+    id: "clipboard.copy_snippet",
+    title: "Copy Snippet",
+    moduleId: "clipboard",
+    module: "clipboard",
+    description: "Put a saved snippet on the clipboard.",
+    category: "clipboard",
+    // One action taking a snippet id, rather than an action per snippet. The
+    // ids are generated and meaningless to read, and a registry that grew an
+    // entry every time somebody saved a snippet would be a registry nobody
+    // could search.
+    dangerLevel: "safe",
+    requiresConfirmation: false,
+    confirmationRule: null,
+    reversible: false,
+    undoActionId: null,
+    handlerType: "internal_function",
+    handlerRef: "clipboard.copy_snippet",
+    allowedTriggers: ["command", "deck", "module_ui"],
+    enabled: true,
+    status: "available"
+  },
   {
     id: "tools.capture_region_ocr",
     title: "Copy Text From Screen",

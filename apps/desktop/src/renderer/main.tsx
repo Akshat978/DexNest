@@ -1359,6 +1359,8 @@ interface NudgeSettings {
   returnReminderDays: number[];
   dailyJournalReminderEnabled: boolean;
   backupReminderAfterDays: number;
+  /** Days something may be lent out before DexNest mentions it. 0 is off. */
+  lentReminderDays: number;
 }
 
 /**
@@ -4602,7 +4604,8 @@ function DexNestApp() {
       vaultExpiryReminderDays: [90, 30, 7],
       returnReminderDays: [7, 3, 1],
       dailyJournalReminderEnabled: true,
-      backupReminderAfterDays: 7
+      backupReminderAfterDays: 7,
+      lentReminderDays: 14
     }
   });
   const [calendarInitialView, setCalendarInitialView] = useState<"day" | "week" | "month">("day");
@@ -15739,7 +15742,8 @@ function SettingsView({
     vaultExpiryReminderDays: calendarState.nudgeSettings.vaultExpiryReminderDays.join(", "),
     returnReminderDays: calendarState.nudgeSettings.returnReminderDays.join(", "),
     dailyJournalReminderEnabled: calendarState.nudgeSettings.dailyJournalReminderEnabled,
-    backupReminderAfterDays: String(calendarState.nudgeSettings.backupReminderAfterDays)
+    backupReminderAfterDays: String(calendarState.nudgeSettings.backupReminderAfterDays),
+    lentReminderDays: String(calendarState.nudgeSettings.lentReminderDays)
   });
   const [weatherForm, setWeatherForm] = useState<WeatherSettings>(weatherState.settings);
   const [weatherBusy, setWeatherBusy] = useState(false);
@@ -15786,7 +15790,8 @@ function SettingsView({
       vaultExpiryReminderDays: calendarState.nudgeSettings.vaultExpiryReminderDays.join(", "),
       returnReminderDays: calendarState.nudgeSettings.returnReminderDays.join(", "),
       dailyJournalReminderEnabled: calendarState.nudgeSettings.dailyJournalReminderEnabled,
-      backupReminderAfterDays: String(calendarState.nudgeSettings.backupReminderAfterDays)
+      backupReminderAfterDays: String(calendarState.nudgeSettings.backupReminderAfterDays),
+      lentReminderDays: String(calendarState.nudgeSettings.lentReminderDays)
     });
   }, [calendarState.nudgeSettings]);
 
@@ -16389,7 +16394,10 @@ function SettingsView({
         vaultExpiryReminderDays: parseNudgeDayList(nudgeSettingsForm.vaultExpiryReminderDays),
         returnReminderDays: parseNudgeDayList(nudgeSettingsForm.returnReminderDays),
         dailyJournalReminderEnabled: nudgeSettingsForm.dailyJournalReminderEnabled,
-        backupReminderAfterDays: Number(nudgeSettingsForm.backupReminderAfterDays) || 7
+        backupReminderAfterDays: Number(nudgeSettingsForm.backupReminderAfterDays) || 7,
+        // No "|| 14" fallback: zero is a deliberate off, and coercing it to
+        // the default would make the field impossible to switch off.
+        lentReminderDays: Math.max(0, Number(nudgeSettingsForm.lentReminderDays) || 0)
       }
     });
     await onRefresh();
@@ -17624,6 +17632,11 @@ function SettingsView({
           <label>
             Backup reminder after days
             <input type="number" min="1" value={nudgeSettingsForm.backupReminderAfterDays} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, backupReminderAfterDays: event.target.value }))} />
+          </label>
+          <label>
+            Lent-out reminder after days
+            <input type="number" min="0" value={nudgeSettingsForm.lentReminderDays} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, lentReminderDays: event.target.value }))} />
+            <span className="technical">0 turns loan reminders off.</span>
           </label>
         </div>
         <label className="checkbox-row">

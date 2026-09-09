@@ -617,7 +617,8 @@ export const fallbackBridge: DexNestBridge = {
       vaultExpiryReminderDays: [90, 30, 7],
       returnReminderDays: [7, 3, 1],
       dailyJournalReminderEnabled: true,
-      backupReminderAfterDays: 7
+      backupReminderAfterDays: 7,
+      lentReminderDays: 14
     }
   }),
   getTimetableState: async () => defaultTimetableState,

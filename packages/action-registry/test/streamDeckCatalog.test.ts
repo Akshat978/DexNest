@@ -149,3 +149,37 @@ test("an incomplete entry produces no card", () => {
   })]).items;
   assert.ok(!items.some(item => item.file.startsWith("cmd-p1-")));
 });
+
+
+// --- snippets -----------------------------------------------------------------
+
+const snippetGroup = (snippets: Parameters<typeof createStreamDeckActionCatalog>[1]) =>
+  createStreamDeckActionCatalog([project()], snippets).find(group => group.id === "clipboard-snippets");
+
+test("each snippet becomes a button carrying its id", () => {
+  const items = snippetGroup([{ id: "s1", title: "Home address" }])!.items;
+  assert.equal(items.length, 1);
+  assert.equal(items[0]!.actionId, "clipboard.copy_snippet");
+  assert.deepEqual(items[0]!.params, { snippetId: "s1" });
+  assert.equal(items[0]!.title, "Home address");
+});
+
+test("a snippet's text never reaches the card", () => {
+  // These files are written into the repo folder and are the sort of thing
+  // shared when someone asks how the deck is set up. The card names the
+  // snippet; the value stays in DexNest.
+  const card = snippetGroup([{ id: "s1", title: "Licence key" }])!.items[0]!;
+  const printed = `${card.title} ${card.description ?? ""} ${card.note ?? ""}`;
+  assert.ok(!printed.includes("AAAA-BBBB"));
+  assert.match(card.description ?? "", /Licence key/);
+});
+
+test("with no snippets the group is absent rather than empty", () => {
+  // An empty group would export a folder of nothing, which reads as a broken
+  // export rather than as having saved no snippets.
+  assert.equal(snippetGroup([]), undefined);
+});
+
+test("a snippet with a blank title is skipped", () => {
+  assert.equal(snippetGroup([{ id: "s1", title: "   " }]), undefined);
+});

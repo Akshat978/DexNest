@@ -1590,6 +1590,8 @@ interface NudgeSettings {
   enabled: boolean;
   vaultExpiryReminderDays: number[];
   returnReminderDays: number[];
+  /** How long something can be lent out before DexNest mentions it. */
+  lentReminderDays: number;
   dailyJournalReminderEnabled: boolean;
   backupReminderAfterDays: number;
 }
@@ -1607,6 +1609,15 @@ interface FinderItem {
   tags: string[];
   status: FinderItemStatus;
   lentTo?: string | null;
+  /**
+   * When it was lent out.
+   *
+   * Recorded separately from updatedAt, which moves whenever anything about
+   * the item is edited. Counting from updatedAt would reset the clock every
+   * time someone corrected a typo in the notes, so a thing lent in March could
+   * read as lent this morning.
+   */
+  lentAt?: string | null;
   photoPath?: string | null;
   confidence?: FinderItemConfidence;
   createdAt: string;
@@ -1623,6 +1634,7 @@ interface FinderItemInput {
   tags?: string[] | string;
   status?: FinderItemStatus;
   lentTo?: string | null;
+  lentAt?: string | null;
   photoPath?: string | null;
   confidence?: FinderItemConfidence;
   query?: string;
@@ -8606,6 +8618,9 @@ function defaultNudgeSettings(): NudgeSettings {
     enabled: true,
     vaultExpiryReminderDays: [90, 30, 7],
     returnReminderDays: [7, 3, 1],
+    // Two weeks. Long enough that lending something over a weekend is not
+    // nagged about, short enough that it is still obvious who has it.
+    lentReminderDays: 14,
     dailyJournalReminderEnabled: true,
     backupReminderAfterDays: 7
   };
@@ -13284,6 +13299,43 @@ function generatedNudgeCandidates(settings: NudgeSettings): Nudge[] {
     }
   }
 
+  // Things lent out and not come back.
+  //
+  // Finder has recorded who has what since it was built and never mentioned it
+  // again, so the record was only useful to someone who already suspected
+  // something was missing - which is the moment it is least likely to be
+  // consulted.
+  if (settings.lentReminderDays > 0) {
+    for (const item of loadFinderItems()) {
+      if (item.status !== "lent_out") continue;
+      // An item lent before lentAt existed has no start date, and guessing one
+      // from updatedAt would date the loan to the last time anything about the
+      // item was edited. Left alone: it will get a date the next time it is
+      // marked lent, and inventing one produces a nudge about a date nobody
+      // chose.
+      if (!item.lentAt) continue;
+
+      const daysOut = localDayDiff(item.lentAt.slice(0, 10), today);
+      if (daysOut < settings.lentReminderDays) continue;
+
+      const who = (item.lentTo ?? "").trim();
+      upsertGeneratedNudge(candidates, existingById, {
+        // Keyed on the loan's start rather than on today, so this is one
+        // standing nudge that can be dismissed once - not a fresh one each
+        // morning that cannot be got rid of until the thing comes back.
+        id: `finder-lent-${item.id}-${item.lentAt.slice(0, 10)}`,
+        title: "Still lent out",
+        message: `${item.itemName}${who ? ` is with ${who}` : ""} · ${daysOut} days`,
+        sourceModule: "finder",
+        sourceId: item.id,
+        date: today,
+        time: null,
+        priority: daysOut >= settings.lentReminderDays * 2 ? "normal" : "soft",
+        snoozeUntil: null
+      });
+    }
+  }
+
   for (const document of loadVaultDocuments()) {
     if (!document.expiryDate) {
       continue;
@@ -15973,6 +16025,39 @@ function runClipboardAction(action: DexNestActionDefinition, source: DexNestActi
     return { ok: true, actionId: action.id, message: "Opened DexNest Clipboard." };
   }
 
+  if (action.id === "clipboard.copy_snippet") {
+    const snippetId = String(params.snippetId ?? params.id ?? "").trim();
+    const snippets = loadClipboardSnippets();
+    // Resolved by id first, then by exact title, so a voice command or a
+    // hand-written deck call can name the snippet the way a person would.
+    const snippet = snippets.find((item) => item.id === snippetId)
+      ?? (snippetId ? snippets.find((item) => item.title.trim().toLowerCase() === snippetId.toLowerCase()) : undefined);
+
+    if (!snippet) {
+      // Deleting a snippet leaves its button on the hardware. Saying the
+      // snippet is gone beats a generic failure, because the fix is to
+      // re-export rather than to press it again.
+      logActionEvent(action, "skipped", source, "Snippet not found for copy.", { snippetId });
+      if (source === "stream_deck_http" || source === "keyboard_shortcut") {
+        notifyHotkeyOutcome("That snippet no longer exists. Re-export your button pack.", "error");
+      }
+      return { ok: false, actionId: action.id, error: "That snippet no longer exists." };
+    }
+
+    clipboard.writeText(snippet.text);
+    // The title, never the text. These journal entries are durable and a
+    // snippet is exactly the kind of thing that is worth saving because it
+    // should not be retyped - which often means it should not be logged.
+    logActionEvent(action, "success", source, `Copied snippet "${snippet.title}".`, {
+      snippetId: snippet.id,
+      charCount: snippet.text.length
+    });
+    if (source === "stream_deck_http" || source === "keyboard_shortcut") {
+      notifyHotkeyOutcome(`Copied "${snippet.title}".`, "success");
+    }
+    return { ok: true, actionId: action.id, message: `Copied "${snippet.title}".`, clipboardState: clipboardState() };
+  }
+
   if (action.id === "clipboard.save_current") {
     const text = clipboard.readText();
     const result = saveClipboardText(text, "manual");
@@ -18086,6 +18171,9 @@ function runCalendarAction(action: DexNestActionDefinition, source: DexNestActio
         enabled: input.nudgeSettings?.enabled ?? current.enabled,
         vaultExpiryReminderDays: Array.isArray(input.nudgeSettings?.vaultExpiryReminderDays) ? input.nudgeSettings.vaultExpiryReminderDays.map(Number).filter((item) => item > 0) : current.vaultExpiryReminderDays,
         returnReminderDays: Array.isArray(input.nudgeSettings?.returnReminderDays) ? input.nudgeSettings.returnReminderDays.map(Number).filter((item) => item > 0) : current.returnReminderDays,
+        // Zero switches loan reminders off, which is why this is not clamped
+        // to a minimum the way backupReminderAfterDays is.
+        lentReminderDays: Math.max(0, Number(input.nudgeSettings?.lentReminderDays ?? current.lentReminderDays)),
         dailyJournalReminderEnabled: input.nudgeSettings?.dailyJournalReminderEnabled ?? current.dailyJournalReminderEnabled,
         backupReminderAfterDays: Math.max(1, Number(input.nudgeSettings?.backupReminderAfterDays ?? current.backupReminderAfterDays))
       });
@@ -18179,6 +18267,11 @@ function normalizeFinderItem(input: FinderItemInput, existing?: FinderItem): Fin
     tags: parseTagList(input.tags ?? existing?.tags),
     status: input.status ?? existing?.status ?? "at_home",
     lentTo: input.lentTo ?? existing?.lentTo ?? null,
+    // Cleared when it comes home, so an item lent again later starts a fresh
+    // count rather than inheriting the age of the previous loan.
+    lentAt: (input.status ?? existing?.status) === "lent_out"
+      ? (input.lentAt ?? existing?.lentAt ?? now)
+      : null,
     photoPath: input.photoPath ?? existing?.photoPath ?? null,
     confidence: input.confidence ?? existing?.confidence ?? "sure",
     createdAt: existing?.createdAt ?? now,
@@ -18247,6 +18340,10 @@ function runFinderAction(action: DexNestActionDefinition, source: DexNestActionT
       if (action.id === "finder.mark_lent_out") {
         patch.status = "lent_out";
         patch.lentTo = input.lentTo ?? existing.lentTo ?? "";
+        // Re-lending an item that was already out keeps the original date:
+        // marking it again is usually correcting who has it, not restarting
+        // the loan.
+        patch.lentAt = existing.status === "lent_out" ? (existing.lentAt ?? null) : new Date().toISOString();
       }
       if (action.id === "finder.mark_returned") {
         patch.status = "at_home";
@@ -18679,7 +18776,10 @@ function exportStreamDeckButtonPack(source: DexNestActionTrigger): { ok: boolean
   const endpointBase = `http://127.0.0.1:${actionPort}/actions`;
   const healthUrl = `http://127.0.0.1:${actionPort}/health`;
 
-  const catalogGroups = createStreamDeckActionCatalog(loadProjects());
+  const catalogGroups = createStreamDeckActionCatalog(
+    loadProjects(),
+    loadClipboardSnippets().map((snippet) => ({ id: snippet.id, title: snippet.title }))
+  );
   const buttons = streamDeckCatalogItems(catalogGroups);
 
   const scriptFor = (button: (typeof buttons)[number]): string => {
