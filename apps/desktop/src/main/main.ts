@@ -6326,6 +6326,23 @@ function notifyClipboardHotkey(message: string, tone: "success" | "error" = "suc
   mainWindow?.webContents.send("dexnest:clipboard-hotkey-result", { message, tone });
 }
 
+/**
+ * Feedback for something triggered by a global hotkey.
+ *
+ * The in-app toast is the right surface when DexNest is on screen, and no
+ * surface at all when it is not - which is the whole point of a global
+ * shortcut. So an unfocused window gets an OS notification instead: a hotkey
+ * that silently did nothing, and a hotkey that silently worked, look
+ * identical from the keyboard.
+ */
+function notifyHotkeyOutcome(message: string, tone: "success" | "error" = "success"): void {
+  notifyClipboardHotkey(message, tone);
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && mainWindow.isFocused()) return;
+  try {
+    if (Notification.isSupported()) new Notification({ title: "DexNest", body: message }).show();
+  } catch { /* a notification is not worth an error */ }
+}
+
 function updateClipboardHotkeyStatus(status: ClipboardSettings["multiCopyLastHotkeyStatus"], message: string): void {
   saveClipboardSettings({
     ...loadClipboardSettings(),
@@ -16057,6 +16074,7 @@ function runDropAction(action: DexNestActionDefinition, source: DexNestActionTri
     const text = explicitText || clipboard.readText();
     if (!text.trim()) {
       logActionEvent(action, "skipped", source, "Clipboard-to-Drop skipped because clipboard text was empty.", { byteLength: 0 });
+      if (source === "keyboard_shortcut") notifyHotkeyOutcome("Clipboard is empty. Nothing sent to your phone.", "error");
       return { ok: false, actionId: action.id, error: "Clipboard text is empty." };
     }
     if (!explicitText && isProtectedClipboardText(text)) {
@@ -16064,6 +16082,9 @@ function runDropAction(action: DexNestActionDefinition, source: DexNestActionTri
         protectedSource: "secure_vault",
         confirmationRequired: source === "stream_deck_http"
       });
+      // Named, not previewed. That the vault refused is the useful half; the
+      // value it refused to send is the half that must not reach a toast.
+      if (source === "keyboard_shortcut") notifyHotkeyOutcome("Protected secret skipped. Nothing sent to your phone.", "error");
       return { ok: false, actionId: action.id, error: clipboardProtectedError() };
     }
     if (source === "stream_deck_http" && !explicitText && looksSensitiveClipboardText(text)) {
@@ -16097,6 +16118,9 @@ function runDropAction(action: DexNestActionDefinition, source: DexNestActionTri
       confirmedFromEndpoint: source === "stream_deck_http" ? confirmed : false
     });
     broadcastDropUpdate("Clipboard sent to phone.", "drop.outgoing_text_created");
+    if (source === "keyboard_shortcut") {
+      notifyHotkeyOutcome(`Sent to your phone · ${item.byteLength} bytes`, "success");
+    }
     return { ok: true, actionId: action.id, item };
   }
 
