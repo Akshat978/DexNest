@@ -20,7 +20,7 @@ import { createCompanionApi, hashToken, openPairing } from "./companionApi.js";
 import { buildAgenda, localDate, weekdayOf, type TodayAgenda } from "@dexnest/today";
 import { authorise as oauthAuthorise, refresh as oauthRefresh } from "./oauth.js";
 import {
-  dedupe, fetchEvents, PROVIDERS, whoAmI,
+  accountCanWrite, dedupe, fetchEvents, parseGrantedScopes, PROVIDERS, whoAmI,
   type CalendarAccount, type CalendarProviderId, type SyncedEvent
 } from "./calendarAccounts.js";
 import { createProviderLimitsService } from "./providerLimits.js";
@@ -2162,7 +2162,11 @@ async function connectCalendarAccount(provider: CalendarProviderId): Promise<Cal
     lastSyncAt: null,
     lastError: null,
     eventCount: 0,
-    enabled: true
+    enabled: true,
+    // What was granted, not what was asked for. A consent screen can be
+    // half-approved, and believing the request over the response is how an
+    // Edit button gets offered for a token that cannot save.
+    grantedScopes: parseGrantedScopes(tokens.scope) ?? oauthConfigFor(provider).scopes
   };
 
   setIntegrationCredential(refreshTokenKey(account.id), `${PROVIDERS[provider].label} calendar token`, tokens.refreshToken);
@@ -2192,6 +2196,13 @@ async function syncCalendarAccount(accountId: string): Promise<void> {
     if (tokens.refreshToken) {
       setIntegrationCredential(refreshTokenKey(accountId), `${PROVIDERS[account.provider].label} calendar token`, tokens.refreshToken);
     }
+
+    // A refresh reports the grant as it now stands, which is how DexNest finds
+    // out that access was narrowed from the provider's own settings. Only when
+    // it actually says something: an omitted `scope` is silence, not a
+    // revocation, and treating it as one would strip a working account.
+    const refreshedScopes = parseGrantedScopes(tokens.scope);
+    if (refreshedScopes) record({ grantedScopes: refreshedScopes });
 
     const fresh = await fetchEvents[account.provider](tokens.accessToken, accountId, CALENDAR_SYNC_DAYS);
     // Replace this account's window wholesale rather than merging into it. The
@@ -12713,7 +12724,11 @@ function calendarState() {
         updatedAt: stamp,
         readOnly: true as const,
         provider: account.provider,
-        accountEmail: account.email
+        accountEmail: account.email,
+        // Why it is read-only, which is a different question from whether it
+        // is. "Reconnect to edit this" and "Outlook editing does not exist
+        // yet" ask different things of the person reading them.
+        writable: accountCanWrite(account)
       };
     })
     .sort((a, b) => a.date.localeCompare(b.date) || (a.startTime ?? "").localeCompare(b.startTime ?? ""));
@@ -21130,7 +21145,10 @@ function registerIpcHandlers(): void {
   ipcMain.handle("dexnest:get-today-agenda", () => todayAgenda());
 
   ipcMain.handle("dexnest:calendar-accounts", () => ({
-    accounts: loadCalendarAccounts(),
+    // canWrite travels with the account rather than being recomputed in the
+    // renderer: the scope list is the main process's business, and two places
+    // deciding the same thing is how they start disagreeing.
+    accounts: loadCalendarAccounts().map(account => ({ ...account, canWrite: accountCanWrite(account) })),
     configured: {
       google: Boolean(calendarProviderConfig("google")),
       microsoft: Boolean(calendarProviderConfig("microsoft"))

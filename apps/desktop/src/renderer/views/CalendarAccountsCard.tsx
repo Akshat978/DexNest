@@ -27,6 +27,8 @@ interface Account {
   lastError: string | null;
   eventCount: number;
   enabled: boolean;
+  /** Whether DexNest holds a token that can change this account's events. */
+  canWrite: boolean;
 }
 
 const PROVIDER_LABEL: Record<ProviderId, string> = { google: "Google", microsoft: "Outlook" };
@@ -134,6 +136,23 @@ export function CalendarAccountsCard() {
                 </p>
                 {account.lastError ? (
                   <p className="truncate text-[10px] text-[#F59E0B]" title={account.lastError}>{account.lastError}</p>
+                ) : null}
+                {!account.canWrite && account.provider === "google" ? (
+                  // Reconnecting is the whole fix: the stored token was issued
+                  // under a read-only grant and no amount of retrying widens
+                  // it. Said here rather than at the point of a failed save,
+                  // because by then an edit has already been typed out.
+                  <button
+                    type="button"
+                    onClick={() => void connect("google")}
+                    disabled={busy === "google"}
+                    className="mt-0.5 text-left text-[10px] text-[#14B8A6] underline-offset-2 hover:underline"
+                  >
+                    {busy === "google" ? "Waiting for browser…" : "Read-only. Reconnect to let DexNest edit this calendar."}
+                  </button>
+                ) : null}
+                {!account.canWrite && account.provider === "microsoft" ? (
+                  <p className="text-[10px] text-[#525252]">Read-only. Outlook editing is not built yet.</p>
                 ) : null}
               </div>
               <button

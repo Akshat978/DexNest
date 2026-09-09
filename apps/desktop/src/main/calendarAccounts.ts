@@ -39,6 +39,16 @@ export interface CalendarAccount {
   /** How many events the last sync brought, for the settings row. */
   eventCount: number;
   enabled: boolean;
+  /**
+   * The scopes the provider actually granted, as it reported them.
+   *
+   * What DexNest asked for and what it holds are different things: a consent
+   * screen can be half-approved, and an account connected before writing
+   * existed holds a read-only token no matter what the current code requests.
+   * Absent means an account from before this was recorded, which is exactly
+   * the read-only case.
+   */
+  grantedScopes?: string[];
 }
 
 /** An event as DexNest stores it, from any provider. */
@@ -71,10 +81,14 @@ export const PROVIDERS: Record<CalendarProviderId, {
     label: "Google",
     authUrl: "https://accounts.google.com/o/oauth2/v2/auth",
     tokenUrl: "https://oauth2.googleapis.com/token",
-    // Read-only on purpose. DexNest shows a day; it does not need permission
-    // to rewrite anyone's calendar, and asking for less is the difference
-    // between a consent screen someone accepts and one they think about.
-    scopes: ["https://www.googleapis.com/auth/calendar.readonly", "openid", "email"],
+    // calendar.events, not the broader calendar scope: it covers reading and
+    // writing events, which is all DexNest does, and leaves calendar creation,
+    // deletion and sharing settings out of what is being asked for.
+    //
+    // This is a wider grant than DexNest used to request, so an account
+    // connected before this change holds a read-only token and has to be
+    // reconnected. That is handled rather than assumed - see accountCanWrite.
+    scopes: ["https://www.googleapis.com/auth/calendar.events", "openid", "email"],
     extraAuthParams: {
       // Without offline access Google issues no refresh token and the account
       // disconnects itself an hour later.
@@ -89,7 +103,9 @@ export const PROVIDERS: Record<CalendarProviderId, {
     label: "Outlook",
     authUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
     tokenUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
-    // offline_access is Microsoft's equivalent of access_type=offline.
+    // Read-only, deliberately. Outlook writes need Calendars.ReadWrite and a
+    // different event shape on Graph; until that is built, asking for write
+    // permission DexNest cannot use would be taking access for nothing.
     scopes: ["https://graph.microsoft.com/Calendars.Read", "offline_access", "openid", "email"],
     needsSecret: false
   }
@@ -252,6 +268,44 @@ export const fetchEvents = {
  * would merge two genuinely different 3pm calls with the same name, so events
  * without a UID are always kept.
  */
+/** Scopes that let DexNest write events to a Google calendar. */
+const GOOGLE_WRITE_SCOPES = [
+  "https://www.googleapis.com/auth/calendar.events",
+  "https://www.googleapis.com/auth/calendar"
+];
+
+/**
+ * Whether DexNest can change this account's events.
+ *
+ * Answered from what the provider granted, never from what the current build
+ * requests. Those two agree only for an account connected since the request
+ * changed, and the gap between them is precisely the case this exists for: an
+ * older account whose stored token is read-only while the code around it has
+ * moved on. Getting this wrong in the optimistic direction means offering an
+ * Edit button that fails at the API.
+ *
+ * Outlook is false regardless. Its write path is not built, so a granted
+ * scope would not make one appear.
+ */
+export function accountCanWrite(account: Pick<CalendarAccount, "provider" | "grantedScopes">): boolean {
+  if (account.provider !== "google") return false;
+  const granted = account.grantedScopes ?? [];
+  return granted.some(scope => GOOGLE_WRITE_SCOPES.includes(scope));
+}
+
+/**
+ * The scopes a token response reported, or null when it reported none.
+ *
+ * Null and empty are different answers and must not collapse: a refresh that
+ * omits `scope` says nothing about the grant, while an empty grant would say
+ * everything. Callers keep what they had on null.
+ */
+export function parseGrantedScopes(scope: string | null | undefined): string[] | null {
+  if (typeof scope !== "string") return null;
+  const parts = scope.split(/\s+/).filter(Boolean);
+  return parts.length > 0 ? parts : null;
+}
+
 export function dedupe(events: readonly SyncedEvent[]): SyncedEvent[] {
   const seen = new Set<string>();
   const kept: SyncedEvent[] = [];

@@ -1347,6 +1347,8 @@ interface ProviderCalendarEvent extends CalendarEvent {
   accountId: string;
   accountEmail: string;
   uid: string | null;
+  /** Whether the stored token could write it, if the write path existed. */
+  writable: boolean;
 }
 
 /** Whether an event came from a connected account rather than from DexNest. */
@@ -1928,6 +1930,8 @@ export interface DexNestBridgeCalendarAccount {
   lastError: string | null;
   eventCount: number;
   enabled: boolean;
+  /** Whether DexNest holds a token that can change this account's events. */
+  canWrite: boolean;
 }
 
 export interface AppHealthState {
@@ -2024,10 +2028,10 @@ export interface DexNestBridge {
   /** Mints a one-time link that pairs a phone's browser with Drop. */
   createDropLink: () => Promise<{ ok: true; url: string; expiresAt: string } | { ok: false; error: string }>;
   getCalendarAccounts: () => Promise<{
-    accounts: Array<{
-      id: string; provider: "google" | "microsoft"; email: string;
-      lastSyncAt: string | null; lastError: string | null; eventCount: number; enabled: boolean;
-    }>;
+    // The named type, which syncCalendars and disconnectCalendar already use.
+    // This was a second copy of the same shape, and it is how canWrite came to
+    // be missing from one of the three places an account is described.
+    accounts: DexNestBridgeCalendarAccount[];
     configured: { google: boolean; microsoft: boolean };
   }>;
   setCalendarApp: (provider: "google" | "microsoft", clientId: string, clientSecret: string | null)
@@ -12643,7 +12647,12 @@ function CalendarView({
                   // button that cannot work is worse than no button, because
                   // it is only discovered to be broken after it is trusted.
                   <p className="technical">
-                    Lives in {selectedEvent.provider === "google" ? "Google Calendar" : "Outlook"}. DexNest can show it but not change it yet.
+                    Lives in {selectedEvent.provider === "google" ? "Google Calendar" : "Outlook"}.
+                    {selectedEvent.provider === "microsoft"
+                      ? " DexNest can show it but not change it."
+                      : selectedEvent.writable
+                        ? " Editing from DexNest is not wired up yet."
+                        : " Reconnect this account in Settings to let DexNest edit it."}
                   </p>
                 ) : (
                   <div className="button-row">
