@@ -59,6 +59,14 @@ export interface LoopGrant {
    * every model call; the digest exists so it does not have to.
    */
   rotateSession: boolean;
+  /**
+   * Whether a run that finished cleanly may complete itself.
+   *
+   * Off by default. PLAN_COMPLETE stays a proposal — this only decides who
+   * answers it when every fact DexNest recorded says yes. See autoAccept.ts
+   * for what "cleanly" means and why none of it is the agent's opinion.
+   */
+  autoAcceptComplete: boolean;
   /** Reported by the provider. On a subscription, a usage proxy not a bill. */
   costUsed: number;
   status: LoopGrantStatus;
@@ -107,6 +115,7 @@ interface GrantRow {
   max_turns: number; max_iterations: number | null; stop_at: string | null;
   max_cost_usd: number | null; max_idle_turns: number | null; auto_resume_on_limit: number | null;
   rotate_session: number | null;
+  auto_accept_complete: number | null;
   status: string; granted_by: string; granted_at: string;
   closed_at: string | null; closed_reason: string | null;
 }
@@ -222,6 +231,7 @@ export class LoopStore {
       maxIdleTurns: row.max_idle_turns ?? null,
       autoResumeOnLimit: row.auto_resume_on_limit === 1,
       rotateSession: row.rotate_session !== 0,
+      autoAcceptComplete: row.auto_accept_complete === 1,
       costUsed: this.costFor(row.id),
       // Derived, like turnsUsed: a counter that can drift is a counter that
       // eventually authorizes the wrong amount of work.
@@ -257,6 +267,8 @@ export class LoopStore {
     autoResumeOnLimit?: boolean;
     /** Give each piece of work a fresh conversation. On by default. */
     rotateSession?: boolean;
+    /** Let a run that finished cleanly complete itself. Off by default. */
+    autoAcceptComplete?: boolean;
     grantedBy: string;
   }): LoopGrant {
     assertPrimary(input.role);
@@ -300,9 +312,9 @@ export class LoopStore {
           budgeted
             ? `INSERT INTO autopilot_loop_grants
                  (id, run_id, provider, session_id, workspace_root, max_turns, max_iterations,
-                  stop_at, max_cost_usd, max_idle_turns, auto_resume_on_limit, rotate_session, status, granted_by, granted_at)
+                  stop_at, max_cost_usd, max_idle_turns, auto_resume_on_limit, rotate_session, auto_accept_complete, status, granted_by, granted_at)
                VALUES (:id, :runId, :provider, :sessionId, :workspaceRoot, :maxTurns, :maxIterations,
-                  :stopAt, :maxCostUsd, :maxIdleTurns, :autoResume, :rotate, 'ACTIVE', :grantedBy, :now)`
+                  :stopAt, :maxCostUsd, :maxIdleTurns, :autoResume, :rotate, :autoAccept, 'ACTIVE', :grantedBy, :now)`
             : `INSERT INTO autopilot_loop_grants
                  (id, run_id, provider, session_id, workspace_root, max_turns, status, granted_by, granted_at)
                VALUES (:id, :runId, :provider, :sessionId, :workspaceRoot, :maxTurns, 'ACTIVE', :grantedBy, :now)`
@@ -316,7 +328,8 @@ export class LoopStore {
             maxCostUsd: input.maxCostUsd ?? null,
             maxIdleTurns: input.maxIdleTurns ?? null,
             autoResume: input.autoResumeOnLimit === true ? 1 : 0,
-            rotate: input.rotateSession === false ? 0 : 1
+            rotate: input.rotateSession === false ? 0 : 1,
+            autoAccept: input.autoAcceptComplete === true ? 1 : 0
           } : {}),
           grantedBy: input.grantedBy, id, now
         });

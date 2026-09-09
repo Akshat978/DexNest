@@ -44,7 +44,7 @@ const initial: NewRunForm = {
   // Off: an operator watching their own quota knows better than a backoff
   // table when it is worth trying again. On: the digest replaces the
   // transcript, so a phase does not need to carry every phase before it.
-  autoResumeOnLimit: false, rotateSession: true,
+  autoResumeOnLimit: false, rotateSession: true, autoAcceptComplete: false,
   constraints: [], nonGoals: [], acceptance: [{ text: "Configured tests pass", tier: "test" }],
   verification: [
     { tier: "typecheck", enabled: false, executable: "node", args: ["node_modules/typescript/bin/tsc", "--noEmit"] },
@@ -327,6 +327,17 @@ export function AutopilotNewRun({ onCreated, cloneOf, clonePlan, onCloned }: {
             model call carry every phase before it — measured at 14x growth across a single night. What carries
             forward instead is the code on disk and the record of what was done. A repair always keeps its
             conversation; only settled work starts fresh.
+          </p>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={form.autoAcceptComplete === true}
+              onChange={event => update({ autoAcceptComplete: event.target.checked })} />
+            Let this run finish itself when everything is done and green
+          </label>
+          <p className="technical">
+            Off by default. The agent still cannot declare itself finished — DexNest checks facts it recorded
+            itself: every phase DONE, the verification PASSED, and nothing assumed. If any of those fails it
+            waits for you exactly as it does now, and records which one. Turn this on for work you would have
+            signed off without reading, so a green run at 3am does not sit until morning.
           </p>
           <label className="checkbox-row">
             <input type="checkbox" checked={form.autoResumeOnLimit === true}

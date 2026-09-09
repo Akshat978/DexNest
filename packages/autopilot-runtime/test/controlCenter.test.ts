@@ -232,6 +232,7 @@ test("a re-run form reproduces the run it was cloned from", async t => {
   input.maxIdleTurns = 4;
   input.rotateSession = false;
   input.autoResumeOnLimit = true;
+  input.autoAcceptComplete = true;
   input.verification = [
     { tier: "test", enabled: true, executable: "node", args: ["--test"] },
     { tier: "typecheck", enabled: true, executable: "node", args: ["tsc", "--noEmit"] }
@@ -256,6 +257,9 @@ test("a re-run form reproduces the run it was cloned from", async t => {
   assert.equal(again.maxIdleTurns, 4);
   assert.equal(again.rotateSession, false);
   assert.equal(again.autoResumeOnLimit, true);
+  // The newest grant switch, and the one most likely to be forgotten: cloning
+  // a run that finishes itself must not quietly produce one that waits.
+  assert.equal(again.autoAcceptComplete, true);
 
   // Both enabled tiers survive, with their commands, and nothing the operator
   // had turned off comes back on.

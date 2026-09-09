@@ -1122,6 +1122,19 @@ export const AUTOPILOT_MIGRATIONS: readonly Migration[] = [
         PRIMARY KEY (group_key, question)
       );
     `
+  },
+  {
+    id: 34,
+    name: "auto_accept_complete",
+    up: `
+      -- Letting a run that finished cleanly finish itself.
+      --
+      -- A grant already carries the bounds an operator can answer before
+      -- pressing start; this is another of them. Default 0, because a run
+      -- completing without anyone looking is a decision rather than a
+      -- convenience, and the default has to be the one that asks.
+      ALTER TABLE autopilot_loop_grants ADD COLUMN auto_accept_complete INTEGER NOT NULL DEFAULT 0;
+    `
   }
 ];
 

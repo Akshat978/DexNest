@@ -30,6 +30,7 @@ import type { WorkerSend } from "./workerStore.ts";
 import { LoopStore, type LoopGrant, type TurnRecord } from "./loopStore.ts";
 import { Verifier, initialPrompt, repairPrompt, type VerificationReport } from "./verification.ts";
 import { isTerminal } from "./states.ts";
+import { canAutoAccept } from "./autoAccept.ts";
 import { Checkpointer, type CheckpointRecord } from "./checkpoints.ts";
 import { buildRunReport, renderRunReportMarkdown, type RunReport } from "./report.ts";
 import { DEFAULT_CONTEXT_LIMITS, selectContextFiles, type ContextCandidate } from "./contextSelection.ts";
@@ -218,6 +219,8 @@ export class AutonomousLoop {
     autoResumeOnLimit?: boolean;
     /** Give each piece of work a fresh conversation. On by default. */
     rotateSession?: boolean;
+    /** Let a run that finished cleanly complete itself. Off by default. */
+    autoAcceptComplete?: boolean;
     grantedBy: string;
   }): LoopGrant {
     assertPrimary(this.worker.role);
@@ -235,6 +238,7 @@ export class AutonomousLoop {
       ...(input.maxIdleTurns !== undefined ? { maxIdleTurns: input.maxIdleTurns } : {}),
       ...(input.autoResumeOnLimit !== undefined ? { autoResumeOnLimit: input.autoResumeOnLimit } : {}),
       ...(input.rotateSession !== undefined ? { rotateSession: input.rotateSession } : {}),
+      ...(input.autoAcceptComplete !== undefined ? { autoAcceptComplete: input.autoAcceptComplete } : {}),
       runId: input.runId,
       provider: this.worker.id,
       sessionId: session.sessionId,
@@ -949,6 +953,37 @@ export class AutonomousLoop {
           // PLAN_COMPLETE is a proposal, not a completion. An agent that could
           // declare itself finished would be marking its own homework at 3am,
           // so both remaining verbs stop and ask a person.
+          //
+          // Unless the operator asked otherwise, and every fact DexNest itself
+          // recorded agrees. That is not the same as trusting the proposal:
+          // the agent's claim is what starts the check, never an input to it.
+          if (decision.verb === "PLAN_COMPLETE") {
+            const verdict = canAutoAccept({
+              enabled: grant.autoAcceptComplete,
+              verification: report.outcome,
+              planItems: this.plans.view(runId, spec).items,
+              assumptions: this.unattended.assumptions(runId).length
+            });
+            // Recorded either way. An operator who switched this on and still
+            // found a run waiting is owed the one condition that stopped it,
+            // rather than having to re-derive it from four screens.
+            if (grant.autoAcceptComplete) {
+              this.engine.store.appendEvent(runId, {
+                type: "PLAN_COMPLETE_AUTO_CHECKED",
+                payload: { accepted: verdict.accept, reason: verdict.reason }
+              });
+            }
+            if (verdict.accept) {
+              // The proposal has to be pending before it can be accepted, and
+              // it becomes pending by being held — so the hold happens first
+              // and is answered immediately, by the same path a person uses.
+              const detail = `The worker believes the plan is complete: ${decision.reason ?? "no reason given"}.`;
+              this.hold(runId, "plan_complete_proposed", detail);
+              this.acceptPlanComplete(runId, { by: "autopilot" });
+              return this.settle(runId, "completed", verdict.reason, report, turnsRun);
+            }
+          }
+
           const reason = decision.verb === "PLAN_COMPLETE" ? "plan_complete_proposed" : "direction_needs_human";
           const detail = decision.verb === "PLAN_COMPLETE"
             ? `The worker believes the plan is complete: ${decision.reason ?? "no reason given"}. Verification passed; a human decides whether the run is done.`

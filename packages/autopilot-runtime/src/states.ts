@@ -170,6 +170,9 @@ export const RUN_EVENT_TYPES = [
   "RUN_QUEUE_ITEM_SETTLED",
   "ATTENTION_DELIVERED",
   "PLAN_COMPLETE_ACCEPTED",
+  // Recorded whenever auto-accept was on, whether it accepted or held, so
+  // the reason a green run is still waiting is in the run's own record.
+  "PLAN_COMPLETE_AUTO_CHECKED",
   "PLAN_COMPLETE_REJECTED",
   "CONSULTATION_APPROVED",
   "CONSULTATION_CANCELLED",
