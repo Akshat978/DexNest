@@ -595,6 +595,8 @@ export const fallbackBridge: DexNestBridge = {
   }),
   getCalendarState: async () => ({
     events: [],
+    providerEvents: [],
+    providerWindow: { from: getLocalTodayDateString(), to: getLocalTodayDateString(), days: 0 },
     today: getLocalTodayDateString(),
     todayEvents: [],
     upcomingEvents: [],

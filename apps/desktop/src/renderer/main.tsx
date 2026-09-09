@@ -1335,8 +1335,31 @@ interface NudgeSettings {
   backupReminderAfterDays: number;
 }
 
+/**
+ * An event that belongs to a connected account, not to DexNest.
+ *
+ * Shaped as a CalendarEvent so the grid, the sort and the occurrence test all
+ * work on it unchanged, and marked so nothing offers to edit what it cannot.
+ */
+interface ProviderCalendarEvent extends CalendarEvent {
+  readOnly: true;
+  provider: string;
+  accountId: string;
+  accountEmail: string;
+  uid: string | null;
+}
+
+/** Whether an event came from a connected account rather than from DexNest. */
+function isProviderEvent(event: CalendarEvent | null | undefined): event is ProviderCalendarEvent {
+  return Boolean(event && (event as ProviderCalendarEvent).readOnly);
+}
+
 interface CalendarState {
   events: CalendarEvent[];
+  /** Events from connected accounts. Read-only until the write path exists. */
+  providerEvents: ProviderCalendarEvent[];
+  /** The date range those provider events actually cover. */
+  providerWindow: { from: string; to: string; days: number };
   today: string;
   todayEvents: CalendarEvent[];
   upcomingEvents: CalendarEvent[];
@@ -4495,6 +4518,8 @@ function DexNestApp() {
   });
   const [calendarState, setCalendarState] = useState<CalendarState>({
     events: [],
+    providerEvents: [],
+    providerWindow: { from: getLocalTodayDateString(), to: getLocalTodayDateString(), days: 0 },
     today: getLocalTodayDateString(),
     todayEvents: [],
     upcomingEvents: [],
@@ -12103,6 +12128,13 @@ function CalendarView({
   const monthDate = parseLocalDateInput(`${visibleMonth}-01`);
   const monthLabel = monthDate.toLocaleDateString(undefined, { month: "long", year: "numeric" });
   const calendarVoiceCandidate = voiceWorkflow.mode === "calendar_create" ? voiceWorkflow.calendarCandidate : null;
+  // What the calendar shows: DexNest's own events and the connected accounts'
+  // together, because a calendar that omits half of the day is not a calendar.
+  // Kept separate in state and merged only here, at the point of drawing.
+  const mergedEvents = useMemo<CalendarEvent[]>(
+    () => [...calendarState.events, ...calendarState.providerEvents],
+    [calendarState.events, calendarState.providerEvents]
+  );
   const calendarDays = useMemo(() => {
     const firstOfMonth = new Date(monthDate);
     const gridStart = new Date(firstOfMonth);
@@ -12117,15 +12149,27 @@ function CalendarView({
         label: String(day.getDate()),
         inMonth: value.startsWith(visibleMonth),
         isToday: value === calendarState.today,
-        events: calendarState.events.filter((event) => calendarEventOccursOn(event, value, parseLocalDateInput))
+        events: mergedEvents.filter((event) => calendarEventOccursOn(event, value, parseLocalDateInput))
       };
     });
-  }, [calendarState.events, calendarState.today, visibleMonth]);
-  const selectedDateEvents = calendarState.events.filter((event) => calendarEventOccursOn(event, selectedDate, parseLocalDateInput));
-  const selectedEvent = selectedEventId ? calendarState.events.find((event) => event.id === selectedEventId) ?? null : null;
+  }, [mergedEvents, calendarState.today, visibleMonth]);
+  const selectedDateEvents = mergedEvents.filter((event) => calendarEventOccursOn(event, selectedDate, parseLocalDateInput));
+  const selectedEvent = selectedEventId ? mergedEvents.find((event) => event.id === selectedEventId) ?? null : null;
   const sortedSelectedEvents = [...selectedDateEvents].sort(sortCalendarEvents);
   const allDaySelectedEvents = sortedSelectedEvents.filter((event) => event.allDay);
   const timedSelectedEvents = sortedSelectedEvents.filter((event) => !event.allDay);
+  // Upcoming arrives from the main process already filtered to DexNest's own
+  // events, so it is rebuilt here rather than used - the sidebar was the one
+  // place a Google event could still be missing from an otherwise merged view.
+  const upcomingVisibleEvents = useMemo(
+    () => mergedEvents
+      .filter((event) => event.date >= calendarState.today)
+      .sort((a, b) => a.date.localeCompare(b.date) || sortCalendarEvents(a, b)),
+    [mergedEvents, calendarState.today]
+  );
+  // True when the grid on screen reaches past what the sync actually covers.
+  const outsideProviderWindow = calendarState.providerEvents.length > 0
+    && `${visibleMonth}-31` > calendarState.providerWindow.to;
   const weekStartDate = weekStartForDate(selectedDate);
   const weekDays = Array.from({ length: 7 }, (_, index) => {
     const day = addCalendarDays(weekStartDate, index);
@@ -12135,7 +12179,7 @@ function CalendarView({
       label: day.toLocaleDateString(undefined, { weekday: "short" }),
       dayNumber: day.getDate(),
       isToday: value === calendarState.today,
-      events: calendarState.events.filter((event) => calendarEventOccursOn(event, value, parseLocalDateInput)).sort(sortCalendarEvents)
+      events: mergedEvents.filter((event) => calendarEventOccursOn(event, value, parseLocalDateInput)).sort(sortCalendarEvents)
     };
   });
   const headerTitle = viewMode === "day"
@@ -12322,17 +12366,27 @@ function CalendarView({
   const nudgeColor = (p: string): string => p === "urgent" ? "#EF4444" : p === "normal" ? "#F59E0B" : "#14B8A6";
 
   function CalendarEventChip({ event, compact = false }: { event: CalendarEvent; compact?: boolean }) {
+    const fromProvider = isProviderEvent(event);
     const dot = event.color ?? null;
+    // An outlined edge rather than a solid one. A provider event is a fact
+    // about somewhere else, and it should not look like something you own on a
+    // grid where everything else is editable.
+    const edge = fromProvider ? { borderLeft: `3px dashed ${ACCENT_CAL}` } : dot ? { borderLeft: `3px solid ${dot}` } : undefined;
     return (
       <button
         type="button"
         className={`calendar-event-chip ${compact ? "calendar-event-chip--compact" : ""}`}
-        style={dot ? { borderLeft: `3px solid ${dot}` } : undefined}
+        style={edge}
         onClick={(clickEvent) => {
           clickEvent.stopPropagation();
+          // Selecting shows the detail panel; loading fills the edit form.
+          // Only one of those can end in a save for a provider event.
+          if (fromProvider) { setSelectedDate(event.date); setSelectedEventId(event.id); return; }
           loadEvent(event);
         }}
-        title={`${event.title} / ${eventTimeLabel(event)}${normalizeRecurrenceValue(event.recurrence) !== "none" ? ` / repeats ${normalizeRecurrenceValue(event.recurrence)}` : ""}`}
+        title={fromProvider
+          ? `${event.title} / ${eventTimeLabel(event)} / from ${(event as ProviderCalendarEvent).accountEmail}`
+          : `${event.title} / ${eventTimeLabel(event)}${normalizeRecurrenceValue(event.recurrence) !== "none" ? ` / repeats ${normalizeRecurrenceValue(event.recurrence)}` : ""}`}
       >
         {dot && <span aria-hidden="true" style={{ display: "inline-block", width: 6, height: 6, borderRadius: 9999, background: dot, marginRight: 5, flex: "none" }} />}
         <span>{event.title}</span>
@@ -12374,6 +12428,14 @@ function CalendarView({
             );
           })}
         </div>
+        {outsideProviderWindow && (
+          // Past the fetched range a connected calendar contributes nothing,
+          // and an empty grid would read as "you have nothing on" rather than
+          // "DexNest has not looked this far".
+          <p className="technical">
+            Connected calendars are synced to {formatLocalDate(calendarState.providerWindow.to)}. Events beyond that are not shown yet.
+          </p>
+        )}
       </GlassCard>
     );
   }
@@ -12572,13 +12634,23 @@ function CalendarView({
                 <h3 className="flex items-center gap-2">{selectedEvent.color && <span aria-hidden="true" style={{ display: "inline-block", width: 10, height: 10, borderRadius: 9999, background: selectedEvent.color, flex: "none" }} />}{selectedEvent.title}</h3>
                 <p className="technical">{formatLocalDate(selectedEvent.date)} / {eventTimeLabel(selectedEvent)}</p>
                 <p>{selectedEvent.allDay ? "All-day event" : "Timed event"}{normalizeRecurrenceValue(selectedEvent.recurrence) !== "none" ? ` / repeats ${normalizeRecurrenceValue(selectedEvent.recurrence)}` : ""}{selectedEvent.reminderMinutesBefore != null ? ` / ${CALENDAR_REMINDER_OPTIONS.find((o) => o.value === String(selectedEvent.reminderMinutesBefore))?.label ?? "reminder set"}` : ""}</p>
-                <p><span>Source</span><strong>{selectedEvent.sourceModule}</strong></p>
+                <p><span>Source</span><strong>{isProviderEvent(selectedEvent) ? selectedEvent.accountEmail : selectedEvent.sourceModule}</strong></p>
                 {selectedEvent.notes && <p>{selectedEvent.notes}</p>}
                 <p className="technical">{selectedEvent.id}</p>
-                <div className="button-row">
-                  <button type="button" onClick={() => { loadEvent(selectedEvent); setShowEventModal(true); }}>Edit</button>
-                  <button type="button" className="danger-button" onClick={() => void deleteEvent(selectedEvent)}>Delete</button>
-                </div>
+                {isProviderEvent(selectedEvent) ? (
+                  // No Edit, no Delete. DexNest holds a read-only token for
+                  // this account, so both would fail at the provider - and a
+                  // button that cannot work is worse than no button, because
+                  // it is only discovered to be broken after it is trusted.
+                  <p className="technical">
+                    Lives in {selectedEvent.provider === "google" ? "Google Calendar" : "Outlook"}. DexNest can show it but not change it yet.
+                  </p>
+                ) : (
+                  <div className="button-row">
+                    <button type="button" onClick={() => { loadEvent(selectedEvent); setShowEventModal(true); }}>Edit</button>
+                    <button type="button" className="danger-button" onClick={() => void deleteEvent(selectedEvent)}>Delete</button>
+                  </div>
+                )}
               </div>
             ) : (
               <EmptyState>Select an event from Day, Week, or Month to view details.</EmptyState>
@@ -12587,12 +12659,19 @@ function CalendarView({
 
           <GlassCard hover={false}>
             <SectionTitle action={<Bell className="h-3.5 w-3.5 text-[#14B8A6]" />}>Upcoming</SectionTitle>
-            {calendarState.upcomingEvents.length === 0 ? <p className="text-xs text-[#525252]">No upcoming events.</p> : (
+            {upcomingVisibleEvents.length === 0 ? <p className="text-xs text-[#525252]">No upcoming events.</p> : (
               <div className="space-y-2">
-                {calendarState.upcomingEvents.slice(0, 6).map((e) => {
+                {upcomingVisibleEvents.slice(0, 6).map((e) => {
                   const bday = /birthday/i.test(e.title);
                   return (
-                    <button key={e.id} type="button" className="calendar-side-event" onClick={() => loadEvent(e)}>
+                    <button
+                      key={e.id}
+                      type="button"
+                      className="calendar-side-event"
+                      // loadEvent fills the edit form, which is the wrong
+                      // destination for something DexNest cannot save.
+                      onClick={() => { if (isProviderEvent(e)) { setSelectedDate(e.date); setSelectedEventId(e.id); } else loadEvent(e); }}
+                    >
                       <div className="flex h-8 w-8 items-center justify-center rounded-lg" style={{ background: `${ACCENT_CAL}14`, color: ACCENT_CAL }}>{bday ? <Cake className="h-4 w-4" /> : <CalendarDays className="h-4 w-4" />}</div>
                       <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{e.title}</p><p className="font-mono text-[10px] text-[#525252]">{formatLocalDate(e.date)} / {e.allDay ? "all-day" : e.startTime || "-"}</p></div>
                       <PinButton input={{ type: "event", module: "calendar", entityId: e.id, title: e.title, subtitle: formatLocalDate(e.date) }} />

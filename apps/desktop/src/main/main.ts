@@ -2089,8 +2089,16 @@ function phoneWeather(): Record<string, unknown> {
 
 // --- connected calendars ------------------------------------------------------
 
-/** How far ahead to pull. Today needs one day; a little more costs nothing. */
-const CALENDAR_SYNC_DAYS = 7;
+/**
+  * How far ahead to pull.
+  *
+  * Seven was right when Today was the only reader. The Calendar module shows a
+  * month at a time and can be paged forward, so a week meant a grid that went
+  * abruptly empty part-way through the current month - which reads as "nothing
+  * scheduled" rather than "not fetched", and that is the wrong thing to believe
+  * about your own calendar. Two months covers the visible grid and the next one.
+  */
+const CALENDAR_SYNC_DAYS = 60;
 
 const loadCalendarAccounts = (): CalendarAccount[] =>
   readJsonFile<CalendarAccount[]>(calendarAccountsPath, []);
@@ -12676,8 +12684,47 @@ function calendarState() {
   const events = loadCalendarEvents().sort((a, b) => a.date.localeCompare(b.date) || (a.startTime ?? "").localeCompare(b.startTime ?? ""));
   const today = todayDateString();
   const nudges = currentNudges();
+
+  // Connected-calendar events, kept in their own array rather than merged into
+  // `events`.
+  //
+  // Everything else that reads calendarState().events treats them as DexNest's
+  // own records - editable, deletable, ours. A provider event is none of those
+  // until the write path exists, and a flag on a shared array is a rule every
+  // future reader has to remember. A separate array cannot be forgotten.
+  const accounts = loadCalendarAccounts().filter(account => account.enabled);
+  const accountsById = new Map(accounts.map(account => [account.id, account]));
+  const providerEvents = dedupe(loadSyncedEvents().filter(event => accountsById.has(event.accountId)))
+    .map(event => {
+      const account = accountsById.get(event.accountId)!;
+      // A provider event has no life of its own here, so it has no creation
+      // time. The last sync is the honest answer to "how current is this".
+      const stamp = account.lastSyncAt ?? account.connectedAt;
+      return {
+        ...event,
+        sourceId: null,
+        // Both providers are asked to expand recurrences, so every event that
+        // arrives is already a single occurrence. Claiming a rule it does not
+        // have would make the grid repeat it a second time.
+        recurrence: null,
+        reminderLevel: "normal" as const,
+        reminderMinutesBefore: null,
+        createdAt: stamp,
+        updatedAt: stamp,
+        readOnly: true as const,
+        provider: account.provider,
+        accountEmail: account.email
+      };
+    })
+    .sort((a, b) => a.date.localeCompare(b.date) || (a.startTime ?? "").localeCompare(b.startTime ?? ""));
+
   return {
     events,
+    providerEvents,
+    // What the provider events actually cover, so the view can say so. Paging
+    // past the window shows nothing, and nothing is indistinguishable from an
+    // empty day unless the range is stated.
+    providerWindow: { from: today, to: addLocalDays(today, CALENDAR_SYNC_DAYS), days: CALENDAR_SYNC_DAYS },
     today,
     todayEvents: events.filter((event) => event.date === today),
     upcomingEvents: events.filter((event) => event.date >= today).slice(0, 20),
