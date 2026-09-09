@@ -457,6 +457,7 @@ export const fallbackBridge: DexNestBridge = {
   listProjects: async () => [],
   getProjectsGit: async () => ({}),
   getEffectActionChoices: async () => [],
+  getEffectPresets: async () => [],
   getBlockEffectsSettings: async () => ({ enabled: false }),
   setBlockEffectsEnabled: async () => ({ enabled: false }),
   listCommandResults: async () => ({}),

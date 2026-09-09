@@ -1412,12 +1412,27 @@ export interface BlockEffect {
   params?: Record<string, unknown>;
 }
 
-/** An action a block may be told to run, as the main process curated it. */
+/**
+ * A whole effect a block may be given, as the main process built it.
+ *
+ * Carries its parameters rather than leaving them to be filled in: these run
+ * unattended, and a form completed wrongly for 09:00 fails where nobody is
+ * watching.
+ */
 export interface EffectActionChoice {
+  group: "Focus" | "Lights" | "Privacy" | "Projects";
+  title: string;
+  actionId: string;
+  params: Record<string, unknown>;
+  hint?: string;
+}
+
+export interface EffectPreset {
   id: string;
   title: string;
-  module: string;
-  dangerLevel: string;
+  description: string;
+  /** Already built by the main process: both halves, or the preset is absent. */
+  effects: BlockEffect[];
 }
 
 interface TimetableBlock {
@@ -2059,6 +2074,7 @@ export interface DexNestBridge {
   listProjects: () => Promise<DexNestProject[]>;
   getProjectsGit: () => Promise<Record<string, ProjectGit>>;
   getEffectActionChoices: () => Promise<EffectActionChoice[]>;
+  getEffectPresets: () => Promise<EffectPreset[]>;
   getBlockEffectsSettings: () => Promise<{ enabled: boolean }>;
   setBlockEffectsEnabled: (enabled: boolean) => Promise<{ enabled: boolean }>;
   listCommandResults: () => Promise<Record<string, ProjectCommandResult>>;
@@ -11808,11 +11824,22 @@ function TimetableView({
   // round trip for an answer that is almost always the same.
   const [effects, setEffects] = useState<BlockEffect[]>([]);
   const [effectChoices, setEffectChoices] = useState<EffectActionChoice[]>([]);
+  const [effectPresets, setEffectPresets] = useState<EffectPreset[]>([]);
   const [effectsEnabled, setEffectsEnabled] = useState(false);
   useEffect(() => {
     void getBridge().getEffectActionChoices().then(setEffectChoices).catch(() => setEffectChoices([]));
+    void getBridge().getEffectPresets().then(setEffectPresets).catch(() => setEffectPresets([]));
     void getBridge().getBlockEffectsSettings().then(settings => setEffectsEnabled(settings.enabled)).catch(() => setEffectsEnabled(false));
   }, []);
+
+  // A saved effect is matched back to its choice by what will actually run,
+  // not by a stored key. That way it survives the list being reworded, and an
+  // effect naming a device that has since been removed reads as unrecognised
+  // rather than quietly resolving to a different lamp.
+  const effectKey = (actionId: string, params: Record<string, unknown> = {}): string =>
+    `${actionId}|${JSON.stringify(Object.fromEntries(Object.entries(params).sort(([a], [b]) => a.localeCompare(b))))}`;
+  const choiceFor = (effect: BlockEffect): EffectActionChoice | undefined =>
+    effectChoices.find(choice => effectKey(choice.actionId, choice.params) === effectKey(effect.actionId, effect.params ?? {}));
 
   function openAddBlock(day: TimetableDay = selectedDay): void {
     resetForm(day);
@@ -12298,13 +12325,28 @@ function TimetableView({
               <div>
                 <div className="mb-1.5 flex items-center justify-between gap-2">
                   <p className="text-sm" style={{ color: "var(--text-muted)" }}>When this block starts and ends</p>
-                  <button
-                    type="button"
-                    disabled={effectChoices.length === 0}
-                    onClick={() => setEffects((current) => [...current, { when: "enter", actionId: "" }])}
-                  >
-                    Add
-                  </button>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {effectPresets.map((preset) => (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        title={preset.description}
+                        // Both halves at once. A preset that added only the
+                        // start would leave a block that turns something on
+                        // with nothing to turn it back off.
+                        onClick={() => setEffects((current) => [...current, ...preset.effects.map(effect => ({ ...effect, params: { ...effect.params } }))])}
+                      >
+                        + {preset.title}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      disabled={effectChoices.length === 0}
+                      onClick={() => setEffects((current) => [...current, { when: "enter", actionId: "" }])}
+                    >
+                      Add
+                    </button>
+                  </div>
                 </div>
                 <label className="mb-2 flex items-center gap-2 text-xs" style={{ color: "var(--text-muted)" }}>
                   <input
@@ -12338,19 +12380,48 @@ function TimetableView({
                         </select>
                         <select
                           className="flex-1"
-                          value={effect.actionId}
-                          onChange={(event) => setEffects((current) => current.map((item, at) => at === index ? { ...item, actionId: event.target.value } : item))}
+                          // Keyed on action plus parameters, because two
+                          // choices can share an action and differ only in
+                          // what they pass - pause and resume are one action.
+                          value={choiceFor(effect) ? effectKey(effect.actionId, effect.params ?? {}) : ""}
+                          onChange={(event) => {
+                            const picked = effectChoices.find(choice => effectKey(choice.actionId, choice.params) === event.target.value);
+                            setEffects((current) => current.map((item, at) => at === index
+                              ? { ...item, actionId: picked?.actionId ?? "", params: picked ? { ...picked.params } : {} }
+                              : item));
+                          }}
                         >
                           {/* Chosen from a list rather than typed: a mistyped
                               action id would sit in a saved block looking
                               configured and fail at the moment the block
                               starts, which is when nobody is watching. */}
                           <option value="">Choose an action…</option>
-                          {effectChoices.map((choice) => (
-                            <option key={choice.id} value={choice.id}>{choice.title}</option>
-                          ))}
+                          {(["Focus", "Lights", "Privacy", "Projects"] as const).map((group) => {
+                            const inGroup = effectChoices.filter(choice => choice.group === group);
+                            if (inGroup.length === 0) return null;
+                            return (
+                              <optgroup key={group} label={group}>
+                                {inGroup.map((choice) => (
+                                  <option key={effectKey(choice.actionId, choice.params)} value={effectKey(choice.actionId, choice.params)}>
+                                    {choice.title}
+                                  </option>
+                                ))}
+                              </optgroup>
+                            );
+                          })}
                         </select>
                         <button type="button" onClick={() => setEffects((current) => current.filter((_, at) => at !== index))}>Remove</button>
+                        {effect.actionId && !choiceFor(effect) && (
+                          // Whatever it named is gone. Saying so beats an empty
+                          // dropdown that looks merely unset, which invites
+                          // saving over it without noticing something was lost.
+                          <p className="w-full text-xs" style={{ color: "#F59E0B" }}>
+                            {effect.actionId} is no longer available. Pick another, or remove this row.
+                          </p>
+                        )}
+                        {choiceFor(effect)?.hint && (
+                          <p className="w-full text-xs" style={{ color: "var(--text-disabled)" }}>{choiceFor(effect)!.hint}</p>
+                        )}
                       </div>
                     ))}
                   </div>

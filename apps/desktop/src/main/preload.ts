@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld("dexNest", {
   listProjects: () => ipcRenderer.invoke("dexnest:list-projects"),
   getProjectsGit: () => ipcRenderer.invoke("dexnest:projects-git"),
   getEffectActionChoices: () => ipcRenderer.invoke("dexnest:effect-action-choices"),
+  getEffectPresets: () => ipcRenderer.invoke("dexnest:effect-presets"),
   getBlockEffectsSettings: () => ipcRenderer.invoke("dexnest:block-effects-settings"),
   setBlockEffectsEnabled: (enabled: boolean) => ipcRenderer.invoke("dexnest:set-block-effects-enabled", enabled),
   listCommandResults: () => ipcRenderer.invoke("dexnest:list-command-results"),

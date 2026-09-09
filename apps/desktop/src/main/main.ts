@@ -3,6 +3,7 @@ import { exec, execFile, execFileSync } from "node:child_process";
 import { canPush, describe as describeGit, parseCommit, parseStatus, type GitCommit, type GitSnapshot } from "./gitStatus.ts";
 import { overlayHtml, rectFromDrag, SELECTION_SCRIPT, type DragPoints } from "./captureRegion.ts";
 import { activeBlockIds, step as stepBlockEffects, type BlockEffect, type BlockMoment } from "./blockEffects.ts";
+import { buildEffectChoices, EFFECT_PRESETS, type EffectChoice } from "./effectChoices.ts";
 import { copyFileSync, cpSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, get as httpGet, type IncomingMessage, type ServerResponse } from "node:http";
 import { get as httpsGet } from "node:https";
@@ -21753,18 +21754,6 @@ function registerIpcHandlers(): void {
   // a dashboard that reports the tree as it was when the app started.
   ipcMain.handle("dexnest:projects-git", () => projectsGit());
 
-  /**
-   * What a timetable block may be told to do.
-   *
-   * Offered as a list rather than a free-text action id, because a mistyped id
-   * would sit in a saved block looking configured and fail silently at the
-   * moment the block starts - which is exactly when nobody is watching.
-   *
-   * Curated rather than "the whole registry filtered by danger level". Most
-   * actions make no sense on a schedule: opening a view at 09:00 while
-   * somebody is using another one is an interruption, not an effect. These are
-   * the ones that change the environment and then stay changed.
-   */
   ipcMain.handle("dexnest:block-effects-settings", () => loadBlockEffectsSettings());
 
   ipcMain.handle("dexnest:set-block-effects-enabled", (_event, enabled: boolean) => {
@@ -21786,31 +21775,49 @@ function registerIpcHandlers(): void {
     return next;
   });
 
-  ipcMain.handle("dexnest:effect-action-choices", () => {
-    const wanted = new Set([
-      "system.performance.enable",
-      "system.performance.disable",
-      "system.lifecycle.lock_sensitive_session",
-      "clipboard.toggle_listener",
-      "external.govee.turn_on",
-      "external.govee.turn_off",
-      "external.govee.apply_scene"
-    ]);
-    const choices = actionRegistry.list()
-      .filter(action => wanted.has(action.id) && action.enabled)
-      .map(action => ({ id: action.id, title: action.title, module: action.module, dangerLevel: action.dangerLevel }));
+  /**
+   * What a timetable block may be told to do.
+   *
+   * Whole effects - an action and the parameters it needs - rather than
+   * actions to be configured afterwards. These run unattended, and a form
+   * filled in wrongly for 09:00 fails where nobody is watching.
+   */
+  const effectChoicesNow = (): EffectChoice[] => buildEffectChoices({
+    devices: loadExternalDevicesCache()
+      .filter(device => device.controllable)
+      .map(device => ({ deviceId: device.deviceId, alias: device.userAlias || device.roomAlias || device.deviceName })),
+    groups: loadExternalDeviceGroups().map(group => ({ id: group.id, name: group.name })),
+    projects: loadProjects().map(project => ({
+      id: project.id,
+      name: project.name,
+      // The same three things the Lifecycle panel treats as stoppable. A
+      // project with none of them has nothing for this to do, and the entry
+      // would fail at the same time every evening.
+      hasStop: Boolean((project.stopCommand ?? "").trim()) || (project.ports?.length ?? 0) > 0 || Boolean(project.dockerComposeEnabled)
+    }))
+  });
 
-    // Stopping a project at the end of the working day is the per-project case
-    // worth having, and it exists only once a project does.
-    for (const project of loadProjects()) {
-      choices.push({
-        id: `dev.project.${project.id}.stop`,
-        title: `Stop ${project.name}`,
-        module: "dev",
-        dangerLevel: "danger"
-      });
-    }
-    return choices;
+  ipcMain.handle("dexnest:effect-action-choices", () => effectChoicesNow());
+
+  /**
+   * Presets, already built.
+   *
+   * Their effects are resolved here rather than named for the renderer to
+   * assemble, because a preset knows it must add both halves or neither and
+   * that rule belongs beside the presets rather than in whichever surface
+   * offers them. A preset whose actions are unavailable arrives empty and is
+   * not offered.
+   */
+  ipcMain.handle("dexnest:effect-presets", () => {
+    const choices = effectChoicesNow();
+    return EFFECT_PRESETS
+      .map(preset => ({
+        id: preset.id,
+        title: preset.title,
+        description: preset.description,
+        effects: preset.build(choices)
+      }))
+      .filter(preset => preset.effects.length > 0);
   });
 
   ipcMain.handle("dexnest:calendar-accounts", () => ({
