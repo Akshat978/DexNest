@@ -2059,6 +2059,8 @@ export interface DexNestBridge {
   listProjects: () => Promise<DexNestProject[]>;
   getProjectsGit: () => Promise<Record<string, ProjectGit>>;
   getEffectActionChoices: () => Promise<EffectActionChoice[]>;
+  getBlockEffectsSettings: () => Promise<{ enabled: boolean }>;
+  setBlockEffectsEnabled: (enabled: boolean) => Promise<{ enabled: boolean }>;
   listCommandResults: () => Promise<Record<string, ProjectCommandResult>>;
   clearCommandResult: (actionId: string) => Promise<void>;
   listPinnedActions: () => Promise<string[]>;
@@ -11806,8 +11808,10 @@ function TimetableView({
   // round trip for an answer that is almost always the same.
   const [effects, setEffects] = useState<BlockEffect[]>([]);
   const [effectChoices, setEffectChoices] = useState<EffectActionChoice[]>([]);
+  const [effectsEnabled, setEffectsEnabled] = useState(false);
   useEffect(() => {
     void getBridge().getEffectActionChoices().then(setEffectChoices).catch(() => setEffectChoices([]));
+    void getBridge().getBlockEffectsSettings().then(settings => setEffectsEnabled(settings.enabled)).catch(() => setEffectsEnabled(false));
   }, []);
 
   function openAddBlock(day: TimetableDay = selectedDay): void {
@@ -12112,6 +12116,15 @@ function TimetableView({
                             <CategoryChip category={block.category} />
                             <StatusChip tone={block.status === "done" ? "ok" : block.status === "skipped" ? "warn" : isCurrent ? "running" : "info"}>{isCurrent && block.status === "planned" ? "now" : block.status}</StatusChip>
                             {conflicts.length > 0 && <StatusChip tone="warn">{conflicts.length} conflict{conflicts.length === 1 ? "" : "s"}</StatusChip>}
+                            {/* Which blocks act, visible without opening each
+                                one. A block that changes the room and looks
+                                exactly like one that does not is how you end
+                                up surprised by your own schedule. */}
+                            {(block.effects?.length ?? 0) > 0 && (
+                              <StatusChip tone={effectsEnabled ? "ok" : "info"}>
+                                {block.effects!.length} effect{block.effects!.length === 1 ? "" : "s"}{effectsEnabled ? "" : " (off)"}
+                              </StatusChip>
+                            )}
                           </div>
                           {block.notes && <p className="mt-1 line-clamp-1 text-xs" style={{ color: "var(--text-muted)" }}>{block.notes}</p>}
                         </div>
@@ -12293,8 +12306,22 @@ function TimetableView({
                     Add
                   </button>
                 </div>
+                <label className="mb-2 flex items-center gap-2 text-xs" style={{ color: "var(--text-muted)" }}>
+                  <input
+                    type="checkbox"
+                    checked={effectsEnabled}
+                    onChange={(event) => {
+                      const next = event.target.checked;
+                      setEffectsEnabled(next);
+                      void getBridge().setBlockEffectsEnabled(next).then(settings => setEffectsEnabled(settings.enabled));
+                    }}
+                  />
+                  Let timetable blocks change things
+                </label>
                 <p className="mb-2 text-xs" style={{ color: "var(--text-disabled)" }}>
-                  Nothing runs yet — this records what the block should do. Applying it comes next.
+                  {effectsEnabled
+                    ? "Runs once when a block starts and once when it ends. It will not undo a change you make by hand mid-block."
+                    : "Off. Effects are saved on blocks but nothing runs until this is on."}
                 </p>
                 {effects.length === 0 ? (
                   <p className="text-xs" style={{ color: "var(--text-disabled)" }}>Nothing. This block only shows on the schedule.</p>

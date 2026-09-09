@@ -2,7 +2,7 @@ import { app, BrowserWindow, clipboard, desktopCapturer, dialog, globalShortcut,
 import { exec, execFile, execFileSync } from "node:child_process";
 import { canPush, describe as describeGit, parseCommit, parseStatus, type GitCommit, type GitSnapshot } from "./gitStatus.ts";
 import { overlayHtml, rectFromDrag, SELECTION_SCRIPT, type DragPoints } from "./captureRegion.ts";
-import { activeBlockIds, hasEffects, minutesOf, resolveTransitions, type BlockEffect, type BlockMoment } from "./blockEffects.ts";
+import { activeBlockIds, step as stepBlockEffects, type BlockEffect, type BlockMoment } from "./blockEffects.ts";
 import { copyFileSync, cpSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, get as httpGet, type IncomingMessage, type ServerResponse } from "node:http";
 import { get as httpsGet } from "node:https";
@@ -200,6 +200,7 @@ const financeRecurringPath = join(settingsRoot, "finance-recurring.json");
 // Where Autopilot sends notifications, and when it keeps quiet. Holds the
 // PATH to a Firebase service account, never its contents.
 const autopilotPushSettingsPath = join(settingsRoot, "autopilot-push.json");
+const blockEffectsSettingsPath = join(settingsRoot, "timetable-effects.json");
 const providerLimits = createProviderLimitsService({ budgetsPath: join(settingsRoot, "provider-limits.json") });
 const financeSettingsPath = join(settingsRoot, "finance-settings.json");
 const financeProfilesPath = join(settingsRoot, "finance-profiles.json");
@@ -12945,6 +12946,129 @@ async function projectsGit(): Promise<Record<string, ProjectGit>> {
   return Object.fromEntries(projects.map((project, index) => [project.id, snapshots[index]!]));
 }
 
+
+// --- timetable blocks that act -------------------------------------------------
+
+interface BlockEffectsSettings {
+  /**
+   * Off until switched on.
+   *
+   * These change the room - lights, performance mode, a locked vault - and a
+   * default that started doing that to someone who had merely filled in a
+   * schedule would be the wrong kind of surprise.
+   */
+  enabled: boolean;
+}
+
+function loadBlockEffectsSettings(): BlockEffectsSettings {
+  return readJsonFile<BlockEffectsSettings>(blockEffectsSettingsPath, { enabled: false });
+}
+
+/**
+ * Where the timetable was last seen.
+ *
+ * Deliberately in memory and not on disk. Persisting it would mean that
+ * starting DexNest after it had been closed across a boundary would replay a
+ * transition that already happened - dimming the lights for a focus block that
+ * ended two hours ago. A restart is a first observation, and a first
+ * observation fires nothing.
+ */
+let lastBlockMoment: BlockMoment | null = null;
+let blockEffectsTimer: ReturnType<typeof setInterval> | null = null;
+
+async function applyBlockEffectsNow(): Promise<void> {
+  const file = loadTimetableFile();
+  const template = file.templates.find(item => item.id === file.activeTemplateId) ?? file.templates[0];
+  const blocks = template?.blocks ?? [];
+
+  const now = new Date();
+  const moment: BlockMoment = {
+    day: currentTimetableDay(),
+    activeIds: activeBlockIds(blocks, currentTimetableDay(), now.getHours() * 60 + now.getMinutes())
+  };
+
+  // step decides both halves, including that being switched off forgets where
+  // the timetable was rather than merely skipping the work.
+  const outcome = stepBlockEffects(lastBlockMoment, moment, blocks, loadBlockEffectsSettings().enabled);
+  lastBlockMoment = outcome.moment;
+  const planned = outcome.planned;
+  if (planned.length === 0) return;
+
+  for (const effect of planned) {
+    // Journalled before it runs. An effect that changes something and then
+    // loses its record is the case where the operator finds the lights
+    // different and nothing to explain it.
+    localDb.appendActionEvent({
+      module: "DexNest Timetable",
+      actionId: effect.actionId,
+      eventType: "timetable_effect_started",
+      status: "pending",
+      source: "timetable",
+      summary: `${effect.blockTitle} ${effect.when === "enter" ? "started" : "ended"}: running ${effect.actionId}.`,
+      metadataJson: { blockId: effect.blockId, when: effect.when }
+    });
+
+    try {
+      const result = await runRegisteredAction(effect.actionId, "timetable", {
+        ...effect.params,
+        // Configuring the effect on the block was the confirmation. Nothing at
+        // 09:00 can answer a dialog, and an action that silently refused every
+        // time would be indistinguishable from one that was never configured.
+        confirmedDangerous: true
+      });
+      if (!result.ok) {
+        const reason = "error" in result && typeof result.error === "string" ? result.error : "Effect failed.";
+        localDb.appendActionEvent({
+          module: "DexNest Timetable",
+          actionId: effect.actionId,
+          eventType: "timetable_effect_failed",
+          status: "failed",
+          source: "timetable",
+          summary: `${effect.blockTitle}: ${effect.actionId} failed.`,
+          metadataJson: { blockId: effect.blockId, when: effect.when },
+          errorMessage: reason
+        });
+      }
+    } catch (error) {
+      // One failing effect must not stop the rest. A block that turns on the
+      // lights and enables performance mode should still do the second if the
+      // lamp is unplugged.
+      localDb.appendActionEvent({
+        module: "DexNest Timetable",
+        actionId: effect.actionId,
+        eventType: "timetable_effect_failed",
+        status: "failed",
+        source: "timetable",
+        summary: `${effect.blockTitle}: ${effect.actionId} threw.`,
+        metadataJson: { blockId: effect.blockId, when: effect.when },
+        errorMessage: error instanceof Error ? error.message : "Effect threw."
+      });
+    }
+  }
+}
+
+/**
+ * Watches for the timetable moving from one block to another.
+ *
+ * Effects run on the edges and never on the level: a block sets something once
+ * when it starts and once when it ends, and never re-asserts it in between.
+ * That is what stops this fighting the operator - turning performance mode off
+ * during a focus block leaves it off, because nothing will turn it on again
+ * until the next boundary.
+ *
+ * Thirty seconds because block boundaries are whole minutes, and a minute-long
+ * interval can drift past one.
+ */
+function startBlockEffectsTimer(): void {
+  if (blockEffectsTimer) clearInterval(blockEffectsTimer);
+  blockEffectsTimer = setInterval(() => { void applyBlockEffectsNow(); }, 30_000);
+  blockEffectsTimer.unref?.();
+  // Once now, to record where the timetable currently is. This is the first
+  // observation, so it fires nothing and only establishes the baseline the
+  // next tick compares against.
+  void applyBlockEffectsNow();
+}
+
 function calendarState() {
   refreshNudges("system", false);
   const events = loadCalendarEvents().sort((a, b) => a.date.localeCompare(b.date) || (a.startTime ?? "").localeCompare(b.startTime ?? ""));
@@ -21641,6 +21765,27 @@ function registerIpcHandlers(): void {
    * somebody is using another one is an interruption, not an effect. These are
    * the ones that change the environment and then stay changed.
    */
+  ipcMain.handle("dexnest:block-effects-settings", () => loadBlockEffectsSettings());
+
+  ipcMain.handle("dexnest:set-block-effects-enabled", (_event, enabled: boolean) => {
+    const next = { enabled: Boolean(enabled) };
+    writeJsonFile(blockEffectsSettingsPath, next);
+    localDb.appendActionEvent({
+      module: "DexNest Timetable",
+      actionId: "timetable.effects.update_settings",
+      eventType: "timetable_effects_settings_updated",
+      status: "success",
+      source: "module_ui",
+      summary: `Timetable block effects ${next.enabled ? "enabled" : "disabled"}.`,
+      metadataJson: { enabled: next.enabled }
+    });
+    // Switching on takes the current moment as a baseline rather than acting
+    // on it, so enabling mid-block does not apply that block retroactively.
+    lastBlockMoment = null;
+    void applyBlockEffectsNow();
+    return next;
+  });
+
   ipcMain.handle("dexnest:effect-action-choices", () => {
     const wanted = new Set([
       "system.performance.enable",
@@ -22323,6 +22468,7 @@ app.whenReady().then(() => {
   ensureHeatmapAlwaysOn();
   startHeatmapTimer();
   startCalendarSyncTimer();
+  startBlockEffectsTimer();
   scheduleWeatherAutoRefresh();
   scheduleNewsAutoRefresh();
   startClipboardListener();

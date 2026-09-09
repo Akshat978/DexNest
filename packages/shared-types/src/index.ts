@@ -44,6 +44,10 @@ export type DexNestActionTrigger =
   | "push_to_talk"
   | "voice"
   | "routine"
+  // Something a timetable block did when it started or ended. Distinct from
+  // "routine" so an audit can tell work the operator started from work the
+  // clock started on their behalf.
+  | "timetable"
   | "module_ui"
   | "phone";
 export type DexNestEventStatus = "success" | "failed" | "skipped" | "cancelled" | "pending";

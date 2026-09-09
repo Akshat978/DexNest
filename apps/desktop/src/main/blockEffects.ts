@@ -137,6 +137,24 @@ export function resolveTransitions(
   return planned;
 }
 
+/**
+ * One tick: what to remember, and what to run.
+ *
+ * Being switched off does not merely skip the work, it forgets where the
+ * timetable was. Remembering across an off period would make switching back on
+ * replay every boundary missed while off - the day's blocks applying in a
+ * burst, at once, hours late.
+ */
+export function step(
+  previous: BlockMoment | null,
+  current: BlockMoment,
+  blocks: readonly EffectBlock[],
+  enabled: boolean
+): { moment: BlockMoment | null; planned: PlannedEffect[] } {
+  if (!enabled) return { moment: null, planned: [] };
+  return { moment: current, planned: resolveTransitions(previous, current, blocks) };
+}
+
 /** Whether a block has anything to do at all, for the "does this act" badge. */
 export function hasEffects(block: EffectBlock): boolean {
   return (block.effects ?? []).some(effect => Boolean(effect.actionId));

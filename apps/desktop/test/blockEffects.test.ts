@@ -16,6 +16,7 @@ import {
   hasEffects,
   minutesOf,
   resolveTransitions,
+  step,
   type EffectBlock
 } from "../src/main/blockEffects.ts";
 
@@ -174,4 +175,45 @@ test("a block with no usable effect does not claim to act", () => {
   assert.equal(hasEffects(block({ effects: undefined })), false);
   assert.equal(hasEffects(block({ effects: [{ id: "e", when: "enter", actionId: "" }] })), false);
   assert.equal(hasEffects(block()), true);
+});
+
+
+// --- one tick -----------------------------------------------------------------
+
+test("switched off, nothing runs and nothing is remembered", () => {
+  // Forgetting matters as much as not running. Keeping the moment across an
+  // off period would make switching back on replay every boundary missed while
+  // off, applying a whole day's blocks at once, hours late.
+  const outcome = step(
+    { day: "monday", activeIds: ["b1"] },
+    { day: "monday", activeIds: [] },
+    [block()],
+    false
+  );
+  assert.deepEqual(outcome.planned, []);
+  assert.equal(outcome.moment, null);
+});
+
+test("the first tick after switching on establishes a baseline and fires nothing", () => {
+  // Enabling at 14:30 inside a block that began at 14:00 must not apply that
+  // block retroactively.
+  const first = step(null, { day: "monday", activeIds: ["b1"] }, [block()], true);
+  assert.deepEqual(first.planned, []);
+  assert.deepEqual(first.moment, { day: "monday", activeIds: ["b1"] });
+
+  // And the tick after it behaves normally.
+  const second = step(first.moment, { day: "monday", activeIds: [] }, [block()], true);
+  assert.equal(second.planned.length, 1);
+  assert.equal(second.planned[0]!.when, "exit");
+});
+
+test("an unchanged tick remembers the moment without running anything", () => {
+  const outcome = step(
+    { day: "monday", activeIds: ["b1"] },
+    { day: "monday", activeIds: ["b1"] },
+    [block()],
+    true
+  );
+  assert.deepEqual(outcome.planned, []);
+  assert.deepEqual(outcome.moment, { day: "monday", activeIds: ["b1"] });
 });
