@@ -388,7 +388,12 @@ export function DropView({
                 {dropState.incoming.length === 0 ? (
                   <div className="flex flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-[#1f1f1f] py-8 text-center"><Inbox className="h-5 w-5 text-[#525252]" /><p className="text-xs text-[#525252]">No incoming files</p></div>
                 ) : dropState.incoming.slice(0, 30).map((item) => {
-                  const Icon = item.type === "text" ? ClipboardCopy : (item.originalName ?? item.fileName ?? "").match(/\.(png|jpe?g|gif|webp|bmp)$/i) ? ImageIcon : FileText;
+                  const name = item.originalName ?? item.fileName ?? "";
+                  const Icon = item.type === "text" ? ClipboardCopy : name.match(/\.(png|jpe?g|gif|webp|bmp)$/i) ? ImageIcon : FileText;
+                  // Offered for the shapes a receipt actually arrives in - a
+                  // photo or a PDF. Every file would put an expense button
+                  // beside things that are plainly not one.
+                  const couldBeReceipt = item.type === "file" && /\.(png|jpe?g|webp|heic|pdf)$/i.test(name);
                   return (
                     <div key={item.id} className="glass-card flex items-center gap-3 p-2.5">
                       <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#38BDF8]/12 text-[#38BDF8]"><Icon className="h-4 w-4" /></div>
@@ -397,6 +402,19 @@ export function DropView({
                         {item.type === "text"
                           ? <button type="button" onClick={() => void copyIncomingText(item.id)} title="Copy" className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#1a1a1a] hover:text-[#38BDF8]"><Copy className="h-4 w-4" /></button>
                           : <button type="button" onClick={() => void onAction("drop.open_incoming_folder")} title="Open folder" className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#1a1a1a] hover:text-[#38BDF8]"><Download className="h-4 w-4" /></button>}
+                        {couldBeReceipt && (
+                          <button
+                            type="button"
+                            title="Create a Finance transaction with this file attached as the receipt"
+                            onClick={() => void (async () => {
+                              const r = await onAction("finance.log_receipt_from_drop", "module_ui", { dropId: item.id }) as { ok?: boolean };
+                              if (r.ok) { await onRefresh(); }
+                            })()}
+                            className="flex h-7 shrink-0 items-center gap-1 rounded-md border border-[#22C55E]/30 px-2 text-[11px] font-medium text-[#22C55E]/90 transition-colors hover:border-[#22C55E]/60 hover:bg-[#22C55E]/12 hover:text-[#22C55E]"
+                          >
+                            Expense
+                          </button>
+                        )}
                         <button type="button" title="Remove from this list (keeps the file on disk)" aria-label="Remove from list" onClick={() => void (async () => { const r = await onAction("drop.remove_incoming_item", "module_ui", { id: item.id }) as { ok?: boolean }; if (r.ok) { await onRefresh(); } })()} className="flex h-7 shrink-0 items-center gap-1 rounded-md border border-[#262626] px-2 text-[11px] font-medium text-[#A3A3A3] transition-colors hover:border-[#3a3a3a] hover:bg-[#1a1a1a] hover:text-[#F5F5F5]">Remove</button>
                         {item.type === "file" && <button type="button" title="Delete the received file from disk (permanent)" aria-label="Delete file from disk" onClick={() => void (async () => { if (!window.confirm("Delete this received file from disk? This cannot be undone.")) { return; } const r = await onAction("drop.delete_incoming_file", "module_ui", { id: item.id, confirmedDangerous: true }) as { ok?: boolean }; if (r.ok) { await onRefresh(); } })()} className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-[#EF4444]/30 text-[#EF4444]/80 transition-colors hover:border-[#EF4444]/60 hover:bg-[#EF4444]/15 hover:text-[#EF4444]"><Trash2 className="h-3.5 w-3.5" /></button>}
                       </div>

@@ -1361,6 +1361,8 @@ interface NudgeSettings {
   backupReminderAfterDays: number;
   /** Days something may be lent out before DexNest mentions it. 0 is off. */
   lentReminderDays: number;
+  /** Days a capture may sit unrouted before DexNest mentions it. 0 is off. */
+  captureStaleDays: number;
 }
 
 /**
@@ -1809,6 +1811,10 @@ interface CaptureItem {
 interface CaptureState {
   items: CaptureItem[];
   inbox: CaptureItem[];
+  /** The oldest unfiled captures, oldest first. At most five. */
+  staleInbox: CaptureItem[];
+  /** The threshold that decided which of those are stale. 0 means off. */
+  staleDays: number;
   routed: CaptureItem[];
   archived: CaptureItem[];
   itemsPath: string;
@@ -4605,7 +4611,8 @@ function DexNestApp() {
       returnReminderDays: [7, 3, 1],
       dailyJournalReminderEnabled: true,
       backupReminderAfterDays: 7,
-      lentReminderDays: 14
+      lentReminderDays: 14,
+      captureStaleDays: 14
     }
   });
   const [calendarInitialView, setCalendarInitialView] = useState<"day" | "week" | "month">("day");
@@ -4647,6 +4654,8 @@ function DexNestApp() {
   const [captureState, setCaptureState] = useState<CaptureState>({
     items: [],
     inbox: [],
+    staleInbox: [],
+    staleDays: 0,
     routed: [],
     archived: [],
     itemsPath: "",
@@ -14234,6 +14243,36 @@ function CaptureView({
             </div>
           </GlassCard>
 
+          {captureState.staleInbox.length > 0 && (
+            <GlassCard accent="#F59E0B" hover={false} className="p-3.5">
+              <div className="flex items-center justify-between gap-2">
+                <SectionTitle className="mb-0">Been here a while</SectionTitle>
+                <StatusChip tone="warn" dot={false}>{captureState.staleDays}+ days</StatusChip>
+              </div>
+              <p className="mt-1 text-xs text-[#A3A3A3]">
+                {/* The list below is newest-first, so anything forgotten sinks
+                    to the bottom - the sort order is part of why an inbox
+                    silts up. These are the same items, surfaced. */}
+                Oldest first. Route or archive them and this goes away.
+              </p>
+              <div className="mt-2 space-y-1.5">
+                {captureState.staleInbox.map((item) => (
+                  <div key={item.id} className="flex items-center gap-2 rounded-lg border border-[#1f1f1f] bg-[#0a0a0a] p-2">
+                    <p className="min-w-0 flex-1 truncate text-xs text-[#F5F5F5]" title={item.title}>{item.title || item.text.slice(0, 60) || "Untitled capture"}</p>
+                    <span className="shrink-0 font-mono text-[10px] text-[#525252]">{formatDate(item.createdAt)}</span>
+                    <button
+                      type="button"
+                      className="min-h-0 shrink-0 rounded-md border border-[#262626] bg-transparent px-2 py-1 text-[10px] text-[#A3A3A3] hover:border-[#EF4444]/40 hover:text-[#EF4444]"
+                      onClick={() => void archiveCapture(item)}
+                    >
+                      Archive
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </GlassCard>
+          )}
+
           {/* Inbox */}
           <div className="flex items-center justify-between">
             <SectionTitle className="mb-0">Inbox</SectionTitle>
@@ -15743,7 +15782,8 @@ function SettingsView({
     returnReminderDays: calendarState.nudgeSettings.returnReminderDays.join(", "),
     dailyJournalReminderEnabled: calendarState.nudgeSettings.dailyJournalReminderEnabled,
     backupReminderAfterDays: String(calendarState.nudgeSettings.backupReminderAfterDays),
-    lentReminderDays: String(calendarState.nudgeSettings.lentReminderDays)
+    lentReminderDays: String(calendarState.nudgeSettings.lentReminderDays),
+    captureStaleDays: String(calendarState.nudgeSettings.captureStaleDays)
   });
   const [weatherForm, setWeatherForm] = useState<WeatherSettings>(weatherState.settings);
   const [weatherBusy, setWeatherBusy] = useState(false);
@@ -15791,7 +15831,8 @@ function SettingsView({
       returnReminderDays: calendarState.nudgeSettings.returnReminderDays.join(", "),
       dailyJournalReminderEnabled: calendarState.nudgeSettings.dailyJournalReminderEnabled,
       backupReminderAfterDays: String(calendarState.nudgeSettings.backupReminderAfterDays),
-      lentReminderDays: String(calendarState.nudgeSettings.lentReminderDays)
+      lentReminderDays: String(calendarState.nudgeSettings.lentReminderDays),
+      captureStaleDays: String(calendarState.nudgeSettings.captureStaleDays)
     });
   }, [calendarState.nudgeSettings]);
 
@@ -16397,7 +16438,8 @@ function SettingsView({
         backupReminderAfterDays: Number(nudgeSettingsForm.backupReminderAfterDays) || 7,
         // No "|| 14" fallback: zero is a deliberate off, and coercing it to
         // the default would make the field impossible to switch off.
-        lentReminderDays: Math.max(0, Number(nudgeSettingsForm.lentReminderDays) || 0)
+        lentReminderDays: Math.max(0, Number(nudgeSettingsForm.lentReminderDays) || 0),
+        captureStaleDays: Math.max(0, Number(nudgeSettingsForm.captureStaleDays) || 0)
       }
     });
     await onRefresh();
@@ -17637,6 +17679,11 @@ function SettingsView({
             Lent-out reminder after days
             <input type="number" min="0" value={nudgeSettingsForm.lentReminderDays} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, lentReminderDays: event.target.value }))} />
             <span className="technical">0 turns loan reminders off.</span>
+          </label>
+          <label>
+            Unfiled capture reminder after days
+            <input type="number" min="0" value={nudgeSettingsForm.captureStaleDays} onChange={(event) => setNudgeSettingsForm((current) => ({ ...current, captureStaleDays: event.target.value }))} />
+            <span className="technical">0 turns capture reminders off.</span>
           </label>
         </div>
         <label className="checkbox-row">

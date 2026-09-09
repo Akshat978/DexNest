@@ -473,6 +473,27 @@ export const seededActions = [
     status: "available" as const
   })),
   {
+    id: "finance.log_receipt_from_drop",
+    title: "Log Drop File As Expense",
+    moduleId: "finance",
+    module: "finance",
+    description: "Turn a file received from your phone into a transaction with the receipt attached.",
+    category: "finance",
+    // Desktop-initiated, deliberately. Finance is not reachable from the phone
+    // and this does not change that: the phone drops a photo, which it could
+    // already do, and the decision to make it a transaction is taken here.
+    dangerLevel: "caution",
+    requiresConfirmation: false,
+    confirmationRule: null,
+    reversible: false,
+    undoActionId: null,
+    handlerType: "internal_function",
+    handlerRef: "finance.log_receipt_from_drop",
+    allowedTriggers: ["command", "module_ui"],
+    enabled: true,
+    status: "available"
+  },
+  {
     id: "clipboard.copy_snippet",
     title: "Copy Snippet",
     moduleId: "clipboard",

@@ -1592,6 +1592,8 @@ interface NudgeSettings {
   returnReminderDays: number[];
   /** How long something can be lent out before DexNest mentions it. */
   lentReminderDays: number;
+  /** How long a capture may sit unrouted before DexNest mentions it. 0 is off. */
+  captureStaleDays: number;
   dailyJournalReminderEnabled: boolean;
   backupReminderAfterDays: number;
 }
@@ -8621,6 +8623,10 @@ function defaultNudgeSettings(): NudgeSettings {
     // Two weeks. Long enough that lending something over a weekend is not
     // nagged about, short enough that it is still obvious who has it.
     lentReminderDays: 14,
+    // Two weeks. A capture is meant to be a quick landing spot, and anything
+    // still sitting in it a fortnight later was either misfiled or is not
+    // going to be dealt with - both worth being told once.
+    captureStaleDays: 14,
     dailyJournalReminderEnabled: true,
     backupReminderAfterDays: 7
   };
@@ -13336,6 +13342,37 @@ function generatedNudgeCandidates(settings: NudgeSettings): Nudge[] {
     }
   }
 
+  // Captures that never went anywhere.
+  //
+  // An inbox with no pressure on it stops being an inbox: things are added,
+  // nothing leaves, and eventually it is not read at all. One nudge for the
+  // whole pile rather than one per item, because the answer to "you have
+  // eleven stale captures" is a single sitting, and eleven separate nudges is
+  // the pile again in a different place.
+  if (settings.captureStaleDays > 0) {
+    const stale = loadCaptureItems().filter((item) => item.status === "inbox"
+      && localDayDiff(item.createdAt.slice(0, 10), today) >= settings.captureStaleDays);
+
+    if (stale.length > 0) {
+      const oldest = stale.reduce((left, right) => (left.createdAt <= right.createdAt ? left : right));
+      const oldestDays = localDayDiff(oldest.createdAt.slice(0, 10), today);
+      upsertGeneratedNudge(candidates, existingById, {
+        // Keyed to the week, so dismissing it clears it until the next one
+        // rather than for ever - the pile is still there, and a reminder that
+        // can be silenced permanently in one click is not a reminder.
+        id: `capture-stale-${startOfLocalWeek()}`,
+        title: "Captures waiting",
+        message: `${stale.length} capture${stale.length === 1 ? "" : "s"} unfiled · oldest ${oldestDays} days`,
+        sourceModule: "capture",
+        sourceId: null,
+        date: today,
+        time: null,
+        priority: "soft",
+        snoozeUntil: null
+      });
+    }
+  }
+
   for (const document of loadVaultDocuments()) {
     if (!document.expiryDate) {
       continue;
@@ -13964,9 +14001,27 @@ function normalizeFinanceRecurring(input: FinanceRecurringInput, existing?: Fina
 
 function captureState() {
   const items = loadCaptureItems().sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  const inbox = items.filter((item) => item.status === "inbox");
+  const staleDays = loadNudgeSettings().captureStaleDays;
+  const today = todayDateString();
   return {
     items,
-    inbox: items.filter((item) => item.status === "inbox"),
+    inbox,
+    /**
+     * The ones that have been waiting longest, oldest first.
+     *
+     * The list above is newest-first, which puts everything forgotten at the
+     * bottom - the sort order itself is part of why an inbox silts up. Five,
+     * because the point is a sitting that ends, and a list of forty is one
+     * nobody starts.
+     */
+    staleInbox: staleDays > 0
+      ? inbox
+        .filter((item) => localDayDiff(item.createdAt.slice(0, 10), today) >= staleDays)
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+        .slice(0, 5)
+      : [],
+    staleDays,
     routed: items.filter((item) => item.status === "routed"),
     archived: items.filter((item) => item.status === "archived"),
     itemsPath: captureItemsPath,
@@ -18155,7 +18210,11 @@ function runCalendarAction(action: DexNestActionDefinition, source: DexNestActio
       const viewMap: Record<string, string> = {
         backup: "settings",
         calendar: "calendar",
+        capture: "capture",
         finance: "finance",
+        // Loans live in Finder, and a nudge that opened the calendar instead
+        // would be asking someone to go and find the thing it just mentioned.
+        finder: "finder",
         journal: "journal",
         vault: "vault"
       };
@@ -18174,6 +18233,7 @@ function runCalendarAction(action: DexNestActionDefinition, source: DexNestActio
         // Zero switches loan reminders off, which is why this is not clamped
         // to a minimum the way backupReminderAfterDays is.
         lentReminderDays: Math.max(0, Number(input.nudgeSettings?.lentReminderDays ?? current.lentReminderDays)),
+        captureStaleDays: Math.max(0, Number(input.nudgeSettings?.captureStaleDays ?? current.captureStaleDays)),
         dailyJournalReminderEnabled: input.nudgeSettings?.dailyJournalReminderEnabled ?? current.dailyJournalReminderEnabled,
         backupReminderAfterDays: Math.max(1, Number(input.nudgeSettings?.backupReminderAfterDays ?? current.backupReminderAfterDays))
       });
@@ -18502,6 +18562,44 @@ function runFinanceAction(action: DexNestActionDefinition, source: DexNestAction
       saveFinanceTransactions([nextTransaction, ...transactions.filter((transaction) => transaction.id !== nextTransaction.id)]);
       logFinanceEvent(action.id, "success", source, `${existing ? "Updated" : "Created"} DexNest Finance transaction.`, financeTransactionMetadata(nextTransaction), startedAt);
       return { ok: true, actionId: action.id, transaction: nextTransaction, financeState: financeState() };
+    }
+
+    if (action.id === "finance.log_receipt_from_drop") {
+      // Read off the raw payload: dropId belongs to this action alone and does
+      // not deserve a place on the shared finance input type.
+      const params = typeof payload === "object" && payload !== null ? payload as { dropId?: unknown } : {};
+      const dropId = String(params.dropId ?? input.id ?? "").trim();
+      const shelf = loadDropShelf();
+      const item = shelf.find((entry) => entry.id === dropId && entry.type === "file") as DropFileItem | undefined;
+      if (!item || !existsSync(item.path)) {
+        throw new Error("That Drop file is no longer on disk.");
+      }
+
+      const nextTransaction = normalizeFinanceTransaction({
+        // receiptPath rather than receiptFilePath: the first copies the file
+        // into Finance's own storage, so clearing the Drop shelf later cannot
+        // leave a transaction pointing at a receipt that has been deleted.
+        receiptPath: item.path,
+        date: todayDateString(),
+        // Zero and unfiled, on purpose. The amount is the one thing a photo
+        // cannot supply, and inventing a placeholder that looks like a number
+        // is worse than a total that is visibly waiting to be corrected.
+        amount: 0,
+        store: "",
+        notes: "From phone. Amount and store still to fill in.",
+        tags: ["unfiled"]
+      });
+      saveFinanceTransactions([nextTransaction, ...loadFinanceTransactions()]);
+
+      logFinanceEvent(action.id, "success", source, "Logged a Drop file as an unfiled transaction.", {
+        ...financeTransactionMetadata(nextTransaction),
+        dropId
+      }, startedAt);
+      // Straight to Finance: the transaction is deliberately incomplete, and
+      // leaving someone on the Drop screen would mean the half-made record is
+      // only found later, if at all.
+      focusDexNestWindow("finance", source);
+      return { ok: true, actionId: action.id, transaction: nextTransaction, message: "Added to Finance. Fill in the amount.", financeState: financeState() };
     }
 
     if (action.id === "finance.delete_transaction") {

@@ -618,7 +618,8 @@ export const fallbackBridge: DexNestBridge = {
       returnReminderDays: [7, 3, 1],
       dailyJournalReminderEnabled: true,
       backupReminderAfterDays: 7,
-      lentReminderDays: 14
+      lentReminderDays: 14,
+      captureStaleDays: 14
     }
   }),
   getTimetableState: async () => defaultTimetableState,
@@ -660,6 +661,8 @@ export const fallbackBridge: DexNestBridge = {
   getCaptureState: async () => ({
     items: [],
     inbox: [],
+    staleInbox: [],
+    staleDays: 0,
     routed: [],
     archived: [],
     itemsPath: "./local-data/settings/capture-items.json",
