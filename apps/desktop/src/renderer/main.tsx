@@ -673,6 +673,23 @@ export interface EventEntry {
   summary: string;
 }
 
+/** A project's git state, as the main process read and worded it. */
+export interface ProjectGit {
+  repo: boolean;
+  problem?: string;
+  branch?: string | null;
+  upstream?: string | null;
+  ahead?: number | null;
+  behind?: number | null;
+  changed?: number;
+  untracked?: number;
+  conflicted?: number;
+  clean?: boolean;
+  commit?: { sha: string; subject: string; authoredAt: string } | null;
+  /** The one-line reading. Worded in main so both surfaces agree. */
+  summary: string;
+}
+
 export interface DexNestProject {
   id: string;
   name: string;
@@ -2014,6 +2031,7 @@ export interface DexNestBridge {
   getAppInfo: () => Promise<AppInfo>;
   listActions: () => Promise<ActionDefinition[]>;
   listProjects: () => Promise<DexNestProject[]>;
+  getProjectsGit: () => Promise<Record<string, ProjectGit>>;
   listCommandResults: () => Promise<Record<string, ProjectCommandResult>>;
   clearCommandResult: (actionId: string) => Promise<void>;
   listPinnedActions: () => Promise<string[]>;
@@ -9185,7 +9203,22 @@ function DevView({
   async function quickProjectAction(actionId: string, params: Record<string, unknown> = {}): Promise<void> {
     await onAction(actionId, "module_ui", params);
     await onProjectsChanged();
+    await loadGit();
   }
+
+  // Read when the view opens and after anything that could move the tree,
+  // rather than on the app-wide refresh. Shelling out to git once per project
+  // is cheap here and pure waste on every other screen.
+  const [git, setGit] = useState<Record<string, ProjectGit>>({});
+  const loadGit = useCallback(async () => {
+    try {
+      setGit(await getBridge().getProjectsGit());
+    } catch {
+      // A dashboard without git state is still a dashboard. Failing loudly
+      // here would put an error banner over projects that are working fine.
+    }
+  }, []);
+  useEffect(() => { void loadGit(); }, [loadGit, projects.length]);
 
   return (
     <div className="space-y-6">
@@ -9208,7 +9241,11 @@ function DevView({
             <SectionTitle>Projects</SectionTitle>
             {projects.map((p) => {
               const active = selProject?.id === p.id;
-              const dirty = false;
+              const g = git[p.id];
+              // Ahead-of-upstream is the state worth colouring: it is the one
+              // that needs an action, and the one B2's push button acts on.
+              const unpushed = (g?.ahead ?? 0) > 0;
+              const dirty = !g?.repo ? false : !(g.clean ?? true);
               return (
                 <button key={p.id} type="button" onClick={() => setSelectedDevId(p.id)} className={`glass-card lift w-full p-4 text-left ${active ? "border-[#3B82F6]/40" : ""}`}>
                   <div className="flex items-start justify-between gap-2">
@@ -9223,6 +9260,15 @@ function DevView({
                       ? <span className="ml-auto shrink-0 text-[#22C55E]">{p.links!.length} link{p.links!.length === 1 ? "" : "s"}</span>
                       : p.urls.length > 0 && <span className="ml-auto shrink-0 text-[#3B82F6]">{p.urls.length} url{p.urls.length === 1 ? "" : "s"}</span>}
                   </div>
+                  {g && (
+                    <div className="mt-1.5 flex items-center gap-1.5 font-mono text-[10px]">
+                      <GitBranch className="h-3 w-3 shrink-0" style={{ color: g.repo ? (unpushed ? "#F59E0B" : dirty ? "#3B82F6" : "#525252") : "#525252" }} />
+                      <span className="truncate" style={{ color: unpushed ? "#F59E0B" : "#525252" }}>{g.summary}</span>
+                    </div>
+                  )}
+                  {g?.commit && (
+                    <p className="mt-0.5 truncate font-mono text-[10px] text-[#3f3f3f]" title={g.commit.subject}>{g.commit.subject}</p>
+                  )}
                 </button>
               );
             })}

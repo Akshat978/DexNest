@@ -455,6 +455,7 @@ export const fallbackBridge: DexNestBridge = {
   }),
   listActions: async () => [],
   listProjects: async () => [],
+  getProjectsGit: async () => ({}),
   listCommandResults: async () => ({}),
   clearCommandResult: async () => undefined,
   listPinnedActions: async () => ["command.open_home", "dev.open_dashboard", "deck.test_endpoint"],

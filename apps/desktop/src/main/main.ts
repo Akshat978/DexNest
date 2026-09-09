@@ -1,5 +1,6 @@
 import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, safeStorage, screen, shell, Tray } from "electron";
 import { exec, execFile, execFileSync } from "node:child_process";
+import { describe as describeGit, parseCommit, parseStatus, type GitCommit, type GitSnapshot } from "./gitStatus.ts";
 import { copyFileSync, cpSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, get as httpGet, type IncomingMessage, type ServerResponse } from "node:http";
 import { get as httpsGet } from "node:https";
@@ -12690,6 +12691,69 @@ function journalState() {
   };
 }
 
+
+// --- git, per project ---------------------------------------------------------
+
+/**
+ * Runs one git command in a project and resolves with its stdout.
+ *
+ * execFile rather than exec: the project path comes from a text field the
+ * operator typed, and a path containing a space, an ampersand or a quote would
+ * otherwise be interpreted by a shell rather than treated as a directory.
+ *
+ * Rejection is not exceptional here. A project that is not a repository is an
+ * ordinary state, so the caller distinguishes rather than this throwing.
+ */
+function runGit(cwd: string, args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  return new Promise(resolve => {
+    execFile("git", args, { cwd, timeout: 10_000, windowsHide: true, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+      resolve({ ok: !error, stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
+    });
+  });
+}
+
+/** What one project's git state is, in the shape the Dev view renders. */
+export type ProjectGit = GitSnapshot & { commit?: GitCommit | null; summary: string };
+
+/** Branch, divergence, dirty count and last commit for one project. */
+async function projectGit(project: DexNestProject): Promise<ProjectGit> {
+  const absent = (problem: string): ProjectGit => ({ repo: false, problem, summary: describeGit({ repo: false, problem }) });
+  if (!project.path || !existsSync(project.path)) {
+    return absent("Project folder not found.");
+  }
+
+  const status = await runGit(project.path, ["status", "--porcelain=v2", "--branch"]);
+  if (!status.ok) {
+    // git prints its own reason, and "not a git repository" is by far the most
+    // common one. Surfacing it beats a generic failure the operator has to
+    // reproduce in a terminal to understand.
+    const reason = status.stderr.trim().split("\n")[0] || "git could not read this folder.";
+    return absent(reason.replace(/^fatal:\s*/i, ""));
+  }
+
+  const snapshot = parseStatus(status.stdout);
+  // Read separately: a repository with no commits yet has a valid status and
+  // an empty log, and asking for both at once would lose the status too.
+  const log = await runGit(project.path, ["log", "-1", "--format=%H%x00%s%x00%aI"]);
+  // Phrased here rather than in the renderer. The renderer cannot reach into
+  // src/main anyway, and two surfaces wording the same state their own way is
+  // how they start describing different repositories.
+  return { ...snapshot, commit: log.ok ? parseCommit(log.stdout) : null, summary: describeGit(snapshot) };
+}
+
+/**
+ * Every project's git state, gathered at once.
+ *
+ * Read on demand rather than stored. A count that was true when it was written
+ * is worse than no count: a working tree changes with every save, and a stale
+ * "clean" is exactly the reading someone would act on.
+ */
+async function projectsGit(): Promise<Record<string, ProjectGit>> {
+  const projects = loadProjects();
+  const snapshots = await Promise.all(projects.map(project => projectGit(project)));
+  return Object.fromEntries(projects.map((project, index) => [project.id, snapshots[index]!]));
+}
+
 function calendarState() {
   refreshNudges("system", false);
   const events = loadCalendarEvents().sort((a, b) => a.date.localeCompare(b.date) || (a.startTime ?? "").localeCompare(b.startTime ?? ""));
@@ -21143,6 +21207,10 @@ function registerIpcHandlers(): void {
   ipcMain.handle("dexnest:get-drop-state", () => dropState());
 
   ipcMain.handle("dexnest:get-today-agenda", () => todayAgenda());
+
+  // Awaited per call rather than cached: git is cheap, and the alternative is
+  // a dashboard that reports the tree as it was when the app started.
+  ipcMain.handle("dexnest:projects-git", () => projectsGit());
 
   ipcMain.handle("dexnest:calendar-accounts", () => ({
     // canWrite travels with the account rather than being recomputed in the

@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld("dexNest", {
   getAppInfo: () => ipcRenderer.invoke("dexnest:get-app-info"),
   listActions: () => ipcRenderer.invoke("dexnest:list-actions"),
   listProjects: () => ipcRenderer.invoke("dexnest:list-projects"),
+  getProjectsGit: () => ipcRenderer.invoke("dexnest:projects-git"),
   listCommandResults: () => ipcRenderer.invoke("dexnest:list-command-results"),
   clearCommandResult: (actionId: string) => ipcRenderer.invoke("dexnest:clear-command-result", actionId),
   listPinnedActions: () => ipcRenderer.invoke("dexnest:list-pinned-actions"),
