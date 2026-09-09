@@ -430,7 +430,15 @@ interface DexNestProject {
 type DevProjectType = "local_app" | "live_website" | "mobile_app" | "external_server";
 interface DevProjectFolder { label: string; path: string; }
 interface DevProjectLink { label: string; url: string; }
-interface DevProjectCommand { label: string; command: string; requiresConfirmation?: boolean; }
+/**
+ * A labelled command belonging to one project.
+ *
+ * The id is what an action and a Stream Deck card are addressed by, so it must
+ * survive renaming, reordering and deletion of its neighbours. A position would
+ * not: removing the first entry would silently repoint every button below it at
+ * a different command, and the card on the hardware would not change its face.
+ */
+interface DevProjectCommand { id: string; label: string; command: string; requiresConfirmation?: boolean; }
 
 interface ProjectInput {
   id?: string;
@@ -450,7 +458,8 @@ interface ProjectInput {
   projectType?: DevProjectType;
   folders?: DevProjectFolder[];
   links?: DevProjectLink[];
-  commandList?: DevProjectCommand[];
+  // Ids are assigned on save, so an entry arriving from the form has none yet.
+  commandList?: Array<Partial<DevProjectCommand>>;
 }
 
 interface RunActionInput {
@@ -11169,6 +11178,25 @@ function getProjectActionDefinitions(projects = loadProjects()): DexNestActionDe
       });
     }
 
+    // One action per labelled command. These sit beside the five fixed slots
+    // rather than replacing them: start and stop carry lifecycle meaning that
+    // an arbitrary command does not.
+    for (const entry of project.commandList ?? []) {
+      actions.push({
+        ...baseAction,
+        id: `${base}.run_cmd_${entry.id}`,
+        title: `${project.name}: ${entry.label}`,
+        description: `Run "${entry.label}" for ${project.name}.`,
+        dangerLevel: entry.requiresConfirmation || isDangerousCommand(entry.command) ? "danger" : "caution",
+        requiresConfirmation: Boolean(entry.requiresConfirmation) || isDangerousCommand(entry.command),
+        confirmationRule: entry.requiresConfirmation
+          ? "Marked as needing confirmation."
+          : isDangerousCommand(entry.command) ? "Command looks destructive." : null,
+        handlerType: "local_command",
+        handlerRef: entry.command
+      });
+    }
+
     for (const key of ["start", "build", "test", "typecheck", "custom"] as const) {
       if (project.commands[key].trim()) {
         const command = project.commands[key].trim();
@@ -11555,14 +11583,28 @@ function stripAnsi(value: string): string {
   return value.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
 }
 
+/**
+ * Runs one of a project's commands.
+ *
+ * Takes either a fixed slot name or a labelled entry from commandList. The
+ * body below is identical for both - same cwd, same timeout, same journalling
+ * - and the only differences are which string to run and what to call it, so
+ * they are resolved here rather than by duplicating the whole path.
+ */
 function runProjectCommand(
   project: DexNestProject,
-  commandKey: keyof DexNestProject["commands"],
+  target: keyof DexNestProject["commands"] | DevProjectCommand,
   source: DexNestActionTrigger,
   confirmedDangerous = false
 ) {
-  const command = project.commands[commandKey].trim();
-  const actionId = `dev.project.${project.id}.run_${commandKey}`;
+  const fixedSlot = typeof target === "string";
+  const command = (fixedSlot ? project.commands[target] : target.command).trim();
+  const actionId = fixedSlot
+    ? `dev.project.${project.id}.run_${target}`
+    : `dev.project.${project.id}.run_cmd_${target.id}`;
+  // What this command is called in a log line. A slot's name is its label;
+  // a listed command has one the operator chose.
+  const commandKey = fixedSlot ? target : target.label;
   const startedAt = Date.now();
 
   return new Promise<{
@@ -11715,7 +11757,19 @@ function upsertProject(input: ProjectInput): DexNestProject {
     projectType: input.projectType ?? existingProject?.projectType,
     folders: input.folders ?? existingProject?.folders ?? [],
     links: input.links ?? existingProject?.links ?? [],
-    commandList: input.commandList ?? existingProject?.commandList ?? [],
+    // Entries predating the id, or hand-written into projects.json, get one
+    // here rather than being skipped - the alternative is a command that is
+    // stored, shown, and quietly unaddressable.
+    commandList: (input.commandList ?? existingProject?.commandList ?? [])
+      .map(entry => ({
+        ...entry,
+        id: typeof entry.id === "string" && /^[a-z0-9][a-z0-9_-]*$/.test(entry.id) ? entry.id : createId("cmd").toLowerCase(),
+        label: String(entry.label ?? "").trim(),
+        command: String(entry.command ?? "").trim()
+      }))
+      // A nameless or empty command cannot be pressed meaningfully and would
+      // export as a blank card.
+      .filter(entry => entry.label && entry.command),
     createdAt: existingProject?.createdAt ?? now,
     updatedAt: now,
     lastOpenedAt: existingProject?.lastOpenedAt ?? null
@@ -20663,6 +20717,30 @@ async function runProjectAction(actionId: string, projectId: string, operation: 
       const combinedStdout = `${stopResult.stdout}\n\n--- start ---\n${startResult.stdout}`;
       return finishLifecycle(project, actionId, "restart", source, startResult.ok ? "success" : "failed", startResult.ok ? "Project restarted." : "Restart failed during start.", combinedStdout, startResult.stderr, startedAt, { ports: project.ports ?? [] });
     });
+  }
+
+  // Before the generic run_ branch, which would otherwise read "cmd_abc123"
+  // as a slot name and index project.commands with it.
+  if (operation.startsWith("run_cmd_")) {
+    const entryId = operation.slice("run_cmd_".length);
+    const entry = (project.commandList ?? []).find(item => item.id === entryId);
+    if (!entry) {
+      // Deleting a command leaves its Stream Deck card on the hardware, and a
+      // card pressed after the command is gone should say so rather than fail
+      // as though the command itself broke.
+      localDb.appendActionEvent({
+        module: "DexNest Dev",
+        actionId,
+        eventType: "project_command_missing",
+        status: "failed",
+        source,
+        summary: `${project.name} has no saved command with that id.`,
+        metadataJson: { ...projectMetadata(project), entryId }
+      });
+      return { ok: false, actionId, error: "That command is no longer saved on this project. Re-export the button pack." };
+    }
+    const params = typeof payload === "object" && payload !== null ? (payload as { confirmedDangerous?: boolean }) : {};
+    return runProjectCommand(project, entry, source, params.confirmedDangerous);
   }
 
   if (operation.startsWith("run_")) {

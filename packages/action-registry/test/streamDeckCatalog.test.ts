@@ -95,3 +95,57 @@ test("every generated button names an action that exists or is a placeholder", (
     assert.ok(registry.has(item.actionId), `${item.actionId} is not a registered action`);
   }
 });
+
+
+// --- labelled commands --------------------------------------------------------
+
+test("each labelled command becomes its own card", () => {
+  // The reason commandList exists: the five fixed slots cannot name a
+  // migration, a seed or a deploy, and those are the commands most worth a
+  // physical button.
+  const items = devGroup([project({
+    commandList: [
+      { id: "c1", label: "Migrate", command: "pnpm db:migrate" },
+      { id: "c2", label: "Seed", command: "pnpm db:seed" }
+    ]
+  })]).items;
+  const migrate = items.find(item => item.file === "cmd-p1-c1")!;
+  assert.equal(migrate.actionId, "dev.project.p1.run_cmd_c1");
+  assert.equal(migrate.title, "DexNest: Migrate");
+  assert.ok(items.some(item => item.file === "cmd-p1-c2"));
+});
+
+test("a card is addressed by id, not by position", () => {
+  // Removing an entry must not silently repoint the cards below it at a
+  // different command while their faces stay the same.
+  const before = devGroup([project({
+    commandList: [
+      { id: "c1", label: "Migrate", command: "pnpm db:migrate" },
+      { id: "c2", label: "Deploy", command: "pnpm deploy" }
+    ]
+  })]).items.find(item => item.file === "cmd-p1-c2")!;
+  const after = devGroup([project({
+    commandList: [{ id: "c2", label: "Deploy", command: "pnpm deploy" }]
+  })]).items.find(item => item.file === "cmd-p1-c2")!;
+  assert.equal(before.actionId, after.actionId);
+});
+
+test("a command needing confirmation is pre-confirmed on the card, and says so", () => {
+  // An HTTP caller has no dialog to answer, so without this the button would
+  // refuse every press. The note is the only warning that survives to the deck.
+  const card = devGroup([project({
+    commandList: [{ id: "c1", label: "Reset", command: "git reset --hard", requiresConfirmation: true }]
+  })]).items.find(item => item.file === "cmd-p1-c1")!;
+  assert.deepEqual(card.params, { confirmedDangerous: true });
+  assert.match(card.note ?? "", /without asking/);
+});
+
+test("an incomplete entry produces no card", () => {
+  const items = devGroup([project({
+    commandList: [
+      { id: "c1", label: "", command: "pnpm x" },
+      { id: "c2", label: "No command", command: "   " }
+    ]
+  })]).items;
+  assert.ok(!items.some(item => item.file.startsWith("cmd-p1-")));
+});

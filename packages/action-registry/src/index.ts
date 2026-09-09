@@ -12,6 +12,8 @@ export interface StreamDeckCatalogProject {
     typecheck?: string;
     custom?: string;
   };
+  /** Labelled commands beyond the five fixed slots. */
+  commandList?: Array<{ id: string; label: string; command: string; requiresConfirmation?: boolean }>;
 }
 
 export interface StreamDeckCatalogItem {
@@ -226,6 +228,27 @@ export function createStreamDeckActionCatalog(projects: StreamDeckCatalogProject
         actionId: `dev.project.${project.id}.run_${key}`,
         params: {},
         description: `Run the ${key} command for ${project.name}.`
+      });
+    }
+
+    // A card per labelled command. This is the reason commandList exists: the
+    // five fixed slots cannot name a migration, a seed or a deploy, and those
+    // are exactly the commands worth a physical button.
+    for (const entry of project.commandList ?? []) {
+      if (!entry.id || !entry.label?.trim() || !entry.command?.trim()) continue;
+      items.push({
+        category: "Dev",
+        file: `cmd-${project.id}-${entry.id}`,
+        title: `${project.name}: ${entry.label}`,
+        actionId: `dev.project.${project.id}.run_cmd_${entry.id}`,
+        // A command marked as needing confirmation is pre-confirmed on the
+        // card, the way stop is: an HTTP caller has no dialog to answer, so
+        // without this the button would refuse every press.
+        params: entry.requiresConfirmation ? { confirmedDangerous: true } : {},
+        description: `Run "${entry.label}" for ${project.name}.`,
+        ...(entry.requiresConfirmation
+          ? { note: "Marked as needing confirmation in DexNest. Pressing this card runs it without asking." }
+          : {})
       });
     }
 

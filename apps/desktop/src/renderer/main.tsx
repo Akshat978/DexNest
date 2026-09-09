@@ -714,7 +714,7 @@ export interface DexNestProject {
   projectType?: "local_app" | "live_website" | "mobile_app" | "external_server";
   folders?: Array<{ label: string; path: string }>;
   links?: Array<{ label: string; url: string }>;
-  commandList?: Array<{ label: string; command: string; requiresConfirmation?: boolean }>;
+  commandList?: Array<{ id: string; label: string; command: string; requiresConfirmation?: boolean }>;
   createdAt: string;
   updatedAt: string;
   lastOpenedAt?: string | null;
@@ -739,6 +739,15 @@ interface ProjectFormState {
   logPath: string;
   dockerComposeEnabled: boolean;
   healthUrl: string;
+  /**
+   * Labelled commands beyond the five fixed slots.
+   *
+   * Carried through the form rather than merely preserved on save. It was
+   * preserved before - normalizeProject falls back to the stored value - which
+   * is why an unreachable field could sit here for so long without losing data
+   * and without ever being usable.
+   */
+  commandList: Array<{ id?: string; label: string; command: string; requiresConfirmation?: boolean }>;
 }
 
 interface ProjectCommandResult {
@@ -8283,7 +8292,8 @@ const emptyProjectForm: ProjectFormState = {
   logCommand: "",
   logPath: "",
   dockerComposeEnabled: false,
-  healthUrl: ""
+  healthUrl: "",
+  commandList: []
 };
 
 function newsTone(status: NewsCacheStatus, enabled: boolean): "ok" | "warn" | "info" | "error" {
@@ -8965,7 +8975,8 @@ function projectToForm(project: DexNestProject): ProjectFormState {
     logCommand: project.logCommand ?? "",
     logPath: project.logPath ?? "",
     dockerComposeEnabled: Boolean(project.dockerComposeEnabled),
-    healthUrl: project.healthUrl ?? ""
+    healthUrl: project.healthUrl ?? "",
+    commandList: (project.commandList ?? []).map(entry => ({ ...entry }))
   };
 }
 
@@ -8990,7 +9001,10 @@ function formToProjectInput(form: ProjectFormState) {
     logCommand: form.logCommand,
     logPath: form.logPath,
     dockerComposeEnabled: form.dockerComposeEnabled,
-    healthUrl: form.healthUrl
+    healthUrl: form.healthUrl,
+    // Blank rows are dropped here rather than saved and filtered later, so the
+    // form does not quietly keep a half-typed row across a reopen.
+    commandList: form.commandList.filter(entry => entry.label.trim() && entry.command.trim())
   };
 }
 
@@ -9375,6 +9389,29 @@ function DevView({
                         </button>
                       );
                     })()}
+                    {/* The labelled commands, pressable where they were defined.
+                        Reaching them only from a Stream Deck would make the
+                        editor a form for configuring other hardware. */}
+                    {(selProject.commandList ?? []).map((entry) => {
+                      const actionId = `dev.project.${selProject.id}.run_cmd_${entry.id}`;
+                      const running = commandRunResults[actionId]?.status === "running";
+                      return (
+                        <button
+                          key={entry.id}
+                          type="button"
+                          disabled={running}
+                          // runProjectAction asks for its own confirmation when
+                          // the command looks destructive; the explicit flag
+                          // covers the ones only the operator knows are risky.
+                          onClick={() => void runProjectAction(selProject, actionId, entry.command, Boolean(entry.requiresConfirmation))}
+                          className="glass-card lift flex flex-col items-center gap-2 p-3 disabled:opacity-40"
+                          title={entry.command}
+                        >
+                          <TerminalSquare className="h-5 w-5" style={{ color: "#8B5CF6" }} />
+                          <span className="truncate font-mono text-xs text-[#F5F5F5]">{running ? "…" : entry.label}</span>
+                        </button>
+                      );
+                    })}
                   </div>
                 </GlassCard>
                 )}
@@ -9469,6 +9506,71 @@ function DevView({
               <label className="text-xs text-[#A3A3A3]">Health URL<input className="technical mt-1 w-full" value={form.healthUrl} onChange={(event) => updateForm("healthUrl", event.target.value)} placeholder="http://localhost:5173/health" /></label>
               <label className="text-xs text-[#A3A3A3]">Log path<input className="technical mt-1 w-full" value={form.logPath} onChange={(event) => updateForm("logPath", event.target.value)} placeholder="file/folder to open" /></label>
               <label className="text-xs text-[#A3A3A3] sm:col-span-2">Log command<input className="technical mt-1 w-full" value={form.logCommand} onChange={(event) => updateForm("logCommand", event.target.value)} placeholder="e.g. docker compose logs --tail 200" /></label>
+            </div>
+            <div className="mt-4">
+              <div className="mb-1.5 flex items-center justify-between gap-2">
+                <p className="text-xs text-[#A3A3A3]">Extra commands</p>
+                <button
+                  type="button"
+                  onClick={() => setForm((current) => ({ ...current, commandList: [...current.commandList, { label: "", command: "", requiresConfirmation: false }] }))}
+                  className="min-h-0 rounded-lg border border-[#262626] bg-transparent px-2 py-1 text-[11px] text-[#A3A3A3] hover:border-[#3B82F6]/40 hover:text-[#F5F5F5]"
+                >
+                  Add command
+                </button>
+              </div>
+              <p className="mb-2 text-[10px] text-[#525252]">
+                Anything the five slots above cannot name — a migration, a seed, a deploy. Each becomes an action and a Stream Deck button.
+              </p>
+              {form.commandList.length === 0 ? (
+                <p className="text-[10px] text-[#3f3f3f]">None yet.</p>
+              ) : (
+                <div className="space-y-2">
+                  {form.commandList.map((entry, index) => (
+                    <div key={entry.id ?? `new-${index}`} className="rounded-lg border border-[#1f1f1f] bg-[#0a0a0a] p-2">
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        <input
+                          className="w-full"
+                          value={entry.label}
+                          placeholder="Label, e.g. Migrate"
+                          onChange={(event) => setForm((current) => ({
+                            ...current,
+                            commandList: current.commandList.map((item, at) => at === index ? { ...item, label: event.target.value } : item)
+                          }))}
+                        />
+                        <input
+                          className="technical w-full"
+                          value={entry.command}
+                          placeholder="pnpm db:migrate"
+                          onChange={(event) => setForm((current) => ({
+                            ...current,
+                            commandList: current.commandList.map((item, at) => at === index ? { ...item, command: event.target.value } : item)
+                          }))}
+                        />
+                      </div>
+                      <div className="mt-1.5 flex items-center justify-between gap-2">
+                        <label className="flex items-center gap-1.5 text-[10px] text-[#A3A3A3]">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(entry.requiresConfirmation)}
+                            onChange={(event) => setForm((current) => ({
+                              ...current,
+                              commandList: current.commandList.map((item, at) => at === index ? { ...item, requiresConfirmation: event.target.checked } : item)
+                            }))}
+                          />
+                          Ask before running
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => setForm((current) => ({ ...current, commandList: current.commandList.filter((_, at) => at !== index) }))}
+                          className="min-h-0 border-0 bg-transparent text-[10px] text-[#525252] hover:text-[#EF4444]"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
             <label className="mt-3 flex items-center gap-2 text-xs text-[#A3A3A3]"><input type="checkbox" checked={form.dockerComposeEnabled} onChange={(event) => setForm((current) => ({ ...current, dockerComposeEnabled: event.target.checked }))} />Docker Compose in project (enables Docker down)</label>
             <label className="mt-3 block text-xs text-[#A3A3A3]">Notes<textarea className="mt-1 w-full" value={form.notes} onChange={(event) => updateForm("notes", event.target.value)} /></label>
