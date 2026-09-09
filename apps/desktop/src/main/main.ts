@@ -1,11 +1,12 @@
-import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, safeStorage, screen, shell, Tray } from "electron";
+import { app, BrowserWindow, clipboard, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, safeStorage, screen, shell, Tray } from "electron";
 import { exec, execFile, execFileSync } from "node:child_process";
 import { canPush, describe as describeGit, parseCommit, parseStatus, type GitCommit, type GitSnapshot } from "./gitStatus.ts";
+import { overlayHtml, rectFromDrag, SELECTION_SCRIPT, type DragPoints } from "./captureRegion.ts";
 import { copyFileSync, cpSync, createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer, get as httpGet, type IncomingMessage, type ServerResponse } from "node:http";
 import { get as httpsGet } from "node:https";
 import { createConnection } from "node:net";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { networkInterfaces } from "node:os";
@@ -4667,6 +4668,19 @@ function defaultKeyboardShortcutSettings(): KeyboardShortcutSettings {
         shortcut: "CommandOrControl+Alt+P",
         targetType: "action",
         actionId: "system.performance.toggle",
+        enabled: true,
+        allowDangerous: false,
+        status: "disabled",
+        lastError: null
+      },
+      {
+        id: "shortcut-capture-region-ocr",
+        label: "Copy text from screen",
+        // Shift, because Ctrl+Alt+C is already multi-copy and the two would be
+        // easy to hit for one another.
+        shortcut: "CommandOrControl+Alt+Shift+C",
+        targetType: "action",
+        actionId: "tools.capture_region_ocr",
         enabled: true,
         allowDangerous: false,
         status: "disabled",
@@ -10945,6 +10959,105 @@ function execFileAsync(file: string, args: string[], cwd?: string, timeoutMs?: n
       resolvePromise({ stdout, stderr });
     });
   });
+}
+
+
+// --- selecting a region of the screen -----------------------------------------
+
+/**
+ * Freezes the screen the pointer is on and lets one region of it be chosen.
+ *
+ * Resolves with a PNG path, or null when nothing was selected. Cancelling is
+ * an ordinary outcome rather than a failure: most presses of a capture key
+ * that turn out to be mistimed end in Escape.
+ *
+ * The screenshot is taken first and shown as a still. Selecting over the live
+ * desktop would mean the thing being framed could move, scroll or repaint
+ * between the drag and the crop, and the captured region would not be the one
+ * that was on screen when the pointer went down.
+ */
+async function captureScreenRegion(): Promise<string | null> {
+  const cursor = screen.getCursorScreenPoint();
+  const display = screen.getDisplayNearestPoint(cursor);
+  const scaleFactor = display.scaleFactor || 1;
+
+  // Asked for at physical resolution. The default thumbnail is small enough
+  // that text in it is unreadable, and OCR on a downscaled crop returns
+  // plausible-looking nonsense rather than nothing.
+  const sources = await desktopCapturer.getSources({
+    types: ["screen"],
+    thumbnailSize: {
+      width: Math.round(display.size.width * scaleFactor),
+      height: Math.round(display.size.height * scaleFactor)
+    }
+  });
+  const source = sources.find(item => String(item.display_id) === String(display.id)) ?? sources[0];
+  if (!source || source.thumbnail.isEmpty()) {
+    throw new Error("DexNest could not read the screen. Check Windows screen-recording permissions.");
+  }
+
+  const tempFolder = createToolsTempFolder("capture_region");
+  const shotPath = join(tempFolder, "screen.png");
+  writeFileSync(shotPath, source.thumbnail.toPNG());
+
+  const overlayPath = join(tempFolder, "overlay.html");
+  writeFileSync(overlayPath, overlayHtml(pathToFileURL(shotPath).href), "utf8");
+
+  const overlay = new BrowserWindow({
+    x: display.bounds.x,
+    y: display.bounds.y,
+    width: display.bounds.width,
+    height: display.bounds.height,
+    frame: false,
+    transparent: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    fullscreenable: false,
+    resizable: false,
+    movable: false,
+    show: false,
+    webPreferences: {
+      // No preload and no node integration. This window displays a picture of
+      // whatever was on the operator's screen, which may be anything at all,
+      // so it is given no way to reach the rest of DexNest. The selection comes
+      // back through executeJavaScript's own return value instead.
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true
+    }
+  });
+  // Above full-screen apps, which is where a code editor or a terminal in
+  // focus mode usually is when something needs reading off it.
+  overlay.setAlwaysOnTop(true, "screen-saver");
+
+  const cleanUp = () => {
+    try { if (!overlay.isDestroyed()) overlay.destroy(); } catch { /* already gone */ }
+    try { rmSync(tempFolder, { recursive: true, force: true }); } catch { /* temp */ }
+  };
+
+  try {
+    await overlay.loadFile(overlayPath);
+    overlay.show();
+    overlay.focus();
+
+    const drag = await overlay.webContents.executeJavaScript(SELECTION_SCRIPT, true) as DragPoints | null;
+    if (!drag) { cleanUp(); return null; }
+
+    const rect = rectFromDrag(drag, scaleFactor, source.thumbnail.getSize());
+    if (!rect) { cleanUp(); return null; }
+
+    const cropped = source.thumbnail.crop(rect);
+    // Written outside the temp folder that is about to be removed, and into a
+    // folder of its own so the caller owns its lifetime.
+    const outFolder = createToolsTempFolder("region");
+    const outPath = join(outFolder, "region.png");
+    writeFileSync(outPath, cropped.toPNG());
+    cleanUp();
+    return outPath;
+  } catch (error) {
+    cleanUp();
+    throw error;
+  }
 }
 
 function createToolsTempFolder(operation: string): string {
@@ -19359,6 +19472,66 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
   const navigationResult = openNavigationAction(action, source, startedAt);
   if (navigationResult) {
     return navigationResult;
+  }
+
+  if (actionId === "tools.capture_region_ocr") {
+    const startedAt = Date.now();
+    let imagePath: string | null = null;
+    try {
+      imagePath = await captureScreenRegion();
+      if (!imagePath) {
+        // Cancelling is the ordinary end of a mistimed press, not a failure,
+        // and saying nothing is the right amount to say about it.
+        logActionEvent(action, "cancelled", source, "Region capture cancelled before a selection was made.", {}, null, Date.now() - startedAt);
+        return { ok: false, actionId, error: "Nothing selected." };
+      }
+
+      const settings = loadToolsSettings();
+      const engine = safeOcrEngine(settings.ocrEngine);
+      if (engine === "easyocr_placeholder") {
+        throw new Error("EasyOCR is a placeholder. Choose PaddleOCR or Tesseract in Tools settings.");
+      }
+
+      const outputBase = join(dirname(imagePath), "ocr-output");
+      const result = await runOcrEngine(imagePath, outputBase, engine, safeOcrLanguage(undefined), safeOcrDevice(settings.ocrDevice));
+      const text = result.text.trim();
+
+      if (!text) {
+        logActionEvent(action, "skipped", source, "Region OCR found no text.", { engine: result.engine }, null, Date.now() - startedAt);
+        notifyHotkeyOutcome("No text found in that region.", "error");
+        return { ok: false, actionId, error: "No text found in that region." };
+      }
+
+      clipboard.writeText(text);
+      // Recorded the same way a manual clipboard save is, so it is searchable
+      // later rather than only being the current clipboard - the whole point
+      // of reading something off the screen is usually to keep it.
+      saveClipboardText(text, "manual");
+
+      const words = text.split(/\s+/).filter(Boolean).length;
+      // Never the text itself. This reads whatever happened to be on screen,
+      // which may be a password field, a private message, or a bank balance,
+      // and the journal is durable in a way the clipboard is not.
+      logActionEvent(action, "success", source, `Region OCR captured ${words} word${words === 1 ? "" : "s"}.`, {
+        engine: result.engine,
+        words,
+        charCount: text.length,
+        averageConfidence: result.averageConfidence
+      }, null, Date.now() - startedAt);
+      notifyHotkeyOutcome(`Copied ${words} word${words === 1 ? "" : "s"} from the screen.`, "success");
+      return { ok: true, actionId, message: `Copied ${words} word${words === 1 ? "" : "s"}.`, charCount: text.length };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Region OCR failed.";
+      logActionEvent(action, "failed", source, "Region OCR failed.", {}, reason, Date.now() - startedAt);
+      notifyHotkeyOutcome(reason, "error");
+      return { ok: false, actionId, error: reason };
+    } finally {
+      // The crop is a picture of the operator's screen. It exists to be read
+      // once and has no reason to outlive that, whether or not OCR succeeded.
+      if (imagePath) {
+        try { rmSync(dirname(imagePath), { recursive: true, force: true }); } catch { /* temp */ }
+      }
+    }
   }
 
   if (actionId === "dev.git_status_all") {

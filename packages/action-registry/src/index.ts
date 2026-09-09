@@ -270,6 +270,16 @@ export function createStreamDeckActionCatalog(projects: StreamDeckCatalogProject
   // One button that answers "is anything unpushed anywhere", which is the
   // question actually asked at the end of a day and the one that otherwise
   // costs a visit to every project in turn.
+  groups.find(group => group.id === "core-command")?.items.push({
+    category: "Core",
+    file: "copy-text-from-screen",
+    title: "Copy Text From Screen",
+    actionId: "tools.capture_region_ocr",
+    params: {},
+    description: "Select a region of the screen and copy the text in it.",
+    note: "Opens a selection overlay on the display the pointer is on. Esc cancels."
+  });
+
   const statusItem: StreamDeckCatalogItem = {
     category: "Dev",
     file: "git-status-all",
@@ -428,6 +438,28 @@ export const seededActions = [
     enabled: true,
     status: "available" as const
   })),
+  {
+    id: "tools.capture_region_ocr",
+    title: "Copy Text From Screen",
+    moduleId: "tools",
+    module: "tools",
+    description: "Select a region of the screen and copy the text in it to the clipboard.",
+    category: "capture",
+    // Reads the screen once, on a deliberate press, and writes only to the
+    // clipboard. Deliberately NOT exposed to the phone or to Autopilot: this
+    // is a utility a person invokes, and an agent that could call it would be
+    // an agent that can read the screen.
+    dangerLevel: "caution",
+    requiresConfirmation: false,
+    confirmationRule: null,
+    reversible: false,
+    undoActionId: null,
+    handlerType: "internal_function",
+    handlerRef: "tools.capture_region_ocr",
+    allowedTriggers: ["command", "deck", "module_ui"],
+    enabled: true,
+    status: "available"
+  },
   {
     id: "dev.git_status_all",
     title: "Git Status (All Projects)",
