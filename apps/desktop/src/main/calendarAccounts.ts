@@ -306,6 +306,129 @@ export function parseGrantedScopes(scope: string | null | undefined): string[] |
   return parts.length > 0 ? parts : null;
 }
 
+
+// --- writing back to Google ---------------------------------------------------
+
+/** A DexNest event, in the shape the write path needs. */
+export interface WritableEvent {
+  title: string;
+  date: string;
+  startTime?: string | null;
+  endTime?: string | null;
+  allDay: boolean;
+  notes?: string | null;
+}
+
+/**
+ * A DexNest event as a Google Calendar resource.
+ *
+ * Kept apart from the request that sends it so the mapping can be checked
+ * without a network or an account. Times are the awkward part: DexNest stores
+ * a local date and a wall-clock time with no zone, and Google needs either an
+ * all-day date pair or a pair of instants. Sending the wall clock with an
+ * explicit timeZone lets Google resolve it, rather than this guessing an
+ * offset and being an hour wrong twice a year.
+ */
+export function googleEventBody(event: WritableEvent, timeZone: string): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    summary: event.title,
+    // location, because that is where fetchEvents reads notes back from. A
+    // round trip that put notes somewhere else would lose them on the next
+    // sync, which is worse than never having sent them.
+    location: event.notes ?? ""
+  };
+
+  if (event.allDay) {
+    // Google's all-day end date is exclusive: a single-day event ends on the
+    // following day. Sending the same date for both is rejected outright.
+    body.start = { date: event.date };
+    body.end = { date: addDays(event.date, 1) };
+    return body;
+  }
+
+  const start = event.startTime || "09:00";
+  // An event with a start and no end is a point in time to DexNest and an
+  // error to Google. An hour is the assumption a calendar app makes.
+  const end = event.endTime || addMinutes(start, 60);
+  body.start = { dateTime: `${event.date}T${start}:00`, timeZone };
+  body.end = {
+    // An end at or before the start would be rejected. This happens for real:
+    // 23:30 to 00:15 is a legal thing to want and cannot be expressed by a
+    // DexNest event, which has no end date - so it is clamped rather than sent
+    // and refused.
+    dateTime: `${event.date}T${end <= start ? addMinutes(start, 60) : end}:00`,
+    timeZone
+  };
+  return body;
+}
+
+function addDays(date: string, days: number): string {
+  const parsed = new Date(`${date}T00:00:00`);
+  parsed.setDate(parsed.getDate() + days);
+  return isoDate(parsed);
+}
+
+function addMinutes(time: string, minutes: number): string {
+  const [hours = "0", mins = "0"] = time.split(":");
+  const total = Number(hours) * 60 + Number(mins) + minutes;
+  // Clamped rather than wrapped: an event pushed past midnight would land on
+  // the wrong day, and 23:59 on the right day is the smaller lie.
+  const capped = Math.min(total, 23 * 60 + 59);
+  return `${String(Math.floor(capped / 60)).padStart(2, "0")}:${String(capped % 60).padStart(2, "0")}`;
+}
+
+async function sendJson(
+  url: string,
+  accessToken: string,
+  method: "POST" | "PATCH" | "DELETE",
+  body?: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  const response = await fetch(url, {
+    method,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: "application/json",
+      ...(body ? { "Content-Type": "application/json" } : {})
+    },
+    ...(body ? { body: JSON.stringify(body) } : {})
+  });
+
+  // 404 and 410 on a delete mean the event is already gone. That is the
+  // outcome that was asked for, so it is not an error to report.
+  if (method === "DELETE" && (response.ok || response.status === 404 || response.status === 410)) {
+    return {};
+  }
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`${response.status}: ${text.slice(0, 200)}`);
+  }
+  // A successful DELETE has no body; everything else does.
+  return response.status === 204 ? {} : ((await response.json()) as Record<string, unknown>);
+}
+
+const GOOGLE_EVENTS = "https://www.googleapis.com/calendar/v3/calendars/primary/events";
+
+export const writeEvents = {
+  /** Creates the event and returns the id Google gave it. */
+  async create(accessToken: string, event: WritableEvent, timeZone: string): Promise<string> {
+    const created = await sendJson(GOOGLE_EVENTS, accessToken, "POST", googleEventBody(event, timeZone));
+    const id = String(created.id ?? "").trim();
+    if (!id) throw new Error("Google accepted the event but returned no id.");
+    return id;
+  },
+
+  async update(accessToken: string, remoteId: string, event: WritableEvent, timeZone: string): Promise<void> {
+    // PATCH rather than PUT: DexNest models a fraction of what a Google event
+    // can hold, and a full replace would strip attendees, conferencing and
+    // reminders that were set elsewhere.
+    await sendJson(`${GOOGLE_EVENTS}/${encodeURIComponent(remoteId)}`, accessToken, "PATCH", googleEventBody(event, timeZone));
+  },
+
+  async remove(accessToken: string, remoteId: string): Promise<void> {
+    await sendJson(`${GOOGLE_EVENTS}/${encodeURIComponent(remoteId)}`, accessToken, "DELETE");
+  }
+};
+
 export function dedupe(events: readonly SyncedEvent[]): SyncedEvent[] {
   const seen = new Set<string>();
   const kept: SyncedEvent[] = [];

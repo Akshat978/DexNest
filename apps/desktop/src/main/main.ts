@@ -25,7 +25,7 @@ import { createCompanionApi, hashToken, openPairing } from "./companionApi.js";
 import { buildAgenda, localDate, weekdayOf, type TodayAgenda } from "@dexnest/today";
 import { authorise as oauthAuthorise, refresh as oauthRefresh } from "./oauth.js";
 import {
-  accountCanWrite, dedupe, fetchEvents, parseGrantedScopes, PROVIDERS, whoAmI,
+  accountCanWrite, dedupe, fetchEvents, parseGrantedScopes, PROVIDERS, whoAmI, writeEvents,
   type CalendarAccount, type CalendarProviderId, type SyncedEvent
 } from "./calendarAccounts.js";
 import { createProviderLimitsService } from "./providerLimits.js";
@@ -1245,6 +1245,18 @@ interface CalendarEvent {
   reminderMinutesBefore?: number | null; // lead time before start: 0/30/60/720/1440
   color?: string | null; // hex from CALENDAR_COLORS palette
   notes?: string | null;
+  /**
+   * The id this event has on the connected calendar, once it has been sent.
+   *
+   * Null means DexNest has never pushed it - either because no account can be
+   * written to, or because the attempt failed. It is what makes an echo of our
+   * own write recognisable when it comes back on the next sync.
+   */
+  remoteId?: string | null;
+  remoteAccountId?: string | null;
+  remoteSyncedAt?: string | null;
+  /** Why the last push did not land, when it did not. */
+  remotePushError?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -13160,6 +13172,123 @@ async function gatherWorklog(date: string): Promise<WorklogInput> {
   };
 }
 
+
+// --- pushing DexNest events to a connected calendar ---------------------------
+
+/**
+ * The account DexNest writes to.
+ *
+ * The first connected Google account that granted write scope. There is no
+ * picker because there is no second choice to make yet: Outlook cannot be
+ * written to, and a setting offering one option is a setting that only exists
+ * to be got wrong.
+ */
+function writeTargetAccount(): CalendarAccount | null {
+  return loadCalendarAccounts().find(account => account.enabled && accountCanWrite(account)) ?? null;
+}
+
+/** A live access token for an account, refreshed from its stored credential. */
+async function calendarAccessToken(account: CalendarAccount): Promise<string> {
+  const credential = findIntegrationCredential(refreshTokenKey(account.id));
+  if (!credential) throw new Error("This account has no stored token. Connect it again.");
+  const tokens = await oauthRefresh(oauthConfigFor(account.provider), decryptIntegrationCredential(credential));
+  if (tokens.refreshToken) {
+    setIntegrationCredential(refreshTokenKey(account.id), `${PROVIDERS[account.provider].label} calendar token`, tokens.refreshToken);
+  }
+  return tokens.accessToken;
+}
+
+/**
+ * Sends one local event to Google, and records where it landed.
+ *
+ * Never throws. A calendar that refuses a write is a problem worth reporting,
+ * but it is not a reason to lose the event locally - DexNest's own copy is
+ * already saved by the time this runs, and failing the whole action would mean
+ * the operator's typing disappears because a network was down.
+ */
+async function pushEventToProvider(event: CalendarEvent, verb: "create" | "update" | "delete"): Promise<CalendarEvent> {
+  const account = writeTargetAccount();
+  if (!account) return event;
+  // Only events DexNest owns. A provider event reaching here would mean
+  // pushing a copy of something that already exists on the other side.
+  if (event.sourceModule === "google" || event.sourceModule === "microsoft") return event;
+  // Nothing to delete or update remotely if it was never sent.
+  if (verb !== "create" && !event.remoteId) return event;
+
+  const startedAt = Date.now();
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const writable = {
+    title: event.title,
+    date: event.date,
+    startTime: event.startTime,
+    endTime: event.endTime,
+    allDay: event.allDay,
+    notes: event.notes
+  };
+
+  // Journalled before the request, so a write that reaches Google and then
+  // fails to record itself still leaves a trace of what was attempted.
+  localDb.appendActionEvent({
+    module: "DexNest Calendar",
+    actionId: `calendar.push_${verb}`,
+    eventType: "calendar_push_started",
+    status: "pending",
+    source: "system",
+    summary: `Sending ${verb} for "${event.title}" to ${account.email}.`,
+    metadataJson: { eventId: event.id, accountId: account.id, remoteId: event.remoteId ?? null }
+  });
+
+  try {
+    const accessToken = await calendarAccessToken(account);
+    let remoteId = event.remoteId ?? null;
+
+    if (verb === "delete") {
+      await writeEvents.remove(accessToken, remoteId!);
+      remoteId = null;
+    } else if (remoteId) {
+      await writeEvents.update(accessToken, remoteId, writable, timeZone);
+    } else {
+      remoteId = await writeEvents.create(accessToken, writable, timeZone);
+    }
+
+    localDb.appendActionEvent({
+      module: "DexNest Calendar",
+      actionId: `calendar.push_${verb}`,
+      eventType: "calendar_push_completed",
+      status: "success",
+      source: "system",
+      summary: `${verb === "delete" ? "Removed" : "Sent"} "${event.title}" ${verb === "delete" ? "from" : "to"} ${account.email}.`,
+      metadataJson: { eventId: event.id, accountId: account.id, remoteId },
+      durationMs: Date.now() - startedAt
+    });
+
+    return {
+      ...event,
+      remoteId,
+      remoteAccountId: remoteId ? account.id : null,
+      // When DexNest last sent this. A4 uses it to tell an echo of our own
+      // write apart from a genuine change made on the other side.
+      remoteSyncedAt: remoteId ? new Date().toISOString() : null
+    };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "Calendar push failed.";
+    localDb.appendActionEvent({
+      module: "DexNest Calendar",
+      actionId: `calendar.push_${verb}`,
+      eventType: "calendar_push_failed",
+      status: "failed",
+      source: "system",
+      summary: `Could not send "${event.title}" to ${account.email}.`,
+      metadataJson: { eventId: event.id, accountId: account.id, remoteId: event.remoteId ?? null },
+      errorMessage: reason,
+      durationMs: Date.now() - startedAt
+    });
+    // Marked as needing another attempt rather than silently left behind, so
+    // the difference between "not shared" and "failed to share" is recorded.
+    return { ...event, remotePushError: reason };
+  }
+}
+
 function calendarState() {
   refreshNudges("system", false);
   const events = loadCalendarEvents().sort((a, b) => a.date.localeCompare(b.date) || (a.startTime ?? "").localeCompare(b.startTime ?? ""));
@@ -18225,7 +18354,8 @@ function normalizeCalendarInput(input: CalendarEventInput, existing?: CalendarEv
   };
 }
 
-function runCalendarAction(action: DexNestActionDefinition, source: DexNestActionTrigger, payload: unknown = {}) {
+// async because saving an event now also sends it to the connected calendar.
+async function runCalendarAction(action: DexNestActionDefinition, source: DexNestActionTrigger, payload: unknown = {}) {
   const startedAt = Date.now();
   const input = typeof payload === "object" && payload !== null ? (payload as CalendarEventInput & { eventId?: string; nudgeId?: string; snoozeMinutes?: number; nudgeSettings?: Partial<NudgeSettings> }) : {};
 
@@ -18347,7 +18477,14 @@ function runCalendarAction(action: DexNestActionDefinition, source: DexNestActio
         };
       }
 
+      // Saved locally first, then pushed. The local copy is what the operator
+      // typed and must survive a calendar that is unreachable; the push adds a
+      // remote id to it rather than being the thing that makes it real.
       saveCalendarEvents([nextEvent, ...events.filter((event) => event.id !== nextEvent.id)]);
+      const pushed = await pushEventToProvider(nextEvent, existing ? "update" : "create");
+      if (pushed !== nextEvent) {
+        saveCalendarEvents([pushed, ...loadCalendarEvents().filter((event) => event.id !== pushed.id)]);
+      }
       logCalendarEvent(
         action.id,
         "success",
@@ -18371,6 +18508,10 @@ function runCalendarAction(action: DexNestActionDefinition, source: DexNestActio
       const eventId = input.eventId ?? input.id ?? "";
       const events = loadCalendarEvents();
       const existing = events.find((event) => event.id === eventId);
+      // Removed from the provider before it is dropped locally. The other
+      // order would leave nothing holding the remote id if the delete failed,
+      // and the event would live on in Google with no way left to reach it.
+      if (existing) await pushEventToProvider(existing, "delete");
       saveCalendarEvents(events.filter((event) => event.id !== eventId));
       logCalendarEvent(action.id, "success", source, "Deleted DexNest Calendar event.", { eventId, date: existing?.date ?? null }, startedAt);
       return { ok: true, actionId: action.id, calendarState: calendarState() };
@@ -20426,7 +20567,11 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
   }
 
   if (action.module === "calendar") {
-    const result = runCalendarAction(action, source, payload);
+    // Awaited before the check: runCalendarAction returns undefined for an
+    // action it does not handle, and this branch falls through on that. An
+    // unawaited promise is always truthy, so without the await every calendar
+    // action would be claimed here whether or not it was handled.
+    const result = await runCalendarAction(action, source, payload);
     if (result) {
       return result;
     }
