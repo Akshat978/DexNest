@@ -64,6 +64,19 @@ export interface SyncedEvent extends EventInput {
   uid: string | null;
 }
 
+/**
+ * One window's worth of events, and whether that window is all of them.
+ *
+ * complete matters because absence is about to mean deletion. A provider that
+ * returned only the first page looks exactly like one whose later events were
+ * deleted, and acting on that would remove local events for the crime of being
+ * the 251st thing in a busy month.
+ */
+export interface FetchedEvents {
+  events: SyncedEvent[];
+  complete: boolean;
+}
+
 export interface ProviderConfig {
   clientId: string;
   clientSecret?: string | null;
@@ -163,7 +176,7 @@ function localTime(value: string | undefined | null): string | null {
  * following poll instead of needing reconciliation.
  */
 export const fetchEvents = {
-  async google(accessToken: string, accountId: string, days: number): Promise<SyncedEvent[]> {
+  async google(accessToken: string, accountId: string, days: number): Promise<FetchedEvents> {
     const from = new Date();
     from.setHours(0, 0, 0, 0);
     const to = new Date(from.getTime() + days * 86400000);
@@ -182,7 +195,7 @@ export const fetchEvents = {
       accessToken
     );
 
-    return ((data.items as Array<Record<string, unknown>>) ?? [])
+    const events = ((data.items as Array<Record<string, unknown>>) ?? [])
       .filter(item => item.status !== "cancelled")
       .map(item => {
         const start = item.start as { date?: string; dateTime?: string } | undefined;
@@ -203,9 +216,14 @@ export const fetchEvents = {
         } satisfies SyncedEvent;
       })
       .filter(event => /^\d{4}-\d{2}-\d{2}$/.test(event.date));
+
+    // A page token means Google had more to give. Not paginated through, since
+    // 250 events in the window is already far past what this is for - but it
+    // is recorded, so nothing downstream mistakes a cut-off list for a short one.
+    return { events, complete: !data.nextPageToken };
   },
 
-  async microsoft(accessToken: string, accountId: string, days: number): Promise<SyncedEvent[]> {
+  async microsoft(accessToken: string, accountId: string, days: number): Promise<FetchedEvents> {
     const from = new Date();
     from.setHours(0, 0, 0, 0);
     const to = new Date(from.getTime() + days * 86400000);
@@ -224,7 +242,7 @@ export const fetchEvents = {
       accessToken
     );
 
-    return ((data.value as Array<Record<string, unknown>>) ?? [])
+    const events = ((data.value as Array<Record<string, unknown>>) ?? [])
       .filter(item => !item.isCancelled)
       .map(item => {
         const start = item.start as { dateTime?: string; timeZone?: string } | undefined;
@@ -257,6 +275,10 @@ export const fetchEvents = {
         } satisfies SyncedEvent;
       })
       .filter(event => /^\d{4}-\d{2}-\d{2}$/.test(event.date));
+
+    // Graph signals more pages with @odata.nextLink, the same way Google uses
+    // a page token.
+    return { events, complete: !data["@odata.nextLink"] };
   }
 };
 

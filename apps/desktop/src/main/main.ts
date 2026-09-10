@@ -1,6 +1,7 @@
 import { app, BrowserWindow, clipboard, desktopCapturer, dialog, globalShortcut, ipcMain, Menu, nativeImage, Notification, safeStorage, screen, shell, Tray } from "electron";
 import { exec, execFile, execFileSync } from "node:child_process";
 import { canPush, describe as describeGit, parseCommit, parseStatus, type GitCommit, type GitSnapshot } from "./gitStatus.ts";
+import { adopt, reconcile } from "./calendarReconcile.ts";
 import { overlayHtml, rectFromDrag, SELECTION_SCRIPT, type DragPoints } from "./captureRegion.ts";
 import { activeBlockIds, step as stepBlockEffects, type BlockEffect, type BlockMoment } from "./blockEffects.ts";
 import { buildEffectChoices, EFFECT_PRESETS, type EffectChoice } from "./effectChoices.ts";
@@ -26,6 +27,7 @@ import { buildAgenda, localDate, weekdayOf, type TodayAgenda } from "@dexnest/to
 import { authorise as oauthAuthorise, refresh as oauthRefresh } from "./oauth.js";
 import {
   accountCanWrite, dedupe, fetchEvents, parseGrantedScopes, PROVIDERS, whoAmI, writeEvents,
+  type FetchedEvents,
   type CalendarAccount, type CalendarProviderId, type SyncedEvent
 } from "./calendarAccounts.js";
 import { createProviderLimitsService } from "./providerLimits.js";
@@ -2090,7 +2092,7 @@ function todayAgenda(): TodayAgenda {
     // two addresses appears once rather than making one 3pm look like two.
     events: [
       ...loadCalendarEvents(),
-      ...dedupe(loadSyncedEvents().filter(event => enabled.has(event.accountId)))
+      ...dedupe(withoutEchoes(loadSyncedEvents().filter(event => enabled.has(event.accountId))))
     ],
     blocks: template?.blocks ?? [],
     nudges: loadNudges(),
@@ -2250,18 +2252,98 @@ async function syncCalendarAccount(accountId: string): Promise<void> {
     const refreshedScopes = parseGrantedScopes(tokens.scope);
     if (refreshedScopes) record({ grantedScopes: refreshedScopes });
 
-    const fresh = await fetchEvents[account.provider](tokens.accessToken, accountId, CALENDAR_SYNC_DAYS);
+    const fetched = await fetchEvents[account.provider](tokens.accessToken, accountId, CALENDAR_SYNC_DAYS);
     // Replace this account's window wholesale rather than merging into it. The
     // refetch is the truth for that window, and merging would leave deleted
     // events on screen for ever.
-    saveSyncedEvents([...loadSyncedEvents().filter(event => event.accountId !== accountId), ...fresh]);
-    record({ lastSyncAt: new Date().toISOString(), lastError: null, eventCount: fresh.length });
+    saveSyncedEvents([...loadSyncedEvents().filter(event => event.accountId !== accountId), ...fetched.events]);
+    applyCalendarReconciliation(account, fetched);
+    record({ lastSyncAt: new Date().toISOString(), lastError: null, eventCount: fetched.events.length });
   } catch (error) {
     // The account stays connected and its last events stay on screen. A failed
     // sync is usually a network blip, and disconnecting would turn that into a
     // re-authorisation the operator has to notice and perform.
     record({ lastError: error instanceof Error ? error.message : String(error) });
   }
+}
+
+
+/**
+ * Settles what changed on the other side since the last sync.
+ *
+ * Runs after the provider's window has been stored, so what is applied here is
+ * about DexNest's own events: the ones it pushed and now has to keep in step.
+ * The decisions are made by the pure reconciler; this only carries them out
+ * and writes down what it did.
+ */
+function applyCalendarReconciliation(account: CalendarAccount, fetched: FetchedEvents): void {
+  const prefix = `${account.provider}:${account.id}:`;
+  const today = todayDateString();
+
+  const outcome = reconcile({
+    local: loadCalendarEvents(),
+    // Back to the provider's own ids. DexNest prefixes them on the way in to
+    // keep two accounts' events apart, and remoteId holds the bare one.
+    remote: fetched.events.map(event => ({
+      remoteId: event.id.startsWith(prefix) ? event.id.slice(prefix.length) : event.id,
+      accountId: event.accountId,
+      title: event.title,
+      date: event.date,
+      startTime: event.startTime ?? null,
+      endTime: event.endTime ?? null,
+      allDay: event.allDay,
+      notes: event.notes ?? null
+    })),
+    accountId: account.id,
+    windowFrom: today,
+    windowTo: addLocalDays(today, CALENDAR_SYNC_DAYS),
+    complete: fetched.complete
+  });
+
+  if (outcome.heldBack) {
+    // Worth a line even though nothing went wrong. A calendar quietly too
+    // large to read in one page would otherwise present as deletions never
+    // arriving, with nothing anywhere to explain it.
+    localDb.appendActionEvent({
+      module: "DexNest Calendar",
+      actionId: "calendar.sync",
+      eventType: "calendar_reconcile_held_back",
+      status: "skipped",
+      source: "system",
+      summary: outcome.heldBack,
+      metadataJson: { accountId: account.id, fetched: fetched.events.length }
+    });
+  }
+
+  if (outcome.deletions.length === 0 && outcome.adoptions.length === 0) return;
+
+  const now = new Date().toISOString();
+  const deletedIds = new Set(outcome.deletions.map(event => event.id));
+  const adoptedById = new Map(outcome.adoptions.map(item => [item.event.id, item]));
+
+  const next = loadCalendarEvents()
+    .filter(event => !deletedIds.has(event.id))
+    .map(event => {
+      const adoption = adoptedById.get(event.id);
+      return adoption ? adopt(event, adoption.from, now) as CalendarEvent : event;
+    });
+  saveCalendarEvents(next);
+
+  // Titles, because this removed and rewrote things the operator can see, and
+  // "3 events deleted" with no names is not something anyone can check.
+  localDb.appendActionEvent({
+    module: "DexNest Calendar",
+    actionId: "calendar.sync",
+    eventType: "calendar_reconciled",
+    status: "success",
+    source: "system",
+    summary: `${outcome.deletions.length} deleted and ${outcome.adoptions.length} updated from ${account.email}.`,
+    metadataJson: {
+      accountId: account.id,
+      deleted: outcome.deletions.map(event => ({ id: event.id, title: event.title, date: event.date })),
+      adopted: outcome.adoptions.map(item => ({ id: item.event.id, title: item.from.title }))
+    }
+  });
 }
 
 async function syncCalendarAccounts(): Promise<void> {
@@ -13289,6 +13371,35 @@ async function pushEventToProvider(event: CalendarEvent, verb: "create" | "updat
   }
 }
 
+
+/**
+ * Drops provider events that are DexNest's own, come back.
+ *
+ * An event pushed to Google arrives in the next sync looking like any other
+ * provider event. Without this it would sit beside the local original as a
+ * second card - which is what someone means when they say two-way sync
+ * duplicated their calendar.
+ *
+ * Matched on the provider id DexNest recorded when it pushed, so it survives
+ * the event being renamed or moved on either side. Title-and-time matching
+ * would break the moment one copy was edited, which is exactly when the two
+ * most need to be recognised as one thing.
+ */
+function withoutEchoes(events: SyncedEvent[]): SyncedEvent[] {
+  const pushed = new Set(
+    loadCalendarEvents()
+      .filter(event => event.remoteId && event.remoteAccountId)
+      .map(event => `${event.remoteAccountId}:${event.remoteId}`)
+  );
+  if (pushed.size === 0) return events;
+
+  return events.filter(event => {
+    const prefix = `${event.sourceModule === "outlook" ? "microsoft" : event.sourceModule}:${event.accountId}:`;
+    const bare = event.id.startsWith(prefix) ? event.id.slice(prefix.length) : event.id;
+    return !pushed.has(`${event.accountId}:${bare}`);
+  });
+}
+
 function calendarState() {
   refreshNudges("system", false);
   const events = loadCalendarEvents().sort((a, b) => a.date.localeCompare(b.date) || (a.startTime ?? "").localeCompare(b.startTime ?? ""));
@@ -13304,7 +13415,7 @@ function calendarState() {
   // future reader has to remember. A separate array cannot be forgotten.
   const accounts = loadCalendarAccounts().filter(account => account.enabled);
   const accountsById = new Map(accounts.map(account => [account.id, account]));
-  const providerEvents = dedupe(loadSyncedEvents().filter(event => accountsById.has(event.accountId)))
+  const providerEvents = dedupe(withoutEchoes(loadSyncedEvents().filter(event => accountsById.has(event.accountId))))
     .map(event => {
       const account = accountsById.get(event.accountId)!;
       // A provider event has no life of its own here, so it has no creation
