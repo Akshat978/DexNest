@@ -5,16 +5,16 @@
   "description": "DexNest offline-first desktop workspace.",
   "packageManager": "pnpm@9.15.0",
   "scripts": {
-    "dev": "corepack pnpm --filter @dexnest/desktop dev",
-    "build": "corepack pnpm -r build",
-    "package:win": "corepack pnpm --filter @dexnest/desktop package:win",
-    "package:win:folder": "corepack pnpm --filter @dexnest/desktop package:win:folder",
-    "package:win:installer": "corepack pnpm --filter @dexnest/desktop package:win:installer",
-    "package:win:all": "corepack pnpm --filter @dexnest/desktop package:win:all",
-    "dist:win": "corepack pnpm --filter @dexnest/desktop dist:win",
-    "rebuild:native": "corepack pnpm --filter @dexnest/desktop rebuild:native",
-    "typecheck": "corepack pnpm -r typecheck",
-    "test": "corepack pnpm --filter @dexnest/autopilot-runtime test && corepack pnpm --filter @dexnest/today test && corepack pnpm --filter @dexnest/action-registry test && corepack pnpm --filter @dexnest/desktop test"
+    "dev": "pnpm --filter @dexnest/desktop dev",
+    "build": "pnpm -r build",
+    "package:win": "pnpm --filter @dexnest/desktop package:win",
+    "package:win:folder": "pnpm --filter @dexnest/desktop package:win:folder",
+    "package:win:installer": "pnpm --filter @dexnest/desktop package:win:installer",
+    "package:win:all": "pnpm --filter @dexnest/desktop package:win:all",
+    "dist:win": "pnpm --filter @dexnest/desktop dist:win",
+    "rebuild:native": "pnpm --filter @dexnest/desktop rebuild:native",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm --filter @dexnest/autopilot-runtime test && pnpm --filter @dexnest/today test && pnpm --filter @dexnest/action-registry test && pnpm --filter @dexnest/desktop test"
   },
   "devDependencies": {
     "typescript": "^5.8.3"
