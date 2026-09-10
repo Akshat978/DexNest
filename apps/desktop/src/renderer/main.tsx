@@ -42,6 +42,7 @@ import {
   TIMETABLE_DAYS, defaultTimetableTemplate, defaultTimetableState, defaultUtilitiesState, defaultWeatherState,
   NEWS_CATEGORIES, defaultNewsState, defaultWakeEngineState, getBridge
 } from "./lib/bridge";
+import { dragToSpan, layoutDay } from "./lib/dayLayout";
 import { Panel, CollapsibleListItem, PageHeader, EmptyState, LimitedList, PathText, StatusBadge, ToastStack, Spinner } from "./components/shared";
 import { HeatmapView } from "./views/HeatmapView";
 import { AppHealthView } from "./views/AppHealthView";
@@ -12592,7 +12593,20 @@ function CalendarView({
     : viewMode === "week"
       ? `${weekStartDate.toLocaleDateString(undefined, { month: "short", day: "numeric" })} - ${addCalendarDays(weekStartDate, 6).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`
       : monthLabel;
-  const calendarHours = Array.from({ length: 16 }, (_, index) => index + 6);
+  // The red now-line, kept honest. Without a tick it would freeze wherever it
+  // was when the view mounted, which is worse than no line at all: a stale one
+  // still looks like the time.
+  const [nowMinutes, setNowMinutes] = useState(() => {
+    const at = new Date();
+    return at.getHours() * 60 + at.getMinutes();
+  });
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const at = new Date();
+      setNowMinutes(at.getHours() * 60 + at.getMinutes());
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   function sortCalendarEvents(left: CalendarEvent, right: CalendarEvent): number {
     if (left.allDay !== right.allDay) {
@@ -12688,6 +12702,19 @@ function CalendarView({
     setNotes("");
     setShowEventModal(true);
     window.setTimeout(() => calendarTitleRef.current?.focus(), 0);
+  }
+
+  /**
+   * The new-event form, opened with the times a drag described.
+   *
+   * Built on createEventAt so an event made by dragging and one made from the
+   * button are the same thing with the same defaults - the only difference
+   * being that the drag already knows when.
+   */
+  function openEventDraft(value: string, startTime: string, endTime: string): void {
+    createEventAt(value);
+    setStartTime(startTime);
+    setEndTime(endTime);
   }
 
   function loadVoiceCandidateForEdit(candidate: CalendarVoiceCandidate): void {
@@ -12845,89 +12872,241 @@ function CalendarView({
     );
   }
 
+  /**
+   * Dragging a column to create an event.
+   *
+   * Tracked as fractions of the column rather than pixels, so the same numbers
+   * feed the preview and the tested conversion to times, and neither has to
+   * know how tall an hour is drawn.
+   *
+   * Pointer events rather than mouse: they cover a trackpad, a touchscreen and
+   * a pen with one path, and setPointerCapture keeps the drag alive when the
+   * pointer leaves the column - which it will, because the columns are narrow.
+   */
+  const [gridDrag, setGridDrag] = useState<{ date: string; from: number; to: number } | null>(null);
+
+  function beginGridDrag(pointer: React.PointerEvent<HTMLDivElement>, date: string): void {
+    // Left button only. A right-click is a context menu, and a middle-click
+    // that created an event would be a surprise with no way to predict it.
+    if (pointer.button !== 0) return;
+    const column = pointer.currentTarget;
+    const rect = column.getBoundingClientRect();
+    const fraction = (pointer.clientY - rect.top) / rect.height;
+    column.setPointerCapture(pointer.pointerId);
+    setGridDrag({ date, from: fraction, to: fraction });
+
+    const move = (moved: PointerEvent) => {
+      setGridDrag((current) => current && { ...current, to: (moved.clientY - rect.top) / rect.height });
+    };
+    const finish = (ended: PointerEvent) => {
+      column.removeEventListener("pointermove", move);
+      column.removeEventListener("pointerup", finish);
+      column.removeEventListener("pointercancel", cancel);
+      const to = (ended.clientY - rect.top) / rect.height;
+      setGridDrag(null);
+      const span = dragToSpan(fraction, to);
+      // Opens the form filled in rather than saving immediately. A drag is a
+      // statement about when, not about what, and an untitled event appearing
+      // on a shared calendar because of a stray gesture is the wrong default.
+      openEventDraft(date, span.startTime, span.endTime);
+    };
+    const cancel = () => {
+      // Escape, or the browser taking the pointer away. Nothing is created.
+      column.removeEventListener("pointermove", move);
+      column.removeEventListener("pointerup", finish);
+      column.removeEventListener("pointercancel", cancel);
+      setGridDrag(null);
+    };
+
+    column.addEventListener("pointermove", move);
+    column.addEventListener("pointerup", finish);
+    column.addEventListener("pointercancel", cancel);
+  }
+
+  /**
+   * The time grid, shared by the week and the day view.
+   *
+   * One component for both so the two cannot disagree about where the same 3pm
+   * meeting sits: a day view is a week view with one column, and building them
+   * separately is how they drift.
+   *
+   * Positions come from the tested layout module rather than being computed
+   * inline. Overlap is the hard part - three events claiming the same hour
+   * must sit beside each other, and getting it wrong hides one behind another,
+   * which reads as a missing appointment rather than a layout bug.
+   */
+  function renderTimeGrid(days: typeof weekDays) {
+    const HOUR_PX = 44;
+    const gridHeight = HOUR_PX * 24;
+
+    return (
+      <div className="calendar-grid" style={{ display: "grid", gridTemplateColumns: `56px repeat(${days.length}, minmax(0, 1fr))` }}>
+        {/* Day headings */}
+        <div />
+        {days.map((day) => (
+          <button
+            key={`head-${day.value}`}
+            type="button"
+            onClick={() => selectCalendarDate(day.value)}
+            className="calendar-grid-head"
+            style={{
+              borderBottom: "1px solid var(--border)",
+              padding: "6px 4px",
+              background: "transparent",
+              color: day.isToday ? ACCENT_CAL : "var(--text-muted)"
+            }}
+          >
+            <span style={{ display: "block", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em" }}>{day.label}</span>
+            <strong style={{ display: "block", fontSize: 18, color: day.value === selectedDate ? ACCENT_CAL : "var(--text)" }}>{day.dayNumber}</strong>
+          </button>
+        ))}
+
+        {/* All-day row. Kept off the time axis: an event with no time has no
+            position on one, and stretching it down the column would claim it
+            fills the day. */}
+        <div className="calendar-grid-gutter" style={{ fontSize: 10, color: "var(--text-disabled)", padding: "4px 6px", textAlign: "right" }}>all-day</div>
+        {days.map((day) => (
+          <div key={`allday-${day.value}`} style={{ borderLeft: "1px solid var(--border)", borderBottom: "1px solid var(--border)", minHeight: 24, padding: 2 }}>
+            {day.events.filter((event) => event.allDay).map((event) => (
+              <CalendarEventChip key={event.id} event={event} compact />
+            ))}
+          </div>
+        ))}
+
+        {/* Hour gutter */}
+        <div style={{ position: "relative", height: gridHeight }}>
+          {Array.from({ length: 24 }, (_, hour) => (
+            <div
+              key={`label-${hour}`}
+              style={{ position: "absolute", top: hour * HOUR_PX, right: 6, fontSize: 10, color: "var(--text-disabled)", transform: "translateY(-6px)" }}
+            >
+              {hour === 0 ? "" : formatHour(hour)}
+            </div>
+          ))}
+        </div>
+
+        {/* One column per day */}
+        {days.map((day) => {
+          const placed = layoutDay(day.events);
+          const dragging = gridDrag?.date === day.value ? gridDrag : null;
+          return (
+            <div
+              key={`col-${day.value}`}
+              role="presentation"
+              onPointerDown={(pointer) => beginGridDrag(pointer, day.value)}
+              style={{ position: "relative", height: gridHeight, borderLeft: "1px solid var(--border)", cursor: "cell", touchAction: "none" }}
+            >
+              {Array.from({ length: 24 }, (_, hour) => (
+                <div
+                  key={`line-${hour}`}
+                  style={{
+                    position: "absolute",
+                    top: hour * HOUR_PX,
+                    left: 0,
+                    right: 0,
+                    height: HOUR_PX,
+                    // Half-hour hint, so a 30-minute event is placeable by eye.
+                    borderTop: "1px solid var(--border)",
+                    backgroundImage: "linear-gradient(to bottom, transparent 50%, color-mix(in srgb, var(--border) 45%, transparent) 50%, transparent calc(50% + 1px))"
+                  }}
+                />
+              ))}
+
+              {/* Where the pointer is dragging, drawn before it exists as an
+                  event. Without it a drag is invisible until it is released. */}
+              {dragging && (
+                <div
+                  style={{
+                    position: "absolute",
+                    top: Math.min(dragging.from, dragging.to) * gridHeight,
+                    height: Math.max(Math.abs(dragging.to - dragging.from) * gridHeight, 8),
+                    left: 2,
+                    right: 2,
+                    borderRadius: 6,
+                    background: `${ACCENT_CAL}22`,
+                    border: `1px dashed ${ACCENT_CAL}`,
+                    pointerEvents: "none"
+                  }}
+                />
+              )}
+
+              {day.isToday && nowMinutes >= 0 && (
+                <div style={{ position: "absolute", top: (nowMinutes / 1440) * gridHeight, left: 0, right: 0, height: 1, background: "#EF4444", pointerEvents: "none", zIndex: 3 }}>
+                  <span style={{ position: "absolute", left: -3, top: -3, width: 7, height: 7, borderRadius: 9999, background: "#EF4444" }} />
+                </div>
+              )}
+
+              {placed.map((box) => {
+                const event = box.event;
+                const fromProvider = isProviderEvent(event);
+                const tone = event.color ?? (fromProvider ? ACCENT_CAL : event.reminderLevel === "urgent" ? "#EF4444" : ACCENT_CAL);
+                return (
+                  <button
+                    key={event.id}
+                    type="button"
+                    // Stops the column's drag-to-create from starting on top of
+                    // an existing event, which would make every event
+                    // unclickable.
+                    onPointerDown={(pointer) => pointer.stopPropagation()}
+                    onClick={() => {
+                      if (fromProvider) { setSelectedDate(event.date); setSelectedEventId(event.id); return; }
+                      loadEvent(event);
+                    }}
+                    title={`${event.title} / ${eventTimeLabel(event)}`}
+                    style={{
+                      position: "absolute",
+                      top: box.top * gridHeight,
+                      height: Math.max(box.height * gridHeight - 2, 14),
+                      left: `calc(${box.left * 100}% + 2px)`,
+                      width: `calc(${box.width * 100}% - 4px)`,
+                      overflow: "hidden",
+                      textAlign: "left",
+                      borderRadius: 6,
+                      padding: "2px 5px",
+                      minHeight: 0,
+                      // Outlined for a provider event, filled for one of ours -
+                      // the same distinction the month chips make.
+                      background: fromProvider ? "transparent" : `color-mix(in srgb, ${tone} 22%, transparent)`,
+                      border: `1px ${fromProvider ? "dashed" : "solid"} ${tone}`,
+                      borderLeft: `3px solid ${tone}`,
+                      color: "var(--text)"
+                    }}
+                  >
+                    <span style={{ display: "block", fontSize: 11, fontWeight: 600, lineHeight: 1.2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{event.title}</span>
+                    {box.height * gridHeight > 28 && (
+                      <span style={{ display: "block", fontSize: 9, opacity: 0.75 }}>{eventTimeLabel(event)}</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
   function renderWeekView() {
     return (
       <GlassCard hover={false}>
-        <SectionTitle action={<span className="technical">{headerTitle}</span>}>Week timeline</SectionTitle>
-        <div className="calendar-week-shell">
-          <div className="calendar-week-header">
-            <span />
-            {weekDays.map((day) => (
-              <button key={day.value} type="button" className={`calendar-week-day ${day.isToday ? "is-today" : ""} ${day.value === selectedDate ? "is-selected" : ""}`} onClick={() => selectCalendarDate(day.value)}>
-                <span>{day.label}</span>
-                <strong>{day.dayNumber}</strong>
-              </button>
-            ))}
-          </div>
-          <div className="calendar-all-day-row">
-            <span className="calendar-hour-label">all-day</span>
-            {weekDays.map((day) => (
-              <div key={day.value} className="calendar-all-day-cell">
-                {day.events.filter((event) => event.allDay).slice(0, 2).map((event) => <CalendarEventChip key={event.id} event={event} compact />)}
-              </div>
-            ))}
-          </div>
-          <div className="calendar-week-body">
-            {calendarHours.map((hour) => (
-              <div key={hour} className="calendar-week-hour">
-                <button type="button" className="calendar-hour-label" onClick={() => createEventAt(selectedDate, hour)}>{formatHour(hour)}</button>
-                {weekDays.map((day) => {
-                  const eventsAtHour = day.events.filter((event) => !event.allDay && Math.floor(timeToMinutes(event.startTime) / 60) === hour);
-                  return (
-                    <div
-                      key={`${day.value}-${hour}`}
-                      role="button"
-                      tabIndex={0}
-                      className="calendar-week-slot"
-                      onClick={() => createEventAt(day.value, hour)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter" || event.key === " ") {
-                          event.preventDefault();
-                          createEventAt(day.value, hour);
-                        }
-                      }}
-                    >
-                      {eventsAtHour.map((event) => <CalendarEventChip key={event.id} event={event} />)}
-                    </div>
-                  );
-                })}
-              </div>
-            ))}
-          </div>
+        <SectionTitle action={<span className="technical">Drag a column to create · {headerTitle}</span>}>Week</SectionTitle>
+        <div style={{ maxHeight: "68vh", overflowY: "auto" }}>
+          {renderTimeGrid(weekDays)}
         </div>
       </GlassCard>
     );
   }
 
   function renderDayView() {
+    // A day is the same grid with one column, so the two views cannot disagree.
+    const day = weekDays.find((item) => item.value === selectedDate)
+      ?? { value: selectedDate, label: parseLocalDateInput(selectedDate).toLocaleDateString(undefined, { weekday: "short" }), dayNumber: parseLocalDateInput(selectedDate).getDate(), isToday: selectedDate === calendarState.today, events: sortedSelectedEvents };
     return (
       <GlassCard hover={false}>
-        <SectionTitle action={<button type="button" onClick={() => createEventAt(selectedDate)} className="calendar-inline-action">Add event</button>}>Day agenda</SectionTitle>
-        <div className="calendar-day-title">
-          <strong>{formatLocalDate(selectedDate)}</strong>
-          <span>{sortedSelectedEvents.length} event{sortedSelectedEvents.length === 1 ? "" : "s"}</span>
+        <SectionTitle action={<span className="technical">{sortedSelectedEvents.length} event{sortedSelectedEvents.length === 1 ? "" : "s"} · drag to create</span>}>{formatLocalDate(selectedDate)}</SectionTitle>
+        <div style={{ maxHeight: "68vh", overflowY: "auto" }}>
+          {renderTimeGrid([day])}
         </div>
-        {/* Clean agenda: all-day chips + a simple list of the day's events. Add via the header/Add event button. */}
-        {sortedSelectedEvents.length === 0 ? (
-          <div className="mt-2 flex flex-col items-center justify-center rounded-xl border border-dashed border-[#262626] py-12 text-center">
-            <CalendarDays className="h-8 w-8 text-[#525252]" />
-            <p className="mt-2 text-sm text-[#A3A3A3]">No events scheduled</p>
-            <button type="button" onClick={() => createEventAt(selectedDate)} className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-[#14B8A6]/40 bg-[#14B8A6]/10 px-3 py-1.5 text-xs font-medium text-[#14B8A6] hover:bg-[#14B8A6]/15"><Plus className="h-3.5 w-3.5" />Add event</button>
-          </div>
-        ) : (
-          <div className="mt-2 space-y-2">
-            {sortedSelectedEvents.map((event) => (
-              <button key={event.id} type="button" onClick={() => loadEvent(event)} className={`flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors ${selectedEventId === event.id ? "border-[#14B8A6]/50 bg-[#14B8A6]/[0.06]" : "border-[#1f1f1f] hover:border-[#14B8A6]/40"}`}>
-                <span className="w-16 shrink-0 font-mono text-xs text-[#14B8A6]">{event.allDay ? "all-day" : event.startTime || "—"}</span>
-                <span className="h-8 w-px shrink-0 rounded-full" style={{ background: event.color ?? (event.reminderLevel === "urgent" ? "#EF4444" : event.reminderLevel === "normal" ? "#F59E0B" : ACCENT_CAL) }} />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium text-[#F5F5F5]">{event.title}</span>
-                  <span className="block font-mono text-[10px] text-[#525252]">{eventTimeLabel(event)} · {event.sourceModule}{event.recurrence ? ` · ${event.recurrence}` : ""}</span>
-                </span>
-              </button>
-            ))}
-          </div>
-        )}
       </GlassCard>
     );
   }
