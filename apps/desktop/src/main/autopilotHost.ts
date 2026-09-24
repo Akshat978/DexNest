@@ -48,53 +48,18 @@ import {
   type RunSpecInput,
   type RuntimePorts,
   type SqlDatabase,
-  type SqlStatement,
   type ApprovalRecord,
   type EnforcedCapabilityPolicy,
   type UncertainResolution
 } from "@dexnest/autopilot-runtime";
+import { createBetterSqliteAdapter, type BetterSqliteLike } from "@dexnest/foundation";
 
-/**
- * The slice of better-sqlite3 this host uses. Declared structurally rather than
- * imported so the main process does not depend on that package's type
- * declarations, which live in another workspace package.
- */
-export interface BetterSqliteLike {
-  exec(sql: string): unknown;
-  prepare(sql: string): {
-    run(params?: Record<string, unknown>): { changes?: number | bigint };
-    get(params?: Record<string, unknown>): unknown;
-    all(params?: Record<string, unknown>): unknown[];
-  };
-}
-
-/**
- * Adapts the app's existing better-sqlite3 connection to the runtime's
- * SqlDatabase port. Autopilot tables live in the same dexnest.sqlite as
- * event_log; there is no second database.
- */
-export function createBetterSqliteAdapter(db: BetterSqliteLike): SqlDatabase {
-  return {
-    exec(sql: string): void {
-      db.exec(sql);
-    },
-    prepare(sql: string): SqlStatement {
-      const statement = db.prepare(sql);
-      return {
-        run(params?: Record<string, unknown>) {
-          const result = params ? statement.run(params) : statement.run();
-          return { changes: Number(result.changes ?? 0) };
-        },
-        get<T>(params?: Record<string, unknown>) {
-          return (params ? statement.get(params) : statement.get()) as T | undefined;
-        },
-        all<T>(params?: Record<string, unknown>) {
-          return (params ? statement.all(params) : statement.all()) as T[];
-        }
-      };
-    }
-  };
-}
+// The better-sqlite3 adapter is shared now (@dexnest/foundation), so there is
+// one implementation of the driver boundary rather than one per module. It is
+// structurally a superset of the runtime's SqlDatabase port, so it is handed
+// straight to Autopilot. Re-exported for the host harness, which passes a test
+// database through the same path.
+export { createBetterSqliteAdapter, type BetterSqliteLike } from "@dexnest/foundation";
 
 export interface AutopilotHostOptions {
   /** Trusted host injection, also used by the fake-process integration harness. */

@@ -3,6 +3,14 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { DexNestEventLogEntry, DexNestEventSource, DexNestEventStatus } from "@dexnest/shared-types";
+import {
+  AUDIT_STREAM,
+  createBetterSqliteAdapter,
+  createEventLog,
+  runFoundationMigrations,
+  type EventLog,
+  type SqlDatabase
+} from "@dexnest/foundation";
 
 interface CreateLocalDbOptions {
   dataRoot: string;
@@ -30,6 +38,11 @@ export function createLocalDb(options: CreateLocalDbOptions) {
   const dbDir = join(options.dataRoot, "data");
   const dbPath = join(dbDir, "dexnest.sqlite");
   let db: Database.Database | null = null;
+  // One adapter and one event log for the life of the connection. Transaction
+  // nesting is tracked per adapter, so every module must be handed this same
+  // instance rather than wrapping the connection again.
+  let sqlDatabase: SqlDatabase | null = null;
+  let eventLog: EventLog | null = null;
 
   function getDb(): Database.Database {
     if (!db) {
@@ -42,19 +55,23 @@ export function createLocalDb(options: CreateLocalDbOptions) {
     return db;
   }
 
-  function initialize(): void {
-    getDb().exec(`
-      CREATE TABLE IF NOT EXISTS event_log (
-        id TEXT PRIMARY KEY,
-        type TEXT NOT NULL,
-        source TEXT NOT NULL,
-        payload_json TEXT NOT NULL,
-        created_at TEXT NOT NULL
-      );
+  function getSqlDatabase(): SqlDatabase {
+    if (!sqlDatabase) sqlDatabase = createBetterSqliteAdapter(getDb() as never);
+    return sqlDatabase;
+  }
 
-      CREATE INDEX IF NOT EXISTS idx_event_log_created_at
-        ON event_log (created_at);
-    `);
+  // The event_log schema is owned by @dexnest/foundation now, so it is defined
+  // once. Its first migration is this table exactly as it was always created
+  // here, which makes it a no-op on every existing install; the second only
+  // adds columns, so existing rows read back unchanged as audit events.
+  function initialize(): void {
+    runFoundationMigrations(getSqlDatabase());
+  }
+
+  /** The shared event log. Requires initialize() to have run. */
+  function getEventLog(): EventLog {
+    if (!eventLog) eventLog = createEventLog(getSqlDatabase());
+    return eventLog;
   }
 
   function appendEvent(input: AppendEventInput): string {
@@ -103,6 +120,7 @@ export function createLocalDb(options: CreateLocalDbOptions) {
         `
           SELECT id, type, source, payload_json AS payloadJson, created_at AS createdAt
           FROM event_log
+          WHERE stream = '${AUDIT_STREAM}'
           ORDER BY created_at DESC
           LIMIT @limit
         `
@@ -135,15 +153,18 @@ export function createLocalDb(options: CreateLocalDbOptions) {
   }
 
   function countEvents(): number {
-    const row = getDb().prepare("SELECT COUNT(*) AS count FROM event_log").get() as { count: number };
+    const row = getDb().prepare(`SELECT COUNT(*) AS count FROM event_log WHERE stream = '${AUDIT_STREAM}'`).get() as { count: number };
     return row.count;
   }
 
-  // Clears all rows from the event log while preserving the table/index structure.
-  // Used by Settings → Data Management when the Audit history category is deleted.
+  // Clears the audit history while preserving the table/index structure.
+  // Used by Settings → Data Management when the Audit history category is
+  // deleted. Scoped to the audit stream: a module's observations (repository
+  // history, for one) are that module's data and have their own retention, and
+  // "delete my activity history" should not silently reset them.
   function clearEvents(): number {
     const before = countEvents();
-    getDb().prepare("DELETE FROM event_log").run();
+    getDb().prepare(`DELETE FROM event_log WHERE stream = '${AUDIT_STREAM}'`).run();
     return before;
   }
 
@@ -158,6 +179,8 @@ export function createLocalDb(options: CreateLocalDbOptions) {
   function close(): void {
     db?.close();
     db = null;
+    sqlDatabase = null;
+    eventLog = null;
   }
 
   // Exposes the live connection so other packages (Autopilot) can add their own
@@ -172,6 +195,8 @@ export function createLocalDb(options: CreateLocalDbOptions) {
     dbPath,
     initialize,
     getDatabase,
+    getSqlDatabase,
+    getEventLog,
     appendEvent,
     appendActionEvent,
     listRecentEvents,

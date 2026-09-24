@@ -28,6 +28,10 @@ DexNest is an offline-first personal command center for Windows, Android, and St
 - Keep features modular and small.
 - Do not add new modules unless explicitly requested.
 - Source-code access does not imply data access. See Sensitive Data Boundary below.
+- New modules build on `@dexnest/foundation`: one SQLite connection with namespaced
+  tables, the shared `event_log`, the action registry, and the host capability set.
+  Do not add a database driver, events table, action system or host-port list of
+  a module's own. See `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`.
 
 ## Autopilot
 

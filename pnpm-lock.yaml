@@ -17,6 +17,9 @@ importers:
       '@dexnest/action-registry':
         specifier: workspace:*
         version: link:../../packages/action-registry
+      '@dexnest/foundation':
+        specifier: workspace:*
+        version: link:../../packages/foundation
       '@dexnest/local-db':
         specifier: workspace:*
         version: link:../../packages/local-db
@@ -175,8 +178,17 @@ importers:
         specifier: ^22.13.14
         version: 22.20.0
 
+  packages/foundation:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.13.14
+        version: 22.20.0
+
   packages/local-db:
     dependencies:
+      '@dexnest/foundation':
+        specifier: workspace:*
+        version: link:../foundation
       '@dexnest/shared-types':
         specifier: workspace:*
         version: link:../shared-types

@@ -11,6 +11,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@dexnest/foundation": "workspace:*",
     "@dexnest/shared-types": "workspace:*",
     "better-sqlite3": "^11.9.1"
   },

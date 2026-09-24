@@ -14,7 +14,7 @@
     "dist:win": "pnpm --filter @dexnest/desktop dist:win",
     "rebuild:native": "pnpm --filter @dexnest/desktop rebuild:native",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm --filter @dexnest/autopilot-runtime test && pnpm --filter @dexnest/today test && pnpm --filter @dexnest/action-registry test && pnpm --filter @dexnest/desktop test"
+    "test": "pnpm --filter @dexnest/foundation test && pnpm --filter @dexnest/autopilot-runtime test && pnpm --filter @dexnest/today test && pnpm --filter @dexnest/action-registry test && pnpm --filter @dexnest/desktop test"
   },
   "devDependencies": {
     "typescript": "^5.8.3"
