@@ -193,3 +193,19 @@ test("events survive a restart", () => {
     again.close();
   }
 });
+
+test("recorded-time filters and ordering are independent of occurred time", () => {
+  // A fact that happened long ago but was only learned now is "new since the
+  // last report" by recorded time, and old by occurred time.
+  const log = fresh();
+  log.append(dev({ id: "late", occurredAt: "2020-01-01T00:00:00.000Z", recordedAt: "2026-09-10T00:00:00.000Z" }));
+  log.append(dev({ id: "early", occurredAt: "2026-09-05T00:00:00.000Z", recordedAt: "2026-09-06T00:00:00.000Z" }));
+
+  assert.deepEqual(log.query({ stream: "dev", recordedSince: "2026-09-08T00:00:00.000Z" }).map((e) => e.id), ["late"]);
+  assert.deepEqual(log.query({ stream: "dev", occurredSince: "2026-09-01T00:00:00.000Z" }).map((e) => e.id), ["early"]);
+  assert.deepEqual(log.query({ stream: "dev", recordedBefore: "2026-09-08T00:00:00.000Z" }).map((e) => e.id), ["early"]);
+
+  assert.deepEqual(log.query({ stream: "dev", orderBy: "recorded", order: "desc" }).map((e) => e.id), ["late", "early"]);
+  assert.deepEqual(log.query({ stream: "dev", orderBy: "occurred", order: "desc" }).map((e) => e.id), ["early", "late"]);
+  assert.deepEqual(log.query({ stream: "dev" }).map((e) => e.id), ["late", "early"], "default is insertion order");
+});

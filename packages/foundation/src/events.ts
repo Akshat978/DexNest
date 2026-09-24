@@ -82,10 +82,20 @@ export interface EventQuery {
   occurredSince?: string;
   /** Exclusive upper bound on occurredAt. */
   occurredBefore?: string;
+  /**
+   * Inclusive lower bound on recordedAt. For consumers that reason about what
+   * has been *learned* since a point - Standup's "since the last report" means
+   * observed since then, whenever the underlying fact happened.
+   */
+  recordedSince?: string;
+  /** Exclusive upper bound on recordedAt. */
+  recordedBefore?: string;
   /** Only events after this seq - the polling cursor. */
   afterSeq?: number;
   limit?: number;
   order?: "asc" | "desc";
+  /** Defaults to insertion order (seq). Ties within a timestamp fall back to seq. */
+  orderBy?: "seq" | "recorded" | "occurred";
 }
 
 export type EventListener = (event: DexNestEvent) => void;
@@ -220,6 +230,8 @@ function where(filter: EventQuery | undefined): { clause: string; params: unknow
     parts.push("COALESCE(occurred_at, created_at) < ?");
     params.push(filter.occurredBefore);
   }
+  if (filter.recordedSince !== undefined) { parts.push("created_at >= ?"); params.push(filter.recordedSince); }
+  if (filter.recordedBefore !== undefined) { parts.push("created_at < ?"); params.push(filter.recordedBefore); }
   if (filter.afterSeq !== undefined) { parts.push("rowid > ?"); params.push(filter.afterSeq); }
   return { clause: parts.length > 0 ? `WHERE ${parts.join(" AND ")}` : "", params };
 }
@@ -324,8 +336,12 @@ export function createEventLog(db: SqlDatabase, options: EventLogOptions = {}): 
       const { clause, params } = where(filter);
       const order = filter?.order === "desc" ? "DESC" : "ASC";
       const limit = filter?.limit !== undefined ? `LIMIT ${Math.max(0, Math.floor(filter.limit))}` : "";
+      const key =
+        filter?.orderBy === "recorded" ? `created_at ${order}, rowid ${order}`
+        : filter?.orderBy === "occurred" ? `COALESCE(occurred_at, created_at) ${order}, rowid ${order}`
+        : `rowid ${order}`;
       return db
-        .prepare(`SELECT ${COLUMNS} FROM event_log ${clause} ORDER BY rowid ${order} ${limit}`)
+        .prepare(`SELECT ${COLUMNS} FROM event_log ${clause} ORDER BY ${key} ${limit}`)
         .all<EventRow>(params)
         .map((row) => toEvent<TPayload>(row));
     },
