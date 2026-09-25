@@ -128,6 +128,7 @@ export async function emitCommitObserved(
     subject: commit.subject,
     authorDate: commit.authorDate,
     branch,
+    ...(commit.authorEmail ? { authorEmail: commit.authorEmail } : {}),
   };
   return ctx.events.append(
     envelope(
