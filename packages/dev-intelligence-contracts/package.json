@@ -1,0 +1,19 @@
+{
+  "name": "@dexnest/dev-intelligence-contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Developer Intelligence contracts: domain types, developer event types and fingerprints, persistence ports, the Standup model.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./standup": "./src/standup.ts",
+    "./issue-lifecycle": "./src/issue-lifecycle.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.14"
+  }
+}

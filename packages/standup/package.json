@@ -1,0 +1,24 @@
+{
+  "name": "@dexnest/standup",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Standup for One: a developer morning report built from Developer Intelligence facts.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@dexnest/dev-intelligence-contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.14",
+    "vitest": "^5.0.1",
+    "@dexnest/dev-intelligence-store": "workspace:*",
+    "@dexnest/foundation": "workspace:*"
+  }
+}

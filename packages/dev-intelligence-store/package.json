@@ -1,0 +1,24 @@
+{
+  "name": "@dexnest/dev-intelligence-store",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Developer Intelligence and Standup persistence on DexNest's shared SQLite connection and event log.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@dexnest/dev-intelligence-contracts": "workspace:*",
+    "@dexnest/foundation": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.14",
+    "vitest": "^5.0.1"
+  }
+}

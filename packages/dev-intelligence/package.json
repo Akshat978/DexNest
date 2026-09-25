@@ -1,0 +1,25 @@
+{
+  "name": "@dexnest/dev-intelligence",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Developer Intelligence: observes local repositories once and records facts other modules reuse.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@dexnest/dev-intelligence-contracts": "workspace:*",
+    "@dexnest/dev-intelligence-store": "workspace:*",
+    "@dexnest/foundation": "workspace:*",
+    "@dexnest/standup": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.14",
+    "vitest": "^5.0.1"
+  }
+}

@@ -18,5 +18,14 @@
   // autopilot-runtime uses allowImportingTsExtensions (required so Node's
   // --experimental-strip-types can run its tests without a build step) and is
   // typechecked by its own `pnpm --filter @dexnest/autopilot-runtime typecheck`.
-  "exclude": ["../../packages/autopilot-runtime/**/*"]
+  // The Developer Intelligence packages test under vitest and typecheck
+  // themselves the same way; their sources are still checked here through the
+  // imports main.ts makes.
+  "exclude": [
+    "../../packages/autopilot-runtime/**/*",
+    "../../packages/dev-intelligence/**/*",
+    "../../packages/dev-intelligence-contracts/**/*",
+    "../../packages/dev-intelligence-store/**/*",
+    "../../packages/standup/**/*"
+  ]
 }

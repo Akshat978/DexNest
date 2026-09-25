@@ -81,6 +81,8 @@
   },
   "dependencies": {
     "@dexnest/action-registry": "workspace:*",
+    "@dexnest/dev-intelligence": "workspace:*",
+    "@dexnest/dev-intelligence-store": "workspace:*",
     "@dexnest/foundation": "workspace:*",
     "@dexnest/local-db": "workspace:*",
     "@dexnest/module-command": "workspace:*",

@@ -597,6 +597,45 @@ export const seededActions = [
     status: "available"
   },
   {
+    id: "dev.scan_repositories",
+    title: "Scan Developer Repositories",
+    moduleId: "dev",
+    module: "dev",
+    description: "Run Developer Intelligence over the configured roots now: repository state, TODOs, technologies and configured health checks.",
+    category: "diagnostics",
+    // Reads repositories through read-only git and writes only DexNest's own
+    // records. Never reads DexNest's data root. Not phone-exposed: its results
+    // name local paths.
+    dangerLevel: "safe",
+    requiresConfirmation: false,
+    confirmationRule: null,
+    reversible: false,
+    undoActionId: null,
+    handlerType: "internal_function",
+    handlerRef: "dev.scan_repositories",
+    allowedTriggers: ["command", "deck", "module_ui"],
+    enabled: true,
+    status: "available"
+  },
+  {
+    id: "standup.generate",
+    title: "Generate Standup",
+    moduleId: "standup",
+    module: "standup",
+    description: "Build a Standup from what Developer Intelligence has observed since the last one.",
+    category: "diagnostics",
+    dangerLevel: "safe",
+    requiresConfirmation: false,
+    confirmationRule: null,
+    reversible: false,
+    undoActionId: null,
+    handlerType: "internal_function",
+    handlerRef: "standup.generate",
+    allowedTriggers: ["command", "deck", "module_ui"],
+    enabled: true,
+    status: "available"
+  },
+  {
     id: "deck.test_endpoint",
     title: "Test Deck Endpoint",
     moduleId: "deck",

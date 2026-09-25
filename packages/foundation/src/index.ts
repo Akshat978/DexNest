@@ -65,6 +65,13 @@ export type {
 } from "./host.ts";
 
 export {
+  createHostScheduler,
+  type HostScheduler,
+  type HostSchedulerOptions,
+  type SchedulerTimers
+} from "./scheduler.ts";
+
+export {
   validateManifest,
   type DexNestModuleManifest,
   type ModuleView,

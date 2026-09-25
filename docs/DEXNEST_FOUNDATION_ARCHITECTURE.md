@@ -143,6 +143,15 @@ declares a `ScheduledJob` and exposes an idempotent entry point keyed by
 `occurrenceId`; the host decides when it fires, skips `heavy` jobs in
 Performance Mode, and coalesces a manual run with one already in flight.
 
+`createHostScheduler` is that host: one instance in `main.ts`, disposed on quit.
+A job fires once per interval-aligned slot and the slot start is its
+`occurrenceId`, so a startup run and the timer landing in the same slot run
+once. `isPaused` is asked before every scheduled firing - `main.ts` answers
+"heavy and Performance Mode is on". A manual `runNow` is the user asking and is
+never paused. A slot that comes due while the previous run is still going joins
+it rather than overlapping. Timers are `unref`'d; an idle DexNest with no
+enabled job has no timer at all.
+
 **Removed**, from one or both standalone port lists:
 
 - Telemetry - DexNest has none and adds none.
@@ -201,8 +210,26 @@ the DPAPI keychain. Source-code access does not imply data access.
 | Unprefixed tables (`repositories`, ...) | `dev_` and `standup_` prefixes |
 | `developer_events` table | `event_log`, stream `dev`, module `developer_intelligence`, `subject` = repository id, `idempotency_key` = namespaced fingerprint |
 | 8 host ports, all stubs | `ModuleHost`; timezone/theme/navigation dropped; process runner stays internal |
-| Module-owned scheduling undecided | Host-owned scan and Standup jobs, idempotent by `occurrenceId` |
+| Module-owned scheduling undecided | One host-owned `scan` job (heavy, `runAtStartup`); the day's scheduled Standup is generated after it and keyed by local date, so every later trigger that day resolves to the same report |
 | TODO scan walked the whole tree | `git ls-files`, boundary check on every path |
+| Technology detection walked the tree on its own | Reads only the TODO scan's vetted `safeFiles`; no second walk |
+
+**Where it lives.** `@dexnest/dev-intelligence-contracts`, `@dexnest/dev-intelligence`
+(scan, plus `module/runtime.ts`, the DexNest module), `@dexnest/standup` and
+`@dexnest/dev-intelligence-store`, wired by `apps/desktop/src/main/devIntelligenceHost.ts`.
+Actions: `dev.scan_repositories`, `standup.generate` (not phone-exposed - results
+name local paths). The module is **off by default**: nothing is scanned until the
+user names a root and turns it on, and a root inside any DexNest data root is
+refused. The boundary includes every place DexNest data can live, not just the
+live root, so an instance launched with `DEXNEST_DATA_ROOT=<scratch>` still
+cannot read the real `local-data`.
+
+The DI packages keep `.js` import specifiers and test with vitest; tests run on
+`node:sqlite` through `@dexnest/dev-intelligence-store/testing` with the same
+migrations, event log and SQL as production.
+
+Not yet done: the renderer view (IPC and preload bridge exist), and a retention
+policy for the `dev` event stream.
 
 ## Migration: Patchwork (later - feature work stays paused)
 

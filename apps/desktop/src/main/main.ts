@@ -22,6 +22,8 @@ import { Jimp } from "jimp";
 import { createActionRegistry, createStreamDeckActionCatalog, seededActions, streamDeckCatalogItems } from "@dexnest/action-registry";
 import { createLocalDb } from "@dexnest/local-db";
 import { createAutopilotHost, type AutopilotHost } from "./autopilotHost.js";
+import { createDevIntelligenceHost, type DevIntelligenceHost } from "./devIntelligenceHost.js";
+import { createHostScheduler } from "@dexnest/foundation";
 import { createCompanionApi, hashToken, openPairing } from "./companionApi.js";
 import { buildAgenda, localDate, weekdayOf, type TodayAgenda } from "@dexnest/today";
 import { authorise as oauthAuthorise, refresh as oauthRefresh } from "./oauth.js";
@@ -226,6 +228,7 @@ const integrationKeychainPath = join(settingsRoot, "integration-keychain.json");
 const calendarAccountsPath = join(settingsRoot, "calendar-accounts.json");
 const syncedEventsPath = join(settingsRoot, "calendar-synced-events.json");
 const performanceModeSettingsPath = join(settingsRoot, "performance-mode-settings.json");
+const devIntelligenceSettingsPath = join(settingsRoot, "dev-intelligence-settings.json");
 const appLifecycleSettingsPath = join(settingsRoot, "app-lifecycle-settings.json");
 const searchIndexStatusPath = join(settingsRoot, "search-index-status.json");
 const dataManagementStatusPath = join(settingsRoot, "data-management-status.json");
@@ -303,6 +306,52 @@ function startAutopilotHost(): void {
     // Autopilot must never prevent DexNest from starting.
     console.warn("[autopilot] host failed to start", error);
     autopilotHost = null;
+  }
+}
+
+// --- Host scheduler and Developer Intelligence ----------------------------
+// One scheduler for module background work (docs/DEXNEST_FOUNDATION_ARCHITECTURE.md).
+// Heavy jobs - walking repositories - hold off while Performance Mode is on;
+// a scan the user asks for still runs.
+const hostScheduler = createHostScheduler({
+  isPaused: (job) => Boolean(job.heavy) && loadPerformanceModeSettings().performanceModeEnabled,
+  onError: (jobId, error) => {
+    console.warn(`[scheduler] ${jobId} failed`, error);
+  }
+});
+
+let devIntelligenceHost: DevIntelligenceHost | null = null;
+
+function startDevIntelligenceHost(): void {
+  try {
+    devIntelligenceHost = createDevIntelligenceHost({
+      database: localDb.getSqlDatabase(),
+      events: localDb.getEventLog(),
+      dataRoot: localDataRoot,
+      otherDataRoots: [CANONICAL_DATA_ROOT, resolve(repoRoot, "local-data")],
+      scheduler: hostScheduler,
+      readSettings: () => readJsonFile<unknown>(devIntelligenceSettingsPath, {}),
+      writeSettings: (settings) => { writeJsonFile(devIntelligenceSettingsPath, settings); },
+      ipcMain,
+      getWindow: () => mainWindow,
+      audit: (summary, metadata, status) => {
+        localDb.appendActionEvent({
+          module: "dev",
+          eventType: "developer_intelligence",
+          status: status === "success" ? "success" : "failed",
+          source: "system",
+          summary,
+          metadataJson: metadata
+        });
+      }
+    });
+    void devIntelligenceHost.module.start().catch((error: unknown) => {
+      console.warn("[dev-intelligence] start failed", error);
+    });
+  } catch (error) {
+    // A broken module must never prevent DexNest from starting.
+    console.warn("[dev-intelligence] host failed to start", error);
+    devIntelligenceHost = null;
   }
 }
 
@@ -20245,6 +20294,37 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
     }
   }
 
+  if (actionId === "dev.scan_repositories") {
+    if (!devIntelligenceHost) return { ok: false, actionId: action.id, error: "Developer Intelligence is not running." };
+    try {
+      const outcome = await devIntelligenceHost.module.scanNow();
+      if (!outcome) return { ok: true, actionId: action.id, message: "Nothing to scan yet. Add a folder in Developer Intelligence settings." };
+      const run = outcome.scanRun;
+      const message = `Scan ${run.state.toLowerCase()}: ${run.repositoriesSucceeded} of ${run.repositoriesAttempted} repositories.`
+        + (outcome.refusedRoots.length > 0 ? ` Skipped ${outcome.refusedRoots.length} folder(s) inside DexNest's private data.` : "");
+      logActionEvent(action, run.state === "FAILED" ? "failed" : "success", source, message, { scanRunId: run.id, state: run.state });
+      return { ok: run.state !== "FAILED", actionId: action.id, message, scanRunId: run.id };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "The scan failed.";
+      logActionEvent(action, "failed", source, "Developer scan failed.", {}, reason);
+      return { ok: false, actionId: action.id, error: reason };
+    }
+  }
+
+  if (actionId === "standup.generate") {
+    if (!devIntelligenceHost) return { ok: false, actionId: action.id, error: "Developer Intelligence is not running." };
+    try {
+      const report = await devIntelligenceHost.module.generateStandup();
+      const message = `Standup ready: ${report.items.length} item(s).`;
+      logActionEvent(action, "success", source, message, { reportId: report.id });
+      return { ok: true, actionId: action.id, message, reportId: report.id };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Could not generate a Standup.";
+      logActionEvent(action, "failed", source, "Standup generation failed.", {}, reason);
+      return { ok: false, actionId: action.id, error: reason };
+    }
+  }
+
   if (actionId === "dev.git_status_all") {
     const projects = loadProjects();
     if (projects.length === 0) {
@@ -23040,6 +23120,7 @@ app.whenReady().then(() => {
   ensureBackupRoot();
   registerIpcHandlers();
   startAutopilotHost();
+  startDevIntelligenceHost();
   syncAppLifecycleLoginItemStatus();
   cleanupClipboardHistory(false, "system");
   startActionEndpoint();
@@ -23100,6 +23181,8 @@ app.on("before-quit", () => {
   reapStaleSidecars(SPEECH_WORKER_MARKER, speechWorkerDiag.pid);
   destroyVoiceOverlay();
   stopHeatmapTimer();
+  devIntelligenceHost?.dispose();
+  void hostScheduler.dispose();
   if (weatherRefreshTimer) {
     clearTimeout(weatherRefreshTimer);
     weatherRefreshTimer = null;
