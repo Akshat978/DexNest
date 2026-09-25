@@ -3,7 +3,7 @@
 Module id `skill_constellation` · table prefix `skill_` · event namespace `skill.` ·
 event stream `skill` · view id `skills`.
 
-Status: **Phase 0 (plan).** Nothing is built yet. Read with `AGENTS.md` and
+Status: **Phase 1 (contracts) done.** Decisions on the Phase 0 questions are in section 15. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`; this module is shaped after
 Developer Intelligence (DI) and Standup.
 
@@ -144,7 +144,8 @@ All created through `runModuleMigrations(db, 'skill_constellation', …)`:
 | `skill_evidence` | `id`; index `(skill_id, at)` | Evidence rows (columns of `SkillEvidence`) |
 | `skill_links` | `(a, b)` | Current links |
 | `skill_layout` | `skill_id` | Deterministic x/y per star from the last build |
-| `skill_state` | `key` | `dev_cursor_seq`, `last_build_id` |
+| `skill_state` | `key` | `dev_cursor_seq`, `last_build_id`, `settings_fingerprint` |
+| `skill_strength_history` | `(build_id, skill_id)` | Strength per skill per build; last 52 builds kept |
 
 A build replaces `skill_skills`, `skill_evidence`, `skill_links`,
 `skill_layout` inside **one** `withTransaction`, and writes its `skill_builds`
@@ -157,7 +158,7 @@ data root via `ModuleSettings`, like DI:
 
 ```ts
 { schemaVersion: 1, enabled: false, rebuildIntervalMinutes: 60,
-  includeUnmappedLibraries: false, hiddenSkills: string[] }
+  includeUnmappedLibraries: false, hiddenSkills: string[], myEmails: string[] }
 ```
 
 ## 6. Strength (evidence only)
@@ -184,7 +185,9 @@ Two skills are linked when they are evidenced in the same repositories:
 `weight = |repos(a) ∩ repos(b)| / |repos(a) ∪ repos(b)|` (Jaccard), kept when
 `shared ≥ 2` or `weight ≥ 0.5`, at most 4 links per star (strongest first,
 ties by id) so the drawing stays readable. Every link can explain itself: "both
-in *app*, *api*". No hand-written "React relates to JavaScript" edges (Q3).
+in *app*, *api*". Curated links come from the data file
+`src/domain/data/related-pairs.ts`, are drawn only when both skills already
+exist, are marked `source: 'curated'`, and do not count toward the per-star cap.
 
 ## 8. Evidence rules
 
@@ -316,32 +319,26 @@ One job, `rebuild`, via `createHostScheduler`:
 | Repository identity changes (DI id is path-derived) | Evidence keyed by DI ids; a renamed repo shows as its DI record does |
 | Windows-only behaviour untestable here | "Needs Windows check" list kept from Phase 5 on |
 
-## 15. Open questions for you
+## 15. Decisions (answers to the Phase 0 questions)
 
-1. **Whose commits?** DI's commit events have no author. Options: (a) count all
-   commits in a repo as that repo's activity (default in this plan); (b) add an
-   `authorEmails` setting and match against the author fields DI keeps in
-   snapshot `recentCommits` (only the recent window, so history before that
-   would count nothing); (c) ask DI to add the author email to
-   `CommitObservedPayload` (a DI change - not in this module's scope).
-2. **Commits → skills.** Attribute a repo's commits to its evidenced
-   languages only (plan), to every skill evidenced in the repo, or not at all
-   (commits only shown as repository activity, not as skill evidence)?
-3. **Links.** Co-occurrence only (plan), or also a small curated set of
-   relations (TypeScript↔JavaScript, React→JavaScript) drawn differently?
-4. **Build on open.** Should opening the view trigger a rebuild when stale
-   (light, but it is work the user did not explicitly ask for), or only offer a
-   button (plan)?
-5. **TODO text in the evidence panel.** Show it by live lookup from DI (plan),
-   or show path + line + date only?
-6. **History.** Keep a per-build strength snapshot so you can see a skill
-   rising or fading over months? Not planned; costs a table and a retention
-   rule.
-7. **Accent colour.** `DESIGN_TOKENS.md` has no token for this module. Reuse
-   `--accent-dev`, or add `--accent-skills` to the locked token set (a design
-   token change)?
-8. **Unmapped libraries.** Hidden by default behind `includeUnmappedLibraries`
-   - agreed, or show everything DI saw?
+1. **Authors.** Developer Intelligence now records `authorEmail` on
+   `dev.commit.observed` (separate commit, with a test; fingerprint unchanged,
+   so no duplicates). Setting `myEmails`: when set, only commits whose author
+   is in it count; a commit recorded without an author (older events) still
+   counts. When `myEmails` is empty every commit counts, because nothing says
+   whose it is - the view will say so and point at the setting.
+2. **Commits** credit the repository's evidenced languages only.
+3. **Links:** same-repository links, plus a hand-written pair list kept as
+   data (`src/domain/data/related-pairs.ts`), drawn only when both skills exist.
+4. **Build on open:** no. A Rebuild button only.
+5. **TODO text:** looked up from Developer Intelligence at display time; never
+   stored in `skill_*` (a test proves the domain drops it).
+6. **History:** one strength row per skill per build, last 52 builds kept.
+   Adds table `skill_strength_history` (Phase 2).
+7. **Accent:** `--accent-dev`. No new tokens.
+8. **Unmapped libraries:** hidden by default; `includeUnmappedLibraries` toggles.
+9. **Gate on Linux:** no new failures, the new package fully green, and the
+   pre-existing Linux failures listed by test name (section 17).
 
 ## 16. Phases for this module
 

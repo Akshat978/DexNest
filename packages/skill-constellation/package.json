@@ -1,0 +1,23 @@
+{
+  "name": "@dexnest/skill-constellation",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Skill Constellation: skills derived only from what Developer Intelligence observed, each with its evidence.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@dexnest/dev-intelligence-contracts": "workspace:*",
+    "@dexnest/foundation": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.14",
+    "vitest": "^5.0.1"
+  }
+}
