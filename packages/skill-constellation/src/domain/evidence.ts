@@ -15,7 +15,7 @@
 import { catalogueSkill, resolveTechnologySkill } from './catalogue.ts';
 import { languageForPath } from './extensions.ts';
 import { stableHash } from './hash.ts';
-import { isPrivateLookingPath, normalizeRelativePath } from './privacy.ts';
+import { escapesRepository, isPrivateLookingPath, normalizeRelativePath } from './privacy.ts';
 import type { SkillConstellationSettings } from './settings.ts';
 import type { ConstellationInput, EvidenceKind, SkillDefinition, SkillEvidence } from './types.ts';
 
@@ -50,7 +50,7 @@ export function deriveEvidence(input: ConstellationInput, options: DeriveEvidenc
   let othersCommits = 0;
 
   const refuses = (repositoryId: string, path: string) =>
-    isPrivateLookingPath(path) || (options.isSensitive?.(repositoryId, path) ?? false);
+    escapesRepository(path) || isPrivateLookingPath(path) || (options.isSensitive?.(repositoryId, path) ?? false);
 
   const add = (skill: SkillDefinition, row: Omit<SkillEvidence, 'id' | 'skillId' | 'repositoryName'>) => {
     const id = evidenceId(skill.id, row.kind, row.sourceRef);

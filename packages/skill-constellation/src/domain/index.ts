@@ -4,7 +4,7 @@ export * from './catalogue.ts';
 export { CATALOGUE_SKILLS, CATALOGUE_NAMES, type CatalogueSkill } from './data/catalogue.ts';
 export { RELATED_PAIRS } from './data/related-pairs.ts';
 export { languageForPath } from './extensions.ts';
-export { isPrivateLookingPath, normalizeRelativePath } from './privacy.ts';
+export { escapesRepository, isPrivateLookingPath, normalizeRelativePath } from './privacy.ts';
 export { deriveEvidence, evidenceId, type DeriveEvidenceOptions, type DerivedEvidence } from './evidence.ts';
 export { aggregateSkills, repositoriesBySkill } from './skills.ts';
 export * from './strength.ts';

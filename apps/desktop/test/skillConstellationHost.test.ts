@@ -206,3 +206,30 @@ test("preload exposes every channel, and main handles every registered action", 
   for (const action of ours) assert.ok(main.includes(`"${action.id}"`), `main.ts does not handle ${action.id}`);
   assert.ok(main.includes("startSkillConstellationHost();") && main.includes("skillConstellationHost?.dispose();"));
 });
+
+test("the host can be disposed and created again on the same connection without leaking handlers", async () => {
+  const { host, ipc, call } = await setup();
+  host.module.enable();
+  host.dispose();
+  assert.equal(ipc.handlers.size, 0);
+  // A second host on the same ipcMain and database: migrations are already
+  // applied, the settings persisted, and every channel registers once.
+  const again = createSkillConstellationHost({
+    database: handle!.db,
+    events: createEventLog(handle!.db),
+    dataRoot: "unused-data-root",
+    otherDataRoots: [],
+    scheduler: createHostScheduler({ timers: heldTimers() }),
+    reader: memoryReader().reader,
+    readSettings: () => ({ enabled: true }),
+    writeSettings: () => undefined,
+    ipcMain: ipc,
+    getWindow: () => window,
+    audit: () => undefined,
+    realpath: (path) => path
+  });
+  assert.equal(ipc.handlers.size, Object.keys(SKILL_CHANNELS).length);
+  const status = (await call(SKILL_CHANNELS.status)) as { enabled: boolean };
+  assert.equal(status.enabled, true);
+  again.dispose();
+});

@@ -34,6 +34,17 @@ export function normalizeRelativePath(path: string): string {
   return path.replace(/\\/g, '/').replace(/^(\.\/)+/, '').replace(/\/+$/, '');
 }
 
+/**
+ * Evidence paths are repository-relative. One that is absolute (POSIX, a
+ * Windows drive, a UNC share) or climbs out with ".." does not describe a file
+ * in the repository, whatever produced it, so it is never recorded.
+ */
+export function escapesRepository(path: string): boolean {
+  const normalized = path.replace(/\\/g, '/');
+  if (normalized.startsWith('/') || /^[A-Za-z]:/.test(normalized)) return true;
+  return normalized.split('/').some((segment) => segment === '..');
+}
+
 export function isPrivateLookingPath(path: string): boolean {
   const segments = normalizeRelativePath(path)
     .split('/')

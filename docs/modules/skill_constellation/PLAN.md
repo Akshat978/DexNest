@@ -3,7 +3,7 @@
 Module id `skill_constellation` · table prefix `skill_` · event namespace `skill.` ·
 event stream `skill` · view id `skills`.
 
-Status: **Phase 6 (view) done.** Decisions on the Phase 0 questions are in section 15. Read with `AGENTS.md` and
+Status: **Phase 7 (hardening) done.** Decisions on the Phase 0 questions are in section 15. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`; this module is shaped after
 Developer Intelligence (DI) and Standup.
 
@@ -407,6 +407,38 @@ One job, `rebuild`, via `createHostScheduler`:
   dependencies); keyboard logic is tested in the model. Not tested: real key
   events and focus movement in a live DOM (no DOM test library in the repo) -
   needs Windows check.
+
+## 15d. Hardening (Phase 7)
+
+Covered by `packages/skill-constellation/src/__tests__/hardening.test.ts` and
+one more host test:
+
+- Restart: a build killed mid-read (process "dies", same database file
+  reopened) is closed out as failed on the next start; the constellation from
+  before is intact and the next build completes.
+- Disk faults at every write of a build (the four deletes, five inserts, the
+  build-row update, the state upsert, history pruning): each leaves the
+  previous constellation, cursor and history exactly as they were, the build
+  is recorded failed, and the next build succeeds. Closes the Phase 2 gap.
+- A build that rolls back announces no event to subscribers.
+- Ten rebuilds at once: one completes, nine skip, one event. The real host
+  scheduler: two manual runs and a slot delivered twice give one build.
+- A repository DI stops listing takes its evidence with it (loss recorded
+  once); removed technology stays as dated history; a TODO deleted after the
+  build shows no text.
+- 50,000 commits across 200 repositories: about 2 s including the synthetic
+  inserts on this container (budget 30 s); an unchanged rebuild skips in under
+  0.5 s; the evidence panel stays capped at 200 rows.
+- Future, missing and garbage dates; unicode and very long paths; corrupt
+  settings files (read back as off).
+
+**Found and fixed:** evidence paths that escape the repository - `..`
+segments, absolute POSIX paths, Windows drive and UNC paths - were recorded.
+DI should never produce them, but the module no longer trusts that
+(`escapesRepository` in `domain/privacy.ts`).
+
+**Decided:** the same commit sha in two clones counts once, not once per
+clone; counting it twice would invent evidence.
 
 ### Needs Windows check (running list)
 
