@@ -3,7 +3,7 @@
 Module id `skill_constellation` · table prefix `skill_` · event namespace `skill.` ·
 event stream `skill` · view id `skills`.
 
-Status: **Phase 1 (contracts) done.** Decisions on the Phase 0 questions are in section 15. Read with `AGENTS.md` and
+Status: **Phase 2 (store) done.** Decisions on the Phase 0 questions are in section 15. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`; this module is shaped after
 Developer Intelligence (DI) and Standup.
 
@@ -146,6 +146,12 @@ All created through `runModuleMigrations(db, 'skill_constellation', …)`:
 | `skill_layout` | `skill_id` | Deterministic x/y per star from the last build |
 | `skill_state` | `key` | `dev_cursor_seq`, `last_build_id`, `settings_fingerprint` |
 | `skill_strength_history` | `(build_id, skill_id)` | Strength per skill per build; last 52 builds kept |
+
+Schema guards: `skill_skills.evidence_count > 0` (a skill with no evidence is
+refused by SQLite itself), `skill_links` requires `a < b`, build status is a
+closed set. When history is pruned to the newest 52 completed builds, build
+rows older than all of them (skipped/failed included) are pruned too, so the
+table stays bounded.
 
 A build replaces `skill_skills`, `skill_evidence`, `skill_links`,
 `skill_layout` inside **one** `withTransaction`, and writes its `skill_builds`
