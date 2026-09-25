@@ -4,7 +4,7 @@ Module id `reality_rpg` · table prefix `rpg_` · event namespace `rpg.` ·
 event stream `rpg` · view id `rpg` · package `@dexnest/reality-rpg` ·
 branch `cloud/reality-rpg`.
 
-Status: **Phase 0 (plan).** Nothing is built yet. Read with `AGENTS.md` and
+Status: **Phase 1 (contracts) done.** Decisions on the Phase 0 questions are in section 13b. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`. Shaped after Developer
 Intelligence's runtime/host split (`packages/dev-intelligence/src/module/runtime.ts`,
 `apps/desktop/src/main/devIntelligenceHost.ts`).
@@ -322,6 +322,33 @@ query. `runAtStartup: true` so time away is caught up once.
    remove them?
 10. **Stats.** Free-text stat names on rules (default), or a fixed list you
     choose (e.g. Craft, Focus, Health, Order)?
+
+## 13b. Decisions (you chose the defaults)
+
+1. Vault, finance and journal are **denied completely**: no rule may name
+   them (by module, action id or type prefix, any case), and their events
+   are dropped at projection.
+2. No foundation change: events are projected immediately and never kept.
+   The projection is the only code that reads a payload (static test).
+3. New rules apply from creation onward (`effectiveFromSeq` = log max seq
+   when saved or enabled); an explicit `reality_rpg.backfill` action applies
+   one to past events. Deleting a rule keeps its awards.
+4. A starter pack ships as data, every rule disabled
+   (`domain/data/starter-pack.ts`): Commit observed, Standup generated,
+   Repositories scanned, Backup completed; achievements First steps,
+   Hundred, Committed week.
+5. Scheduled job (15 minutes, minimum 5) plus Refresh; no live subscription.
+6. No penalties, no negative XP, no streak-loss messages.
+7. Not phone- or Deck-exposed.
+8. Accent `--accent-loop` (existing token). No new tokens.
+9. Awards stay when their source events are later deleted.
+10. Free-text stat names (letters, digits, spaces, up to 32 characters).
+
+**Phase 1 notes.** Payload fields kept for legacy audit rows (`module`,
+`actionId`, `status`) must also be short identifiers
+(`[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}`), so free text in those fields cannot
+pass either. Quests count only awards that happened after the quest was
+created. The level curve is data: level n needs 50·n·(n-1) XP, 60 levels.
 
 ## 14. Phases for this module
 

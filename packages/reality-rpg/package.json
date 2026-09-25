@@ -1,0 +1,22 @@
+{
+  "name": "@dexnest/reality-rpg",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Reality RPG: XP, achievements and quests from DexNest activity, by rules kept as data.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@dexnest/foundation": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.14",
+    "vitest": "^5.0.1"
+  }
+}
