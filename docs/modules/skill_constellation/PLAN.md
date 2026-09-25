@@ -3,7 +3,7 @@
 Module id `skill_constellation` · table prefix `skill_` · event namespace `skill.` ·
 event stream `skill` · view id `skills`.
 
-Status: **Phase 5 (host) done.** Decisions on the Phase 0 questions are in section 15. Read with `AGENTS.md` and
+Status: **Phase 6 (view) done.** Decisions on the Phase 0 questions are in section 15. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`; this module is shaped after
 Developer Intelligence (DI) and Standup.
 
@@ -383,6 +383,31 @@ One job, `rebuild`, via `createHostScheduler`:
 - Preload: `skillConstellationStatus/Snapshot/Evidence/History/Settings/
   UpdateSettings`. Renderer typings come with the view (Phase 6).
 
+## 15c. The view (Phase 6)
+
+- `apps/desktop/src/renderer/views/SkillConstellationView.tsx` (+ `.css`,
+  + `skillConstellationModel.ts` for the pure decisions). Sidebar entry
+  "Skills" right after Autopilot, icon `Stars`, accent `--accent-dev`; opened
+  by `skill_constellation.open` -> `desktop.view.skills`.
+- States: loading (status, `aria-busy`), error (alert + Try again), off
+  (explains it reads only DI; Turn on / Rebuild), empty (built, no evidence:
+  scan in DI first), ready. Stale and "every commit counts" notices.
+- Constellation: SVG, stars sized by strength, links by overlap (curated ones
+  dashed), no animation. Keyboard: one tab stop (roving tabindex), arrow keys
+  move to the nearest star in that direction, Home/End, Enter/Space opens the
+  evidence, Escape closes it and returns focus to the star.
+- Evidence panel: strength and the numbers behind each component, evidence
+  grouped by repository with path, date, detail, commit sha, and TODO text
+  looked up live. Strength history across builds. Hide / show a skill.
+- Settings (collapsed): my commit emails, include non-curated libraries.
+- Buttons run the registered actions through `runUiAction`, so they are
+  journalled. Bridge typings: `DexNestBridge extends SkillConstellationBridge`;
+  the Vite-preview fallback bridge returns the "off" state.
+- Tests render the real `.tsx` via Vite SSR + `react-dom/server` (no new
+  dependencies); keyboard logic is tested in the model. Not tested: real key
+  events and focus movement in a live DOM (no DOM test library in the repo) -
+  needs Windows check.
+
 ### Needs Windows check (running list)
 
 - The boundary with real `D:\DeskNest\local-data`, a scratch
@@ -394,6 +419,10 @@ One job, `rebuild`, via `createHostScheduler`:
   preload bridge under context isolation.
 - Settings file written under the real settings root, not AppData.
 - Performance Mode actually holding off the heavy `rebuild` job.
+- The view in Electron on Windows: Inter / JetBrains Mono actually loaded
+  (the tokens name them; the fonts are the app's), SVG star labels legible at
+  the app's default size, arrow-key focus moving between stars and the focus
+  ring visible, Escape returning focus, and screen-reader labels (Narrator).
 
 ## 16. Phases for this module
 

@@ -1,0 +1,245 @@
+/* Skill Constellation. DexNest design tokens only - no literal colours. The
+   module uses the Dev accent (--accent-dev); fonts are --font-ui and, for
+   paths, dates and numbers, --font-tech. Nothing animates: an open
+   constellation costs no CPU. */
+
+.skill-constellation {
+  font-family: var(--font-ui);
+}
+
+.skill-constellation .technical {
+  font-family: var(--font-tech);
+}
+
+.skill-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-4);
+  color: var(--text-muted);
+}
+
+.skill-status p {
+  margin: 0;
+}
+
+.skill-stale {
+  color: var(--warning);
+}
+
+.skill-hint,
+.skill-caption,
+.skill-panel__category {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.skill-notice {
+  margin: 0;
+  color: var(--text);
+}
+
+.skill-error {
+  display: grid;
+  gap: var(--space-2);
+  color: var(--error);
+}
+
+.skill-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(16rem, 2fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .skill-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.skill-sky {
+  margin: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3);
+}
+
+.skill-sky svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.skill-link {
+  stroke: var(--text-muted);
+  stroke-width: 1.5;
+}
+
+.skill-link--curated {
+  stroke-dasharray: 6 6;
+}
+
+.skill-star {
+  cursor: pointer;
+  outline: none;
+}
+
+.skill-star__core {
+  fill: var(--accent-dev);
+}
+
+.skill-star__halo {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 2;
+}
+
+.skill-star:hover .skill-star__halo {
+  stroke: var(--border);
+}
+
+.skill-star:focus-visible .skill-star__halo {
+  stroke: var(--text);
+  stroke-width: 3;
+}
+
+.skill-star--selected .skill-star__halo {
+  stroke: var(--accent-dev);
+  stroke-width: 3;
+}
+
+.skill-star--hidden .skill-star__core {
+  fill: var(--text-disabled);
+}
+
+.skill-star__label {
+  fill: var(--text);
+  font-family: var(--font-ui);
+  font-size: 22px;
+  pointer-events: none;
+}
+
+.skill-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  display: grid;
+  gap: var(--space-3);
+  max-height: 44rem;
+  overflow-y: auto;
+}
+
+.skill-panel--hint {
+  color: var(--text-muted);
+}
+
+.skill-panel__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.skill-panel__head h3,
+.skill-panel__category {
+  margin: 0;
+}
+
+.skill-strength {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+}
+
+.skill-strength dt {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.skill-strength dd {
+  margin: 0;
+}
+
+.skill-history {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.skill-repo h4 {
+  margin: 0 0 var(--space-2);
+}
+
+.skill-repo__dates {
+  color: var(--text-muted);
+  font-weight: normal;
+  font-size: 0.8rem;
+}
+
+.skill-repo ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.skill-evidence {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-1) var(--space-3);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+
+.skill-evidence__kind {
+  color: var(--text);
+}
+
+.skill-evidence__path,
+.skill-evidence__detail,
+.skill-evidence__todo {
+  grid-column: 1 / -1;
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.skill-link-button {
+  justify-self: start;
+}
+
+.skill-settings {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+}
+
+.skill-settings form {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+  max-width: 36rem;
+}
+
+.skill-settings label {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.skill-settings .skill-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.skill-constellation button:focus-visible,
+.skill-constellation input:focus-visible,
+.skill-constellation summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}

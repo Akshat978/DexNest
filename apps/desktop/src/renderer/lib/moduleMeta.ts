@@ -1,13 +1,13 @@
 import {
   Activity, Calculator, CalendarClock, CalendarDays, ClipboardList, CloudSun, Code2, Command,
   Bot, HardDriveDownload, Inbox, LayoutGrid, Lightbulb, Newspaper, NotebookPen, PackageSearch,
-  ScrollText, Settings as SettingsIcon, Share2, Sparkles, Stethoscope, Vault, Wallet, Wrench,
+  ScrollText, Settings as SettingsIcon, Share2, Sparkles, Stars, Stethoscope, Vault, Wallet, Wrench,
   type LucideIcon
 } from "lucide-react";
 
 /** Every view the shell can route to. */
 export type ViewId =
-  | "command" | "dev" | "autopilot" | "deck" | "clipboard" | "drop" | "tools" | "vault"
+  | "command" | "dev" | "autopilot" | "skills" | "deck" | "clipboard" | "drop" | "tools" | "vault"
   | "search" | "capture" | "journal" | "calendar" | "timetable" | "utilities" | "news"
   | "finder" | "finance" | "heatmap" | "devices" | "backup" | "health" | "audit" | "settings";
 
@@ -44,6 +44,7 @@ export const SIDEBAR_VIEWS: SidebarView[] = [
   { id: "finance", label: "Finance", accentClass: "accent-finance", actionId: "finance.open" },
   { id: "dev", label: "Dev", accentClass: "accent-dev", actionId: "dev.open_dashboard" },
   { id: "autopilot", label: "Autopilot", accentClass: "accent-dev", actionId: "autopilot.open" },
+  { id: "skills", label: "Skills", accentClass: "accent-dev", actionId: "skill_constellation.open" },
   { id: "deck", label: "Deck", accentClass: "accent-deck", actionId: "deck.test_endpoint" },
   { id: "heatmap", label: "Heatmap", accentClass: "accent-heatmap", actionId: "heatmap.open" },
   { id: "devices", label: "External Devices", accentClass: "accent-tools", actionId: "" },
@@ -61,6 +62,7 @@ export const MODULE_META: Record<string, { icon: LucideIcon; accent: string }> =
   command: { icon: Command, accent: "#22D3EE" },
   dev: { icon: Code2, accent: "#3B82F6" },
   autopilot: { icon: Bot, accent: "#0EA5E9" },
+  skills: { icon: Stars, accent: "var(--accent-dev)" },
   deck: { icon: LayoutGrid, accent: "#A855F7" },
   clipboard: { icon: ClipboardList, accent: "#8B5CF6" },
   drop: { icon: Share2, accent: "#38BDF8" },
