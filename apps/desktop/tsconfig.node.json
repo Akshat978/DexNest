@@ -14,7 +14,7 @@
     "noEmit": false,
     "isolatedModules": false
   },
-  "include": ["src/main/**/*.ts", "../../packages/**/*.ts", "../../modules/deck/**/*.ts"],
+  "include": ["src/main/**/*.ts", "test/skillConstellationHost.test.ts", "../../packages/**/*.ts", "../../modules/deck/**/*.ts"],
   // autopilot-runtime uses allowImportingTsExtensions (required so Node's
   // --experimental-strip-types can run its tests without a build step) and is
   // typechecked by its own `pnpm --filter @dexnest/autopilot-runtime typecheck`.

@@ -154,6 +154,14 @@ contextBridge.exposeInMainWorld("dexNest", {
   standupGenerate: (input?: { forceNew?: boolean }) => ipcRenderer.invoke("dexnest:standup-generate", input),
   standupLatest: () => ipcRenderer.invoke("dexnest:standup-latest"),
   standupList: (limit?: number) => ipcRenderer.invoke("dexnest:standup-list", limit),
+  // Skill Constellation: reads, plus settings. Rebuild and on/off are the
+  // skill_constellation.* actions, run through runAction like any other.
+  skillConstellationStatus: () => ipcRenderer.invoke("dexnest:skill-constellation-status"),
+  skillConstellationSnapshot: () => ipcRenderer.invoke("dexnest:skill-constellation-snapshot"),
+  skillConstellationEvidence: (skillId: string) => ipcRenderer.invoke("dexnest:skill-constellation-evidence", skillId),
+  skillConstellationHistory: (skillId: string) => ipcRenderer.invoke("dexnest:skill-constellation-history", skillId),
+  skillConstellationSettings: () => ipcRenderer.invoke("dexnest:skill-constellation-settings"),
+  skillConstellationUpdateSettings: (settings: unknown) => ipcRenderer.invoke("dexnest:skill-constellation-update-settings", settings),
   autopilotReadiness: (project: string) => ipcRenderer.invoke("dexnest:autopilot-readiness", project),
   autopilotRerunForm: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-rerun-form", runId),
   autopilotRunChanges: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-run-changes", runId),

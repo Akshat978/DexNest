@@ -3,7 +3,7 @@
 Module id `skill_constellation` · table prefix `skill_` · event namespace `skill.` ·
 event stream `skill` · view id `skills`.
 
-Status: **Phase 4 (actions and events) done.** Decisions on the Phase 0 questions are in section 15. Read with `AGENTS.md` and
+Status: **Phase 5 (host) done.** Decisions on the Phase 0 questions are in section 15. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`; this module is shaped after
 Developer Intelligence (DI) and Standup.
 
@@ -361,6 +361,39 @@ One job, `rebuild`, via `createHostScheduler`:
 8. **Unmapped libraries:** hidden by default; `includeUnmappedLibraries` toggles.
 9. **Gate on Linux:** no new failures, the new package fully green, and the
    pre-existing Linux failures listed by test name (section 17).
+
+## 15b. Host wiring (Phase 5)
+
+- `apps/desktop/src/main/skillConstellationHost.ts`: migrations, the module,
+  the data boundary (live root + every other DexNest data root, junctions
+  resolved with `realpathSync.native`), IPC reads with the trusted-main-frame
+  check, `dispose()`.
+- IPC channels (`dexnest:skill-constellation-*`): `status`, `snapshot`,
+  `evidence(skillId)`, `history(skillId)`, `settings`, `update-settings`.
+  Skill ids are validated. Saving settings cannot switch the module on or off
+  and is audited with counts only (never the emails).
+- Rebuild / on / off are the registered actions, handled in `main.ts` and
+  journalled by `logActionEvent`, like `dev.scan_repositories`. Because the
+  module also audits (so scheduled builds are logged), a user-run rebuild or
+  toggle writes two audit lines - the same as `standup.generate` today.
+- `main.ts` starts the host after Developer Intelligence and passes DI's
+  persistence as the reader; if DI failed to start, Skill Constellation does
+  not start. Disposed on quit before DI. The job runs on the one host
+  scheduler, so Performance Mode holds it off (heavy).
+- Preload: `skillConstellationStatus/Snapshot/Evidence/History/Settings/
+  UpdateSettings`. Renderer typings come with the view (Phase 6).
+
+### Needs Windows check (running list)
+
+- The boundary with real `D:\DeskNest\local-data`, a scratch
+  `DEXNEST_DATA_ROOT`, and a repository reached through a junction into the
+  data root (`realpathSync.native` on NTFS junctions).
+- Evidence paths recorded from Windows repositories (backslashes normalised to
+  `/` in the domain; displayed as recorded).
+- Electron IPC: the trusted-frame check against a real BrowserWindow, and the
+  preload bridge under context isolation.
+- Settings file written under the real settings root, not AppData.
+- Performance Mode actually holding off the heavy `rebuild` job.
 
 ## 16. Phases for this module
 

@@ -41,6 +41,9 @@ importers:
       '@dexnest/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types
+      '@dexnest/skill-constellation':
+        specifier: workspace:*
+        version: link:../../packages/skill-constellation
       '@dexnest/today':
         specifier: workspace:*
         version: link:../../packages/today

@@ -89,6 +89,7 @@
     "@dexnest/module-deck": "workspace:*",
     "@dexnest/module-dev": "workspace:*",
     "@dexnest/shared-types": "workspace:*",
+    "@dexnest/skill-constellation": "workspace:*",
     "@dexnest/today": "workspace:*",
     "adm-zip": "^0.5.17",
     "better-sqlite3": "^11.9.1",
