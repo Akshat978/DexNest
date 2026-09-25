@@ -3,7 +3,7 @@
 Module id `skill_constellation` · table prefix `skill_` · event namespace `skill.` ·
 event stream `skill` · view id `skills`.
 
-Status: **Phase 7 (hardening) done.** Decisions on the Phase 0 questions are in section 15. Read with `AGENTS.md` and
+Status: **All phases done.** See `HANDOFF.md`. Decisions on the Phase 0 questions are in section 15. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`; this module is shaped after
 Developer Intelligence (DI) and Standup.
 
