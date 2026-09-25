@@ -41,6 +41,17 @@ describe('static safety', () => {
     expect(bad).toEqual([]);
   });
 
+  it('the module never reads disk or spawns processes: no fs, child_process or worker imports outside tests', () => {
+    const deny = /^node:(fs|fs\/promises|child_process|worker_threads)$|^(fs|fs\/promises|child_process)$/;
+    const bad: string[] = [];
+    for (const file of tsFiles(SRC)) {
+      for (const specifier of importsOf(readFileSync(file, 'utf8'))) {
+        if (deny.test(specifier)) bad.push(`${relative(SRC, file)} -> ${specifier}`);
+      }
+    }
+    expect(bad).toEqual([]);
+  });
+
   it('EC-036: no LLM or network client imports', () => {
     const deny =
       /\b(openai|anthropic|@ai-sdk|langchain|cohere|ollama)\b|from\s+['"](axios|got|node-fetch|undici)['"]|from\s+['"]node:(http|https|net|tls|dgram|dns)['"]|\bfetch\s*\(|\bXMLHttpRequest\b|\bWebSocket\b/i;

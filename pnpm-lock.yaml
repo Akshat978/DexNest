@@ -268,6 +268,9 @@ importers:
         specifier: workspace:*
         version: link:../foundation
     devDependencies:
+      '@dexnest/dev-intelligence-store':
+        specifier: workspace:*
+        version: link:../dev-intelligence-store
       '@types/node':
         specifier: ^22.13.14
         version: 22.20.0

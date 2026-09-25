@@ -3,7 +3,7 @@
 Module id `skill_constellation` · table prefix `skill_` · event namespace `skill.` ·
 event stream `skill` · view id `skills`.
 
-Status: **Phase 2 (store) done.** Decisions on the Phase 0 questions are in section 15. Read with `AGENTS.md` and
+Status: **Phase 3 (engine) done.** Decisions on the Phase 0 questions are in section 15. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`; this module is shaped after
 Developer Intelligence (DI) and Standup.
 
@@ -310,6 +310,16 @@ One job, `rebuild`, via `createHostScheduler`:
 - Staleness: `skill_state.dev_cursor_seq` vs the newest dev event seq.
 - DI's tables are **read through its stores**, never by SQL against `dev_*`
   from this module (prefix ownership).
+- The cursor is read first, then facts, and commits only up to the cursor, so
+  a build never records a cursor newer than the input it used.
+- Builds are serialised in-process; a failed build does not block the next.
+- `force: true` rebuilds even when nothing changed (not used by the job).
+- Known limit: DI refreshes a still-present fact's `lastObservedAt` on every
+  scan without emitting an event, so an otherwise unchanged repository does
+  not trigger a rebuild just to refresh that date. Activity (commits, resolved
+  TODOs) always arrives as events.
+- TODO text for the evidence panel: `engine.describeEvidence(skillId)` looks it
+  up from DI's TODO store at call time; private-looking paths get none.
 
 ## 14. Risks
 
