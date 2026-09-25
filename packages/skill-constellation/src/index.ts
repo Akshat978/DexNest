@@ -6,4 +6,5 @@
 export * from './domain/index.ts';
 export * from './store/index.ts';
 export * from './engine/index.ts';
+export * from './module/index.ts';
 export * from './manifest.ts';

@@ -3,7 +3,7 @@
 Module id `skill_constellation` · table prefix `skill_` · event namespace `skill.` ·
 event stream `skill` · view id `skills`.
 
-Status: **Phase 3 (engine) done.** Decisions on the Phase 0 questions are in section 15. Read with `AGENTS.md` and
+Status: **Phase 4 (actions and events) done.** Decisions on the Phase 0 questions are in section 15. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`; this module is shaped after
 Developer Intelligence (DI) and Standup.
 
@@ -258,11 +258,17 @@ Stream `skill`, module `skill_constellation`, namespace `skill.`:
 
 | Type | Subject | Idempotency key | When |
 |---|---|---|---|
-| `skill.constellation.built` | build id | `skill_constellation:build:<occurrenceId>` | A build completed and changed something |
+| `skill.constellation.built` | build id | `skill_constellation:build:<occurrenceId>` | A build completed (a build only completes when the dev stream or build-relevant settings moved, or it was forced) |
 | `skill.discovered` | skill id | `skill_constellation:discovered:<skillId>` | A skill appears for the first time ever |
 | `skill.evidence_lost` | skill id | `skill_constellation:lost:<skillId>:<buildId>` | A skill that existed has no evidence left |
 
-Payloads carry ids, counts and dates - no paths, no text. Plus one audit-stream
+Payloads carry ids, counts and dates - no paths, no text. The events are
+written inside the build's transaction (`module/events.ts`, via the engine's
+`onCommit`): an event that fails to write rolls the build back, and a build
+that rolls back leaves no event.
+
+`skill_constellation` was added to `DexNestModuleId` in `@dexnest/shared-types`
+so the registry entries type-check as this module's. Plus one audit-stream
 line for each user-meaningful action (build requested, enabled/disabled), via
 the host's `audit` callback exactly as DI does.
 
