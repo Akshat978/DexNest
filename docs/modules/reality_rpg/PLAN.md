@@ -4,7 +4,7 @@ Module id `reality_rpg` · table prefix `rpg_` · event namespace `rpg.` ·
 event stream `rpg` · view id `rpg` · package `@dexnest/reality-rpg` ·
 branch `cloud/reality-rpg`.
 
-Status: **Phase 1 (contracts) done.** Decisions on the Phase 0 questions are in section 13b. Read with `AGENTS.md` and
+Status: **Phase 2 (store) done.** Decisions on the Phase 0 questions are in section 13b. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`. Shaped after Developer
 Intelligence's runtime/host split (`packages/dev-intelligence/src/module/runtime.ts`,
 `apps/desktop/src/main/devIntelligenceHost.ts`).
@@ -349,6 +349,17 @@ query. `runAtStartup: true` so time away is caught up once.
 (`[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}`), so free text in those fields cannot
 pass either. Quests count only awards that happened after the quest was
 created. The level curve is data: level n needs 50·n·(n-1) XP, 60 levels.
+
+**Phase 2 notes.** Store: `packages/reality-rpg/src/store/`. Every rule save
+is a new version (`rpg_rule_versions`), and the store refuses to save a
+definition the domain refuses. Definitions read back through the domain's
+validation; a row that no longer validates (corrupt JSON, or a denied module
+written in behind the store's back) is returned as `invalid`, never used.
+Deleting a rule or achievement keeps the awards and unlocks it produced. A
+completed quest cannot be abandoned. Schema guards: `xp > 0`, closed status
+sets, `UNIQUE (rule_id, event_id)` on the ledger and `UNIQUE (occurrence_id)`
+on runs. `commitRun` returns only the awards, unlocks, completions and levels
+it actually wrote, so events in Phase 4 are raised for new things only.
 
 ## 14. Phases for this module
 
