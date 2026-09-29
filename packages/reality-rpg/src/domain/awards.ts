@@ -7,7 +7,7 @@
  * enforces the same thing with a unique key.
  *
  * A rule awards only when it is enabled, the event is at or after the rule's
- * effectiveFromSeq, and the rule's daily cap for that local day - counting
+ * effectiveFrom (by recorded time), and the rule's daily cap for that local day - counting
  * awards already in the ledger - is not yet reached.
  */
 
@@ -40,7 +40,7 @@ export function computeAwards(rules: readonly Rule[], events: readonly ObservedE
     const day = localDay(event.occurredAt, context.timeZone);
     if (!day) continue;
     for (const rule of active) {
-      if (event.seq < rule.effectiveFromSeq) continue;
+      if (Date.parse(event.recordedAt) < Date.parse(rule.effectiveFrom)) continue;
       if (!ruleMatches(rule.match, event)) continue;
       const id = awardId(rule.id, event.id);
       if (seen.has(id)) continue;

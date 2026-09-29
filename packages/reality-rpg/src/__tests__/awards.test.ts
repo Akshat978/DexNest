@@ -43,11 +43,14 @@ describe('computeAwards', () => {
     expect(awards.map((a) => a.ruleId).sort()).toEqual(['commit-observed', 'second']);
   });
 
-  it('respects enabled and effectiveFromSeq - no retroactive awards', () => {
-    const early = observed({ seq: 10 });
-    const late = observed({ seq: 20 });
+  it('respects enabled and effectiveFrom - no retroactive awards, judged by recorded time not seq', () => {
+    const early = observed({ seq: 10, recordedAt: '2026-06-01T09:00:00.000Z' });
+    const late = observed({ seq: 20, recordedAt: '2026-06-01T11:00:00.000Z' });
+    // After an audit clear a new event can carry a lower seq than an old one; time still decides.
+    const reused = observed({ seq: 5, recordedAt: '2026-06-02T08:00:00.000Z' });
     expect(computeAwards([rule({ enabled: false })], [late], empty)).toEqual([]);
-    expect(computeAwards([rule({ effectiveFromSeq: 15 })], [early, late], empty).map((a) => a.eventSeq)).toEqual([20]);
+    const effective = rule({ effectiveFrom: '2026-06-01T10:00:00.000Z' });
+    expect(computeAwards([effective], [early, late, reused], empty).map((a) => a.eventSeq).sort()).toEqual([20, 5].sort());
   });
 
   it('caps awards per local day, counting what the ledger already holds', () => {

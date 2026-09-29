@@ -2,7 +2,7 @@
 import type { ObservedEvent, RawEvent, Rule } from '../domain/types.ts';
 
 export function raw(overrides: Partial<RawEvent> = {}): RawEvent {
-  return { id: 'e1', seq: 1, type: 'action_executed', stream: 'audit', module: null, occurredAt: '2026-06-01T10:00:00.000Z', payload: {}, ...overrides };
+  return { id: 'e1', seq: 1, type: 'action_executed', stream: 'audit', module: null, occurredAt: '2026-06-01T10:00:00.000Z', recordedAt: '2026-06-01T10:00:00.000Z', payload: {}, ...overrides };
 }
 
 let n = 0;
@@ -17,6 +17,7 @@ export function observed(overrides: Partial<ObservedEvent> = {}): ObservedEvent 
     actionId: null,
     status: null,
     occurredAt: '2026-06-01T10:00:00.000Z',
+    recordedAt: '2026-06-01T10:00:00.000Z',
     ...overrides,
   };
 }
@@ -29,7 +30,7 @@ export function rule(overrides: Partial<Rule> = {}): Rule {
     enabled: true,
     match: { types: ['dev.commit.observed'] },
     award: { xp: 5, stat: 'Craft' },
-    effectiveFromSeq: 0,
+    effectiveFrom: '1970-01-01T00:00:00.000Z',
     ...overrides,
   };
 }

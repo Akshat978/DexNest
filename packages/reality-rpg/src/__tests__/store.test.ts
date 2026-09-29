@@ -222,8 +222,9 @@ describe('Reality RPG store', () => {
       const { db } = open();
       const store = createRealityRpgStore(db);
       store.saveRule(ruleInput, T);
-      db.prepare("INSERT INTO rpg_rules (id, version, name, enabled, effective_from_seq, definition_json, created_at, updated_at) VALUES ('broken', 1, 'b', 1, 0, '{not json', ?, ?)").run([T, T]);
-      db.prepare("INSERT INTO rpg_rules (id, version, name, enabled, effective_from_seq, definition_json, created_at, updated_at) VALUES ('sneaky', 1, 's', 1, 0, ?, ?, ?)").run([
+      db.prepare("INSERT INTO rpg_rules (id, version, name, enabled, effective_from, definition_json, created_at, updated_at) VALUES ('broken', 1, 'b', 1, ?, '{not json', ?, ?)").run([T, T, T]);
+      db.prepare("INSERT INTO rpg_rules (id, version, name, enabled, effective_from, definition_json, created_at, updated_at) VALUES ('sneaky', 1, 's', 1, ?, ?, ?, ?)").run([
+        T,
         JSON.stringify({ ...ruleInput, id: 'sneaky', match: { types: ['action_executed'], module: 'journal' } }), T, T,
       ]);
       const { rules, invalid } = store.listRules();

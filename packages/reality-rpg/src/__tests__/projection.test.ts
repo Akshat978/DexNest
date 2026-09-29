@@ -29,6 +29,7 @@ describe('projectEvent keeps an allow-listed envelope and nothing else', () => {
         actionId: 'clipboard.copy',
         status: 'success',
         occurredAt: '2026-06-01T10:00:00.000Z',
+        recordedAt: '2026-06-01T10:00:00.000Z',
       },
     });
     const text = JSON.stringify(p);

@@ -18,6 +18,8 @@ export interface RawEvent {
   stream: string;
   module: string | null;
   occurredAt: string;
+  /** When the row was written to the log. */
+  recordedAt: string;
   payload: unknown;
 }
 
@@ -37,6 +39,7 @@ export interface ObservedEvent {
   /** Legacy audit rows only: "success", "failed", ... */
   status: string | null;
   occurredAt: string;
+  recordedAt: string;
 }
 
 export interface RuleMatch {
@@ -57,8 +60,12 @@ export interface Rule {
   award: { xp: number; stat: string };
   /** Most awards this rule gives in one local day. */
   dailyCap?: number;
-  /** Events before this seq never earn from this rule (no retroactive surprises). */
-  effectiveFromSeq: number;
+  /**
+   * Events recorded before this time never earn from this rule (no retroactive
+   * surprises). A timestamp, not a seq: seq values can be reused after audit
+   * history is cleared, and a seq threshold would then ignore new events.
+   */
+  effectiveFrom: string;
 }
 
 export type Condition =

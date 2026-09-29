@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS rpg_rules (
   version            INTEGER NOT NULL CHECK (version >= 1),
   name               TEXT NOT NULL,
   enabled            INTEGER NOT NULL CHECK (enabled IN (0, 1)),
-  effective_from_seq INTEGER NOT NULL DEFAULT 0,
+  effective_from     TEXT NOT NULL,
   definition_json    TEXT NOT NULL,
   created_at         TEXT NOT NULL,
   updated_at         TEXT NOT NULL

@@ -111,6 +111,16 @@ function parseMatch(v: unknown, errors: string[]): RuleMatch {
   return match;
 }
 
+const EPOCH = '1970-01-01T00:00:00.000Z';
+
+function isoTime(v: unknown, field: string, errors: string[]): string {
+  if (typeof v !== 'string' || !Number.isFinite(Date.parse(v))) {
+    errors.push(`${field} must be a date and time`);
+    return EPOCH;
+  }
+  return new Date(Date.parse(v)).toISOString();
+}
+
 export function parseRule(input: unknown): Parsed<Rule> {
   const errors: string[] = [];
   if (!isObj(input)) return { ok: false, errors: ['a rule must be an object'] };
@@ -125,7 +135,7 @@ export function parseRule(input: unknown): Parsed<Rule> {
     enabled: input.enabled === true,
     match: parseMatch(input.match, errors),
     award: { xp: int(award.xp, 'award.xp', 1, LIMITS.maxXp, errors), stat },
-    effectiveFromSeq: input.effectiveFromSeq === undefined ? 0 : int(input.effectiveFromSeq, 'effectiveFromSeq', 0, Number.MAX_SAFE_INTEGER, errors),
+    effectiveFrom: input.effectiveFrom === undefined ? EPOCH : isoTime(input.effectiveFrom, 'effectiveFrom', errors),
   };
   if (input.dailyCap !== undefined) rule.dailyCap = int(input.dailyCap, 'dailyCap', 1, LIMITS.maxDailyCap, errors);
   return errors.length > 0 ? { ok: false, errors } : { ok: true, value: rule };

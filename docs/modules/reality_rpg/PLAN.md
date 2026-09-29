@@ -4,7 +4,7 @@ Module id `reality_rpg` · table prefix `rpg_` · event namespace `rpg.` ·
 event stream `rpg` · view id `rpg` · package `@dexnest/reality-rpg` ·
 branch `cloud/reality-rpg`.
 
-Status: **Phase 2 (store) done.** Decisions on the Phase 0 questions are in section 13b. Read with `AGENTS.md` and
+Status: **Phase 3 (engine) done.** Decisions on the Phase 0 questions are in section 13b. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`. Shaped after Developer
 Intelligence's runtime/host split (`packages/dev-intelligence/src/module/runtime.ts`,
 `apps/desktop/src/main/devIntelligenceHost.ts`).
@@ -111,7 +111,7 @@ interface Rule {
   match: RuleMatch;
   award: { xp: number; stat: string };   // xp integer 1..500
   dailyCap?: number;                      // max awards per local day
-  effectiveFromSeq: number;               // no retroactive awards unless backfilled (Q3)
+  effectiveFrom: string;                  // recorded time; no retroactive awards unless backfilled (changed in Phase 3)
 }
 
 type Condition =
@@ -164,7 +164,7 @@ Settings (host JSON file under the data root's settings, like DI):
    limit: 500 })`, paged. Only named types are ever queried.
 3. Each row is projected to `ObservedEvent` immediately (section 8) and
    dropped if it belongs to a denied module or the `rpg` stream itself.
-4. For each rule whose `match` fits and whose `effectiveFromSeq <= event.seq`:
+4. For each rule whose `match` fits and whose `effectiveFrom <= event.recordedAt`:
    award `rule.award.xp` unless the rule's `dailyCap` for that local day is
    reached. Award id = hash(ruleId, eventId); inserted with `INSERT OR
    IGNORE` against `UNIQUE(rule_id, event_id)`.
@@ -180,7 +180,7 @@ once-only unlock/completion/level rows plus event-log idempotency keys.
 history" (Settings → Data Management) deletes the newest rows, so new rows
 can reuse seq values the cursor has passed. Each run compares the log's
 current max seq with the last one it saw; if it went down, it rescans from
-the rules' earliest `effectiveFromSeq` (the ledger's unique key absorbs
+the start (the ledger's unique key absorbs
 repeats). Tested in Phase 7.
 
 **Rule edits.** Editing a rule bumps its version; past awards keep the XP and
@@ -283,7 +283,7 @@ query. `runAtStartup: true` so time away is caught up once.
 | Feedback loop (RPG events awarding XP) | `rpg` stream/types unmatchable |
 | Farming (e.g. `ui_clicked` spam, repeated navigation) | Per-rule daily caps; starter pack avoids noisy types; view shows where XP came from |
 | Rule edits rewriting history | Ledger stores XP and rule version at award time |
-| Retroactive surprise on first enable (thousands of past events) | `effectiveFromSeq` = log max seq when a rule is created; backfill only on request (Q3) |
+| Retroactive surprise on first enable (thousands of past events) | `effectiveFrom` = the time a rule is created or enabled; backfill only on request (Q3) |
 | Legacy audit rows with no envelope module | Module read from the payload's `module` field only |
 | Time zones / DST for daily & weekly quests | Local day computed per event with `Intl`; tests across DST |
 | Large log on first run | Paged by seq, named types only, one transaction per page |
@@ -330,8 +330,8 @@ query. `runAtStartup: true` so time away is caught up once.
    are dropped at projection.
 2. No foundation change: events are projected immediately and never kept.
    The projection is the only code that reads a payload (static test).
-3. New rules apply from creation onward (`effectiveFromSeq` = log max seq
-   when saved or enabled); an explicit `reality_rpg.backfill` action applies
+3. New rules apply from creation onward (`effectiveFrom` = the time the rule
+   is saved or enabled); an explicit `reality_rpg.backfill` action applies
    one to past events. Deleting a rule keeps its awards.
 4. A starter pack ships as data, every rule disabled
    (`domain/data/starter-pack.ts`): Commit observed, Standup generated,
@@ -360,6 +360,27 @@ completed quest cannot be abandoned. Schema guards: `xp > 0`, closed status
 sets, `UNIQUE (rule_id, event_id)` on the ledger and `UNIQUE (occurrence_id)`
 on runs. `commitRun` returns only the awards, unlocks, completions and levels
 it actually wrote, so events in Phase 4 are raised for new things only.
+
+**Phase 3 notes.** Engine: `packages/reality-rpg/src/engine/engine.ts`.
+
+- *Changed from the plan:* a rule's start is now a recorded **time**
+  (`effectiveFrom`), not a seq. After "clear audit history" new rows can reuse
+  lower seq values; a seq threshold would have made every existing rule
+  ignore new events forever. `RawEvent`/`ObservedEvent` gained `recordedAt`
+  (an envelope field), and `rpg_rules.effective_from_seq` became
+  `effective_from` (edited in migration 1; nothing had shipped).
+- Queries always carry `types` = the enabled rules' named types; with no
+  enabled rule the log is not queried at all (spy test). The foundation row
+  is handed straight to `projectEvent`; the engine never reads a payload.
+- Seq regression: if the newest named-type seq is lower than the last one
+  seen, the run rescans named types from seq 0 (`rescanned: true`).
+- Ledger ids already present are looked up before awarding, so a replayed
+  event cannot use up a daily-cap slot.
+- Recurring quests are evaluated for today and for every period a new award
+  falls in (a day the machine was off still counts once processed).
+- New achievements unlock from existing awards without a new event.
+- A run with nothing new records `skipped`; a failure records `failed` and
+  leaves ledger and cursor untouched; runs are serialised in-process.
 
 ## 14. Phases for this module
 

@@ -12,7 +12,7 @@ const errorsOf = (input: unknown) => {
 
 describe('parseRule', () => {
   it('accepts a well-formed rule and fills defaults', () => {
-    expect(parseRule(good)).toEqual({ ok: true, value: { ...good, version: 1, effectiveFromSeq: 0 } });
+    expect(parseRule(good)).toEqual({ ok: true, value: { ...good, version: 1, effectiveFrom: '1970-01-01T00:00:00.000Z' } });
   });
 
   it('refuses a rule that names no event types - the game never reads everything', () => {

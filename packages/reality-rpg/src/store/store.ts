@@ -112,6 +112,8 @@ export interface RealityRpgStore {
   listAwards(options?: { limit?: number; beforeSeq?: number }): StoredAward[];
   allAwards(): StoredAward[];
   hasAward(awardId: string): boolean;
+  /** Which of `ids` the ledger already holds. */
+  existingAwardIds(ids: readonly string[]): Set<string>;
   dailyCounts(ruleIds: readonly string[], days: readonly string[]): Map<string, number>;
   totals(): { totalXp: number; stats: { stat: string; xp: number }[] };
   listLevels(): LevelReached[];
@@ -236,11 +238,11 @@ export function createRealityRpgStore(db: SqlDatabase): RealityRpgStore {
         if (!parsed.ok) throw new Error(`Rule ${input.id} is not valid: ${parsed.errors.join('; ')}`);
         const json = JSON.stringify(parsed.value);
         run(
-          `INSERT INTO rpg_rules (id, version, name, enabled, effective_from_seq, definition_json, created_at, updated_at)
+          `INSERT INTO rpg_rules (id, version, name, enabled, effective_from, definition_json, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT (id) DO UPDATE SET version = excluded.version, name = excluded.name, enabled = excluded.enabled,
-             effective_from_seq = excluded.effective_from_seq, definition_json = excluded.definition_json, updated_at = excluded.updated_at`,
-          [rule.id, version, rule.name, rule.enabled ? 1 : 0, rule.effectiveFromSeq, json, existing ? str(existing.created_at) : now, now],
+             effective_from = excluded.effective_from, definition_json = excluded.definition_json, updated_at = excluded.updated_at`,
+          [rule.id, version, rule.name, rule.enabled ? 1 : 0, rule.effectiveFrom, json, existing ? str(existing.created_at) : now, now],
         );
         run('INSERT INTO rpg_rule_versions (rule_id, version, definition_json, saved_at) VALUES (?, ?, ?, ?)', [rule.id, version, json, now]);
         return parsed.value;
@@ -362,6 +364,16 @@ export function createRealityRpgStore(db: SqlDatabase): RealityRpgStore {
 
     hasAward(awardId) {
       return get('SELECT 1 AS present FROM rpg_awards WHERE id = ?', [awardId]) !== undefined;
+    },
+
+    existingAwardIds(ids) {
+      const out = new Set<string>();
+      // Chunked: SQLite limits the number of bound parameters.
+      for (let i = 0; i < ids.length; i += 500) {
+        const chunk = ids.slice(i, i + 500);
+        for (const r of all(`SELECT id FROM rpg_awards WHERE id IN (${chunk.map(() => '?').join(', ')})`, chunk)) out.add(str(r.id));
+      }
+      return out;
     },
 
     dailyCounts(ruleIds, days) {

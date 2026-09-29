@@ -53,6 +53,7 @@ export function projectEvent(raw: RawEvent): Projection {
       actionId,
       status,
       occurredAt: raw.occurredAt,
+      recordedAt: raw.recordedAt,
     },
   };
 }
