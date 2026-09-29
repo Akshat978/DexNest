@@ -16,6 +16,7 @@
     "@dexnest/foundation": "workspace:*"
   },
   "devDependencies": {
+    "@dexnest/action-registry": "workspace:*",
     "@types/node": "^22.13.14",
     "vitest": "^5.0.1"
   }

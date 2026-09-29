@@ -64,6 +64,11 @@ describe('projectEvent keeps an allow-listed envelope and nothing else', () => {
     expect(projectEvent(raw({ type: 'rpg.anything' }))).toEqual({ kept: false, reason: 'self' });
   });
 
+  it("drops the game's own audit lines, so using the game never earns XP", () => {
+    expect(projectEvent(raw({ type: 'reality_rpg', payload: { module: 'reality_rpg', actionId: 'reality_rpg.rule.save', status: 'success' } }))).toEqual({ kept: false, reason: 'self' });
+    expect(projectEvent(raw({ payload: { module: 'command', actionId: 'reality_rpg.refresh', status: 'success' } }))).toEqual({ kept: false, reason: 'self' });
+  });
+
   it('drops malformed rows', () => {
     expect(projectEvent(raw({ id: '' }))).toEqual({ kept: false, reason: 'malformed' });
     expect(projectEvent(raw({ seq: Number.NaN }))).toEqual({ kept: false, reason: 'malformed' });

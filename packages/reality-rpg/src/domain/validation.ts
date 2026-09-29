@@ -10,7 +10,7 @@
  * - awards zero, negative, fractional or outsized XP.
  */
 
-import { isDeniedModule, isDeniedName, isSelfFeeding } from './privacy.ts';
+import { isDeniedModule, isDeniedName, isSelfFeeding, isSelfName } from './privacy.ts';
 import type { AchievementDef, Condition, Quest, QuestStatus, QuestWindow, Rule, RuleMatch } from './types.ts';
 
 export const LIMITS = {
@@ -105,7 +105,7 @@ function parseMatch(v: unknown, errors: string[]): RuleMatch {
   if (isDeniedModule(match.module) || named.some((n) => isDeniedName(n))) {
     errors.push('rules may not name vault, finance or journal activity');
   }
-  if (isSelfFeeding(match.stream, null) || match.types.some((t) => isSelfFeeding(null, t))) {
+  if (isSelfFeeding(match.stream, null) || match.types.some((t) => isSelfFeeding(null, t)) || named.some((n) => isSelfName(n))) {
     errors.push("rules may not match Reality RPG's own events");
   }
   return match;

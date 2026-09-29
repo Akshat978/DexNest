@@ -33,6 +33,8 @@ describe('parseRule', () => {
   it("refuses a rule that could match the game's own events", () => {
     expect(errorsOf({ ...good, match: { types: ['rpg.level.reached'] } })).toContain("rules may not match Reality RPG's own events");
     expect(errorsOf({ ...good, match: { types: ['x'], stream: 'rpg' } })).toContain("rules may not match Reality RPG's own events");
+    expect(errorsOf({ ...good, match: { types: ['action_executed'], actionIds: ['reality_rpg.rule.save'] } })).toContain("rules may not match Reality RPG's own events");
+    expect(errorsOf({ ...good, match: { types: ['action_executed'], module: 'reality_rpg' } })).toContain("rules may not match Reality RPG's own events");
   });
 
   it.each([0, -5, 2.5, LIMITS.maxXp + 1, '10', Number.NaN])('refuses xp %s', (xp) => {

@@ -4,7 +4,7 @@ Module id `reality_rpg` · table prefix `rpg_` · event namespace `rpg.` ·
 event stream `rpg` · view id `rpg` · package `@dexnest/reality-rpg` ·
 branch `cloud/reality-rpg`.
 
-Status: **Phase 3 (engine) done.** Decisions on the Phase 0 questions are in section 13b. Read with `AGENTS.md` and
+Status: **Phase 4 (actions and events) done.** Decisions on the Phase 0 questions are in section 13b. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`. Shaped after Developer
 Intelligence's runtime/host split (`packages/dev-intelligence/src/module/runtime.ts`,
 `apps/desktop/src/main/devIntelligenceHost.ts`).
@@ -381,6 +381,28 @@ it actually wrote, so events in Phase 4 are raised for new things only.
 - New achievements unlock from existing awards without a new event.
 - A run with nothing new records `skipped`; a failure records `failed` and
   leaves ledger and cursor untouched; runs are serialised in-process.
+
+**Phase 4 notes.**
+
+- *Shared packages (separate commit, `233bf7d`):* `"reality_rpg"` added to
+  `DexNestModuleId` in `@dexnest/shared-types`, and twelve `reality_rpg.*`
+  actions registered in `@dexnest/action-registry`. The registry is the only
+  action system, so this cannot live inside the module. Editing actions are
+  `module_ui` only; none is phone- or Deck-exposed.
+- *Added to the self-feeding guard:* the game's own audit lines (module
+  `reality_rpg`, action ids `reality_rpg.*`, type `reality_rpg`) are dropped
+  at projection and refused in rules, so using the game never earns XP.
+- Milestone events (`module/events.ts`) are written inside the run's
+  transaction with idempotency keys; `rpg.run.completed` only for runs that
+  awarded something.
+- Runtime (`module/runtime.ts`): no job until enabled; `process` is light,
+  `runAtStartup: true`, and re-checks "still enabled" when a slot lands.
+  Saving a rule sets `effectiveFrom` to now when it is created or switched
+  on, keeps it when an enabled rule is edited, and ignores any value in the
+  input. Backfill requires the rule to be on, resets it to the epoch and
+  rescans from seq 0 (the ledger prevents double awards). Settings saved
+  over IPC cannot switch the module on or off. Each user action writes one
+  audit line through the host's callback.
 
 ## 14. Phases for this module
 

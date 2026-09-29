@@ -26,6 +26,18 @@ export function isDeniedName(name: string | null | undefined): boolean {
   return typeof name === 'string' && DENIED_PREFIX.test(name.trim());
 }
 
+export const RPG_MODULE = 'reality_rpg';
+const SELF_PREFIX = /^(rpg\.|reality_rpg([._-]|$))/i;
+
 export function isSelfFeeding(stream: string | null | undefined, type: string | null | undefined): boolean {
-  return stream === RPG_STREAM || (typeof type === 'string' && type.startsWith(RPG_TYPE_PREFIX));
+  return stream === RPG_STREAM || (typeof type === 'string' && SELF_PREFIX.test(type.trim()));
+}
+
+/**
+ * A module or action id that is the game's own - e.g. the audit line written
+ * when the user saves a rule (module "reality_rpg", action
+ * "reality_rpg.rule.save"). Awarding XP for using the game would feed itself.
+ */
+export function isSelfName(name: string | null | undefined): boolean {
+  return typeof name === 'string' && SELF_PREFIX.test(name.trim());
 }

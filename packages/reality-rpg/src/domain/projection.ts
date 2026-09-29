@@ -11,7 +11,7 @@
  * nothing downstream can see them even by mistake.
  */
 
-import { isDeniedModule, isDeniedName, isSelfFeeding } from './privacy.ts';
+import { isDeniedModule, isDeniedName, isSelfFeeding, isSelfName } from './privacy.ts';
 import type { ObservedEvent, RawEvent } from './types.ts';
 
 export type Projection =
@@ -41,6 +41,7 @@ export function projectEvent(raw: RawEvent): Projection {
   if (isDeniedModule(module) || isDeniedName(module) || isDeniedName(actionId) || isDeniedName(raw.type)) {
     return { kept: false, reason: 'denied' };
   }
+  if (isSelfName(module) || isSelfName(actionId)) return { kept: false, reason: 'self' };
 
   return {
     kept: true,
