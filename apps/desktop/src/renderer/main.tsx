@@ -55,6 +55,7 @@ import type { PinInput, PinsContextValue } from "./components/pins";
 import { ClipboardView } from "./views/ClipboardView";
 import { AuditView } from "./views/AuditView";
 import { AutopilotView } from "./views/AutopilotView";
+import { ObjectOsView, type ObjectOsBridge } from "./views/ObjectOsView";
 import { BackupView } from "./views/BackupView";
 import { ExternalDevicesView } from "./views/ExternalDevicesView";
 import logoUrl from "./logo.png";
@@ -2077,7 +2078,7 @@ interface DataManagementDeleteResult {
   lastDeletion: DataManagementLastDeletion;
 }
 
-export interface DexNestBridge {
+export interface DexNestBridge extends ObjectOsBridge {
   getAppInfo: () => Promise<AppInfo>;
   listActions: () => Promise<ActionDefinition[]>;
   listProjects: () => Promise<DexNestProject[]>;
@@ -6428,6 +6429,7 @@ function DexNestApp() {
           )}
           {activeView === "audit" && <AuditView events={events} onRefresh={handleAction} refreshEvents={refreshEvents} />}
           {activeView === "autopilot" && <AutopilotView />}
+          {activeView === "object" && <ObjectOsView bridge={getBridge()} onAction={(actionId, params) => runUiAction(actionId, "module_ui", params ?? {})} />}
           {activeView === "settings" && (
             <SettingsView
               actions={actions}

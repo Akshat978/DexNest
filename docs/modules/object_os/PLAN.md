@@ -4,7 +4,7 @@ Module id `object_os` · table prefix `obj_` · event namespace `object.` ·
 event stream `object` · view id `object` · package `@dexnest/object-os` ·
 branch `cloud/object-os`.
 
-Status: **Phase 5 (host) done.** Domain, store, engine, runtime, registry entries and the desktop host exist; no view yet. Read with `AGENTS.md` and
+Status: **Phase 6 (view) done.** Domain, store, engine, runtime, registry entries, the desktop host and the view exist. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`. Shaped after Developer
 Intelligence's runtime/host split and the modules built before it on other
 branches (Skill Constellation, Reality RPG, GhostOS).
@@ -402,6 +402,40 @@ source, the folder and the stored file; `lstat` reporting a junction as a
 link (for "never follow a link when deleting"); case-insensitive path
 comparison; `shell.openPath` and `shell.showItemInFolder`; the dialogs; the
 notification.
+
+### Refinements made in Phase 6
+
+- Files: `ObjectOsView.tsx`, `objectOsModel.ts` (pure, tested), `ObjectOs.css`;
+  sidebar entry "ObjectOS" (view id `object`, `Package` icon,
+  `--accent-tools`); the bridge type and a fallback for the Vite preview.
+- The view imports only types from `@dexnest/object-os` (tested), so the
+  renderer never bundles the store or the engine. Lists and formatters it
+  needs (categories, statuses, roles, units, money, label ids) are mirrored
+  in the model and a test compares them with the package's.
+- Layout: the list column (needs attention, search, category / status /
+  location filters, objects, daily reminders) and the detail column
+  (header with edit, status, export and delete; the nine tabs). Adding and
+  editing replace the detail column.
+- The attention list and the object list show names, label ids, category,
+  status and location - never a serial number (tested; the Phase 6
+  mutation). Serials, prices and notes appear only in the object's own
+  detail.
+- Deleting an object, removing a file and deleting a record ask first in an
+  alert dialog whose focused button is Cancel (Escape cancels); the action
+  then runs with `confirmedDangerous`.
+- Dates picked in forms: today (or later) is sent as the current time, so
+  it is never "in the future"; an earlier day is noon UTC, so it reads as
+  that day in every time zone.
+- A measurement key keeps its unit: once a key has readings, the unit field
+  shows that unit and is not editable.
+- Tone (overdue, due soon, low stock, warranty ending) is always said in
+  words as well as colour.
+- Keyboard: every control is a native button, input or select with a label
+  (tested for every tab); the tabs use roving focus (arrows wrap, Home,
+  End); the tab panel is focusable.
+
+Needs Windows check: the view in the real app (fonts, focus rings, the date
+inputs, the file dialogs launched from it).
 
 ## 15. Phases for this module
 
