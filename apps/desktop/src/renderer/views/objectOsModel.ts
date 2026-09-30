@@ -93,6 +93,9 @@ export function nextTab(current: Tab, key: string): Tab | null {
   return null;
 }
 
+/** The most objects one list read returns (the store's default page). */
+export const LIST_LIMIT = 500;
+
 // --- view state -----------------------------------------------------------------
 
 export type ViewState = { kind: "loading" } | { kind: "error"; message: string } | { kind: "empty" } | { kind: "ready" };

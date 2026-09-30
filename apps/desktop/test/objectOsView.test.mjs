@@ -148,6 +148,12 @@ test("list: search, filters by category, location and status, and a needs-attent
   assert.match(html, /aria-pressed="false"/);
 });
 
+test("a long list says it is cut short and how to find the rest", () => {
+  const many = Array.from({ length: 500 }, (_, i) => ({ ...printer, id: `A${String(i).padStart(7, "0")}`, name: `Thing ${i}` }));
+  assert.match(render({ initial: { ...ready, status: status(5000), objects: many } }), /Showing the first 500 objects by name\. Search or filter to find the others\./);
+  assert.doesNotMatch(render({ initial: ready }), /Showing the first/);
+});
+
 test("privacy: the attention list and the object list never show a serial number", () => {
   const html = render({ initial: { ...ready, detail: null } });
   for (const label of ["Needs attention", "Objects"]) {

@@ -582,6 +582,48 @@ test("import refuses damaged bytes, duplicate names, DexNest's data and non-zips
   assert.equal(t.objectEvents().includes("object.import_completed"), false);
 });
 
+test("hostile zips: a compression bomb and an oversized manifest are refused without writing or reading them", async () => {
+  const s = setup();
+  const { files } = await populated(s);
+  s.dialog.exportPath = join(s.home, "out.zip");
+  await s.run(A.export);
+  const photo = files[1] as FileRecord;
+  const photoName = `files/${photo.objectId}/${photo.storedName}`;
+
+  // The photo entry, deflated from 20 MB of zeros but declaring its real size (70,000 bytes).
+  const bomb = new AdmZip();
+  for (const e of new AdmZip(s.dialog.exportPath).getEntries()) bomb.addFile(e.entryName, e.entryName === photoName ? Buffer.alloc(20 * 1024 * 1024) : e.getData());
+  const bombBuf = bomb.toBuffer();
+  const declare = (buf: Buffer, name: string, size: number) => {
+    const nameBytes = Buffer.from(name);
+    for (let at = buf.indexOf(nameBytes); at >= 0; at = buf.indexOf(nameBytes, at + 1)) {
+      if (at >= 30 && buf.readUInt32LE(at - 30) === 0x04034b50) buf.writeUInt32LE(size, at - 30 + 22);
+      if (at >= 46 && buf.readUInt32LE(at - 46) === 0x02014b50) buf.writeUInt32LE(size, at - 46 + 24);
+    }
+  };
+  declare(bombBuf, photoName, photo.sizeBytes);
+  const bombPath = join(s.home, "bomb.zip");
+  writeFileSync(bombPath, bombBuf);
+
+  // The manifest claiming to be 300 MB.
+  const big = readFileSync(s.dialog.exportPath);
+  declare(big, EXPORT_JSON_NAME, 300 * 1024 * 1024);
+  const bigPath = join(s.home, "big-manifest.zip");
+  writeFileSync(bigPath, big);
+
+  const t = setup("obj-host-h-");
+  t.dialog.importPath = bombPath;
+  const r1 = await t.run(A.import);
+  assert.equal(r1?.ok, false);
+  assert.match(String(r1?.error), /larger than it says|damaged|does not match/);
+  t.dialog.importPath = bigPath;
+  const r2 = await t.run(A.import);
+  assert.equal(r2?.ok, false);
+  assert.match(String(r2?.error), /object-os\.json is too large/);
+  assert.deepEqual(walk(join(t.dataRoot, "files", "objects")), []);
+  assert.deepEqual(t.call(OBJECT_CHANNELS.list), { ok: true, value: [] });
+});
+
 // --- privacy -----------------------------------------------------------------------------
 
 test("messages and journal lines never carry the owner's text, even when a refusal quotes it", async () => {

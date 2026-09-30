@@ -7,6 +7,7 @@
  * inside the file: an import never attaches rows to objects it did not bring.
  */
 
+import { MAX_COMPONENT_DEPTH } from './components.ts';
 import { MAX_FILE_BYTES, SHA256, sanitizeFileName, storedFileName } from './files.ts';
 import { isObjectId, isRecordId } from './ids.ts';
 import { normalizeTimestamp } from './time.ts';
@@ -130,6 +131,20 @@ export function parseExport(input: unknown): Parsed<ObjectExport> {
     if (typeof id !== 'string' || !objectIds.has(id)) push(`${where}: refers to an object not in the file`);
   };
   for (const o of objects) if (o.parentId) known(o.parentId, `object ${o.id} parent`);
+  // Part-of chains inside the file: no loops, no deeper than the limit.
+  const parentIn = new Map(objects.map((o) => [o.id, o.parentId]));
+  for (const o of objects) {
+    const seen = new Set<string>([o.id]);
+    let current = o.parentId;
+    for (let depth = 1; current && parentIn.has(current); depth++) {
+      if (seen.has(current) || depth > MAX_COMPONENT_DEPTH) {
+        push(`object ${o.id}: its part-of chain loops or is deeper than ${MAX_COMPONENT_DEPTH}`);
+        break;
+      }
+      seen.add(current);
+      current = parentIn.get(current) ?? null;
+    }
+  }
 
   const withIds = <T extends { id: string }>(rows: unknown[], label: string, kind: Parameters<typeof isRecordId>[0], build: (row: Obj, where: string) => T | null): T[] => {
     const out: T[] = [];

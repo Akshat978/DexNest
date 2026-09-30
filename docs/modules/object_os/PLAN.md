@@ -4,7 +4,7 @@ Module id `object_os` · table prefix `obj_` · event namespace `object.` ·
 event stream `object` · view id `object` · package `@dexnest/object-os` ·
 branch `cloud/object-os`.
 
-Status: **Phase 6 (view) done.** Domain, store, engine, runtime, registry entries, the desktop host and the view exist. Read with `AGENTS.md` and
+Status: **Phase 7 (hardening) done.** Domain, store, engine, runtime, registry entries, the desktop host and the view exist, and have been tried against faults, crashes, duplicates, hostile files and scale. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`. Shaped after Developer
 Intelligence's runtime/host split and the modules built before it on other
 branches (Skill Constellation, Reality RPG, GhostOS).
@@ -436,6 +436,62 @@ notification.
 
 Needs Windows check: the view in the real app (fonts, focus rings, the date
 inputs, the file dialogs launched from it).
+
+### Refinements made in Phase 7
+
+Tests: `packages/object-os/src/__tests__/hardening.test.ts`, plus hostile
+zips in `apps/desktop/test/objectOsHost.test.ts`.
+
+- **A disk fault at every write** of 14 kinds of change (create, edit with
+  status/location/parent changes, state, maintenance using a part, stock,
+  part quantity, settings version, measurement, record delete, attach,
+  remove file, delete object with files and components, the reminders job,
+  import with files): afterwards - and after a restart - the data is either
+  exactly as before or exactly as after a clean run, every stored file has
+  its row and every row its file, and a clean retry completes.
+- **Found and fixed: bytes without rows after a crash.** Migration 2 adds
+  `obj_pending_files`. A marker is written before bytes are copied or
+  deleted and cleared with the rows (or right after the deletion); `start()`
+  removes whatever a marker names and no row claims. Covered: an attach
+  stopped after the copy, a file removal and an object deletion stopped
+  before the bytes went, an import stopped half-way (a retry then works).
+  An import also clears the folders of the objects it is about to write
+  (they are not in the database, so anything there is left over) and never
+  touches folders of objects already here.
+- **Found and fixed: two imports at once** could remove each other's copied
+  files. Imports now run one at a time; the second skips what the first
+  brought.
+- **Found and fixed: events outside their transaction.** `file_attached`
+  and `file_removed` are now appended in the same transaction as the row.
+  An audit line that cannot be written no longer turns a committed change
+  into an error.
+- **Found and fixed: cycles and depth on import.** An export whose part-of
+  links loop or run deeper than 32 is refused by the parser; an import that
+  would hang a chain more than 32 deep under an object already here is
+  refused in the transaction.
+- **Found and fixed: attention at scale.** With 5,000 objects, 10,000
+  schedules and 100,000 readings it took 6 s (each schedule scanned every
+  completion and reading). Completions and readings are now grouped first,
+  readings are fetched once per object and key, and the view's names are
+  read once per object: about 1 s with every object needing attention.
+  List, search, filter, detail, history and status stay well under a
+  second.
+- **Found and fixed:** `status().objects` counted at most 5,000 (now a
+  count); the view says when the list is cut at 500 and how to find the
+  rest.
+- **Found and fixed: a flaky test from Phase 4.** The "no prices in the
+  log" check also matched digits inside random event ids and wall-clock
+  timestamps; those are removed before the check (a price leak is still
+  caught - checked by putting one in).
+- Duplicates: one reminder slot delivered five times at once gives one run,
+  one event, one notification; deleting twice refuses the second.
+- Hostile import files (no manifest, not JSON, not an export, a future
+  version, a stored name pointing outside, missing bytes, wrong hash, wrong
+  size, a row for an object not in the file, negative stock, a
+  `__proto__` settings key) are each refused with nothing written. At the
+  host: a compression bomb declaring a small size and a manifest declaring
+  300 MB are refused without writing or reading them.
+- Mutation check: moving an object without the cycle check fails two tests.
 
 ## 15. Phases for this module
 

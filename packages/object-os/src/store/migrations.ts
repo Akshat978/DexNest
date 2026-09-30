@@ -219,4 +219,18 @@ CREATE TABLE IF NOT EXISTS obj_kv (
 );
 `,
   },
+  {
+    version: 2,
+    name: 'pending_files',
+    // Bytes on disk whose rows may not exist: written before a copy or a
+    // delete starts, cleared when it finishes. After a crash, start() removes
+    // whatever no row claims. stored_name '' stands for the object's whole folder.
+    sql: `
+CREATE TABLE IF NOT EXISTS obj_pending_files (
+  object_id   TEXT NOT NULL CHECK (length(object_id) = 8),
+  stored_name TEXT NOT NULL,
+  PRIMARY KEY (object_id, stored_name)
+);
+`,
+  },
 ];

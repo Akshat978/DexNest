@@ -9,6 +9,7 @@ import {
   CATEGORIES,
   FILE_ROLES,
   INTERVAL_UNITS,
+  OBJECT_LIST_PAGE,
   STATUSES,
   TIMELINE_KINDS,
   decimalsOf as packageDecimals,
@@ -31,6 +32,7 @@ import {
   dueLabel,
   EMPTY_OBJECT_FORM,
   fileSize,
+  LIST_LIMIT,
   formatMoney,
   formatObjectId,
   formFromObject,
@@ -180,6 +182,10 @@ test("settings and measurements are grouped, newest first", () => {
   const m = (id: string, key: string, at: string, value: number): Measurement => ({ id, objectId: "7K3F9QXM", key, value, unit: "h", measuredAt: at, note: "", createdAt: at });
   const groups = measurementGroups({ measurements: [m("msr_a0000001", "hours", "2026-01-01T00:00:00.000Z", 10), m("msr_a0000002", "hours", "2026-03-01T00:00:00.000Z", 30), m("msr_b0000001", "bed", "2026-02-01T00:00:00.000Z", 60)] });
   assert.deepEqual(groups.map((g) => [g.key, g.readings.map((r) => r.value)]), [["bed", [60]], ["hours", [30, 10]]]);
+});
+
+test("the list limit is the store's default page", () => {
+  assert.equal(LIST_LIMIT, OBJECT_LIST_PAGE);
 });
 
 test("file sizes read as people read them", () => {

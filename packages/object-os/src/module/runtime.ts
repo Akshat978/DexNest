@@ -151,8 +151,15 @@ export function createObjectOsModule(options: ObjectOsModuleOptions): ObjectOsMo
   let unschedule: (() => void) | undefined;
   let lastError: string | null = null;
 
-  const audit = (actionId: AuditActionId, metadata: Record<string, string | number | boolean | null> = {}, status: AuditStatus = 'success') =>
-    options.audit?.(actionId, AUDIT_SUMMARIES[actionId], metadata, status);
+  // The object.* event is written with the change; the audit line comes after it, and a
+  // failure to write it must not turn a committed change into an error.
+  const audit = (actionId: AuditActionId, metadata: Record<string, string | number | boolean | null> = {}, status: AuditStatus = 'success') => {
+    try {
+      options.audit?.(actionId, AUDIT_SUMMARIES[actionId], metadata, status);
+    } catch {
+      // The change stands; its object.* event is in the shared log.
+    }
+  };
 
   /** A store refusal becomes a Parsed failure instead of an exception. */
   function guarded<T>(work: () => Parsed<T>): Parsed<T> {
@@ -217,7 +224,7 @@ export function createObjectOsModule(options: ObjectOsModuleOptions): ObjectOsMo
 
   function status(): ObjectOsStatus {
     const lastReminder = store.lastRun('reminders') ?? null;
-    return { remindersEnabled: store.getModuleSettings().reminders.enabled, lastReminder, lastError, objects: store.listObjects({ limit: 5000 }).length };
+    return { remindersEnabled: store.getModuleSettings().reminders.enabled, lastReminder, lastError, objects: store.countObjects() };
   }
 
   // --- objects ----------------------------------------------------------------
@@ -454,12 +461,13 @@ export function createObjectOsModule(options: ObjectOsModuleOptions): ObjectOsMo
     const role = parseFileRole(input.role);
     if (!role.ok) return role;
     const at = iso();
-    const r = await engine.attachFile({ objectId, sourcePath: input.sourcePath, role: role.value, now: at });
+    const r = await engine.attachFile({ objectId, sourcePath: input.sourcePath, role: role.value, now: at }, (f) =>
+      appendObjectEvent(ev, 'object.file_attached', { subject: objectId, at, payload: { fileId: f.id, role: f.role, sizeBytes: f.sizeBytes } }),
+    );
     if (!r.ok) {
       audit('object_os.file.attach', { objectId }, 'failure');
       return r;
     }
-    appendObjectEvent(ev, 'object.file_attached', { subject: objectId, at, payload: { fileId: r.value.id, role: r.value.role, sizeBytes: r.value.sizeBytes } });
     audit('object_os.file.attach', { objectId, fileId: r.value.id, sizeBytes: r.value.sizeBytes });
     return r;
   }
@@ -475,9 +483,8 @@ export function createObjectOsModule(options: ObjectOsModuleOptions): ObjectOsMo
     const fileId = isObj(input) ? input.fileId : undefined;
     if (!isRecordId('file', fileId)) return fail('fileId is invalid');
     const at = iso();
-    const r = engine.removeFile(fileId);
+    const r = engine.removeFile(fileId, (removed) => appendObjectEvent(ev, 'object.file_removed', { subject: removed.objectId, at, payload: { fileId } }));
     if (!r.ok) return r;
-    appendObjectEvent(ev, 'object.file_removed', { subject: r.value.objectId, at, payload: { fileId } });
     audit('object_os.file.remove', { objectId: r.value.objectId, fileId });
     return r;
   }
@@ -520,9 +527,16 @@ export function createObjectOsModule(options: ObjectOsModuleOptions): ObjectOsMo
 
   async function importArchive(archive: ImportArchive): Promise<Parsed<ImportPlan>> {
     const at = iso();
-    const r = await engine.importArchive(archive, (plan) =>
-      appendObjectEvent(ev, 'object.import_completed', { subject: null, at, payload: { objects: plan.objects.length, skipped: plan.skipped.length, files: plan.files.length } }),
-    );
+    let r: Parsed<ImportPlan>;
+    try {
+      r = await engine.importArchive(archive, (plan) =>
+        appendObjectEvent(ev, 'object.import_completed', { subject: null, at, payload: { objects: plan.objects.length, skipped: plan.skipped.length, files: plan.files.length } }),
+      );
+    } catch (error) {
+      // A refusal from the store (a chain too deep under an object already here) is a refusal, not a crash.
+      if (!(error instanceof ObjectStoreError)) throw error;
+      r = fail(error.message);
+    }
     audit('object_os.import', r.ok ? { objects: r.value.objects.length, skipped: r.value.skipped.length, files: r.value.files.length } : {}, r.ok ? 'success' : 'failure');
     return r;
   }
@@ -594,10 +608,22 @@ export function createObjectOsModule(options: ObjectOsModuleOptions): ObjectOsMo
   function attentionView(): AttentionView {
     const summary = store.attention(iso());
     const names: Record<string, string> = {};
+    // Each object, part and object's schedules read once, however many items name them.
+    const scheduleTitles = new Map<string, Map<string, string>>();
     for (const item of summary.items) {
-      if (item.kind === 'stock') names[item.partId] = store.getPart(item.partId)?.name ?? '';
-      else names[item.objectId] = store.getObject(item.objectId)?.name ?? '';
-      if (item.kind === 'maintenance') names[item.scheduleId] = store.schedules(item.objectId).find((s) => s.id === item.scheduleId)?.title ?? '';
+      if (item.kind === 'stock') {
+        if (!(item.partId in names)) names[item.partId] = store.getPart(item.partId)?.name ?? '';
+        continue;
+      }
+      if (!(item.objectId in names)) names[item.objectId] = store.getObject(item.objectId)?.name ?? '';
+      if (item.kind === 'maintenance') {
+        let titles = scheduleTitles.get(item.objectId);
+        if (!titles) {
+          titles = new Map(store.schedules(item.objectId).map((s) => [s.id, s.title]));
+          scheduleTitles.set(item.objectId, titles);
+        }
+        names[item.scheduleId] = titles.get(item.scheduleId) ?? '';
+      }
     }
     return { summary, names };
   }
@@ -619,6 +645,12 @@ export function createObjectOsModule(options: ObjectOsModuleOptions): ObjectOsMo
     engine,
     start() {
       store.recoverInterruptedRuns(iso());
+      // Bytes left by a copy or delete that DexNest stopped in the middle of.
+      try {
+        engine.recoverPending();
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+      }
       reschedule();
     },
     stop() {

@@ -248,7 +248,12 @@ describe('the owner\'s text never reaches the event log or a notification', () =
     expect(h.types().length).toBeGreaterThan(12);
     const logged = JSON.stringify(h.handle.db.prepare("SELECT * FROM event_log WHERE stream IN ('object', 'audit')").all());
     expect(logged.toLowerCase()).not.toContain(MARK.toLowerCase());
-    expect(logged).not.toMatch(/999|12\.34|1234/);
+    // Prices must not appear. Random event ids and wall-clock timestamps are removed first, so their digits cannot match by chance.
+    const scrubbed = logged
+      .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '<uuid>')
+      .replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z/g, '<time>');
+    const hit = scrubbed.match(/.{0,60}(999|12\.34|1234).{0,60}/);
+    expect(hit?.[0] ?? null).toBeNull();
     expect(h.notes.length).toBe(1);
     expect(JSON.stringify(h.notes).toLowerCase()).not.toContain(MARK.toLowerCase());
   });

@@ -53,9 +53,23 @@ export function attention(input: AttentionInput): AttentionSummary {
   const items: AttentionItem[] = [];
   const counts = { overdue: 0, dueSoon: 0, warrantyEnding: 0, lowStock: 0 };
 
+  // Grouped once, so each schedule looks only at its own completions and readings
+  // (dueStatus filters to the same rows; this keeps thousands of schedules linear).
+  const logBySchedule = new Map<string, MaintenanceEntry[]>();
+  for (const e of input.log) if (e.scheduleId) logBySchedule.set(e.scheduleId, [...(logBySchedule.get(e.scheduleId) ?? []), e]);
+  const readingsByKey = new Map<string, Measurement[]>();
+  for (const m of input.readings) {
+    const k = `${m.objectId}\n${m.key}`;
+    const list = readingsByKey.get(k);
+    if (list) list.push(m);
+    else readingsByKey.set(k, [m]);
+  }
+  const none: never[] = [];
+
   for (const s of input.schedules) {
     if (!live.has(s.objectId)) continue;
-    const status = dueStatus(s, input.log, input.readings, input.now);
+    const key = s.rule.kind === 'usage' ? `${s.objectId}\n${s.rule.measurementKey}` : '';
+    const status = dueStatus(s, logBySchedule.get(s.id) ?? none, readingsByKey.get(key) ?? none, input.now);
     if (status.state === 'overdue' || status.state === 'due_soon') {
       items.push({ kind: 'maintenance', objectId: s.objectId, scheduleId: s.id, status });
       if (status.state === 'overdue') counts.overdue += 1;

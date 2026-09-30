@@ -24,6 +24,7 @@ import {
   formatMoney,
   formatObjectId,
   formFromObject,
+  LIST_LIMIT,
   localToday,
   measurementGroups,
   modificationLabel,
@@ -390,6 +391,7 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
                   </li>
                 ))}
               </ul>
+              {objects.length >= LIST_LIMIT && <p className="objectos-hint" role="note">Showing the first {LIST_LIMIT} objects by name. Search or filter to find the others.</p>}
 
               <section className="objectos-card" aria-labelledby="objectos-reminders-title">
                 <h3 id="objectos-reminders-title">Daily reminders</h3>

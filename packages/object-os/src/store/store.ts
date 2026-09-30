@@ -16,7 +16,7 @@
 
 import { runModuleMigrations, withTransaction, type SqlDatabase } from '@dexnest/foundation';
 import { attention, type AttentionSummary } from '../domain/attention.ts';
-import { wouldCreateCycle } from '../domain/components.ts';
+import { MAX_COMPONENT_DEPTH, wouldCreateCycle } from '../domain/components.ts';
 import { EXPORT_FORMAT, EXPORT_VERSION, type ObjectExport, type StockLogRow } from '../domain/export.ts';
 import type { RecordKind } from '../domain/ids.ts';
 import { toPublicObject, type PublicObject } from '../domain/read-api.ts';
@@ -101,8 +101,24 @@ export interface ImportPlan {
   files: FileRecord[];
 }
 
+/** How many objects one list read returns unless asked for more (up to 5,000). */
+export const OBJECT_LIST_PAGE = 500;
+
+/** Bytes that may exist without a row: a file, or (storedName null) an object's whole folder. */
+export interface PendingFile {
+  objectId: string;
+  storedName: string | null;
+}
+
 export interface ObjectStore {
   objectIdExists(id: string): boolean;
+  countObjects(): number;
+  /** Recorded before bytes are written or deleted; cleared when the work is done (see migration 2). */
+  markPending(entries: readonly PendingFile[]): void;
+  clearPending(entries: readonly PendingFile[]): void;
+  pendingFiles(): PendingFile[];
+  /** Whether a file row claims this stored name in this object's folder. */
+  storedFileExists(objectId: string, storedName: string): boolean;
   createObject(id: string, draft: ObjectDraft, now: string): ObjectRecord;
   updateObject(id: string, draft: ObjectDraft, now: string): ObjectRecord;
   setStatus(id: string, status: ObjectStatus, now: string): { from: ObjectStatus; object: ObjectRecord };
@@ -427,7 +443,7 @@ export function openObjectStore(db: SqlDatabase, options: { now?: string } = {})
       const p = likeEscape(term);
       params.push(p, p, p, p, p, likeEscape(term.replace(/-/g, '').toUpperCase()), p);
     }
-    const limit = Math.max(1, Math.min(filter.limit ?? 500, 5000));
+    const limit = Math.max(1, Math.min(filter.limit ?? OBJECT_LIST_PAGE, 5000));
     return all(`SELECT * FROM obj_objects o ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY o.name COLLATE NOCASE, o.id LIMIT ?`, [...params, limit]).map((r) =>
       toObject(r, tagsOf(String(r.id))),
     );
@@ -709,15 +725,16 @@ export function openObjectStore(db: SqlDatabase, options: { now?: string } = {})
 
   function computeAttention(now: string): AttentionSummary {
     // Only what a schedule can use: the latest reading per usage key, and the readings around completions.
-    const usageKeys = allSchedules().filter((s) => s.rule.kind === 'usage');
+    const schedules = allSchedules();
+    const pairs = new Map<string, [string, string]>();
+    for (const s of schedules) if (s.rule.kind === 'usage') pairs.set(`${s.objectId}\n${s.rule.measurementKey}`, [s.objectId, s.rule.measurementKey]);
     const readings: Measurement[] = [];
-    for (const s of usageKeys) {
-      const key = s.rule.kind === 'usage' ? s.rule.measurementKey : '';
-      readings.push(...all('SELECT * FROM obj_measurements WHERE object_id = ? AND key = ? ORDER BY measured_at', [s.objectId, key]).map(toMeasurement));
+    for (const [objectId, key] of pairs.values()) {
+      for (const r of all('SELECT * FROM obj_measurements WHERE object_id = ? AND key = ? ORDER BY measured_at', [objectId, key])) readings.push(toMeasurement(r));
     }
     return attention({
       objects: all<{ id: string; status: ObjectStatus }>('SELECT id, status FROM obj_objects'),
-      schedules: allSchedules(),
+      schedules,
       log: all('SELECT * FROM obj_maintenance WHERE schedule_id IS NOT NULL').map(toEntry),
       readings,
       purchases: all('SELECT * FROM obj_purchase WHERE warranty_until IS NOT NULL').map(toPurchase),
@@ -856,6 +873,16 @@ export function openObjectStore(db: SqlDatabase, options: { now?: string } = {})
         ]);
       }
       for (const o of objects) if (o.photoFileId) run('UPDATE obj_objects SET photo_file_id = ? WHERE id = ?', [o.photoFileId, o.id]);
+      // An imported object may hang under one already here: the whole chain must stay within the limit and never loop.
+      for (const o of ordered) {
+        const seen = new Set<string>([o.id]);
+        let current = parentOf(o.id);
+        for (let depth = 1; current !== null; depth++) {
+          if (seen.has(current) || depth > MAX_COMPONENT_DEPTH) throw new ObjectStoreError(`importing would put object ${o.id} inside itself or more than ${MAX_COMPONENT_DEPTH} levels deep`);
+          seen.add(current);
+          current = parentOf(current);
+        }
+      }
       const plan: ImportPlan = { objects: objects.map((o) => o.id), skipped, files };
       alsoInTransaction?.(plan);
       return plan;
@@ -869,8 +896,25 @@ export function openObjectStore(db: SqlDatabase, options: { now?: string } = {})
     return row ? normalizeObjectOsSettings(JSON.parse(row.value_json)) : defaultObjectOsSettings();
   }
 
+  const pendingKey = (e: PendingFile) => [e.objectId, e.storedName ?? ''];
+
   return {
     objectIdExists: exists,
+    countObjects: () => Number(one<{ n: number }>('SELECT COUNT(*) AS n FROM obj_objects')?.n ?? 0),
+    markPending: (entries) =>
+      tx(() => {
+        for (const e of entries) run('INSERT OR IGNORE INTO obj_pending_files (object_id, stored_name) VALUES (?, ?)', pendingKey(e));
+      }),
+    clearPending: (entries) =>
+      tx(() => {
+        for (const e of entries) run('DELETE FROM obj_pending_files WHERE object_id = ? AND stored_name = ?', pendingKey(e));
+      }),
+    pendingFiles: () =>
+      all<{ object_id: string; stored_name: string }>('SELECT object_id, stored_name FROM obj_pending_files ORDER BY object_id, stored_name').map((r) => ({
+        objectId: String(r.object_id),
+        storedName: r.stored_name ? String(r.stored_name) : null,
+      })),
+    storedFileExists: (objectId, storedName) => one('SELECT 1 AS ok FROM obj_files WHERE object_id = ? AND stored_name = ?', [objectId, storedName]) !== undefined,
     createObject,
     updateObject,
     setStatus,
