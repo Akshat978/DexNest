@@ -23,9 +23,11 @@ import { randomUUID } from 'node:crypto';
 import type { EventLog } from '@dexnest/foundation';
 import { awardId, computeAwards } from '../domain/awards.ts';
 import { levelFor } from '../domain/levels.ts';
+import { localDay } from '../domain/time.ts';
 import { ruleMatches } from '../domain/matching.ts';
 import { isRecurring, isoWeekOfDay, newUnlocks, questProgress, type QuestProgress } from '../domain/index.ts';
 import { projectEvent } from '../domain/projection.ts';
+import { stableHash } from '../domain/hash.ts';
 import { namedTypes } from '../domain/validation.ts';
 import type { Award, ObservedEvent, Quest, Rule } from '../domain/types.ts';
 import type { CommittedRun, RealityRpgStore, RunRecord, RunTrigger } from '../store/store.ts';
@@ -95,6 +97,13 @@ export function createRpgEngine(options: RpgEngineOptions): RpgEngine {
     return { events, lastSeq: cursor, read };
   }
 
+  /** Achievement and active-quest definitions, hashed: what evaluation depends on besides awards. */
+  function definitionsFingerprint(): string {
+    const achievements = store.listAchievements().achievements;
+    const quests = store.listQuests('active').quests.map((q) => [q.id, q.condition, q.window, q.createdAt]);
+    return stableHash(JSON.stringify([achievements, quests]));
+  }
+
   function questCompletions(quests: readonly Quest[], ledger: readonly Award[], fresh: readonly Award[], at: Date) {
     const done = new Set(store.listCompletions().map((c) => `${c.questId}|${c.periodKey}`));
     const out: { questId: string; periodKey: string; completesQuest: boolean }[] = [];
@@ -140,17 +149,31 @@ export function createRpgEngine(options: RpgEngineOptions): RpgEngine {
       const fromSeq = rescanned ? 0 : store.cursor();
       const collected = collect(types, fromSeq);
 
+      // Nothing new was read and nothing to evaluate changed: skip before
+      // loading the ledger, so an idle scheduled run stays cheap however large
+      // the history grows. Levels, unlocks and quest completions can only
+      // change with new awards or changed definitions.
+      const definitions = definitionsFingerprint();
+      if (collected.events.length === 0 && collected.lastSeq === store.cursor() && !rescanned && definitions === store.definitionsFingerprint()) {
+        return {
+          status: 'skipped',
+          run: store.markSkipped(runId, { finishedAt: now().toISOString(), maxSeqSeen: newest, definitionsFingerprint: definitions }),
+          reason: 'nothing_new',
+        };
+      }
+
       // Idempotency before caps: an event already awarded must not use up a cap slot.
       const candidateIds: string[] = [];
       for (const event of collected.events) for (const rule of rules) if (ruleMatches(rule.match, event)) candidateIds.push(awardId(rule.id, event.id));
       const already = store.existingAwardIds(candidateIds);
       const at = now();
-      const days = [...new Set(collected.events.map((e) => e.occurredAt.slice(0, 10)))];
-      // Cap counts for the local days these events fall on (and their UTC neighbours).
+      // Cap counts for the local days these events fall on. An event whose time
+      // cannot be read has no day; computeAwards skips it, and it must not fail
+      // the run - that would leave the cursor stuck on it forever.
       const dayWindow = new Set<string>();
-      for (const d of days) {
-        const t = Date.parse(`${d}T00:00:00.000Z`);
-        for (const offset of [-1, 0, 1]) dayWindow.add(new Date(t + offset * 86_400_000).toISOString().slice(0, 10));
+      for (const event of collected.events) {
+        const day = localDay(event.occurredAt, timeZone);
+        if (day) dayWindow.add(day);
       }
       const fresh = computeAwards(rules, collected.events, {
         alreadyAwarded: already,
@@ -171,7 +194,7 @@ export function createRpgEngine(options: RpgEngineOptions): RpgEngine {
       const toSeq = collected.lastSeq;
       const nothingNew = fresh.length === 0 && unlocks.length === 0 && completions.length === 0 && levels.length === 0 && toSeq === store.cursor() && !rescanned;
       if (nothingNew) {
-        return { status: 'skipped', run: store.markSkipped(runId, { finishedAt: at.toISOString(), maxSeqSeen: newest }), reason: 'nothing_new' };
+        return { status: 'skipped', run: store.markSkipped(runId, { finishedAt: at.toISOString(), maxSeqSeen: newest, definitionsFingerprint: definitions }), reason: 'nothing_new' };
       }
 
       const committed = store.commitRun({
@@ -180,6 +203,7 @@ export function createRpgEngine(options: RpgEngineOptions): RpgEngine {
         fromSeq,
         toSeq,
         maxSeqSeen: Math.max(newest, toSeq),
+        definitionsFingerprint: definitions,
         awards: fresh,
         unlocks,
         questCompletions: completions,

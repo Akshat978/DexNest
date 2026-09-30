@@ -4,7 +4,7 @@ Module id `reality_rpg` · table prefix `rpg_` · event namespace `rpg.` ·
 event stream `rpg` · view id `rpg` · package `@dexnest/reality-rpg` ·
 branch `cloud/reality-rpg`.
 
-Status: **Phase 6 (view) done.** Decisions on the Phase 0 questions are in section 13b. Read with `AGENTS.md` and
+Status: **Phase 7 (hardening) done.** Decisions on the Phase 0 questions are in section 13b. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`. Shaped after Developer
 Intelligence's runtime/host split (`packages/dev-intelligence/src/module/runtime.ts`,
 `apps/desktop/src/main/devIntelligenceHost.ts`).
@@ -444,6 +444,30 @@ it actually wrote, so events in Phase 4 are raised for new things only.
 - Tests: the real `.tsx` rendered with the app's own Vite (SSR) and
   `react-dom/server`; no new dependencies. Not tested: real key events and
   focus movement in a live DOM (no DOM test library in the repo).
+
+**Phase 7 notes.** `packages/reality-rpg/src/__tests__/hardening.test.ts`,
+plus one host test (dispose and recreate).
+
+- Covered: restart after a run died uncommitted; a disk fault at each write
+  of a run (awards, unlocks, quest completions, quest status, levels, run
+  record, cursor, milestone events) - each leaves nothing behind and the next
+  run awards exactly once; ten simultaneous refreshes; the real host
+  scheduler with manual runs racing a slot delivered twice; the audit log
+  cleared completely and refilled; daily caps and quests across the US DST
+  change; far-future times; corrupt and sneaky stored rules (never queried);
+  rule edits between runs; deleted source events; the top of the level curve.
+- **Found and fixed:** one event with an unreadable time crashed every run
+  (`RangeError` building the cap-day window), and because the cursor never
+  moved past it, processing would have been stuck for good. Days now come
+  from `localDay`, which skips unreadable times.
+- **Found and fixed:** an idle scheduled run loaded the whole award ledger to
+  re-evaluate achievements and quests - about 0.3 s per run at 50,000 awards.
+  Runs now record a fingerprint of the achievement and active-quest
+  definitions; with no new events, no rescan and unchanged definitions, a run
+  skips before touching the ledger (about 3 ms at the same size).
+- Measured on this Linux container: 100,000-row log (50,000 named) processed
+  in about 1.3-1.6 s; the next run with 10 new events about 0.35 s; an idle
+  run about 3 ms. Memory was not measured.
 
 ### Needs Windows check (running list)
 

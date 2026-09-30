@@ -199,3 +199,23 @@ test("preload exposes every channel, and main.ts starts, routes and disposes the
   assert.ok(main.includes('actionId.startsWith("reality_rpg.")') && main.includes("runRealityRpgAction(realityRpgHost.module, actionId, params)"));
   assert.ok(main.includes("startRealityRpgHost();") && main.includes("realityRpgHost?.dispose();"));
 });
+
+test("the host can be disposed and created again on the same connection without leaking handlers", () => {
+  const { host, ipc, call } = setup();
+  host.module.enable();
+  host.dispose();
+  assert.equal(ipc.handlers.size, 0);
+  const again = createRealityRpgHost({
+    database: handle!.db,
+    events: createEventLog(handle!.db),
+    scheduler: createHostScheduler({ timers: heldTimers() }),
+    readSettings: () => ({ enabled: true }),
+    writeSettings: () => undefined,
+    ipcMain: ipc,
+    getWindow: () => window,
+    audit: () => undefined
+  });
+  assert.equal(ipc.handlers.size, Object.keys(RPG_CHANNELS).length);
+  assert.equal((call(RPG_CHANNELS.status) as { enabled: boolean }).enabled, true);
+  again.dispose();
+});

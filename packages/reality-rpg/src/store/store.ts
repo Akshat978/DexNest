@@ -70,6 +70,8 @@ export interface CommitRunInput {
   toSeq: number;
   /** The log's max seq as seen by this run (for seq-regression detection). */
   maxSeqSeen: number;
+  /** Fingerprint of the achievement and quest definitions this run evaluated. */
+  definitionsFingerprint?: string;
   awards: readonly Award[];
   unlocks: readonly { achievementId: string; tippingAwardId: string }[];
   questCompletions: readonly { questId: string; periodKey: string; completesQuest: boolean }[];
@@ -121,7 +123,7 @@ export interface RealityRpgStore {
   // Runs
   beginRun(input: { id: string; occurrenceId: string; trigger: RunTrigger; startedAt: string }): { started: boolean; run: RunRecord };
   commitRun(input: CommitRunInput): CommittedRun;
-  markSkipped(runId: string, input: { finishedAt: string; maxSeqSeen: number }): RunRecord;
+  markSkipped(runId: string, input: { finishedAt: string; maxSeqSeen: number; definitionsFingerprint?: string }): RunRecord;
   markFailed(runId: string, input: { finishedAt: string; error: string }): RunRecord;
   recoverInterruptedRuns(now: string): number;
   getRun(id: string): RunRecord | undefined;
@@ -132,6 +134,8 @@ export interface RealityRpgStore {
   cursor(): number;
   maxSeqSeen(): number;
   setCursor(seq: number): void;
+  /** The definitions fingerprint the last run or skip evaluated; null before the first. */
+  definitionsFingerprint(): string | null;
 }
 
 type Row = Record<string, unknown>;
@@ -184,6 +188,7 @@ function safeJson(text: unknown): unknown {
 
 const STATE_CURSOR = 'cursor';
 const STATE_MAX_SEQ = 'max_seq_seen';
+const STATE_DEFINITIONS = 'definitions_fingerprint';
 
 export function createRealityRpgStore(db: SqlDatabase): RealityRpgStore {
   const get = (sql: string, params: readonly unknown[] = []) => db.prepare(sql).get<Row>(params);
@@ -197,6 +202,13 @@ export function createRealityRpgStore(db: SqlDatabase): RealityRpgStore {
   };
   const setState = (key: string, value: number) =>
     run('INSERT INTO rpg_state (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value', [key, String(value)]);
+
+  const setText = (key: string, value: string) =>
+    run('INSERT INTO rpg_state (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value', [key, value]);
+  const text = (key: string) => {
+    const r = get('SELECT value FROM rpg_state WHERE key = ?', [key]);
+    return r ? str(r.value) : null;
+  };
 
   const getRun = (id: string) => {
     const r = get('SELECT * FROM rpg_runs WHERE id = ?', [id]);
@@ -454,6 +466,7 @@ export function createRealityRpgStore(db: SqlDatabase): RealityRpgStore {
         );
         setState(STATE_CURSOR, input.toSeq);
         setState(STATE_MAX_SEQ, input.maxSeqSeen);
+        if (input.definitionsFingerprint !== undefined) setText(STATE_DEFINITIONS, input.definitionsFingerprint);
 
         const result: CommittedRun = { run: requireRun(input.runId), inserted, newUnlocks, newCompletions, newLevels };
         input.alsoInTransaction?.(result);
@@ -465,6 +478,7 @@ export function createRealityRpgStore(db: SqlDatabase): RealityRpgStore {
       return withTransaction(db, () => {
         run("UPDATE rpg_runs SET status = 'skipped', finished_at = ? WHERE id = ? AND status = 'running'", [input.finishedAt, runId]);
         setState(STATE_MAX_SEQ, input.maxSeqSeen);
+        if (input.definitionsFingerprint !== undefined) setText(STATE_DEFINITIONS, input.definitionsFingerprint);
         return requireRun(runId);
       });
     },
@@ -494,5 +508,6 @@ export function createRealityRpgStore(db: SqlDatabase): RealityRpgStore {
     setCursor: (seq) => {
       setState(STATE_CURSOR, seq);
     },
+    definitionsFingerprint: () => text(STATE_DEFINITIONS),
   };
 }
