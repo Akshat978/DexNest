@@ -4,7 +4,7 @@ Module id `object_os` · table prefix `obj_` · event namespace `object.` ·
 event stream `object` · view id `object` · package `@dexnest/object-os` ·
 branch `cloud/object-os`.
 
-Status: **Phase 2 (store) done.** Domain and store exist; nothing is wired into the app yet. Read with `AGENTS.md` and
+Status: **Phase 3 (engine) done.** Domain, store and engine exist; nothing is wired into the app yet. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`. Shaped after Developer
 Intelligence's runtime/host split and the modules built before it on other
 branches (Skill Constellation, Reality RPG, GhostOS).
@@ -311,6 +311,28 @@ carry counts, not keys.
   reflect it).
 - The read API is `createObjectReadApi(store)`: list, get, components and
   attention, public fields only.
+
+### Refinements made in Phase 3
+
+- The file port (`files/port.ts`) is the whole contract with the host:
+  `inspect` (no read: real path, inside the data root, is a file, size),
+  `copyIn` (streamed, hashed, size-capped, temp name + rename), `remove`,
+  `removeFolder`, and `resolveStored` (the stored file only if, resolved, it
+  is still inside its object's folder). Imports go through an
+  `ImportArchive` the host opens: the engine asks only for entries named
+  exactly `files/<object id>/<stored name>` from validated rows.
+- Attach order: inspect -> refuse -> copy -> record; a failed record write
+  deletes the copy. The first photo becomes the object's photo, the first
+  receipt the purchase receipt.
+- Export of one object walks its components; a file whose bytes are
+  missing or no longer inside its folder is left out of the zip and
+  reported, and its row goes with it so the export stays importable.
+- Import checks every listed file's size before copying, copies with hash
+  verification, then writes rows in one transaction; any failure removes
+  what was copied. Files of skipped (already present) objects are not
+  copied.
+- Reminders: skipped without claiming when off (a manual "check now" runs
+  anyway); claimed per occurrence when on.
 
 ## 15. Phases for this module
 
