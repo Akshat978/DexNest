@@ -4,7 +4,7 @@ Module id `object_os` · table prefix `obj_` · event namespace `object.` ·
 event stream `object` · view id `object` · package `@dexnest/object-os` ·
 branch `cloud/object-os`.
 
-Status: **Phase 3 (engine) done.** Domain, store and engine exist; nothing is wired into the app yet. Read with `AGENTS.md` and
+Status: **Phase 4 (actions and events) done.** Domain, store, engine, runtime and registry entries exist; no host or view yet. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`. Shaped after Developer
 Intelligence's runtime/host split and the modules built before it on other
 branches (Skill Constellation, Reality RPG, GhostOS).
@@ -333,6 +333,26 @@ carry counts, not keys.
   copied.
 - Reminders: skipped without claiming when off (a manual "check now" runs
   anyway); claimed per occurrence when on.
+
+### Refinements made in Phase 4
+
+- `createObjectOsModule` (`module/runtime.ts`) is the one entry point the
+  host will call. Every entry point validates, writes, and appends its
+  event in the same transaction; a refused action writes no event.
+- Events carry ids, types and counts only. A test puts a marker in every
+  text field (name, make, model, serial, location, notes, tags, shop,
+  part names, settings values, file names) and checks it appears in no
+  object event, audit line or notification.
+- `reminder_checked` is appended with an idempotency key per occurrence,
+  on top of the run claim: one slot delivered twice gives one event and
+  one notification.
+- Opening a file and turning reminders on or off write audit lines only
+  (no object event). "Check now" runs even when reminders are off.
+- `settings_saved` is written only when a new version is created (saving
+  identical values is a no-op).
+- Parts used by a maintenance entry also write `stock_changed` events.
+- Export writes its event only after the host reports a successful write.
+- The store gained `lastRun(kind)` for the module status.
 
 ## 15. Phases for this module
 

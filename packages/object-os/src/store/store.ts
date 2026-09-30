@@ -163,6 +163,7 @@ export interface ObjectStore {
   claimRun(input: { id: string; occurrenceId: string; kind: string; trigger: RunTrigger; now: string }): RunRecord | null;
   finishRun(id: string, status: 'completed' | 'skipped' | 'failed', now: string, summary: Record<string, unknown>, error?: string | null): RunRecord;
   getRunByOccurrence(occurrenceId: string): RunRecord | undefined;
+  lastRun(kind: string): RunRecord | undefined;
   recoverInterruptedRuns(now: string): number;
 
   transaction<T>(work: () => T): T;
@@ -972,6 +973,10 @@ export function openObjectStore(db: SqlDatabase, options: { now?: string } = {})
     },
     getRunByOccurrence: (occurrenceId) => {
       const row = one('SELECT * FROM obj_runs WHERE occurrence_id = ?', [occurrenceId]);
+      return row ? toRun(row) : undefined;
+    },
+    lastRun: (kind) => {
+      const row = one('SELECT * FROM obj_runs WHERE kind = ? ORDER BY started_at DESC, id DESC LIMIT 1', [kind]);
       return row ? toRun(row) : undefined;
     },
     recoverInterruptedRuns: (now) => Number(run("UPDATE obj_runs SET status = 'failed', finished_at = ?, error = 'interrupted' WHERE status = 'running'", [now]).changes),
