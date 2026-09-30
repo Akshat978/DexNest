@@ -4,7 +4,7 @@ Module id `reality_rpg` · table prefix `rpg_` · event namespace `rpg.` ·
 event stream `rpg` · view id `rpg` · package `@dexnest/reality-rpg` ·
 branch `cloud/reality-rpg`.
 
-Status: **Phase 5 (host) done.** Decisions on the Phase 0 questions are in section 13b. Read with `AGENTS.md` and
+Status: **Phase 6 (view) done.** Decisions on the Phase 0 questions are in section 13b. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`. Shaped after Developer
 Intelligence's runtime/host split (`packages/dev-intelligence/src/module/runtime.ts`,
 `apps/desktop/src/main/devIntelligenceHost.ts`).
@@ -422,6 +422,29 @@ it actually wrote, so events in Phase 4 are raised for new things only.
 - Preload: `realityRpgStatus/Snapshot/History/Settings/UpdateSettings`.
   Renderer typings come with the view (Phase 6).
 
+**Phase 6 notes.**
+
+- `apps/desktop/src/renderer/views/RealityRpgView.tsx` (+ `RealityRpg.css`,
+  + `realityRpgModel.ts` for the pure decisions). Sidebar entry "Reality RPG"
+  right after Autopilot (icon `Swords`, accent `--accent-loop`); opened by
+  `reality_rpg.open` -> `desktop.view.rpg`.
+- States: loading (status, `aria-busy`), error (alert + Try again), off
+  (explains what it reads and never reads), ready. Five sections in an ARIA
+  tab list (one tab stop; arrows, Home, End): Character (level, XP to next,
+  progress, stats, last run), Quests (progress as numbers, completions,
+  abandon, create form), Achievements (unlocked with date, locked with
+  progress), History (rule and action, never content; "Show older" pages
+  through `realityRpgHistory`), Rules (switch on/off, apply to past activity
+  only for rules that are on, delete, starter set added switched off, new-rule
+  form, a warning when saved definitions no longer validate).
+- Every change runs a registered action through `runUiAction`, so it is
+  journalled. Forms only shape input; the module validates.
+- The sidebar's `.accent-loop` class is defined in `RealityRpg.css` rather
+  than the shared `styles.css` (no other module's file touched).
+- Tests: the real `.tsx` rendered with the app's own Vite (SSR) and
+  `react-dom/server`; no new dependencies. Not tested: real key events and
+  focus movement in a live DOM (no DOM test library in the repo).
+
 ### Needs Windows check (running list)
 
 - Electron IPC: the trusted-frame check against a real `BrowserWindow`; the
@@ -434,6 +457,10 @@ it actually wrote, so events in Phase 4 are raised for new things only.
 - Local day and ISO week in the Windows time zone (Intl on Windows uses ICU
   zone names mapped from Windows zones).
 - Idle behaviour: no timer when off; one light timer when on.
+- The view in Electron on Windows: Inter / JetBrains Mono loaded, the native
+  `<progress>` bar taking `accent-color`, tab-list arrow keys and focus
+  rings, date inputs for fixed-window quests, and Narrator reading the tabs
+  and buttons.
 
 ## 14. Phases for this module
 
