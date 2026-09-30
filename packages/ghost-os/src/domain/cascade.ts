@@ -41,7 +41,21 @@ export interface CascadePlan {
 
 export const refKey = (ref: RowRef) => `${ref.kind}:${ref.id}`;
 
-export function planCascade(reader: CascadeReader, roots: RowRef[], mode: 'forget' | 'withdraw'): CascadePlan {
+/**
+ * A walk that visits this many queue entries has stopped converging: fail
+ * loudly rather than loop. Far above any real graph (the walk dedupes, so a
+ * healthy one visits each edge once).
+ */
+export const CASCADE_STEP_LIMIT = 1_000_000;
+
+export class CascadeLimitError extends Error {
+  constructor(limit: number) {
+    super(`forget did not converge within ${limit} steps; nothing was removed`);
+    this.name = 'CascadeLimitError';
+  }
+}
+
+export function planCascade(reader: CascadeReader, roots: RowRef[], mode: 'forget' | 'withdraw', stepLimit: number = CASCADE_STEP_LIMIT): CascadePlan {
   const seen = new Set<string>();
   const rows: RowRef[] = [];
   const tombstones: CascadePlan['tombstones'] = [];
@@ -50,6 +64,7 @@ export function planCascade(reader: CascadeReader, roots: RowRef[], mode: 'forge
   const queue: RowRef[] = [...roots];
 
   for (let i = 0; i < queue.length; i++) {
+    if (i >= stepLimit) throw new CascadeLimitError(stepLimit);
     const next = queue[i] as RowRef;
     const key = refKey(next);
     if (seen.has(key)) continue;

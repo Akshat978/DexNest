@@ -82,6 +82,8 @@ export interface ImportResult {
   skippedForgotten: RowCounts;
   derivations: number;
   tombstones: number;
+  /** Tombstones in the file for facts GhostOS still holds: not applied (import never removes). */
+  tombstonesSkipped: number;
 }
 
 export class GhostStoreError extends Error {
@@ -106,8 +108,8 @@ export interface GhostStore {
   getObservation(id: string): Observation | undefined;
   putObservation(observation: Observation, options?: PutOptions): PutStatus;
   observationsOf(entityId: string, limit?: number): Observation[];
-  /** Observations from one source, oldest first. */
-  observationsFromSource(sourceId: string): Observation[];
+  /** Observations from one source, oldest first; only those observed at or after `since` when given. */
+  observationsFromSource(sourceId: string, since?: string): Observation[];
 
   derivationsOf(child: RowRef): RowRef[];
   isForgotten(sourceId: string, sourceRef: string): boolean;
@@ -637,8 +639,14 @@ export function openGhostStore(db: SqlDatabase, options: OpenGhostStoreOptions =
       for (const id of parsed.externalEntityIds) {
         if (!exists({ kind: 'entity', id })) throw new GhostStoreError(`the file refers to entity ${id}, which is not in the file or in GhostOS`);
       }
-      const result: ImportResult = { added: zero(), skippedExisting: zero(), skippedForgotten: zero(), derivations: 0, tombstones: 0 };
+      const result: ImportResult = { added: zero(), skippedExisting: zero(), skippedForgotten: zero(), derivations: 0, tombstones: 0, tombstonesSkipped: 0 };
       for (const t of data.tombstones) {
+        // Import merges and never removes: a tombstone for a fact still held here is not applied.
+        const held = (['entity', 'relation', 'observation'] as const).some((kind) => one(`SELECT 1 AS ok FROM ${TABLE[kind]} WHERE source_id = ? AND source_ref = ?`, [t.sourceId, t.sourceRef]));
+        if (held) {
+          result.tombstonesSkipped += 1;
+          continue;
+        }
         result.tombstones += Number(run('INSERT OR IGNORE INTO ghost_tombstones (source_id, source_ref, forgotten_at) VALUES (?, ?, ?)', [t.sourceId, t.sourceRef, t.forgottenAt]).changes);
       }
       const parentsOf = new Map<string, RowRef[]>();
@@ -731,7 +739,11 @@ export function openGhostStore(db: SqlDatabase, options: OpenGhostStoreOptions =
     },
     putObservation,
     observationsOf: (entityId, limit = 200) => all('SELECT * FROM ghost_observations WHERE entity_id = ? ORDER BY observed_at DESC, id DESC LIMIT ?', [entityId, limit]).map(toObservation),
-    observationsFromSource: (sourceId) => all('SELECT * FROM ghost_observations WHERE source_id = ? ORDER BY observed_at, id', [sourceId]).map(toObservation),
+    observationsFromSource: (sourceId, since) =>
+      (since
+        ? all('SELECT * FROM ghost_observations WHERE source_id = ? AND observed_at >= ? ORDER BY observed_at, id', [sourceId, since])
+        : all('SELECT * FROM ghost_observations WHERE source_id = ? ORDER BY observed_at, id', [sourceId])
+      ).map(toObservation),
     derivationsOf: (child) =>
       all<{ parent_kind: RowKind; parent_id: string }>('SELECT parent_kind, parent_id FROM ghost_derivations WHERE child_kind = ? AND child_id = ? ORDER BY parent_kind, parent_id', [child.kind, child.id]).map((r) => ({
         kind: r.parent_kind,

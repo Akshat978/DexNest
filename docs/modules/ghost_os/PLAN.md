@@ -4,7 +4,7 @@ Module id `ghost_os` · table prefix `ghost_` · event namespace `ghost.` ·
 event stream `ghost` · view id `ghost` · package `@dexnest/ghost-os` ·
 branch `cloud/ghost-os`.
 
-Status: **Phase 6 (view) done.** GhostOS runs in the desktop app with its view; hardening (Phase 7) and handoff (Phase 8) remain. Read with `AGENTS.md` and
+Status: **Phase 7 (hardening) done.** Handoff (Phase 8) remains. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`. Shaped after Developer
 Intelligence's runtime/host split, and after the two modules built before it
 on other branches (Skill Constellation, Reality RPG).
@@ -418,6 +418,21 @@ run. Manual entry, search, timeline and export need no job.
 - The renderer imports only types from `@dexnest/ghost-os`; its lists
   (types, relation vocabulary) are mirrored and a test keeps them equal, so
   no store or engine code is bundled into the renderer.
+
+### Refinements made in Phase 7
+
+- **Cascade safety net:** the walk already dedupes, so a cycle ends it; if
+  that ever broke, a synchronous loop would freeze DexNest's main process.
+  `planCascade` now stops after 1,000,000 steps with `CascadeLimitError`
+  and removes nothing (a real graph needs a few thousand).
+- **Habit detection reads only the last 70 days** of observations
+  (`HABIT_LOOKBACK_DAYS`; a test keeps it wider than every detector's
+  window). A quiet sync over 50,000 commits went from about 1.4 s to about
+  0.3 s on Linux.
+- **Imported tombstones for facts still held here are not applied**
+  (reported as `tombstonesSkipped`): import merges and never removes, and a
+  tombstone on a live row would freeze it (never updated, never withdrawn).
+- An interrupted occurrence stays spent after a restart; the next slot runs.
 
 ## 16. Phases for this module
 

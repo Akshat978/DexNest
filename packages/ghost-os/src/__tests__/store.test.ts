@@ -332,7 +332,7 @@ describe('export and import', () => {
 
     const { store: target } = fresh();
     const result = target.importAll(parse(data));
-    expect(result).toEqual({ added: { entity: 4, relation: 2, observation: 3 }, skippedExisting: { entity: 0, relation: 0, observation: 0 }, skippedForgotten: { entity: 0, relation: 0, observation: 0 }, derivations: 2, tombstones: 1 });
+    expect(result).toEqual({ added: { entity: 4, relation: 2, observation: 3 }, skippedExisting: { entity: 0, relation: 0, observation: 0 }, skippedForgotten: { entity: 0, relation: 0, observation: 0 }, derivations: 2, tombstones: 1, tombstonesSkipped: 0 });
     expect(target.exportAll('2026-07-01T00:00:00.000Z')).toEqual(data);
     expect(target.search('zephyr').map((h) => h.id)).toEqual([w.project.id]);
   });

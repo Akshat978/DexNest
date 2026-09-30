@@ -33,6 +33,9 @@ export interface DetectedHabit {
 export const HABIT_DETECTORS = ['time_of_day', 'weekly_rhythm'] as const;
 export type HabitDetectorId = (typeof HABIT_DETECTORS)[number];
 
+/** How far back any detector looks, with room for the current week and time zones. */
+export const HABIT_LOOKBACK_DAYS = 70;
+
 export const HABIT_THRESHOLDS = {
   timeOfDay: { windowDays: 30, minActiveDays: 8, minShare: 0.6 },
   weeklyRhythm: { weeks: 8, minMedianDays: 3, minStableWeeks: 6, tolerance: 1 },

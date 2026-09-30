@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CONFIDENCE, HABIT_THRESHOLDS, detectHabits, detectTimeOfDay, detectWeeklyRhythm, habitSourceRef, partOfDay, type ActivitySample } from '../domain/index.ts';
+import { CONFIDENCE, HABIT_LOOKBACK_DAYS, HABIT_THRESHOLDS, detectHabits, detectTimeOfDay, detectWeeklyRhythm, habitSourceRef, partOfDay, type ActivitySample } from '../domain/index.ts';
 
 const NOW = '2026-06-30T12:00:00.000Z'; // a Tuesday, ISO week 2026-W27
 const ctx = { now: NOW, timeZone: 'UTC', subject: 'commits' };
@@ -107,5 +107,13 @@ describe('detectHabits', () => {
     const a = detectTimeOfDay(Array.from({ length: 8 }, (_, i) => at(i, '19:00')), ctx);
     const b = detectTimeOfDay(Array.from({ length: 12 }, (_, i) => at(i, '19:00')), ctx);
     expect(a && habitSourceRef(a)).toBe(b && habitSourceRef(b));
+  });
+});
+
+describe('lookback', () => {
+  it('covers every detector window: older observations cannot change a result', () => {
+    expect(HABIT_LOOKBACK_DAYS).toBeGreaterThanOrEqual(HABIT_THRESHOLDS.timeOfDay.windowDays + 1);
+    // Eight full weeks before this one, plus this one, plus a day for time zones.
+    expect(HABIT_LOOKBACK_DAYS).toBeGreaterThanOrEqual((HABIT_THRESHOLDS.weeklyRhythm.weeks + 1) * 7 + 1);
   });
 });

@@ -13,7 +13,7 @@ import type { SourceAdapter } from '../adapters/types.ts';
 import type { RowCounts } from '../domain/events.ts';
 import { detectHabits, habitSourceRef, type DetectedHabit } from '../domain/habits.ts';
 import { detectorSourceId, sourceRowId } from '../domain/ids.ts';
-import { HABIT_DETECTORS } from '../domain/habits.ts';
+import { HABIT_DETECTORS, HABIT_LOOKBACK_DAYS } from '../domain/habits.ts';
 import type { AdapterId } from '../domain/settings.ts';
 import type { Entity, RowRef } from '../domain/types.ts';
 import { LIMITS } from '../domain/validation.ts';
@@ -116,7 +116,9 @@ export function createGhostEngine(options: GhostEngineOptions): GhostEngine {
   /** Detect habits from this adapter's observations; update what holds, remove what lapsed. */
   function runHabits(adapter: SourceAdapter, now: string, outcome: SyncOutcome) {
     if (!adapter.habitSubject) return;
-    const samples = adapter.activity(store.observationsFromSource(adapter.sourceId));
+    // Detectors look back at most HABIT_LOOKBACK_DAYS: older observations cannot change what they find.
+    const since = new Date(Date.parse(now) - HABIT_LOOKBACK_DAYS * 86_400_000).toISOString();
+    const samples = adapter.activity(store.observationsFromSource(adapter.sourceId, since));
     const found = detectHabits(samples, { now, timeZone: options.timeZone(), subject: adapter.habitSubject });
     const foundIds = new Set<string>();
     for (const h of found) {
