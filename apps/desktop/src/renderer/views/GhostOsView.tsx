@@ -10,6 +10,10 @@ import {
   fieldsFor,
   formFromDetail,
   nextTab,
+  pickerKey,
+  pickerMessage,
+  pickerOptionId,
+  pickerState,
   RELATION_TYPE_LIST,
   shortDate,
   shortDateTime,
@@ -23,6 +27,7 @@ import {
   viewState,
   whenLabel,
   type EntityForm,
+  type PickerOption,
   type Tab
 } from "./ghostOsModel";
 import "./GhostOs.css";
@@ -51,6 +56,7 @@ export interface GhostOsViewProps {
     error?: string | null;
     confirmForget?: boolean;
     form?: EntityForm;
+    picker?: PickerInitial;
   };
 }
 
@@ -299,8 +305,9 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
                   {detail ? (
                     <EntityDetailPanel
                       detail={detail}
-                      items={items}
                       busy={busy}
+                      search={async (text) => unwrap(await bridge.ghostOsSearch({ text }))}
+                      picker={initial?.picker}
                       confirmForget={confirmForget}
                       onAskForget={setConfirmForget}
                       onForget={() => void forget()}
@@ -376,10 +383,146 @@ function SourceLine({ provenance }: { provenance: EntityDetail["entity"]["proven
   );
 }
 
+/** Tests only: pin the connection picker's state. */
+interface PickerInitial {
+  query: string;
+  results: SearchHit[] | null;
+  active?: number;
+  chosen?: PickerOption | null;
+  error?: string | null;
+}
+
+/**
+ * Chooses a connection's target by searching every entry, not only the
+ * timeline page. A WAI-ARIA combobox: the input owns a listbox; arrow keys,
+ * Home and End move, Enter chooses, Escape closes; a live region says what
+ * is happening (nothing typed, searching, no results, how many found).
+ */
+function ConnectionPicker(props: {
+  excludeId: string;
+  chosen: PickerOption | null;
+  onChoose(option: PickerOption | null): void;
+  search(text: string): Promise<SearchHit[]>;
+  initial?: PickerInitial;
+}) {
+  const [query, setQuery] = useState(props.initial?.query ?? "");
+  const [results, setResults] = useState<SearchHit[] | null>(props.initial?.results ?? null);
+  const [searching, setSearching] = useState(false);
+  const [error, setError] = useState<string | null>(props.initial?.error ?? null);
+  const [active, setActive] = useState(props.initial?.active ?? -1);
+  const [open, setOpen] = useState(props.initial !== undefined && props.initial.query.trim() !== "");
+  const latest = useRef(0);
+
+  useEffect(() => {
+    if (props.initial !== undefined) return;
+    const text = query.trim();
+    if (!text) {
+      setResults(null);
+      setSearching(false);
+      return;
+    }
+    const ticket = ++latest.current;
+    setSearching(true);
+    // A short pause so each keystroke does not search.
+    const timer = setTimeout(() => {
+      props.search(text).then(
+        (hits) => {
+          if (ticket !== latest.current) return;
+          setResults(hits);
+          setError(null);
+          setSearching(false);
+          setActive(-1);
+        },
+        (e: unknown) => {
+          if (ticket !== latest.current) return;
+          setError(errorText(e));
+          setSearching(false);
+        }
+      );
+    }, 200);
+    return () => clearTimeout(timer);
+    // Only the query decides what to search for; a stale answer is dropped by its ticket.
+  }, [query]);
+
+  const state = pickerState({ query, results, searching, error, excludeId: props.excludeId });
+  const options = state.kind === "results" ? state.options : [];
+  const expanded = open && options.length > 0;
+
+  function choose(option: PickerOption) {
+    props.onChoose(option);
+    setOpen(false);
+    setQuery("");
+    setResults(null);
+    setActive(-1);
+  }
+
+  function onKey(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (!open && event.key === "ArrowDown" && options.length > 0) setOpen(true);
+    const next = pickerKey(event.key, active, options.length);
+    if (!next) return;
+    event.preventDefault();
+    if (next.action === "close") {
+      setOpen(false);
+      setActive(-1);
+      return;
+    }
+    setActive(next.active);
+    const option = options[next.active];
+    if (next.action === "choose" && option) choose(option);
+  }
+
+  if (props.chosen) {
+    return (
+      <p className="ghost-picked">
+        <span>To</span>{" "}
+        <strong>{props.chosen.title}</strong> <span className="ghost-meta">({props.chosen.typeLabel})</span>{" "}
+        <button type="button" onClick={() => props.onChoose(null)} aria-label={`Change the entry, now ${props.chosen.title}`}>Change</button>
+      </p>
+    );
+  }
+
+  return (
+    <div className="ghost-picker">
+      <label htmlFor="ghost-rel-to">To</label>
+      <input
+        id="ghost-rel-to"
+        type="text"
+        role="combobox"
+        autoComplete="off"
+        aria-autocomplete="list"
+        aria-expanded={expanded}
+        aria-controls="ghost-rel-to-list"
+        aria-describedby="ghost-rel-to-status"
+        aria-activedescendant={expanded && active >= 0 && options[active] ? pickerOptionId(options[active].id) : undefined}
+        placeholder="Search your entries"
+        value={query}
+        onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+        onKeyDown={onKey}
+      />
+      <ul id="ghost-rel-to-list" role="listbox" aria-label="Matching entries" className="ghost-picker-list" hidden={!expanded}>
+        {options.map((option, i) => (
+          <li
+            key={option.id}
+            id={pickerOptionId(option.id)}
+            role="option"
+            aria-selected={i === active}
+            className="ghost-picker-option"
+            onMouseDown={(e) => { e.preventDefault(); choose(option); }}
+          >
+            {option.title} <span className="ghost-meta">{option.typeLabel}</span>
+          </li>
+        ))}
+      </ul>
+      <p id="ghost-rel-to-status" className="ghost-hint" role="status" aria-live="polite">{pickerMessage(state)}</p>
+    </div>
+  );
+}
+
 function EntityDetailPanel(props: {
   detail: EntityDetail;
-  items: TimelineItem[];
   busy: boolean;
+  search(text: string): Promise<SearchHit[]>;
+  picker?: PickerInitial;
   confirmForget: { kind: "entity" | "relation" | "observation"; id: string } | null;
   onAskForget(target: { kind: "entity" | "relation" | "observation"; id: string } | null): void;
   onForget(): void;
@@ -393,9 +536,8 @@ function EntityDetailPanel(props: {
   const d = entity.details as Record<string, unknown>;
   const [statement, setStatement] = useState("");
   const [relType, setRelType] = useState("related_to");
-  const [relTo, setRelTo] = useState("");
+  const [relTo, setRelTo] = useState<PickerOption | null>(props.picker?.chosen ?? null);
   const [outcome, setOutcome] = useState("");
-  const targets = [...new Map(props.items.filter((i) => i.kind === "entity" && i.entityId !== entity.id).map((i) => [i.entityId, i])).values()];
 
   async function addObservation(event: React.FormEvent) {
     event.preventDefault();
@@ -406,7 +548,11 @@ function EntityDetailPanel(props: {
   }
   async function addRelation(event: React.FormEvent) {
     event.preventDefault();
-    if (await props.run("ghost_os.relation.save", { relation: { fromId: entity.id, toId: relTo, type: relType } })) props.reload();
+    if (!relTo) return;
+    if (await props.run("ghost_os.relation.save", { relation: { fromId: entity.id, toId: relTo.id, type: relType } })) {
+      setRelTo(null);
+      props.reload();
+    }
   }
   async function recordOutcome(event: React.FormEvent) {
     event.preventDefault();
@@ -488,11 +634,7 @@ function EntityDetailPanel(props: {
         <label htmlFor="ghost-rel-type">Connection</label>
         <input id="ghost-rel-type" list="ghost-rel-types" value={relType} onChange={(e) => setRelType(e.target.value)} />
         <datalist id="ghost-rel-types">{RELATION_TYPE_LIST.map((t) => <option key={t} value={t} />)}</datalist>
-        <label htmlFor="ghost-rel-to">To</label>
-        <select id="ghost-rel-to" value={relTo} onChange={(e) => setRelTo(e.target.value)}>
-          <option value="">Choose an entry</option>
-          {targets.map((t) => <option key={t.entityId} value={t.entityId}>{t.title}</option>)}
-        </select>
+        <ConnectionPicker excludeId={entity.id} chosen={relTo} onChoose={setRelTo} search={props.search} initial={props.picker} />
         <button type="submit" disabled={busy || !relTo}>Connect</button>
       </form>
 

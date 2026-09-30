@@ -10,7 +10,9 @@ Everything Windows-specific is under "Needs Windows check" and is
 unverified.
 
 Design and every decision: `PLAN.md` (section 15 records your answers; the
-"Refinements made in Phase N" notes record what changed along the way).
+"Refinements made in Phase N" and "Follow-up Phase N" notes record what
+changed along the way). Phases 9-11 were a follow-up: relations end instead
+of disappearing, retention, and the connection picker.
 Linux test baseline: `LINUX_BASELINE.md`.
 
 ---
@@ -28,6 +30,11 @@ adapter, or GhostOS's own habit detection), the source's reference, a list of
 evidence and a confidence. A non-manual fact with no evidence is refused at
 validation, in the store and on import. Manual entries are marked as entered
 by you.
+
+**Relations keep their history**: when a source stops supporting a
+relation between entries that remain, it ends (`validTo` = the sync time)
+and stays visible - "cli used TypeScript until March". Supported again, it
+is a new relation from then on.
 
 **Forget cascades**: forgetting an entry removes its connections, its
 observations and everything derived from them - including the search index
@@ -75,8 +82,8 @@ listing exactly the DI fields it reads.
 | `domain/` | Types; ids (stable for source facts); **validation** of every row and input, per entity type; **provenance rules** (no evidence -> refused; confidence 0-1; derived never above 0.95; only habits are derived); **cascade planning** (forget/withdraw over the derivation graph, cycle-safe, with a step limit); **habit detectors** (time of day, weekly rhythm; fixed thresholds; 70-day lookback); search (FTS5 queries built from words only, LIKE patterns escaped) and timeline query parsing; the **export format** and all-or-nothing import parsing; the **read allowlist** and the commit projection (the only code that reads an event payload); the DI mapping (repositories -> projects, technologies -> skills, commits -> day observations); events; settings (every adapter off). | none (static test) |
 | `store/` | Core tables via `runModuleMigrations` (ledger `ghost_os`): `ghost_entities`, `_tags`, `_relations`, `_observations`, `_derivations`, `_tombstones`, `_adapters`, `_runs`, `_state`. **FTS5 index in its own ledger** (`ghost_os_search`) with triggers; without FTS5 that ledger fails alone and search uses LIKE; when FTS5 appears the index is backfilled. Every write validated; derived rows written with their parents; tombstoned facts not written; forget/withdraw/import each one transaction; runs `UNIQUE (occurrence_id)`. | shared `SqlDatabase` |
 | `adapters/` | The `SourceAdapter` interface (ready for Skill Constellation, Standup, Reality RPG); the **allowlisted event reader** (refuses any other stream, module or type before touching the log); the Developer Intelligence adapter (cursor by seq, rescans on seq regression, whole history for new projects, repositories inside DexNest's data not read past their record). | narrowed readers only |
-| `engine/` | Sync: claim the occurrence, read outside a transaction, then write everything - entities, relations, observations, withdrawals of what the source no longer supports, habits, cursor, run record, the caller's events - in one transaction. Enable; disable = withdraw everything the adapter contributed (and derived from it). | via store |
-| `module/` | Runtime: off by default; one **heavy** `sync` job only while a source is on (60 min, not at startup); a one-at-a-time sync queue; validated entry points for every action; `ghost.*` events inside the same transaction; audit lines with fixed summaries and ids/counts only; run recovery on start. | via ports |
+| `engine/` | Sync: claim the occurrence, read outside a transaction, then write everything - entities, relations, observations, withdrawals of entities the source no longer supports, **ended relations** (Phase 9), habits, cursor, run record, the caller's events - in one transaction. Enable; disable = withdraw everything the adapter contributed (and derived from it). | via store |
+| `module/` | Runtime: off by default; one **heavy** `sync` job only while a source is on (60 min, not at startup); a one-at-a-time sync queue; validated entry points for every action; `ghost.*` events inside the same transaction; audit lines with fixed summaries and ids/counts only; run recovery on start; **retention after each scheduled sync, inside the job** (Phase 10). | via ports |
 | `manifest.ts` | `GHOST_OS_MANIFEST`, `GHOST_ACTION_IDS`; `validateManifest` returns no problems (core and search migrations). | - |
 
 ### `apps/desktop`
@@ -95,7 +102,10 @@ listing exactly the DI fields it reads.
 - `src/renderer/views/GhostOsView.tsx` (+ `GhostOs.css`, `ghostOsModel.ts`):
   the view - Timeline (type filter, search, newest first, paged; entry
   detail with every fact's source, confidence and evidence; connections,
-  observations, forget with confirmation, record a decision's outcome), Add
+  observations, forget with confirmation, record a decision's outcome, and
+  a connection form whose target is found by **searching every entry** - a
+  keyboard-operable combobox with empty, searching, no-results and error
+  states (Phase 11); ended connections on the timeline), Add
   (one form whose fields follow the type; edits your own entries), Sources
   (Developer Intelligence on/off, what it reads and never reads, sync,
   export, import). Loading, empty and error states; tabs keyboard-operable.
@@ -119,6 +129,9 @@ listing exactly the DI fields it reads.
 | Adapter off removes what it contributed | `engine.test.ts` › turning the adapter off removes everything it contributed, habits included |
 | Export everything / import back | `store.test.ts` › round-trips everything into an empty GhostOS; `hardening.test.ts` › a large export imports back unchanged |
 | Event log carries ids and types, never your text | `module.test.ts` › a marker in every text field appears nowhere in event_log, audit included |
+| Relations end instead of disappearing (9) | `relation-history.test.ts` › ends at the sync time and stays as history; supported again: a new relation…; forgetting an entry removes its ended relations too; the timeline shows an ended relation…; export and import keep an ended relation ended |
+| Retention (10) | `retention.test.ts` › keeps the newest 500 runs, never one still running; prunes ghost events older than 180 days, and nothing else in the event log; never prunes the owner's entities, relations or observations; runs only inside the sync job |
+| Connection picker (11) | desktop `ghostOsModel.test.ts` › picker states, live-region text, keyboard; `ghostOsView.test.mjs` › connection picker (combobox, results, no results, chosen) |
 
 ## Final test counts (Linux)
 
@@ -128,20 +141,21 @@ listing exactly the DI fields it reads.
 | dev-intelligence-store | 10 | 10 |
 | dev-intelligence | 85 pass, 2 fail, 1 skipped | 85 pass, 2 fail, 1 skipped |
 | standup | 25 | 25 |
-| **ghost-os** | - | **160** |
+| **ghost-os** | - | **175** |
 | today | 13 | 13 |
 | action-registry | 26 | 26 |
-| desktop | 165 | 192 |
+| desktop | 165 | 199 |
 | autopilot-runtime | 668 pass, 17 fail, 4 skipped | 668 pass, 17 fail, 4 skipped (same 17 by name) |
 
-Passing tests across the workspace: **1039 -> 1226**. Every failure is a
+Passing tests across the workspace: **1039 -> 1248**. Every failure is a
 pre-existing Linux-only failure listed by name in `LINUX_BASELINE.md`; no
 phase introduced a new one. `pnpm typecheck` passes, including the new
 desktop test files (added to `tsconfig.node.json`). No skipped or `.only`
 tests were added.
 
 ghost-os by phase: 74 (1) -> 100 (2) -> 128 (3) -> 143 (4) -> 159 (7) -> 160
-(8). Desktop: 165 -> 174 (5) -> 192 (6).
+(8) -> 170 (9) -> 175 (10). Desktop: 165 -> 174 (5) -> 192 (6) -> 193 (9) ->
+199 (11).
 
 `pnpm test` on Linux stops at dev-intelligence's two known failures (the root
 script chains packages with `&&`), so every gate ran each package separately.
@@ -161,6 +175,9 @@ Each was applied, shown failing, and reverted with the suite green again.
 | 6 | Evidence shown without its source | view › every fact with its source and its evidence |
 | 7 | Cascade cycle protection removed | cascade › ends on a derivation cycle; hardening › forget walks a cycle once (hit the step limit after 4 minutes of SQL - the limit was then lowered from 5M to 1M) |
 | 8 | Editing a decision drops its recorded outcome (the bug found in Phase 8) | module › editing a decision keeps the outcome recorded for it |
+| 9 | Unsupported relations deleted instead of ended | 4 relation-history tests (the export test did not fail at first - nothing was ended to export - and was tightened to assert an ended relation exists) |
+| 10 | Prune filtered by module only, not stream-scoped | retention › prunes ghost events older than 180 days, and nothing else (GhostOS's own audit lines were deleted) |
+| 11 | The entry itself offered as a connection target | model › picker states; view › connection picker results |
 
 ## Known gaps and what is untested
 
@@ -170,9 +187,9 @@ Each was applied, shown failing, and reverted with the suite green again.
 - **No live-DOM tests.** The view is rendered to markup (Vite SSR +
   `react-dom/server`) and its logic tested in the model; real focus
   movement, focus rings and screen-reader output are not.
-- **Choosing a connection's target** is limited to entries on the loaded
-  timeline page. A proper entry picker (search inside the connection form)
-  is the obvious next step.
+- **Connection picker in a live DOM**: its states, markup and key handling
+  are tested (model + rendered markup); real focus, the 200 ms search pause
+  and screen-reader announcements are not.
 - **Commits are "observed", not "mine".** On `main`, DI's commit events carry
   no author, so every commit in a watched repository counts (confidence 0.6;
   statements never say "I wrote"). The Skill Constellation branch has a DI
@@ -182,16 +199,21 @@ Each was applied, shown failing, and reverted with the suite green again.
   parses each `dev.commit.observed` payload (including the subject line)
   before the projection keeps sha and time. It is in memory for an instant,
   never kept. A content-free read would need a foundation change.
-- **A relation a source no longer supports is removed, not closed** (e.g. a
-  technology gone from a repository). `validTo` exists for this; the DI
-  adapter does not use it yet, so that history is lost on withdrawal.
+- **History needs both ends**: a relation ends (and is kept) only while both
+  entries remain. When the source stops supporting an entry itself (a
+  repository removed from DI), the entry goes with its relations, ended ones
+  included.
+- **An ended relation gets a new id** (its live identity is freed for a later
+  re-support). Anything that stored the old id elsewhere would not follow.
 - **Time-zone changes**: commit days are local days at sync time. Moving
   time zone splits later commits by the new zone; commits already recorded
   keep their day.
 - **More than 1,000 commits in one repository on one day** keeps the first
   1,000 as evidence and counts those.
-- **No retention** on the `ghost` event stream or `ghost_runs` (one run row
-  per hourly sync while a source is on).
+- **Retention runs only in the scheduled sync job.** With every source off
+  there is no job, so `ghost` events from your own edits are not pruned in
+  that state; a manual "Sync now" does not prune either. Entities,
+  relations and observations are never pruned by design.
 - **Two audit lines per user action** (the action's journal line and the
   module's own), as other modules do today.
 - **Habit subjects**: a habit's identity is detector + subject ("commits").
@@ -242,6 +264,12 @@ The view and fonts
 - Inter and JetBrains Mono actually loaded; date inputs; tab arrow keys;
   visible focus rings; Narrator reading tabs, forms and the forget
   confirmation.
+- The connection picker: typing, arrow keys and Enter in the real window;
+  Narrator announcing the combobox, the highlighted option and the live
+  region ("Nothing matches …", "3 entries found").
+- Retention on a long-running install: runs capped at 500 and `ghost`
+  events at 180 days after an hourly sync, with Performance Mode skipping
+  the heavy job (and so the retention with it).
 
 ## Changes from the plan, and why
 
@@ -271,4 +299,13 @@ The view and fonts
   import merges and never removes.
 - **Editing a decision keeps its recorded outcome** (Phase 8): the edit form
   does not carry the outcome, and saving replaced the details wholesale.
-- **Relation targets from the loaded timeline** (Phase 6): see known gaps.
+- **Relation targets from the loaded timeline** (Phase 6), replaced in Phase 11
+  by a search-based picker over every entry.
+- **Relations end instead of disappearing** (Phase 9): unsupported relations
+  between remaining entries get `validTo` and move to an ended identity
+  (`<ref>~ended~<time>`); re-support is a new relation from that time. The
+  timeline gained `relation` items (at `validTo`) and a `relations` filter;
+  sync events and messages count `ended`.
+- **Retention** (Phase 10): newest 500 runs; `ghost` events from `ghost_os`
+  older than 180 days, via the event log's stream-scoped `prune`; inside the
+  sync job only; a failure never fails the sync.

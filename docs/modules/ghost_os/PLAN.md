@@ -4,7 +4,7 @@ Module id `ghost_os` · table prefix `ghost_` · event namespace `ghost.` ·
 event stream `ghost` · view id `ghost` · package `@dexnest/ghost-os` ·
 branch `cloud/ghost-os`.
 
-Status: **Phase 10 (follow-up) done.** Phase 11 next; `HANDOFF.md` is updated after it. Read with `AGENTS.md` and
+Status: **Done, including follow-up Phases 9-11.** See `HANDOFF.md`. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`. Shaped after Developer
 Intelligence's runtime/host split, and after the two modules built before it
 on other branches (Skill Constellation, Reality RPG).
@@ -464,6 +464,19 @@ run. Manual entry, search, timeline and export need no job.
 - A manual "Sync now" does not run retention; with every source off there
   is no job, so nothing is pruned (GhostOS then writes events only for your
   own actions).
+
+### Follow-up Phase 11 - connection picker
+
+- The connection form's target is chosen by searching every entry (the
+  same search as the timeline), not only the loaded timeline page.
+- A WAI-ARIA combobox: the input owns a listbox, arrow keys wrap, Home/End
+  jump, Enter chooses only a highlighted option, Escape closes; the entry
+  itself is never offered; at most 20 options shown. A live region says
+  "Type to search your entries", "Searching…", "Nothing matches …", or how
+  many were found. Searches wait 200 ms after typing; a stale answer is
+  dropped.
+- The chosen entry is shown with a "Change" button; Connect is disabled
+  until one is chosen.
 
 ## 16. Phases for this module
 

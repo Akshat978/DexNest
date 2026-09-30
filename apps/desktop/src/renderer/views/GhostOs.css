@@ -279,3 +279,41 @@
 .ghost-sources p {
   margin: 0;
 }
+
+.ghost-picker {
+  display: grid;
+  gap: var(--space-1);
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.ghost-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  max-height: 16rem;
+  overflow-y: auto;
+}
+
+.ghost-picker-option {
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.ghost-picker-option:hover,
+.ghost-picker-option[aria-selected="true"] {
+  background: var(--surface-hover);
+  outline: 1px solid var(--accent-search);
+}
+
+.ghost-picked {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}

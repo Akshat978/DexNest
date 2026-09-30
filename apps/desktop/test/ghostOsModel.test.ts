@@ -12,6 +12,11 @@ import {
   fieldsFor,
   formFromDetail,
   nextTab,
+  PICKER_LIMIT,
+  pickerKey,
+  pickerMessage,
+  pickerOptionId,
+  pickerState,
   originLabel,
   RELATION_TYPE_LIST,
   sourceLabel,
@@ -88,4 +93,50 @@ test("an ended connection reads as history on the timeline", () => {
   assert.equal(timelineKind(item), "Connection ended");
   assert.equal(timelineKind({ ...item, kind: "entity" }), "Project");
   assert.equal(timelineKind({ ...item, kind: "observation" }), "Observation");
+});
+
+const hit = (id: string, title: string, type: "person" | "project" | "skill" = "project") => ({ id, type, title, timelineAt: NOW, origin: "manual" as const });
+
+test("picker: nothing typed, searching, error, no results, results", () => {
+  const base = { query: "", results: null, searching: false, error: null, excludeId: "ent_self0001" };
+  assert.deepEqual(pickerState(base), { kind: "empty" });
+  assert.deepEqual(pickerState({ ...base, query: "   " }), { kind: "empty" });
+  assert.deepEqual(pickerState({ ...base, query: "ty", searching: true }), { kind: "searching" });
+  assert.deepEqual(pickerState({ ...base, query: "ty" }), { kind: "searching" });
+  assert.deepEqual(pickerState({ ...base, query: "ty", error: "locked" }), { kind: "error", message: "locked" });
+  assert.deepEqual(pickerState({ ...base, query: " zz ", results: [] }), { kind: "no-results", query: "zz" });
+  // The entry itself is never offered; if it was the only match, that is no results.
+  assert.deepEqual(pickerState({ ...base, query: "self", results: [hit("ent_self0001", "Me")] }), { kind: "no-results", query: "self" });
+  assert.deepEqual(pickerState({ ...base, query: "ty", results: [hit("ent_self0001", "Me"), hit("ent_ts000001", "TypeScript", "skill")] }), {
+    kind: "results",
+    options: [{ id: "ent_ts000001", title: "TypeScript", typeLabel: "Skill" }]
+  });
+  const many = Array.from({ length: 50 }, (_, i) => hit(`ent_many${String(i).padStart(4, "0")}`, `P${i}`));
+  const capped = pickerState({ ...base, query: "p", results: many });
+  assert.equal(capped.kind === "results" && capped.options.length, PICKER_LIMIT);
+});
+
+test("picker: what the live region says", () => {
+  assert.equal(pickerMessage({ kind: "empty" }), "Type to search your entries.");
+  assert.equal(pickerMessage({ kind: "searching" }), "Searching…");
+  assert.equal(pickerMessage({ kind: "error", message: "locked" }), "Search failed: locked");
+  assert.equal(pickerMessage({ kind: "no-results", query: "zz" }), "Nothing matches “zz”.");
+  assert.equal(pickerMessage({ kind: "results", options: [{ id: "a", title: "A", typeLabel: "Person" }] }), "1 entry found. Use the arrow keys to choose.");
+  assert.equal(pickerMessage({ kind: "results", options: [{ id: "a", title: "A", typeLabel: "Person" }, { id: "b", title: "B", typeLabel: "Person" }] }), "2 entries found. Use the arrow keys to choose.");
+});
+
+test("picker: keyboard - arrows wrap, Home/End, Enter chooses only a highlighted option, Escape closes", () => {
+  assert.deepEqual(pickerKey("ArrowDown", -1, 3), { active: 0, action: "move" });
+  assert.deepEqual(pickerKey("ArrowDown", 2, 3), { active: 0, action: "move" });
+  assert.deepEqual(pickerKey("ArrowUp", 0, 3), { active: 2, action: "move" });
+  assert.deepEqual(pickerKey("ArrowUp", -1, 3), { active: 2, action: "move" });
+  assert.deepEqual(pickerKey("Home", 2, 3), { active: 0, action: "move" });
+  assert.deepEqual(pickerKey("End", 0, 3), { active: 2, action: "move" });
+  assert.deepEqual(pickerKey("Enter", 1, 3), { active: 1, action: "choose" });
+  assert.equal(pickerKey("Enter", -1, 3), null, "Enter with nothing highlighted is not a choice");
+  assert.deepEqual(pickerKey("Escape", 1, 3), { active: -1, action: "close" });
+  assert.deepEqual(pickerKey("Escape", -1, 0), { active: -1, action: "close" });
+  assert.equal(pickerKey("ArrowDown", -1, 0), null, "no options, nothing to move to");
+  assert.equal(pickerKey("a", 0, 3), null, "typing goes to the input");
+  assert.equal(pickerOptionId("ent_ts000001"), "ghost-pick-ent_ts000001");
 });

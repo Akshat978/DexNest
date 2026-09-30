@@ -147,6 +147,39 @@ test("entity detail: every fact with its source and its evidence", () => {
   assert.match(html, /<form class="ghost-form ghost-form--inline" aria-label="New observation">/);
 });
 
+test("connection picker: a labelled combobox that searches every entry, with an empty state", () => {
+  const html = render({ initial: { status: full, items, detail } });
+  assert.match(html, /<label for="ghost-rel-to">To<\/label><input id="ghost-rel-to" type="text" role="combobox" autoComplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls="ghost-rel-to-list" aria-describedby="ghost-rel-to-status"/i);
+  assert.match(html, /role="status" aria-live="polite">Type to search your entries\.<\/p>/);
+  assert.match(html, /<ul id="ghost-rel-to-list" role="listbox" aria-label="Matching entries" class="ghost-picker-list" hidden="">/);
+  assert.doesNotMatch(html, /<select id="ghost-rel-to"/, "no longer limited to the loaded timeline");
+  assert.match(html, /<button type="submit" disabled="">Connect<\/button>/);
+});
+
+test("connection picker: results with the highlighted option announced; the entry itself never offered", () => {
+  const results = [
+    { id: project.id, type: "project", title: "Zephyr app", timelineAt: T, origin: "adapter" },
+    { id: "ent_skill001", type: "skill", title: "TypeScript", timelineAt: T, origin: "adapter" },
+    { id: "ent_far00001", type: "person", title: "Someone far back", timelineAt: "2020-01-01T00:00:00.000Z", origin: "manual" }
+  ];
+  const html = render({ initial: { status: full, items, detail, picker: { query: "e", results, active: 1 } } });
+  assert.match(html, /aria-expanded="true"/);
+  assert.match(html, /aria-activedescendant="ghost-pick-ent_far00001"/i);
+  assert.match(html, /<li id="ghost-pick-ent_skill001" role="option" aria-selected="false"/);
+  assert.match(html, /<li id="ghost-pick-ent_far00001" role="option" aria-selected="true"[^>]*>Someone far back <span class="ghost-meta">Person<\/span>/);
+  assert.doesNotMatch(html, /ghost-pick-ent_proj0001/);
+  assert.match(html, />2 entries found\. Use the arrow keys to choose\.</);
+});
+
+test("connection picker: no results, and a chosen entry", () => {
+  const none = render({ initial: { status: full, items, detail, picker: { query: "zzz", results: [] } } });
+  assert.match(none, />Nothing matches “zzz”\.</);
+  assert.match(none, /aria-expanded="false"/);
+  const chosen = render({ initial: { status: full, items, detail, picker: { query: "", results: null, chosen: { id: "ent_far00001", title: "Someone far back", typeLabel: "Person" } } } });
+  assert.match(chosen, /<span>To<\/span> <strong>Someone far back<\/strong> <span class="ghost-meta">\(Person\)<\/span> <button type="button" aria-label="Change the entry, now Someone far back">Change<\/button>/);
+  assert.match(chosen, /<button type="submit">Connect<\/button>/);
+});
+
 test("forget asks first, and says what it removes", () => {
   const html = render({ initial: { status: full, items, detail, confirmForget: true } });
   assert.match(html, /role="alertdialog"/);

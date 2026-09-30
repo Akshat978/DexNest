@@ -4,7 +4,7 @@
 // store or the engine. The lists below mirror the package's and a test keeps
 // them equal.
 
-import type { EntityDetail, EntityType, Evidence, GhostOsStatus, Provenance, TimelineItem } from "@dexnest/ghost-os";
+import type { EntityDetail, EntityType, Evidence, GhostOsStatus, Provenance, SearchHit, TimelineItem } from "@dexnest/ghost-os";
 
 export const ENTITY_TYPE_LIST: readonly EntityType[] = [
   "person", "project", "skill", "knowledge", "memory", "event", "habit", "decision", "file", "conversation", "place"
@@ -224,3 +224,79 @@ export function actionMessage(result: unknown): { ok: boolean; text: string | nu
   if (r.ok === true) return { ok: true, text: typeof r.message === "string" ? r.message : null };
   return { ok: false, text: typeof r.error === "string" ? r.error : "That did not work." };
 }
+
+// --- connection picker ----------------------------------------------------------
+// Choose a connection's target by searching all of GhostOS (the same search as
+// the timeline), as a WAI-ARIA combobox: type, move with the arrow keys, Enter
+// to choose, Escape to close.
+
+export interface PickerOption {
+  id: string;
+  title: string;
+  typeLabel: string;
+}
+
+export type PickerState =
+  | { kind: "empty" }
+  | { kind: "searching" }
+  | { kind: "error"; message: string }
+  | { kind: "no-results"; query: string }
+  | { kind: "results"; options: PickerOption[] };
+
+/** Most options shown at once; the search itself caps at 200. */
+export const PICKER_LIMIT = 20;
+
+export function pickerState(input: { query: string; results: SearchHit[] | null; searching: boolean; error: string | null; excludeId: string }): PickerState {
+  if (!input.query.trim()) return { kind: "empty" };
+  if (input.error) return { kind: "error", message: input.error };
+  if (input.searching || input.results === null) return { kind: "searching" };
+  // An entry is never connected to itself.
+  const options = input.results
+    .filter((hit) => hit.id !== input.excludeId)
+    .slice(0, PICKER_LIMIT)
+    .map((hit) => ({ id: hit.id, title: hit.title, typeLabel: TYPE_LABELS[hit.type] }));
+  return options.length === 0 ? { kind: "no-results", query: input.query.trim() } : { kind: "results", options };
+}
+
+/** What the picker's live region says. */
+export function pickerMessage(state: PickerState): string {
+  switch (state.kind) {
+    case "empty":
+      return "Type to search your entries.";
+    case "searching":
+      return "Searching…";
+    case "error":
+      return `Search failed: ${state.message}`;
+    case "no-results":
+      return `Nothing matches “${state.query}”.`;
+    case "results":
+      return `${state.options.length} ${state.options.length === 1 ? "entry" : "entries"} found. Use the arrow keys to choose.`;
+  }
+}
+
+export type PickerKeyResult = { active: number; action: "move" | "choose" | "close" } | null;
+
+/**
+ * The combobox keys. `active` is -1 when no option is highlighted. Returns
+ * null for keys the picker does not handle (typing goes to the input).
+ */
+export function pickerKey(key: string, active: number, count: number): PickerKeyResult {
+  if (key === "Escape") return { active: -1, action: "close" };
+  if (count === 0) return null;
+  switch (key) {
+    case "ArrowDown":
+      return { active: active < 0 ? 0 : (active + 1) % count, action: "move" };
+    case "ArrowUp":
+      return { active: active <= 0 ? count - 1 : active - 1, action: "move" };
+    case "Home":
+      return { active: 0, action: "move" };
+    case "End":
+      return { active: count - 1, action: "move" };
+    case "Enter":
+      return active >= 0 && active < count ? { active, action: "choose" } : null;
+    default:
+      return null;
+  }
+}
+
+export const pickerOptionId = (id: string) => `ghost-pick-${id}`;
