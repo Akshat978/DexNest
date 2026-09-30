@@ -4,7 +4,7 @@ Module id `ghost_os` · table prefix `ghost_` · event namespace `ghost.` ·
 event stream `ghost` · view id `ghost` · package `@dexnest/ghost-os` ·
 branch `cloud/ghost-os`.
 
-Status: **Phase 2 (store) done.** Domain and store exist; nothing is wired into the app yet. Read with `AGENTS.md` and
+Status: **Phase 3 (engine) done.** Domain, store, the Developer Intelligence adapter and the engine exist; nothing is wired into the app yet. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`. Shaped after Developer
 Intelligence's runtime/host split, and after the two modules built before it
 on other branches (Skill Constellation, Reality RPG).
@@ -343,6 +343,29 @@ run. Manual entry, search, timeline and export need no job.
 - Import runs in rounds, so a derived row lands once what it depends on has
   landed; rows whose dependencies were skipped as forgotten stay out and are
   counted.
+
+### Refinements made in Phase 3
+
+- GhostOS takes **no dependency on DI's packages**, not even types: the
+  adapter declares structural types listing exactly the fields it reads
+  (`DiRepository`, `DiTechnology`), and the host passes DI's stores in.
+  The list of fields is the privacy contract, in code.
+- No separate "used X in repo Y on day Z" observations. Commits become one
+  observation per repository per local day on the project; skills connect
+  through `project -uses-> skill`. Fewer rows, same evidence.
+- A sync reconciles: an entity or relation the source no longer supports
+  (a repository removed from DI, or now inside DexNest's data; a technology
+  gone) is removed with what depended on it, without a tombstone.
+  Observations are never removed by omission, only with their entity.
+- A project GhostOS did not hold yet gets its whole commit history, not
+  only commits after the cursor. If the log's seqs go backwards, the
+  adapter starts over; merging by sha makes that harmless.
+- A repository inside DexNest's data is not read past its record: its
+  technologies are not requested and its commits are dropped.
+- Habit identity is detector + subject ("commits"); a habit that stops
+  holding is removed (no tombstone), a forgotten one is tombstoned.
+- Turned off while reading: the sync writes nothing and is recorded as
+  skipped.
 
 ## 16. Phases for this module
 

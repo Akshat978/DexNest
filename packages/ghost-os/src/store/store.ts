@@ -117,6 +117,10 @@ export interface GhostStore {
   forget(target: RowRef, now: string, alsoInTransaction?: (plan: CascadePlan) => void): CascadePlan;
   /** Removes every row one source contributed and everything derived from it. No tombstones. */
   withdrawSource(sourceId: string, alsoInTransaction?: (plan: CascadePlan) => void): CascadePlan;
+  /** Removes rows and what depends on them without tombstones: the source no longer says so. */
+  removeRows(roots: readonly RowRef[]): CascadePlan;
+  /** Ids of the rows one source contributed. */
+  sourceRowIds(kind: RowKind, sourceId: string): string[];
 
   search(text: string, options?: { types?: readonly EntityType[]; limit?: number }): SearchHit[];
   timeline(query: TimelineQuery): TimelineItem[];
@@ -127,6 +131,8 @@ export interface GhostStore {
   getAdapter(id: AdapterId): AdapterState;
   setAdapterEnabled(id: AdapterId, enabled: boolean, now: string): AdapterState;
   recordAdapterSync(id: AdapterId, cursor: string | null, counts: RowCounts, now: string): AdapterState;
+  /** Off, and back to the start: the next time it is turned on it reads from the beginning. */
+  resetAdapter(id: AdapterId, now: string): AdapterState;
 
   /** Claims an occurrence. Null when it was already claimed: the caller does nothing. */
   claimRun(input: { id: string; occurrenceId: string; kind: RunKind; trigger: RunTrigger; now: string }): RunRecord | null;
@@ -449,6 +455,14 @@ export function openGhostStore(db: SqlDatabase, options: OpenGhostStoreOptions =
     });
   }
 
+  function removeRows(roots: readonly RowRef[]): CascadePlan {
+    return withTransaction(db, () => {
+      const plan = planCascade(cascadeReader, [...roots], 'withdraw');
+      execute(plan, null);
+      return plan;
+    });
+  }
+
   // --- search and timeline -----------------------------------------------------
 
   function search(text: string, options: { types?: readonly EntityType[]; limit?: number } = {}): SearchHit[] {
@@ -725,6 +739,8 @@ export function openGhostStore(db: SqlDatabase, options: OpenGhostStoreOptions =
     listTombstones,
     forget,
     withdrawSource,
+    removeRows,
+    sourceRowIds: (kind, sourceId) => all<{ id: string }>(`SELECT id FROM ${TABLE[kind]} WHERE source_id = ? ORDER BY id`, [sourceId]).map((r) => r.id),
     search,
     timeline,
     counts,
@@ -733,6 +749,7 @@ export function openGhostStore(db: SqlDatabase, options: OpenGhostStoreOptions =
     getAdapter,
     setAdapterEnabled: (id, enabled, now) => upsertAdapter({ ...getAdapter(id), enabled }, now),
     recordAdapterSync: (id, cursor, rowCounts, now) => upsertAdapter({ ...getAdapter(id), cursor, lastSyncAt: now, counts: rowCounts }, now),
+    resetAdapter: (id, now) => upsertAdapter({ ...getAdapter(id), enabled: false, cursor: null, counts: zero() }, now),
     claimRun,
     finishRun,
     getRunByOccurrence: (occurrenceId) => {
