@@ -4,7 +4,7 @@ Module id `object_os` · table prefix `obj_` · event namespace `object.` ·
 event stream `object` · view id `object` · package `@dexnest/object-os` ·
 branch `cloud/object-os`.
 
-Status: **Phase 7 (hardening) done.** Domain, store, engine, runtime, registry entries, the desktop host and the view exist, and have been tried against faults, crashes, duplicates, hostile files and scale. Read with `AGENTS.md` and
+Status: **Phase 8 (handoff) done - see `HANDOFF.md`.** Phase 7 (hardening) done. Domain, store, engine, runtime, registry entries, the desktop host and the view exist, and have been tried against faults, crashes, duplicates, hostile files and scale. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`. Shaped after Developer
 Intelligence's runtime/host split and the modules built before it on other
 branches (Skill Constellation, Reality RPG, GhostOS).
