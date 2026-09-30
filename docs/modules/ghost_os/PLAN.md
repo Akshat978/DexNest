@@ -4,7 +4,7 @@ Module id `ghost_os` · table prefix `ghost_` · event namespace `ghost.` ·
 event stream `ghost` · view id `ghost` · package `@dexnest/ghost-os` ·
 branch `cloud/ghost-os`.
 
-Status: **Phase 4 (actions and events) done.** The module runtime, its events and its registered actions exist; the desktop host and view are not wired yet. Read with `AGENTS.md` and
+Status: **Phase 5 (host) done.** GhostOS runs in the desktop main process (host, IPC, preload, actions); the view is not built yet. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`. Shaped after Developer
 Intelligence's runtime/host split, and after the two modules built before it
 on other branches (Skill Constellation, Reality RPG).
@@ -383,6 +383,23 @@ run. Manual entry, search, timeline and export need no job.
 - Editing is for the owner's own rows: a row a source contributed can be
   forgotten, not edited. An entry keeps its type; a pasted conversation
   keeps when it was pasted.
+
+### Refinements made in Phase 5
+
+- The host hands GhostOS DI's stores **narrowed to the fields it reads**:
+  repository roots reduce to their paths; every other field DI keeps (remote
+  URLs, versions, fingerprints, domains) is dropped before GhostOS sees it.
+  Technologies are asked for with `status: 'observed'` only.
+- Export and import are refused inside DexNest's data (by path and through
+  links: `createDataBoundary` with `realpathSync.native`). The import is
+  size-checked before it is read (64 MB). The export file is written inside
+  the transaction that records `ghost.export.created`: a failed write leaves
+  no event.
+- Action messages are fixed text with counts, because main.ts journals them;
+  validation errors name fields, never values (the export-version error no
+  longer echoes the file's value).
+- Without Developer Intelligence running, GhostOS still starts (manual
+  entry, search, export) and has no source to turn on.
 
 ## 16. Phases for this module
 

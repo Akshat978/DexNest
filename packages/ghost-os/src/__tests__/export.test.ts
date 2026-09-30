@@ -45,7 +45,7 @@ describe('export file', () => {
   it('refuses anything that is not a GhostOS export of this version', () => {
     expect(errorsOf(parseExport([]))).toEqual(['the file is not a GhostOS export']);
     expect(errorsOf(parseExport({ ...sample(), format: 'other' }))).toEqual(['the file is not a GhostOS export']);
-    expect(errorsOf(parseExport({ ...sample(), version: 2 }))[0]).toMatch(/version 2/);
+    expect(errorsOf(parseExport({ ...sample(), version: 2 }))[0]).toMatch(/version is not supported/);
   });
 
   it('one bad row refuses the whole file', () => {

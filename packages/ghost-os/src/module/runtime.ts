@@ -89,7 +89,8 @@ export interface GhostOsModule {
   disableAdapter(id: unknown): Parsed<WithdrawOutcome>;
   syncNow(): Promise<SyncOutcome[]>;
 
-  exportData(): GhostExport;
+  /** Everything, as one export. `write` (the host's file write) runs inside the same transaction as the event: if it throws, no export is recorded. */
+  exportData(write?: (data: GhostExport) => void): GhostExport;
   importData(input: unknown): Parsed<ImportResult>;
 
   search(text: unknown, types?: unknown): Parsed<SearchHit[]>;
@@ -426,10 +427,11 @@ export function createGhostOsModule(options: GhostOsModuleOptions): GhostOsModul
 
     syncNow: () => syncAll({ occurrenceId: `${GHOST_SYNC_JOB}:manual:${iso()}`, trigger: 'manual' }),
 
-    exportData() {
+    exportData(write) {
       const at = iso();
       const data = store.transaction(() => {
         const exported = store.exportAll(at);
+        write?.(exported);
         appendGhostEvent(options.events, 'ghost.export.created', {
           subject: null,
           at,

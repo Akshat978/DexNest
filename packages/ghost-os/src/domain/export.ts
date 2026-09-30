@@ -70,7 +70,7 @@ export function parseExport(input: unknown): Parsed<ParsedImport> {
   };
   if (!isObj(input)) return { ok: false, errors: ['the file is not a GhostOS export'] };
   if (input.format !== EXPORT_FORMAT) return { ok: false, errors: ['the file is not a GhostOS export'] };
-  if (input.version !== EXPORT_VERSION) return { ok: false, errors: [`export version ${String(input.version)} is not supported`] };
+  if (input.version !== EXPORT_VERSION) return { ok: false, errors: [`this export's version is not supported (GhostOS reads version ${EXPORT_VERSION})`] };
   const exportedAt = normalizeTimestamp(input.exportedAt);
   if (!exportedAt) push('exportedAt is invalid');
 

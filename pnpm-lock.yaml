@@ -26,6 +26,9 @@ importers:
       '@dexnest/foundation':
         specifier: workspace:*
         version: link:../../packages/foundation
+      '@dexnest/ghost-os':
+        specifier: workspace:*
+        version: link:../../packages/ghost-os
       '@dexnest/local-db':
         specifier: workspace:*
         version: link:../../packages/local-db
