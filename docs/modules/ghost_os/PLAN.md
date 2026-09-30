@@ -4,7 +4,7 @@ Module id `ghost_os` · table prefix `ghost_` · event namespace `ghost.` ·
 event stream `ghost` · view id `ghost` · package `@dexnest/ghost-os` ·
 branch `cloud/ghost-os`.
 
-Status: **Phase 5 (host) done.** GhostOS runs in the desktop main process (host, IPC, preload, actions); the view is not built yet. Read with `AGENTS.md` and
+Status: **Phase 6 (view) done.** GhostOS runs in the desktop app with its view; hardening (Phase 7) and handoff (Phase 8) remain. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`. Shaped after Developer
 Intelligence's runtime/host split, and after the two modules built before it
 on other branches (Skill Constellation, Reality RPG).
@@ -400,6 +400,24 @@ run. Manual entry, search, timeline and export need no job.
   longer echoes the file's value).
 - Without Developer Intelligence running, GhostOS still starts (manual
   entry, search, export) and has no source to turn on.
+
+### Refinements made in Phase 6
+
+- The view has three tabs: **Timeline** (type filter, search, and the
+  selected entry's detail beside it), **Add** (one form whose fields follow
+  the type; also used to edit your own entries) and **Sources** (Developer
+  Intelligence on/off with what it reads and never reads, sync, export,
+  import).
+- Every fact in the detail - the entry, each connection, each observation
+  - shows its source and confidence, and non-manual facts list their
+  evidence (the first 20, then a count).
+- Forget asks first, in the view, saying it cannot be undone and that a
+  source cannot bring it back (the registry marks it caution).
+- A new connection's target is chosen from entries on the loaded timeline;
+  a full entry picker is a known gap for Phase 8.
+- The renderer imports only types from `@dexnest/ghost-os`; its lists
+  (types, relation vocabulary) are mirrored and a test keeps them equal, so
+  no store or engine code is bundled into the renderer.
 
 ## 16. Phases for this module
 
