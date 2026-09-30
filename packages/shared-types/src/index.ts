@@ -24,7 +24,8 @@ export type DexNestModuleId =
   | "assistant"
   | "autopilot"
   | "skill_constellation"
-  | "reality_rpg";
+  | "reality_rpg"
+  | "ghost_os";
 
 export type DexNestActionStatus = "available" | "placeholder";
 export type DexNestActionDangerLevel = "safe" | "caution" | "danger" | "critical";

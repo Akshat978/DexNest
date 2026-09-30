@@ -369,7 +369,24 @@ const fallbackSkillSettings = {
 // shows its "off" state with the starter set empty.
 const fallbackRpgSettings = { schemaVersion: 1 as const, enabled: false, intervalMinutes: 15 };
 
+// Outside Electron (the Vite preview) there is no main process, so GhostOS
+// shows its empty state with no source installed.
+const ghostUnavailable = { ok: false as const, errors: ["GhostOS runs in the DexNest desktop app."] };
+
 export const fallbackBridge: DexNestBridge = {
+  ghostOsStatus: async () => ({
+    adapters: [{ id: "developer_intelligence", enabled: false, cursor: null, lastSyncAt: null, counts: { entity: 0, relation: 0, observation: 0 }, installed: false }],
+    syncing: false,
+    lastRun: null,
+    lastError: null,
+    searchMode: "like",
+    counts: { entity: 0, relation: 0, observation: 0 }
+  }),
+  ghostOsTimeline: async () => ({ ok: true, value: [] }),
+  ghostOsSearch: async () => ({ ok: true, value: [] }),
+  ghostOsEntity: async () => ghostUnavailable,
+  ghostOsSettings: async () => ({ schemaVersion: 1, adapters: { developer_intelligence: { enabled: false } }, syncIntervalMinutes: 60 }),
+  ghostOsUpdateSettings: async () => ghostUnavailable,
   realityRpgStatus: async () => ({ enabled: false, processing: false, lastRun: null, lastError: null }),
   realityRpgSnapshot: async () => ({
     enabled: false,

@@ -23,6 +23,7 @@ import { createActionRegistry, createStreamDeckActionCatalog, seededActions, str
 import { createLocalDb } from "@dexnest/local-db";
 import { createAutopilotHost, type AutopilotHost } from "./autopilotHost.js";
 import { createDevIntelligenceHost, type DevIntelligenceHost } from "./devIntelligenceHost.js";
+import { createGhostOsHost, runGhostOsAction, type GhostOsHost } from "./ghostOsHost.js";
 import { createRealityRpgHost, runRealityRpgAction, type RealityRpgHost } from "./realityRpgHost.js";
 import { createSkillConstellationHost, type SkillConstellationHost } from "./skillConstellationHost.js";
 import { createHostScheduler } from "@dexnest/foundation";
@@ -429,6 +430,59 @@ function startRealityRpgHost(): void {
     // A broken module must never prevent DexNest from starting.
     console.warn("[reality-rpg] host failed to start", error);
     realityRpgHost = null;
+  }
+}
+
+// --- GhostOS ----------------------------------------------------------------
+// A local, evidence-backed model of the owner. Reads only what the owner
+// enters and, once they turn it on, Developer Intelligence's repository and
+// technology records and commit events. Off by default; its one heavy job is
+// scheduled only after a source is turned on.
+let ghostOsHost: GhostOsHost | null = null;
+
+function startGhostOsHost(): void {
+  try {
+    ghostOsHost = createGhostOsHost({
+      database: localDb.getSqlDatabase(),
+      events: localDb.getEventLog(),
+      dataRoot: localDataRoot,
+      otherDataRoots: [CANONICAL_DATA_ROOT, resolve(repoRoot, "local-data")],
+      scheduler: hostScheduler,
+      developerIntelligence: devIntelligenceHost?.module.persistence ?? null,
+      ipcMain,
+      getWindow: () => mainWindow,
+      dialogs: {
+        async chooseExportPath(defaultName) {
+          const options = { title: "Export GhostOS", defaultPath: defaultName, filters: [{ name: "GhostOS export", extensions: ["json"] }] };
+          const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
+          return result.canceled || !result.filePath ? null : result.filePath;
+        },
+        async chooseImportPath() {
+          const options = { title: "Import GhostOS", properties: ["openFile" as const], filters: [{ name: "GhostOS export", extensions: ["json"] }] };
+          const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+          return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0] ?? null;
+        }
+      },
+      files: {
+        writeText: (path, text) => { writeFileSync(path, text, "utf8"); },
+        size: (path) => (existsSync(path) ? statSync(path).size : null),
+        readText: (path) => readFileSync(path, "utf8")
+      },
+      audit: (summary, metadata, status) => {
+        localDb.appendActionEvent({
+          module: "ghost_os",
+          eventType: "ghost_os",
+          status: status === "success" ? "success" : "failed",
+          source: "system",
+          summary,
+          metadataJson: metadata
+        });
+      }
+    });
+  } catch (error) {
+    // A broken module must never prevent DexNest from starting.
+    console.warn("[ghost-os] host failed to start", error);
+    ghostOsHost = null;
   }
 }
 
@@ -19830,6 +19884,7 @@ function navigationTargetForAction(actionId: string): { view: string; focusAssis
     "settings.open": { view: "settings", message: "DexNest opened Settings." },
     "audit.open_history": { view: "audit", message: "DexNest opened Audit." },
     "autopilot.open": { view: "autopilot", message: "DexNest opened Autopilot." },
+    "ghost_os.open": { view: "ghost", message: "DexNest opened GhostOS." },
     "reality_rpg.open": { view: "rpg", message: "DexNest opened Reality RPG." },
     "skill_constellation.open": { view: "skills", message: "DexNest opened Skill Constellation." },
     "system.health.open": { view: "settings", message: "DexNest opened App Health." },
@@ -20385,6 +20440,23 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
     } catch (error) {
       const reason = error instanceof Error ? error.message : "Reality RPG could not finish.";
       logActionEvent(action, "failed", source, "Reality RPG action failed.", {}, reason, Date.now() - startedAt);
+      return { ok: false, actionId: action.id, error: reason };
+    }
+  }
+
+  if (actionId.startsWith("ghost_os.") && actionId !== "ghost_os.open") {
+    if (!ghostOsHost) return { ok: false, actionId: action.id, error: "GhostOS is not running." };
+    const params = typeof payload === "object" && payload !== null ? payload as Record<string, unknown> : {};
+    try {
+      const result = await runGhostOsAction(ghostOsHost, actionId, params);
+      if (result) {
+        // GhostOS messages are fixed text with counts; they never carry what the owner typed.
+        logActionEvent(action, result.ok ? "success" : "failed", source, result.message ?? result.error ?? action.title, {}, result.ok ? null : result.error ?? null, Date.now() - startedAt);
+        return { ...result, actionId: action.id };
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "GhostOS could not finish.";
+      logActionEvent(action, "failed", source, "GhostOS action failed.", {}, reason, Date.now() - startedAt);
       return { ok: false, actionId: action.id, error: reason };
     }
   }
@@ -23216,6 +23288,7 @@ if (gotSingleInstanceLock) {
       actionId: "system.lifecycle.second_instance",
       eventType: "second_instance_focused",
       status: "success",
+  startGhostOsHost();
   startRealityRpgHost();
       source: "system",
       summary: "Focused the existing DexNest instance instead of opening a duplicate.",
@@ -23276,6 +23349,7 @@ app.whenReady().then(() => {
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
+  ghostOsHost?.dispose();
       createWindow();
   realityRpgHost?.dispose();
     }

@@ -1,13 +1,13 @@
 import {
   Activity, Calculator, CalendarClock, CalendarDays, ClipboardList, CloudSun, Code2, Command,
   Bot, HardDriveDownload, Inbox, LayoutGrid, Lightbulb, Newspaper, NotebookPen, PackageSearch,
-  ScrollText, Settings as SettingsIcon, Share2, Sparkles, Stars, Stethoscope, Swords, Vault, Wallet, Wrench,
+  Ghost, ScrollText, Settings as SettingsIcon, Share2, Sparkles, Stars, Stethoscope, Swords, Vault, Wallet, Wrench,
   type LucideIcon
 } from "lucide-react";
 
 /** Every view the shell can route to. */
 export type ViewId =
-  | "command" | "dev" | "autopilot" | "rpg" | "skills" | "deck" | "clipboard" | "drop" | "tools" | "vault"
+  | "command" | "dev" | "autopilot" | "ghost" | "rpg" | "skills" | "deck" | "clipboard" | "drop" | "tools" | "vault"
   | "search" | "capture" | "journal" | "calendar" | "timetable" | "utilities" | "news"
   | "finder" | "finance" | "heatmap" | "devices" | "backup" | "health" | "audit" | "settings";
 
@@ -46,6 +46,7 @@ export const SIDEBAR_VIEWS: SidebarView[] = [
   { id: "autopilot", label: "Autopilot", accentClass: "accent-dev", actionId: "autopilot.open" },
   { id: "skills", label: "Skills", accentClass: "accent-dev", actionId: "skill_constellation.open" },
   { id: "rpg", label: "Reality RPG", accentClass: "accent-loop", actionId: "reality_rpg.open" },
+  { id: "ghost", label: "GhostOS", accentClass: "accent-search", actionId: "ghost_os.open" },
   { id: "deck", label: "Deck", accentClass: "accent-deck", actionId: "deck.test_endpoint" },
   { id: "heatmap", label: "Heatmap", accentClass: "accent-heatmap", actionId: "heatmap.open" },
   { id: "devices", label: "External Devices", accentClass: "accent-tools", actionId: "" },
@@ -65,6 +66,7 @@ export const MODULE_META: Record<string, { icon: LucideIcon; accent: string }> =
   autopilot: { icon: Bot, accent: "#0EA5E9" },
   skills: { icon: Stars, accent: "var(--accent-dev)" },
   rpg: { icon: Swords, accent: "var(--accent-loop)" },
+  ghost: { icon: Ghost, accent: "var(--accent-search)" },
   deck: { icon: LayoutGrid, accent: "#A855F7" },
   clipboard: { icon: ClipboardList, accent: "#8B5CF6" },
   drop: { icon: Share2, accent: "#38BDF8" },

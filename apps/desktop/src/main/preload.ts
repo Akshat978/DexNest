@@ -154,6 +154,14 @@ contextBridge.exposeInMainWorld("dexNest", {
   standupGenerate: (input?: { forceNew?: boolean }) => ipcRenderer.invoke("dexnest:standup-generate", input),
   standupLatest: () => ipcRenderer.invoke("dexnest:standup-latest"),
   standupList: (limit?: number) => ipcRenderer.invoke("dexnest:standup-list", limit),
+  // GhostOS: reads and settings. Saving, forgetting, sources, sync, export and
+  // import are ghost_os.* actions, run through runAction.
+  ghostOsStatus: () => ipcRenderer.invoke("dexnest:ghost-os-status"),
+  ghostOsTimeline: (query?: unknown) => ipcRenderer.invoke("dexnest:ghost-os-timeline", query),
+  ghostOsSearch: (query: { text: string; types?: string[] }) => ipcRenderer.invoke("dexnest:ghost-os-search", query),
+  ghostOsEntity: (id: string) => ipcRenderer.invoke("dexnest:ghost-os-entity", id),
+  ghostOsSettings: () => ipcRenderer.invoke("dexnest:ghost-os-settings"),
+  ghostOsUpdateSettings: (settings: unknown) => ipcRenderer.invoke("dexnest:ghost-os-update-settings", settings),
   // Reality RPG: reads and settings. Refresh, on/off, rules, quests,
   // achievements and backfill are reality_rpg.* actions, run through runAction.
   realityRpgStatus: () => ipcRenderer.invoke("dexnest:reality-rpg-status"),
