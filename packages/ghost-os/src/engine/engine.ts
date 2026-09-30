@@ -37,6 +37,8 @@ export interface SyncOutcome {
   added: RowCounts;
   updated: RowCounts;
   withdrawn: RowCounts;
+  /** Relations the source stopped supporting: ended (validTo set), kept as history. */
+  ended: number;
   skippedForgotten: number;
   skippedSource: number;
   habits: HabitOutcome[];
@@ -146,6 +148,7 @@ export function createGhostEngine(options: GhostEngineOptions): GhostEngine {
       added: zero(),
       updated: zero(),
       withdrawn: zero(),
+      ended: 0,
       skippedForgotten: 0,
       skippedSource: 0,
       habits: [],
@@ -182,20 +185,28 @@ export function createGhostEngine(options: GhostEngineOptions): GhostEngine {
         const exists = (id: string) => store.getEntity(id) !== undefined;
 
         const heldEntities = new Set(store.sourceRowIds('entity', adapter.sourceId));
-        const heldRelations = new Set(store.sourceRowIds('relation', adapter.sourceId));
+        const liveRelations = new Set(store.liveSourceRelationIds(adapter.sourceId));
         for (const e of contribution.entities) {
           heldEntities.delete(e.id);
           count('entity', store.putEntity(e));
         }
         for (const r of contribution.relations) {
-          heldRelations.delete(r.id);
+          liveRelations.delete(r.id);
           // An end the owner forgot stays forgotten; so does the relation.
-          if (!exists(r.fromId) || !exists(r.toId)) outcome.skippedForgotten += 1;
-          else count('relation', store.putRelation(r));
+          if (!exists(r.fromId) || !exists(r.toId)) {
+            outcome.skippedForgotten += 1;
+            continue;
+          }
+          // Supported again after it ended: a new relation from the time the old one ended, which keeps its history.
+          const endedAt = r.provenance.sourceRef ? store.lastEndedAt(adapter.sourceId, r.provenance.sourceRef) : null;
+          const relation = endedAt && (!r.validFrom || r.validFrom < endedAt) ? { ...r, validFrom: endedAt, createdAt: r.createdAt < endedAt ? endedAt : r.createdAt } : r;
+          count('relation', store.putRelation(relation));
         }
-        // What the source no longer supports goes, with what depended on it. No tombstones: it may come back.
-        const gone: RowRef[] = [...[...heldRelations].map((id): RowRef => ({ kind: 'relation', id })), ...[...heldEntities].map((id): RowRef => ({ kind: 'entity', id }))];
+        // An entity the source no longer supports goes, with what depended on it. No tombstones: it may come back.
+        const gone: RowRef[] = [...heldEntities].map((id): RowRef => ({ kind: 'entity', id }));
         if (gone.length) addCounts(outcome.withdrawn, store.removeRows(gone).counts);
+        // A relation it no longer supports, between entries that remain, ends: it stays as history.
+        for (const id of liveRelations) if (store.endRelation(id, now)) outcome.ended += 1;
 
         for (const o of contribution.observations) {
           if (!exists(o.entityId)) outcome.skippedForgotten += 1;
@@ -212,6 +223,7 @@ export function createGhostEngine(options: GhostEngineOptions): GhostEngine {
           added: done.added,
           updated: done.updated,
           withdrawn: done.withdrawn,
+          ended: done.ended,
           skippedForgotten: done.skippedForgotten,
           skippedSource: done.skippedSource,
           habits: done.habits.length,

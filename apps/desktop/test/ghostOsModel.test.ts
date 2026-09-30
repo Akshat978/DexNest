@@ -15,6 +15,8 @@ import {
   originLabel,
   RELATION_TYPE_LIST,
   sourceLabel,
+  timelineKind,
+  timelineLabel,
   TYPE_LABELS,
   viewState
 } from "../src/renderer/views/ghostOsModel.ts";
@@ -78,4 +80,12 @@ test("states, tabs and messages", () => {
   assert.deepEqual(actionMessage({ ok: false, cancelled: true, error: "Export cancelled." }), { ok: true, text: null });
   assert.deepEqual(actionMessage({ ok: false, error: "no" }), { ok: false, text: "no" });
   assert.deepEqual(actionMessage(undefined), { ok: false, text: "No answer from DexNest." });
+});
+
+test("an ended connection reads as history on the timeline", () => {
+  const item = { kind: "relation" as const, id: "rel_00000001", at: NOW, entityId: "ent_00000001", entityType: "project" as const, title: "cli", statement: "uses TypeScript", origin: "adapter" as const, confidence: 0.9 };
+  assert.equal(timelineLabel(item), "cli stopped: uses TypeScript");
+  assert.equal(timelineKind(item), "Connection ended");
+  assert.equal(timelineKind({ ...item, kind: "entity" }), "Project");
+  assert.equal(timelineKind({ ...item, kind: "observation" }), "Observation");
 });

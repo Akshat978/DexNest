@@ -66,7 +66,7 @@ describe('LIKE fallback', () => {
 describe('timeline query', () => {
   it('defaults to everything, newest first, a page at a time', () => {
     const r = parseTimelineQuery(undefined);
-    expect(r.ok && r.value).toEqual({ from: null, to: null, types: [], origins: [], observations: true, limit: TIMELINE_LIMITS.defaultLimit, before: null });
+    expect(r.ok && r.value).toEqual({ from: null, to: null, types: [], origins: [], observations: true, relations: true, limit: TIMELINE_LIMITS.defaultLimit, before: null });
   });
 
   it('filters by type and origin, and pages from a position', () => {
@@ -77,6 +77,7 @@ describe('timeline query', () => {
       types: ['memory', 'decision'],
       origins: ['manual'],
       observations: false,
+      relations: true,
       limit: 10,
       before: { at: '2026-01-15T00:00:00.000Z', id: 'ent_12345678' },
     });

@@ -4,7 +4,7 @@ Module id `ghost_os` · table prefix `ghost_` · event namespace `ghost.` ·
 event stream `ghost` · view id `ghost` · package `@dexnest/ghost-os` ·
 branch `cloud/ghost-os`.
 
-Status: **Done (Phase 8).** See `HANDOFF.md` for what was built, test counts, mutation checks, known gaps and the Windows checklist. Read with `AGENTS.md` and
+Status: **Phase 9 (follow-up) done.** Phases 10-11 in progress; `HANDOFF.md` is updated after Phase 11. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`. Shaped after Developer
 Intelligence's runtime/host split, and after the two modules built before it
 on other branches (Skill Constellation, Reality RPG).
@@ -433,6 +433,22 @@ run. Manual entry, search, timeline and export need no job.
   (reported as `tombstonesSkipped`): import merges and never removes, and a
   tombstone on a live row would freeze it (never updated, never withdrawn).
 - An interrupted occurrence stays spent after a restart; the next slot runs.
+
+### Follow-up Phase 9 - relations end instead of disappearing
+
+- When a source stops supporting a relation between entries that both
+  remain, the sync **ends** it: `validTo` = the sync time. It moves to an
+  ended identity (source reference `<ref>~ended~<time>`, id derived from
+  that) so the live identity is free: if the source supports it again, that
+  is a **new** relation with `validFrom` = when the old one ended, and the
+  old one stays ended. No tombstone either way.
+- A relation whose entry the source no longer supports still goes with the
+  entry (history needs both ends).
+- Forget and turning the source off remove ended relations like any other.
+- The timeline shows an ended relation at its `validTo` (kind `relation`,
+  "cli stopped: uses TypeScript"); `relations: false` leaves them out. The
+  detail shows "from … until …". Sync events and messages count `ended`.
+- Relations the owner entered are never ended by a sync.
 
 ## 16. Phases for this module
 

@@ -17,6 +17,7 @@ import {
   sourceLabel,
   TAB_LABELS,
   TABS,
+  timelineKind,
   timelineLabel,
   TYPE_LABELS,
   viewState,
@@ -284,7 +285,7 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
                           <button type="button" className="ghost-item" aria-current={detail?.entity.id === item.entityId ? "true" : undefined} onClick={() => void openEntity(item.entityId)}>
                             <span>{timelineLabel(item)}</span>
                             <span className="ghost-meta">
-                              {item.kind === "observation" ? "Observation" : TYPE_LABELS[item.entityType]} · <time className="technical" dateTime={item.at}>{shortDate(item.at)}</time> · {originLabel(item.origin, item.confidence)}
+                              {timelineKind(item)} · <time className="technical" dateTime={item.at}>{shortDate(item.at)}</time> · {originLabel(item.origin, item.confidence)}
                             </span>
                           </button>
                         </li>
@@ -473,7 +474,8 @@ function EntityDetailPanel(props: {
                 <p>
                   {direction === "out" ? `${relation.type.replace(/_/g, " ")} → ` : `← ${relation.type.replace(/_/g, " ")} `}
                   {other ? <button type="button" className="ghost-link" onClick={() => props.onOpen(other.id)}>{other.title}</button> : "a forgotten entry"}
-                  {relation.validTo && <> (until <time className="technical" dateTime={relation.validTo}>{shortDate(relation.validTo)}</time>)</>}
+                  {relation.validFrom && <> from <time className="technical" dateTime={relation.validFrom}>{shortDate(relation.validFrom)}</time></>}
+                  {relation.validTo && <> until <time className="technical" dateTime={relation.validTo}>{shortDate(relation.validTo)}</time></>}
                 </p>
                 <SourceLine provenance={relation.provenance} />
               </div>

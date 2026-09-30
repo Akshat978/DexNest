@@ -100,7 +100,16 @@ export function shortDateTime(iso: string): string {
 }
 
 export function timelineLabel(item: TimelineItem): string {
-  return item.kind === "observation" ? `${item.title}: ${item.statement ?? ""}` : item.title;
+  if (item.kind === "observation") return `${item.title}: ${item.statement ?? ""}`;
+  if (item.kind === "relation") return `${item.title} stopped: ${item.statement ?? ""}`;
+  return item.title;
+}
+
+/** What kind of row a timeline item is. */
+export function timelineKind(item: TimelineItem): string {
+  if (item.kind === "observation") return "Observation";
+  if (item.kind === "relation") return "Connection ended";
+  return TYPE_LABELS[item.entityType];
 }
 
 // --- forms ----------------------------------------------------------------------

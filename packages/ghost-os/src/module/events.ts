@@ -31,7 +31,7 @@ export function appendGhostEvent<T extends GhostEventType>(
 }
 
 const changed = (o: SyncOutcome) =>
-  [o.added, o.updated, o.withdrawn].some((c) => c.entity + c.relation + c.observation > 0) || o.habitsLapsed > 0;
+  [o.added, o.updated, o.withdrawn].some((c) => c.entity + c.relation + c.observation > 0) || o.ended > 0 || o.habitsLapsed > 0;
 
 /** A sync's events: one per occurrence when anything changed, one per habit per detection period. */
 export function appendSyncEvents(events: Pick<EventLog, 'append'>, outcome: SyncOutcome, at: string): void {
@@ -47,6 +47,7 @@ export function appendSyncEvents(events: Pick<EventLog, 'append'>, outcome: Sync
         added: outcome.added,
         updated: outcome.updated,
         withdrawn: outcome.withdrawn,
+        ended: outcome.ended,
         skippedForgotten: outcome.skippedForgotten,
       },
     });

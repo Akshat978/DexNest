@@ -31,7 +31,7 @@ export interface EntitySavedPayload { entityType: EntityType; origin: Origin; cr
 export interface RelationSavedPayload { relationType: string; created: boolean }
 export interface ObservationRecordedPayload { entityId: string }
 export interface ForgottenPayload { kind: RowKind; removed: RowCounts; tombstones: number }
-export interface AdapterSyncedPayload { adapterId: string; occurrenceId: string; added: RowCounts; updated: RowCounts; withdrawn: RowCounts; skippedForgotten: number }
+export interface AdapterSyncedPayload { adapterId: string; occurrenceId: string; added: RowCounts; updated: RowCounts; withdrawn: RowCounts; ended: number; skippedForgotten: number }
 export interface AdapterWithdrawnPayload { adapterId: string; removed: RowCounts }
 export interface HabitDetectedPayload { detectorId: string; periodKey: string; confidence: number; evidenceCount: number }
 export interface ExportCreatedPayload { rows: RowCounts; derivations: number; tombstones: number }

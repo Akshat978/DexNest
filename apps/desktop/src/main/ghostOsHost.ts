@@ -250,7 +250,8 @@ export async function runGhostOsAction(host: GhostOsHost, actionId: string, para
       if (failed.length) return { ok: false, error: "A GhostOS source could not be read. See GhostOS status." };
       const added = outcomes.reduce((n, o) => n + o.added.entity + o.added.relation + o.added.observation, 0);
       const updated = outcomes.reduce((n, o) => n + o.updated.entity + o.updated.relation + o.updated.observation, 0);
-      return { ok: true, message: `Synced: ${added} new, ${updated} updated.` };
+      const ended = outcomes.reduce((n, o) => n + o.ended, 0);
+      return { ok: true, message: `Synced: ${added} new, ${updated} updated${ended ? `, ${plural(ended, "connection")} ended` : ""}.` };
     }
     case "ghost_os.export": {
       const path = await host.dialogs.chooseExportPath(`ghostos-export-${new Date().toISOString().slice(0, 10)}.json`);

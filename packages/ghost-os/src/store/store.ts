@@ -20,7 +20,9 @@ import type { RowCounts } from '../domain/events.ts';
 import { toFtsQuery, searchTerms, toLikePattern, SEARCH_LIMITS, type TimelineQuery } from '../domain/search.ts';
 import { ADAPTER_IDS, defaultGhostOsSettings, normalizeGhostOsSettings, type AdapterId, type GhostOsSettings } from '../domain/settings.ts';
 import type { Derivation, Entity, EntityType, Evidence, Observation, Origin, Relation, RowKind, RowRef, Tombstone } from '../domain/types.ts';
-import { validateEntity, validateObservation, validateRelation, type Parsed } from '../domain/validation.ts';
+import { LIMITS, validateEntity, validateObservation, validateRelation, type Parsed } from '../domain/validation.ts';
+import { sourceRowId } from '../domain/ids.ts';
+import { stableHash } from '../domain/hash.ts';
 import { GHOST_OS_MIGRATIONS, GHOST_OS_SEARCH_LEDGER, GHOST_OS_SEARCH_MIGRATIONS } from './migrations.ts';
 
 export const GHOST_MIGRATION_MODULE = 'ghost_os';
@@ -41,7 +43,8 @@ export interface SearchHit {
 }
 
 export interface TimelineItem {
-  kind: 'entity' | 'observation';
+  /** A relation appears when it ended: `at` is its validTo, `statement` its type and the other entry's title. */
+  kind: 'entity' | 'observation' | 'relation';
   id: string;
   at: string;
   entityId: string;
@@ -123,6 +126,16 @@ export interface GhostStore {
   removeRows(roots: readonly RowRef[]): CascadePlan;
   /** Ids of the rows one source contributed. */
   sourceRowIds(kind: RowKind, sourceId: string): string[];
+  /** Relations one source contributed that have not ended. */
+  liveSourceRelationIds(sourceId: string): string[];
+  /**
+   * Ends a source's relation at `at`: it keeps its history (validTo = at) under
+   * an ended identity, freeing the live one so a later re-support is a new
+   * relation. Null when there is no such live relation.
+   */
+  endRelation(id: string, at: string): Relation | null;
+  /** When the most recent ended relation for this source fact ended; null if none has. */
+  lastEndedAt(sourceId: string, sourceRef: string): string | null;
 
   search(text: string, options?: { types?: readonly EntityType[]; limit?: number }): SearchHit[];
   timeline(query: TimelineQuery): TimelineItem[];
@@ -231,6 +244,9 @@ function toRun(row: Row): RunRecord {
     error: str(row.error),
   };
 }
+
+/** Marks an ended relation's source reference: `<live ref>~ended~<time>`. */
+export const ENDED_MARK = '~ended~';
 
 const timelineAt = (e: Entity) => e.occurredAt ?? e.startedAt ?? e.createdAt;
 
@@ -467,6 +483,25 @@ export function openGhostStore(db: SqlDatabase, options: OpenGhostStoreOptions =
     });
   }
 
+  function endRelation(id: string, at: string): Relation | null {
+    return withTransaction(db, () => {
+      const row = one("SELECT * FROM ghost_relations WHERE id = ? AND valid_to IS NULL AND origin <> 'manual'", [id]);
+      if (!row) return null;
+      const before = toRelation(row);
+      const sourceId = before.provenance.sourceId as string;
+      const ref = before.provenance.sourceRef as string;
+      // The ended identity: unique per end time, within the source-reference length limit.
+      const base = ref.length + ENDED_MARK.length + at.length > LIMITS.sourceRef ? stableHash(ref) : ref;
+      const endedRef = `${base}${ENDED_MARK}${at}`;
+      const endedId = sourceRowId('relation', sourceId, endedRef);
+      const validTo = before.validFrom && before.validFrom > at ? before.validFrom : at;
+      run('UPDATE ghost_relations SET id = ?, source_ref = ?, valid_to = ?, updated_at = ? WHERE id = ?', [endedId, endedRef, validTo, at, id]);
+      run("UPDATE ghost_derivations SET child_id = ? WHERE child_kind = 'relation' AND child_id = ?", [endedId, id]);
+      run("UPDATE ghost_derivations SET parent_id = ? WHERE parent_kind = 'relation' AND parent_id = ?", [endedId, id]);
+      return toRelation(one('SELECT * FROM ghost_relations WHERE id = ?', [endedId]) as Row);
+    });
+  }
+
   // --- search and timeline -----------------------------------------------------
 
   function search(text: string, options: { types?: readonly EntityType[]; limit?: number } = {}): SearchHit[] {
@@ -495,6 +530,8 @@ export function openGhostStore(db: SqlDatabase, options: OpenGhostStoreOptions =
     const entityParams: unknown[] = [];
     const obsWhere: string[] = [];
     const obsParams: unknown[] = [];
+    const relWhere: string[] = ['r.valid_to IS NOT NULL'];
+    const relParams: unknown[] = [];
     const add = (where: string[], params: unknown[], col: string, sql: string, values: unknown[]) => {
       where.push(sql.replace(/\$/g, col));
       params.push(...values);
@@ -502,6 +539,7 @@ export function openGhostStore(db: SqlDatabase, options: OpenGhostStoreOptions =
     for (const [where, params, at, originCol] of [
       [entityWhere, entityParams, 'e.timeline_at', 'e.origin'],
       [obsWhere, obsParams, 'o.observed_at', 'o.origin'],
+      [relWhere, relParams, 'r.valid_to', 'r.origin'],
     ] as const) {
       if (q.from) add(where, params, at, '$ >= ?', [q.from]);
       if (q.to) add(where, params, at, '$ < ?', [q.to]);
@@ -521,6 +559,13 @@ export function openGhostStore(db: SqlDatabase, options: OpenGhostStoreOptions =
       );
       params.push(...obsParams);
     }
+    if (q.relations) {
+      parts.push(
+        `SELECT 'relation', r.id, r.valid_to, r.from_id, e.type, e.title, r.type || ' ' || t.title, r.origin, r.confidence
+         FROM ghost_relations r JOIN ghost_entities e ON e.id = r.from_id JOIN ghost_entities t ON t.id = r.to_id ${w(relWhere)}`,
+      );
+      params.push(...relParams);
+    }
     let sql = `SELECT * FROM (${parts.join(' UNION ALL ')})`;
     if (q.before) {
       sql += ' WHERE (at < ? OR (at = ? AND id < ?))';
@@ -529,7 +574,7 @@ export function openGhostStore(db: SqlDatabase, options: OpenGhostStoreOptions =
     sql += ' ORDER BY at DESC, id DESC LIMIT ?';
     params.push(q.limit);
     return all(sql, params).map((r) => ({
-      kind: r.kind as 'entity' | 'observation',
+      kind: r.kind as TimelineItem['kind'],
       id: String(r.id),
       at: String(r.at),
       entityId: String(r.entity_id),
@@ -754,6 +799,16 @@ export function openGhostStore(db: SqlDatabase, options: OpenGhostStoreOptions =
     forget,
     withdrawSource,
     removeRows,
+    liveSourceRelationIds: (sourceId) =>
+      all<{ id: string }>(`SELECT id FROM ghost_relations WHERE source_id = ? AND valid_to IS NULL AND instr(source_ref, '${ENDED_MARK}') = 0 ORDER BY id`, [sourceId]).map((r) => r.id),
+    endRelation,
+    lastEndedAt: (sourceId, sourceRef) =>
+      str(
+        one<{ at: string | null }>(
+          'SELECT max(valid_to) AS at FROM ghost_relations WHERE source_id = ? AND (substr(source_ref, 1, length(?)) = ? OR substr(source_ref, 1, length(?)) = ?)',
+          [sourceId, `${sourceRef}${ENDED_MARK}`, `${sourceRef}${ENDED_MARK}`, `${stableHash(sourceRef)}${ENDED_MARK}`, `${stableHash(sourceRef)}${ENDED_MARK}`],
+        )?.at,
+      ),
     sourceRowIds: (kind, sourceId) => all<{ id: string }>(`SELECT id FROM ${TABLE[kind]} WHERE source_id = ? ORDER BY id`, [sourceId]).map((r) => r.id),
     search,
     timeline,

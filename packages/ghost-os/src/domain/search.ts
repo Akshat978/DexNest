@@ -47,6 +47,8 @@ export interface TimelineQuery {
   origins: Origin[];
   /** Include observations alongside entities. */
   observations: boolean;
+  /** Include relations that ended, at the time they ended. */
+  relations: boolean;
   limit: number;
   /** Continue after this position (the last item's time and id). */
   before: { at: string; id: string } | null;
@@ -86,7 +88,7 @@ export function parseTimelineQuery(input: unknown): Parsed<TimelineQuery> {
   let before: TimelineQuery['before'] = null;
   if (q.before !== undefined && q.before !== null) {
     const at = isObj(q.before) ? normalizeTimestamp(q.before.at) : null;
-    const id = isObj(q.before) && typeof q.before.id === 'string' && /^(ent|obs)_[A-Za-z0-9-]{8,64}$/.test(q.before.id) ? q.before.id : null;
+    const id = isObj(q.before) && typeof q.before.id === 'string' && /^(ent|obs|rel)_[A-Za-z0-9-]{8,64}$/.test(q.before.id) ? q.before.id : null;
     if (!at || !id) errors.push('before must be { at, id } of a timeline item');
     else before = { at, id };
   }
@@ -96,6 +98,7 @@ export function parseTimelineQuery(input: unknown): Parsed<TimelineQuery> {
     types: subset(q.types, ENTITY_TYPES, 'types', errors),
     origins: subset(q.origins, ORIGINS, 'origins', errors),
     observations: q.observations !== false,
+    relations: q.relations !== false,
     limit,
     before,
   };

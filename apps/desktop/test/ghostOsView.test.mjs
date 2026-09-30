@@ -73,7 +73,8 @@ const detail = {
 const items = [
   { kind: "observation", id: "obs_day00001", at: T, entityId: project.id, entityType: "project", title: "Zephyr app", statement: "2 commits observed", origin: "adapter", confidence: 0.6 },
   { kind: "entity", id: "ent_me000001", at: T, entityId: "ent_me000001", entityType: "person", title: "Me", statement: null, origin: "manual", confidence: 1 },
-  { kind: "entity", id: project.id, at: T, entityId: project.id, entityType: "project", title: "Zephyr app", statement: null, origin: "adapter", confidence: 1 }
+  { kind: "entity", id: project.id, at: T, entityId: project.id, entityType: "project", title: "Zephyr app", statement: null, origin: "adapter", confidence: 1 },
+  { kind: "relation", id: "rel_ended001", at: "2026-05-01T00:00:00.000Z", entityId: project.id, entityType: "project", title: "Zephyr app", statement: "uses Go", origin: "adapter", confidence: 0.9 }
 ];
 
 const render = (props) => renderToStaticMarkup(createElement(View, { bridge, onAction, ...props }));
@@ -118,6 +119,7 @@ test("timeline: filterable by type, searchable, each row says where it came from
   assert.match(html, /Zephyr app: 2 commits observed/);
   assert.match(html, /Observation · <time class="technical" datetime="2026-06-01T09:00:00.000Z">2026-06-01<\/time> · from a source, 60% sure/i);
   assert.match(html, /Person · <time[^>]*>2026-06-01<\/time> · entered by you/);
+  assert.match(html, /<span>Zephyr app stopped: uses Go<\/span><span class="ghost-meta">Connection ended · <time[^>]*>2026-05-01<\/time>/i);
   assert.match(html, />Sync now</);
 });
 
@@ -136,7 +138,8 @@ test("entity detail: every fact with its source and its evidence", () => {
   assert.match(html, /Commit 1234567 in repo-app/);
   // Connections both ways, with validity.
   assert.match(html, /uses → <button type="button" class="ghost-link">TypeScript<\/button>/);
-  assert.match(html, /← worked on <button type="button" class="ghost-link">Me<\/button> \(until <time/);
+  assert.match(html, /← worked on <button type="button" class="ghost-link">Me<\/button> until <time[^>]*>2026-05-01<\/time>/i);
+  assert.match(html, /uses → <button type="button" class="ghost-link">TypeScript<\/button> from <time[^>]*>2026-06-01<\/time>/i);
   // A source's entry is forgotten, not edited.
   assert.doesNotMatch(html, />Edit</);
   assert.match(html, /aria-label="Forget Zephyr app"/);
