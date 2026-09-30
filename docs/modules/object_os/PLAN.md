@@ -4,7 +4,7 @@ Module id `object_os` · table prefix `obj_` · event namespace `object.` ·
 event stream `object` · view id `object` · package `@dexnest/object-os` ·
 branch `cloud/object-os`.
 
-Status: **Phase 4 (actions and events) done.** Domain, store, engine, runtime and registry entries exist; no host or view yet. Read with `AGENTS.md` and
+Status: **Phase 5 (host) done.** Domain, store, engine, runtime, registry entries and the desktop host exist; no view yet. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`. Shaped after Developer
 Intelligence's runtime/host split and the modules built before it on other
 branches (Skill Constellation, Reality RPG, GhostOS).
@@ -353,6 +353,55 @@ carry counts, not keys.
 - Parts used by a maintenance entry also write `stock_changed` events.
 - Export writes its event only after the host reports a successful write.
 - The store gained `lastRun(kind)` for the module status.
+
+### Refinements made in Phase 5
+
+- Host files: `objectOsHost.ts` (IPC reads, action runner, journal lines),
+  `objectOsFiles.ts` (the real file port), `objectOsZip.ts` (zip writer and
+  reader). `main.ts` wires them like GhostOS; `object_os.open` opens view
+  `object`.
+- **Where actions may come from.** The Stream Deck HTTP endpoint runs any
+  registered action and can listen on the LAN, so ObjectOS checks the
+  trigger itself: only DexNest's own window (`module_ui`, or `command` where
+  the registry entry allows it) may change anything. No ObjectOS action opts
+  in to the phone. This is what "nothing phone-exposed" means in this build.
+- **Files come from a dialog.** Attach, export and import always ask the
+  owner with a file dialog; a path in an action's params is ignored.
+- **Boundary checked twice.** A source is checked when inspected and again,
+  by its resolved path, right before it is opened for copying (a swap for a
+  link in between is refused). A destination that does not exist yet is
+  judged by its folder too, so an export through a linked folder into the
+  data root is refused.
+- **The objects folder must be where it should be.** Nothing is written if
+  `files/objects`, or an object's folder, resolves anywhere else. Deleting
+  an object whose folder has become a link removes the link, never what it
+  points to.
+- **Zips without holding them in memory.** Export writes stored (not
+  compressed) entries streamed from disk, patching sizes and CRC-32 in
+  afterwards; a file whose bytes no longer match the recorded SHA-256 stops
+  the export. Import reads the central directory with caps (no ZIP64, no
+  encryption, no multi-part, no duplicate names; stored or deflate only),
+  and streams each entry through its declared size, CRC-32 and the
+  export's SHA-256. Entry names are never used as paths. `adm-zip` (already
+  a desktop dependency) is not used because it loads whole archives into
+  memory; zips it writes, with compressed entries, import fine (tested).
+  Limit: one export up to about 4 GB and 60,000 files; larger sets are
+  exported a part at a time.
+- **Journal lines are fixed text.** A refusal's reason can quote the
+  owner's text (a measurement unit, a file system message with a path), so
+  it is shown in the window and the action journal gets "ObjectOS did not
+  make the change." Unexpected errors are journalled without their message.
+- **Photos.** The view gets a photo as a data URL, only for a stored png,
+  jpg, gif or webp of at most 8 MB that still resolves inside its folder.
+  SVG is never inlined.
+- Reminder notifications are silent Electron notifications with counts
+  only.
+
+Needs Windows check: junctions resolved by `realpathSync.native` for the
+source, the folder and the stored file; `lstat` reporting a junction as a
+link (for "never follow a link when deleting"); case-insensitive path
+comparison; `shell.openPath` and `shell.showItemInFolder`; the dialogs; the
+notification.
 
 ## 15. Phases for this module
 

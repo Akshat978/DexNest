@@ -38,6 +38,9 @@ importers:
       '@dexnest/module-dev':
         specifier: workspace:*
         version: link:../../modules/dev
+      '@dexnest/object-os':
+        specifier: workspace:*
+        version: link:../../packages/object-os
       '@dexnest/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types
