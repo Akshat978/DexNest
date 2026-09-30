@@ -240,6 +240,9 @@ importers:
         specifier: workspace:*
         version: link:../foundation
     devDependencies:
+      '@dexnest/action-registry':
+        specifier: workspace:*
+        version: link:../action-registry
       '@types/node':
         specifier: ^22.13.14
         version: 22.20.0

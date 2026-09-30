@@ -245,7 +245,7 @@ export function validateProvenance(v: unknown, errors: string[]): Provenance {
   };
 }
 
-export function manualProvenance(confidence = CONFIDENCE.manual): Provenance {
+export function manualProvenance(confidence: number = CONFIDENCE.manual): Provenance {
   return { origin: 'manual', sourceId: null, sourceRef: null, evidence: [...MANUAL_EVIDENCE], confidence };
 }
 

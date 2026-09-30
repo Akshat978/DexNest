@@ -4,7 +4,7 @@ Module id `ghost_os` · table prefix `ghost_` · event namespace `ghost.` ·
 event stream `ghost` · view id `ghost` · package `@dexnest/ghost-os` ·
 branch `cloud/ghost-os`.
 
-Status: **Phase 3 (engine) done.** Domain, store, the Developer Intelligence adapter and the engine exist; nothing is wired into the app yet. Read with `AGENTS.md` and
+Status: **Phase 4 (actions and events) done.** The module runtime, its events and its registered actions exist; the desktop host and view are not wired yet. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`. Shaped after Developer
 Intelligence's runtime/host split, and after the two modules built before it
 on other branches (Skill Constellation, Reality RPG).
@@ -366,6 +366,23 @@ run. Manual entry, search, timeline and export need no job.
   holding is removed (no tombstone), a forgotten one is tombstoned.
 - Turned off while reading: the sync writes nothing and is recorded as
   skipped.
+
+### Refinements made in Phase 4
+
+- Settings live in GhostOS's own tables (`ghost_state`, `ghost_adapters`),
+  so the runtime takes no `ModuleSettings` port: an adapter's on/off state
+  must change in the same transaction as the data it adds or withdraws.
+- `ghost.adapter.synced` is written only when a sync changed something;
+  a quiet hourly sync leaves no event (the run is still in `ghost_runs`).
+  `ghost.habit.detected` is written once per habit per detection period.
+- Turning a source on writes an audit line, no `ghost.*` event: nothing in
+  GhostOS changed yet.
+- The audit callback receives the action id, a fixed summary from
+  `AUDIT_SUMMARIES` and ids/counts only; the host cannot be handed the
+  owner's text by GhostOS.
+- Editing is for the owner's own rows: a row a source contributed can be
+  forgotten, not edited. An entry keeps its type; a pasted conversation
+  keeps when it was pasted.
 
 ## 16. Phases for this module
 
