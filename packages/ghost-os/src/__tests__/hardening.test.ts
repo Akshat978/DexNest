@@ -541,10 +541,11 @@ describe('50,000 commits', () => {
 
     started = performance.now();
     const forgot = ok(b.module.forget({ kind: 'entity', id: projectIdFor('repo-00') }));
+    const forgetMs = performance.now() - started;
     expect(forgot.removed.observation).toBeGreaterThan(300);
-    expect(performance.now() - started).toBeLessThan(20_000);
+    expect(forgetMs).toBeLessThan(20_000);
 
-    console.info(`[ghost-os hardening] 50k commits: first sync ${Math.round(firstMs)} ms, quiet sync ${Math.round(quietMs)} ms, ${observations} observations`);
+    console.info(`[ghost-os hardening] 50k commits: first sync ${Math.round(firstMs)} ms, quiet sync ${Math.round(quietMs)} ms, forget a project ${Math.round(forgetMs)} ms, ${observations} observations`);
   }, 180_000);
 
   it('a large export imports back unchanged', async () => {

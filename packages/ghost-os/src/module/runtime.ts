@@ -228,6 +228,17 @@ export function createGhostOsModule(options: GhostOsModuleOptions): GhostOsModul
       details = { ...(draft.details as ConversationDetails), importedAt };
       occurredAt = importedAt;
     }
+    if (existing && draft.type === 'decision') {
+      // The outcome is recorded by its own action; an edit of the decision keeps it.
+      const prev = existing.details as DecisionDetails;
+      const next = draft.details as DecisionDetails;
+      details = {
+        ...next,
+        outcome: next.outcome ?? prev.outcome,
+        outcomeAt: next.outcomeAt ?? prev.outcomeAt,
+        reviewAt: next.reviewAt ?? prev.reviewAt,
+      };
+    }
     const entity: Entity = {
       ...draft,
       id: draft.id ?? newRowId('entity', token()),

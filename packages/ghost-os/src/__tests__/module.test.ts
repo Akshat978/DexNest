@@ -335,6 +335,17 @@ describe('refusals', () => {
   });
 });
 
+describe('decisions', () => {
+  it('editing a decision keeps the outcome recorded for it', () => {
+    const h = harness();
+    const d = ok(h.module.saveEntity({ type: 'decision', title: 'Move', details: { decidedAt: '2026-06-01T00:00:00Z', choice: 'go' } }));
+    ok(h.module.recordDecisionOutcome({ id: d.id, outcome: 'went well' }));
+    const edited = ok(h.module.saveEntity({ id: d.id, type: 'decision', title: 'Move city', details: { decidedAt: '2026-06-01T00:00:00Z', choice: 'go', rationale: 'closer' } }));
+    expect(edited.title).toBe('Move city');
+    expect(edited.details).toMatchObject({ rationale: 'closer', outcome: 'went well', outcomeAt: '2026-06-30T12:00:00.000Z' });
+  });
+});
+
 describe('reading', () => {
   it('search, timeline and entity detail', () => {
     const h = harness();
