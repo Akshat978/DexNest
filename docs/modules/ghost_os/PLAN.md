@@ -4,7 +4,7 @@ Module id `ghost_os` · table prefix `ghost_` · event namespace `ghost.` ·
 event stream `ghost` · view id `ghost` · package `@dexnest/ghost-os` ·
 branch `cloud/ghost-os`.
 
-Status: **Phase 1 (contracts) done.** `packages/ghost-os/src/domain/` exists; nothing is stored or wired yet. Read with `AGENTS.md` and
+Status: **Phase 2 (store) done.** Domain and store exist; nothing is wired into the app yet. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`. Shaped after Developer
 Intelligence's runtime/host split, and after the two modules built before it
 on other branches (Skill Constellation, Reality RPG).
@@ -327,6 +327,22 @@ run. Manual entry, search, timeline and export need no job.
   observations may point at existing entities, which the store checks.
 - The habit title is text GhostOS writes ("Commits mostly in the evening"),
   never the owner's.
+
+### Refinements made in Phase 2
+
+- One more table, `ghost_state` (key/value), holds the sync interval. On/off
+  for each adapter lives in `ghost_adapters`, so it changes in the same
+  transaction as the data it adds or withdraws.
+- The search index is a plain FTS5 table keyed by an explicit
+  `ghost_entities.fts_rowid` (not SQLite's implicit rowid, which VACUUM may
+  renumber), kept in step by triggers created in the `ghost_os_search`
+  migration. Without FTS5 there are no triggers and no index, and search
+  uses LIKE; when FTS5 appears later the migration backfills the index.
+- Foreign keys without ON DELETE CASCADE: only the planned cascade removes
+  rows.
+- Import runs in rounds, so a derived row lands once what it depends on has
+  landed; rows whose dependencies were skipped as forgotten stay out and are
+  counted.
 
 ## 16. Phases for this module
 
