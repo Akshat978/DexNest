@@ -1,0 +1,181 @@
+/* Reality RPG. DexNest design tokens only - no literal colours. Accent is the
+   existing --accent-loop token; fonts are --font-ui and, for numbers, ids and
+   dates, --font-tech. Nothing animates. */
+
+.rpg {
+  font-family: var(--font-ui);
+}
+
+.rpg .technical {
+  font-family: var(--font-tech);
+}
+
+.rpg-notice {
+  margin: 0;
+  color: var(--text);
+}
+
+.rpg-notice--error,
+.rpg-error {
+  color: var(--error);
+}
+
+.rpg-error {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.rpg-hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.rpg-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: var(--space-2);
+}
+
+.rpg-tabs [role="tab"][aria-selected="true"] {
+  border-color: var(--accent-loop);
+  color: var(--text);
+}
+
+.rpg-panel {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.rpg-sheet,
+.rpg-quests,
+.rpg-rules {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.rpg-level {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.rpg-level p {
+  margin: 0;
+}
+
+.rpg-level__number {
+  font-size: 1.5rem;
+}
+
+.rpg-bar {
+  width: 100%;
+  height: 0.6rem;
+  accent-color: var(--accent-loop);
+}
+
+.rpg-stats,
+.rpg-list,
+.rpg-history {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.rpg-stats li,
+.rpg-history li {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+}
+
+.rpg-history li span:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.rpg-item {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.rpg-item p {
+  margin: 0;
+}
+
+.rpg-item__title {
+  color: var(--text);
+}
+
+.rpg-item--done {
+  border-color: var(--accent-loop);
+}
+
+.rpg-item--off .rpg-item__title {
+  color: var(--text-muted);
+}
+
+.rpg-item > button {
+  justify-self: start;
+}
+
+.rpg-form {
+  display: grid;
+  gap: var(--space-3);
+  max-width: 36rem;
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.rpg-form h3 {
+  margin: 0;
+}
+
+.rpg-form label {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.rpg-form fieldset {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  display: grid;
+  gap: var(--space-1);
+}
+
+.rpg-check {
+  display: flex !important;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.rpg button:focus-visible,
+.rpg input:focus-visible,
+.rpg select:focus-visible,
+.rpg [role="tabpanel"]:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* The sidebar's accent class for this module, next to the module's own styles
+   rather than in the shared stylesheet. Loaded with the view, which the shell
+   imports up front. */
+.accent-loop {
+  --accent: var(--accent-loop);
+}

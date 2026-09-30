@@ -38,6 +38,9 @@ importers:
       '@dexnest/module-dev':
         specifier: workspace:*
         version: link:../../modules/dev
+      '@dexnest/reality-rpg':
+        specifier: workspace:*
+        version: link:../../packages/reality-rpg
       '@dexnest/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types
@@ -255,6 +258,22 @@ importers:
       '@types/node':
         specifier: ^22.13.14
         version: 22.20.0
+
+  packages/reality-rpg:
+    dependencies:
+      '@dexnest/foundation':
+        specifier: workspace:*
+        version: link:../foundation
+    devDependencies:
+      '@dexnest/action-registry':
+        specifier: workspace:*
+        version: link:../action-registry
+      '@types/node':
+        specifier: ^22.13.14
+        version: 22.20.0
+      vitest:
+        specifier: ^5.0.1
+        version: 5.0.1(@types/node@22.20.0)(vite@6.4.3(@types/node@22.20.0)(jiti@2.7.0))
 
   packages/run-queue: {}
 
