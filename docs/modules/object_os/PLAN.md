@@ -4,7 +4,7 @@ Module id `object_os` · table prefix `obj_` · event namespace `object.` ·
 event stream `object` · view id `object` · package `@dexnest/object-os` ·
 branch `cloud/object-os`.
 
-Status: **Phase 0 (plan).** Nothing is built yet. Read with `AGENTS.md` and
+Status: **Phase 1 (contracts) done.** `packages/object-os/src/domain/` exists; nothing is stored or wired yet. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`. Shaped after Developer
 Intelligence's runtime/host split and the modules built before it on other
 branches (Skill Constellation, Reality RPG, GhostOS).
@@ -117,7 +117,7 @@ later, stable for the object's life. Every other row gets an internal id
 | `obj_parts` | name, part number, supplier (text), unit, quantity on hand, low-stock threshold, notes |
 | `obj_part_fits` | (part_id, object_id) |
 | `obj_stock_log` | Stock changes (part, delta, reason: used/restocked/corrected, maintenance id, at) |
-| `obj_measurements` | Readings: object, key, value (number), unit, measured_at, note; `cumulative` flag per key for usage counters |
+| `obj_measurements` | Readings: object, key, value (number), unit, measured_at, note |
 | `obj_purchase` | One per object: purchased_on, price (minor units), currency, shop, warranty_until, receipt_file_id |
 | `obj_files` | object, role (manual, photo, receipt, model, config, other), display name, stored name, size, type (by extension), sha256, added_at |
 | `obj_runs` | Reminder runs, `UNIQUE (occurrence_id)` |
@@ -254,27 +254,42 @@ carry counts, not keys.
 | Usage schedules with no readings | Shown as "no reading yet", never due |
 | Reminders waking the machine | Light job, off by default, at most daily, no timer when off |
 
-## 14. Open questions for you
+## 14. Decisions (owner: "go with your defaults")
 
-1. **Short id format:** 8-character Crockford base32 shown as `7K3F-9QXM`
-   (default), or shorter (6 characters, ~10^9) for smaller QR labels?
-2. **Categories:** the brief's six (printer, computer, appliance, tool,
-   vehicle, other) as a fixed list (default), or can you add your own?
-3. **"Due soon" windows:** 14 days for time schedules and 10% of the
-   interval for usage schedules (default)?
-4. **File size limit:** 200 MB per file (default)? A total per object?
-5. **Executable attachments:** "open" shows them in their folder instead of
-   running them (default), or refuse to attach them at all?
-6. **Export of one object:** include its components (default) or just the
-   object?
-7. **Import:** skip objects whose id already exists and report (default,
-   like GhostOS), or import them as new objects with new ids?
-8. **Reminder notification text:** counts only (default), or the first
-   object's name ("Printer: nozzle change overdue")?
-9. **Deleting an object** also deletes its files from disk (default) - or
-   keep the files until you remove them separately?
-10. **Accent colour:** no ObjectOS token exists. Reuse one (suggest
-    `--accent-tools` or `--accent-dev`)? No new tokens unless you say.
+1. **Short ids:** 8 characters of Crockford base32, shown `7K3F-9QXM`.
+2. **Categories:** the brief's six, fixed.
+3. **Due soon:** 14 days before a time schedule is due; within 10% of the
+   interval for a usage schedule.
+4. **File size:** 200 MB per file; no total per object.
+5. **Executables:** attachable; "open" shows them in their folder instead of
+   running them.
+6. **Export of one object** includes its components.
+7. **Import:** an object id already present is skipped and reported.
+8. **Reminder notification:** counts only.
+9. **Deleting an object** deletes its files from disk too.
+10. **Accent:** `--accent-tools`. No new tokens.
+
+### Refinements made in Phase 1
+
+- No `cumulative` flag on measurements: a usage schedule names a
+  measurement key and counts from the reading at the last completion (the
+  reading recorded with it, else the last reading taken at or before it,
+  else the latest - as if just done); before any completion, from the
+  schedule's start reading, else the first reading ever. No reading at all
+  is `no_reading`, never due.
+- Due states are `ok`, `due_soon`, `overdue` (from the due moment on),
+  `no_reading` and `inactive`.
+- A warranty is "ending" from 30 days before its last day through that day;
+  an expiry in the last 30 days still needs attention, an older one is
+  history. Sold and disposed objects never need attention.
+- Maintenance, measurements and modifications refuse dates in the future.
+- Settings values are stored as text with sorted keys; `__proto__`,
+  `constructor` and `prototype` are refused as keys.
+- The export's file entries must have the stored name
+  `<file id>-<sanitised name>` exactly, so a zip entry can never point
+  outside `files/<object id>/`.
+- The read API is a fixed field list (`PUBLIC_OBJECT_FIELDS`) copied field by
+  field: no serial, notes, photo or files, even if the record grows.
 
 ## 15. Phases for this module
 
