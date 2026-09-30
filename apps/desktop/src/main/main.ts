@@ -23,6 +23,7 @@ import { createActionRegistry, createStreamDeckActionCatalog, seededActions, str
 import { createLocalDb } from "@dexnest/local-db";
 import { createAutopilotHost, type AutopilotHost } from "./autopilotHost.js";
 import { createDevIntelligenceHost, type DevIntelligenceHost } from "./devIntelligenceHost.js";
+import { createSkillConstellationHost, type SkillConstellationHost } from "./skillConstellationHost.js";
 import { createHostScheduler } from "@dexnest/foundation";
 import { createCompanionApi, hashToken, openPairing } from "./companionApi.js";
 import { buildAgenda, localDate, weekdayOf, type TodayAgenda } from "@dexnest/today";
@@ -229,6 +230,7 @@ const calendarAccountsPath = join(settingsRoot, "calendar-accounts.json");
 const syncedEventsPath = join(settingsRoot, "calendar-synced-events.json");
 const performanceModeSettingsPath = join(settingsRoot, "performance-mode-settings.json");
 const devIntelligenceSettingsPath = join(settingsRoot, "dev-intelligence-settings.json");
+const skillConstellationSettingsPath = join(settingsRoot, "skill-constellation-settings.json");
 const appLifecycleSettingsPath = join(settingsRoot, "app-lifecycle-settings.json");
 const searchIndexStatusPath = join(settingsRoot, "search-index-status.json");
 const dataManagementStatusPath = join(settingsRoot, "data-management-status.json");
@@ -352,6 +354,46 @@ function startDevIntelligenceHost(): void {
     // A broken module must never prevent DexNest from starting.
     console.warn("[dev-intelligence] host failed to start", error);
     devIntelligenceHost = null;
+  }
+}
+
+// --- Skill Constellation ---------------------------------------------------
+// Reads only what Developer Intelligence recorded, through DI's own stores.
+// Off by default; its one job is scheduled only after the user turns it on.
+let skillConstellationHost: SkillConstellationHost | null = null;
+
+function startSkillConstellationHost(): void {
+  if (!devIntelligenceHost) {
+    console.warn("[skill-constellation] not started: Developer Intelligence is not running");
+    return;
+  }
+  try {
+    skillConstellationHost = createSkillConstellationHost({
+      database: localDb.getSqlDatabase(),
+      events: localDb.getEventLog(),
+      dataRoot: localDataRoot,
+      otherDataRoots: [CANONICAL_DATA_ROOT, resolve(repoRoot, "local-data")],
+      scheduler: hostScheduler,
+      reader: devIntelligenceHost.module.persistence,
+      readSettings: () => readJsonFile<unknown>(skillConstellationSettingsPath, {}),
+      writeSettings: (settings) => { writeJsonFile(skillConstellationSettingsPath, settings); },
+      ipcMain,
+      getWindow: () => mainWindow,
+      audit: (summary, metadata, status) => {
+        localDb.appendActionEvent({
+          module: "skill_constellation",
+          eventType: "skill_constellation",
+          status: status === "success" ? "success" : "failed",
+          source: "system",
+          summary,
+          metadataJson: metadata
+        });
+      }
+    });
+  } catch (error) {
+    // A broken module must never prevent DexNest from starting.
+    console.warn("[skill-constellation] host failed to start", error);
+    skillConstellationHost = null;
   }
 }
 
@@ -19753,6 +19795,7 @@ function navigationTargetForAction(actionId: string): { view: string; focusAssis
     "settings.open": { view: "settings", message: "DexNest opened Settings." },
     "audit.open_history": { view: "audit", message: "DexNest opened Audit." },
     "autopilot.open": { view: "autopilot", message: "DexNest opened Autopilot." },
+    "skill_constellation.open": { view: "skills", message: "DexNest opened Skill Constellation." },
     "system.health.open": { view: "settings", message: "DexNest opened App Health." },
     "system.performance.open": { view: "settings", message: "DexNest opened Performance Mode settings." }
   };
@@ -20321,6 +20364,29 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
     } catch (error) {
       const reason = error instanceof Error ? error.message : "Could not generate a Standup.";
       logActionEvent(action, "failed", source, "Standup generation failed.", {}, reason);
+      return { ok: false, actionId: action.id, error: reason };
+    }
+  }
+
+  if (actionId === "skill_constellation.rebuild" || actionId === "skill_constellation.enable" || actionId === "skill_constellation.disable") {
+    if (!skillConstellationHost) return { ok: false, actionId: action.id, error: "Skill Constellation is not running. It needs Developer Intelligence." };
+    const skills = skillConstellationHost.module;
+    try {
+      if (actionId === "skill_constellation.enable" || actionId === "skill_constellation.disable") {
+        const settings = actionId === "skill_constellation.enable" ? skills.enable() : skills.disable();
+        const message = settings.enabled ? "Skill Constellation is on. It rebuilds after Developer Intelligence records something new." : "Skill Constellation is off. Your constellation is kept.";
+        logActionEvent(action, "success", source, message, { enabled: settings.enabled });
+        return { ok: true, actionId: action.id, message, enabled: settings.enabled };
+      }
+      const outcome = await skills.rebuildNow();
+      const message = outcome.status === "completed"
+        ? `Constellation rebuilt: ${outcome.build.skills} skill(s) from ${outcome.build.evidence} piece(s) of evidence.`
+        : "Nothing new since the last build; the constellation is up to date.";
+      logActionEvent(action, "success", source, message, { buildId: outcome.build.id, status: outcome.status });
+      return { ok: true, actionId: action.id, message, buildId: outcome.build.id, status: outcome.status };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Skill Constellation could not finish.";
+      logActionEvent(action, "failed", source, "Skill Constellation action failed.", {}, reason);
       return { ok: false, actionId: action.id, error: reason };
     }
   }
@@ -23121,6 +23187,7 @@ app.whenReady().then(() => {
   registerIpcHandlers();
   startAutopilotHost();
   startDevIntelligenceHost();
+  startSkillConstellationHost();
   syncAppLifecycleLoginItemStatus();
   cleanupClipboardHistory(false, "system");
   startActionEndpoint();
@@ -23181,6 +23248,7 @@ app.on("before-quit", () => {
   reapStaleSidecars(SPEECH_WORKER_MARKER, speechWorkerDiag.pid);
   destroyVoiceOverlay();
   stopHeatmapTimer();
+  skillConstellationHost?.dispose();
   devIntelligenceHost?.dispose();
   void hostScheduler.dispose();
   if (weatherRefreshTimer) {
