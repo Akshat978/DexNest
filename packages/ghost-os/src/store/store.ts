@@ -154,6 +154,8 @@ export interface GhostStore {
   finishRun(id: string, status: Exclude<RunStatus, 'running'>, now: string, summary: Record<string, unknown>, error?: string | null): RunRecord;
   getRunByOccurrence(occurrenceId: string): RunRecord | undefined;
   listRuns(limit?: number): RunRecord[];
+  /** Keeps the newest `keep` runs; a run still running is never removed. Returns how many were removed. */
+  pruneRuns(keep: number): number;
   /** Runs left 'running' by a crash become 'failed'. Returns how many. */
   recoverInterruptedRuns(now: string): number;
 
@@ -825,6 +827,13 @@ export function openGhostStore(db: SqlDatabase, options: OpenGhostStoreOptions =
       const row = one('SELECT * FROM ghost_runs WHERE occurrence_id = ?', [occurrenceId]);
       return row ? toRun(row) : undefined;
     },
+    pruneRuns: (keep) =>
+      Number(
+        run(
+          "DELETE FROM ghost_runs WHERE status <> 'running' AND id NOT IN (SELECT id FROM ghost_runs ORDER BY started_at DESC, id DESC LIMIT ?)",
+          [Math.max(0, Math.floor(keep))],
+        ).changes,
+      ),
     recoverInterruptedRuns: (now) => Number(run("UPDATE ghost_runs SET status = 'failed', finished_at = ?, error = 'interrupted' WHERE status = 'running'", [now]).changes),
     listRuns: (limit = 20) => all('SELECT * FROM ghost_runs ORDER BY started_at DESC, id DESC LIMIT ?', [limit]).map(toRun),
     exportAll,

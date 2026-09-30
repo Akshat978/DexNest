@@ -18,7 +18,8 @@ import type { EventLog, JobOccurrence, ModuleScheduler, SqlDatabase } from '@dex
 import { createDeveloperIntelligenceAdapter, type DiReader } from '../adapters/developer-intelligence.ts';
 import { createAllowedEventReader } from '../adapters/event-reader.ts';
 import type { SourceAdapter } from '../adapters/types.ts';
-import { AUDIT_SUMMARIES, type RowCounts } from '../domain/events.ts';
+import { AUDIT_SUMMARIES, GHOST_EVENT_STREAM, GHOST_MODULE_ID, type RowCounts } from '../domain/events.ts';
+import { eventCutoff, RETENTION } from '../domain/retention.ts';
 import { parseExport, type GhostExport } from '../domain/export.ts';
 import { isRowId, newRowId } from '../domain/ids.ts';
 import { parseTimelineQuery, toFtsQuery } from '../domain/search.ts';
@@ -185,8 +186,28 @@ export function createGhostOsModule(options: GhostOsModuleOptions): GhostOsModul
       runAtStartup: false,
       run: async (occurrence) => {
         await syncAll(occurrence);
+        // Housekeeping rides on the sync job: no timer of its own.
+        applyRetention();
       },
     });
+  }
+
+  /**
+   * Keeps GhostOS's bookkeeping bounded: the newest RETENTION.maxRuns runs,
+   * and `ghost`-stream events from ghost_os younger than RETENTION.eventDays.
+   * Uses the event log's stream-scoped prune, so no other stream or module is
+   * touched. The owner's entities, relations and observations are never pruned.
+   * A failure here never fails the sync that ran before it.
+   */
+  function applyRetention(): { runs: number; events: number } {
+    try {
+      const runs = store.pruneRuns(RETENTION.maxRuns);
+      const events = options.events.prune({ stream: GHOST_EVENT_STREAM, module: GHOST_MODULE_ID, occurredBefore: eventCutoff(iso()) });
+      return { runs, events };
+    } catch (error) {
+      lastError = `retention: ${error instanceof Error ? error.message : String(error)}`;
+      return { runs: 0, events: 0 };
+    }
   }
 
   // --- helpers ----------------------------------------------------------------

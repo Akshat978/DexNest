@@ -13,3 +13,4 @@ export * from './events.ts';
 export * from './settings.ts';
 export { stableHash } from './hash.ts';
 export * from './developer-intelligence.ts';
+export * from './retention.ts';

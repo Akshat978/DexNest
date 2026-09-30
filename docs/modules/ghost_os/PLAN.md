@@ -4,7 +4,7 @@ Module id `ghost_os` · table prefix `ghost_` · event namespace `ghost.` ·
 event stream `ghost` · view id `ghost` · package `@dexnest/ghost-os` ·
 branch `cloud/ghost-os`.
 
-Status: **Phase 9 (follow-up) done.** Phases 10-11 in progress; `HANDOFF.md` is updated after Phase 11. Read with `AGENTS.md` and
+Status: **Phase 10 (follow-up) done.** Phase 11 next; `HANDOFF.md` is updated after it. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`. Shaped after Developer
 Intelligence's runtime/host split, and after the two modules built before it
 on other branches (Skill Constellation, Reality RPG).
@@ -449,6 +449,21 @@ run. Manual entry, search, timeline and export need no job.
   "cli stopped: uses TypeScript"); `relations: false` leaves them out. The
   detail shows "from … until …". Sync events and messages count `ended`.
 - Relations the owner entered are never ended by a sync.
+
+### Follow-up Phase 10 - retention
+
+- After each **scheduled** sync, inside the `sync` job (no timer of its
+  own): keep the newest 500 `ghost_runs` (a run still `running` is never
+  removed), and prune `ghost`-stream events from `ghost_os` older than 180
+  days with the event log's stream-scoped `prune` (stream **and** module in
+  the filter). Constants in `domain/retention.ts`.
+- Never pruned: any other stream (GhostOS's own `audit` lines included), any
+  other module's events on the ghost stream, and the owner's entities,
+  relations and observations - only forget removes those.
+- A retention failure is recorded as `lastError` and never fails the sync.
+- A manual "Sync now" does not run retention; with every source off there
+  is no job, so nothing is pruned (GhostOS then writes events only for your
+  own actions).
 
 ## 16. Phases for this module
 
