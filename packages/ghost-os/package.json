@@ -1,0 +1,22 @@
+{
+  "name": "@dexnest/ghost-os",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "GhostOS core: a local, evidence-backed model of the owner - entities, relations and observations over time.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@dexnest/foundation": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.14",
+    "vitest": "^5.0.1"
+  }
+}

@@ -4,7 +4,7 @@ Module id `ghost_os` · table prefix `ghost_` · event namespace `ghost.` ·
 event stream `ghost` · view id `ghost` · package `@dexnest/ghost-os` ·
 branch `cloud/ghost-os`.
 
-Status: **Phase 0 (plan).** Nothing is built yet. Read with `AGENTS.md` and
+Status: **Phase 1 (contracts) done.** `packages/ghost-os/src/domain/` exists; nothing is stored or wired yet. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`. Shaped after Developer
 Intelligence's runtime/host split, and after the two modules built before it
 on other branches (Skill Constellation, Reality RPG).
@@ -290,36 +290,43 @@ run. Manual entry, search, timeline and export need no job.
 | Timeline across time zones / DST | Local day via `Intl`, as in the previous modules |
 | Relations that change | `valid_from`/`valid_to`, never overwritten silently: a changed fact closes the old range and opens a new one |
 
-## 15. Open questions for you
+## 15. Decisions (owner: "go with your defaults")
 
-1. **Import behaviour.** Merge into what exists (default: an id already
-   present is left as is and reported), or "replace everything" (wipe then
-   import)? Or both, with replace behind a confirmation?
-2. **Commit authors.** On `main`, DI's commit events have no author, so every
-   observed commit counts, including other people's. Bring over the small DI
-   change from the Skill Constellation branch (records `authorEmail`; its
-   own commit, as there), plus a "my emails" setting here? Or accept "commits
-   observed" as evidence with the lower confidence as planned?
-3. **Commit granularity.** One observation per repository per day ("3
-   commits in app on 2026-06-01", evidence: the shas) - default - or one per
-   commit?
-4. **Forget and adapters.** Forgetting something an adapter contributed
-   keeps it forgotten on the next sync (tombstone, default). Should turning
-   the adapter off and on again clear those tombstones, or keep them?
-5. **File references.** Refuse only DexNest's data roots (the brief), or also
-   well-known secret locations (`.ssh`, `.gnupg`, `.aws`, AI tool config
-   folders, browser profiles)?
-6. **Relation types.** The built-in vocabulary plus free-form (default), or
-   the built-in list only?
-7. **Danger levels.** `ghost_os.forget` and `ghost_os.adapter.disable` remove
-   data: mark them `caution` with the registry's confirmation, or keep all
-   actions `safe` like the previous modules?
-8. **Skills from DI.** Which technology facts become skills: languages,
-   runtimes, tooling and package managers (default), or libraries too?
-9. **Export location.** Always ask with a save dialog (default), or also
-   offer a default under the data root's `backups/`?
-10. **Accent colour.** No GhostOS token exists. Reuse one (suggest
-    `--accent-search` or `--accent-command`)? No new tokens unless you say.
+1. **Import** merges: a row whose id already exists is skipped and reported.
+   No "replace everything".
+2. **Commit authors:** no DI change. Commits are "observed in a repository",
+   confidence 0.6, and statements never say "I wrote".
+3. **Commit granularity:** one observation per repository per local day,
+   with the commits as evidence.
+4. **Tombstones** survive turning an adapter off and on again.
+5. **File references** refuse DexNest's data roots only (the brief).
+6. **Relation types:** the built-in vocabulary plus free-form
+   `[a-z][a-z0-9_]{0,39}`.
+7. **Danger levels:** `ghost_os.forget` and `ghost_os.adapter.disable` are
+   `caution` (they delete data); everything else `safe`.
+8. **Skills from DI:** categories `language`, `runtime`, `toolchain`,
+   `tooling`, `packageManager`. Not `library`, `project` or `baseImage`.
+9. **Export location:** always a save dialog.
+10. **Accent:** reuse `--accent-search`. No new tokens.
+
+### Refinements made in Phase 1
+
+- Provenance is uniform: entities, relations and observations all carry
+  `origin`, `sourceId` (`adapter:<id>` or `detector:<id>`, null when
+  manual), `sourceRef`, `evidence[]` and `confidence`. Tombstones are keyed by
+  `(sourceId, sourceRef)`.
+- Only habits are derived. A derived row is never more than 0.95 sure and,
+  in an import, must come with its derivations.
+- Forget tombstones every non-manual row the cascade removes, including a
+  detected habit: a forgotten habit stays forgotten. Withdrawing an adapter
+  tombstones nothing.
+- Withdrawing an adapter also removes the owner's relations and observations
+  that point at an entity the adapter contributed (a relation cannot outlive
+  its endpoint). The withdraw event reports the counts.
+- In an import, derivations must stay inside the file; relations and
+  observations may point at existing entities, which the store checks.
+- The habit title is text GhostOS writes ("Commits mostly in the evening"),
+  never the owner's.
 
 ## 16. Phases for this module
 
