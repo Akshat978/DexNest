@@ -23,6 +23,7 @@ import { createActionRegistry, createStreamDeckActionCatalog, seededActions, str
 import { createLocalDb } from "@dexnest/local-db";
 import { createAutopilotHost, type AutopilotHost } from "./autopilotHost.js";
 import { createDevIntelligenceHost, type DevIntelligenceHost } from "./devIntelligenceHost.js";
+import { createRealityRpgHost, runRealityRpgAction, type RealityRpgHost } from "./realityRpgHost.js";
 import { createHostScheduler } from "@dexnest/foundation";
 import { createCompanionApi, hashToken, openPairing } from "./companionApi.js";
 import { buildAgenda, localDate, weekdayOf, type TodayAgenda } from "@dexnest/today";
@@ -229,6 +230,7 @@ const calendarAccountsPath = join(settingsRoot, "calendar-accounts.json");
 const syncedEventsPath = join(settingsRoot, "calendar-synced-events.json");
 const performanceModeSettingsPath = join(settingsRoot, "performance-mode-settings.json");
 const devIntelligenceSettingsPath = join(settingsRoot, "dev-intelligence-settings.json");
+const realityRpgSettingsPath = join(settingsRoot, "reality-rpg-settings.json");
 const appLifecycleSettingsPath = join(settingsRoot, "app-lifecycle-settings.json");
 const searchIndexStatusPath = join(settingsRoot, "search-index-status.json");
 const dataManagementStatusPath = join(settingsRoot, "data-management-status.json");
@@ -352,6 +354,39 @@ function startDevIntelligenceHost(): void {
     // A broken module must never prevent DexNest from starting.
     console.warn("[dev-intelligence] host failed to start", error);
     devIntelligenceHost = null;
+  }
+}
+
+// --- Reality RPG ------------------------------------------------------------
+// Reads only event_log rows of the types its enabled rules name. Off by
+// default; its one light job is scheduled only after the user turns it on.
+let realityRpgHost: RealityRpgHost | null = null;
+
+function startRealityRpgHost(): void {
+  try {
+    realityRpgHost = createRealityRpgHost({
+      database: localDb.getSqlDatabase(),
+      events: localDb.getEventLog(),
+      scheduler: hostScheduler,
+      readSettings: () => readJsonFile<unknown>(realityRpgSettingsPath, {}),
+      writeSettings: (settings) => { writeJsonFile(realityRpgSettingsPath, settings); },
+      ipcMain,
+      getWindow: () => mainWindow,
+      audit: (summary, metadata, status) => {
+        localDb.appendActionEvent({
+          module: "reality_rpg",
+          eventType: "reality_rpg",
+          status: status === "success" ? "success" : "failed",
+          source: "system",
+          summary,
+          metadataJson: metadata
+        });
+      }
+    });
+  } catch (error) {
+    // A broken module must never prevent DexNest from starting.
+    console.warn("[reality-rpg] host failed to start", error);
+    realityRpgHost = null;
   }
 }
 
@@ -19753,6 +19788,7 @@ function navigationTargetForAction(actionId: string): { view: string; focusAssis
     "settings.open": { view: "settings", message: "DexNest opened Settings." },
     "audit.open_history": { view: "audit", message: "DexNest opened Audit." },
     "autopilot.open": { view: "autopilot", message: "DexNest opened Autopilot." },
+    "reality_rpg.open": { view: "rpg", message: "DexNest opened Reality RPG." },
     "system.health.open": { view: "settings", message: "DexNest opened App Health." },
     "system.performance.open": { view: "settings", message: "DexNest opened Performance Mode settings." }
   };
@@ -20291,6 +20327,22 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
       const reason = error instanceof Error ? error.message : "Could not draft a worklog.";
       logJournalEvent(actionId, "failed", source, "Worklog draft failed.", { date }, startedAt, reason);
       return { ok: false, actionId, error: reason };
+    }
+  }
+
+  if (actionId.startsWith("reality_rpg.")) {
+    if (!realityRpgHost) return { ok: false, actionId: action.id, error: "Reality RPG is not running." };
+    const params = typeof payload === "object" && payload !== null ? payload as Record<string, unknown> : {};
+    try {
+      const result = await runRealityRpgAction(realityRpgHost.module, actionId, params);
+      if (result) {
+        logActionEvent(action, result.ok ? "success" : "failed", source, result.message ?? result.error ?? action.title, {}, result.ok ? null : result.error ?? null, Date.now() - startedAt);
+        return { ...result, actionId: action.id };
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Reality RPG could not finish.";
+      logActionEvent(action, "failed", source, "Reality RPG action failed.", {}, reason, Date.now() - startedAt);
+      return { ok: false, actionId: action.id, error: reason };
     }
   }
 
@@ -23121,6 +23173,7 @@ app.whenReady().then(() => {
   registerIpcHandlers();
   startAutopilotHost();
   startDevIntelligenceHost();
+  startRealityRpgHost();
   syncAppLifecycleLoginItemStatus();
   cleanupClipboardHistory(false, "system");
   startActionEndpoint();
@@ -23181,6 +23234,7 @@ app.on("before-quit", () => {
   reapStaleSidecars(SPEECH_WORKER_MARKER, speechWorkerDiag.pid);
   destroyVoiceOverlay();
   stopHeatmapTimer();
+  realityRpgHost?.dispose();
   devIntelligenceHost?.dispose();
   void hostScheduler.dispose();
   if (weatherRefreshTimer) {

@@ -38,6 +38,9 @@ importers:
       '@dexnest/module-dev':
         specifier: workspace:*
         version: link:../../modules/dev
+      '@dexnest/reality-rpg':
+        specifier: workspace:*
+        version: link:../../packages/reality-rpg
       '@dexnest/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types

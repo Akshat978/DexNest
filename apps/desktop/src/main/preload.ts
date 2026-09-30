@@ -154,6 +154,13 @@ contextBridge.exposeInMainWorld("dexNest", {
   standupGenerate: (input?: { forceNew?: boolean }) => ipcRenderer.invoke("dexnest:standup-generate", input),
   standupLatest: () => ipcRenderer.invoke("dexnest:standup-latest"),
   standupList: (limit?: number) => ipcRenderer.invoke("dexnest:standup-list", limit),
+  // Reality RPG: reads and settings. Refresh, on/off, rules, quests,
+  // achievements and backfill are reality_rpg.* actions, run through runAction.
+  realityRpgStatus: () => ipcRenderer.invoke("dexnest:reality-rpg-status"),
+  realityRpgSnapshot: () => ipcRenderer.invoke("dexnest:reality-rpg-snapshot"),
+  realityRpgHistory: (query?: { beforeSeq?: number; limit?: number }) => ipcRenderer.invoke("dexnest:reality-rpg-history", query),
+  realityRpgSettings: () => ipcRenderer.invoke("dexnest:reality-rpg-settings"),
+  realityRpgUpdateSettings: (settings: unknown) => ipcRenderer.invoke("dexnest:reality-rpg-update-settings", settings),
   autopilotReadiness: (project: string) => ipcRenderer.invoke("dexnest:autopilot-readiness", project),
   autopilotRerunForm: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-rerun-form", runId),
   autopilotRunChanges: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-run-changes", runId),

@@ -4,7 +4,7 @@ Module id `reality_rpg` · table prefix `rpg_` · event namespace `rpg.` ·
 event stream `rpg` · view id `rpg` · package `@dexnest/reality-rpg` ·
 branch `cloud/reality-rpg`.
 
-Status: **Phase 4 (actions and events) done.** Decisions on the Phase 0 questions are in section 13b. Read with `AGENTS.md` and
+Status: **Phase 5 (host) done.** Decisions on the Phase 0 questions are in section 13b. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`. Shaped after Developer
 Intelligence's runtime/host split (`packages/dev-intelligence/src/module/runtime.ts`,
 `apps/desktop/src/main/devIntelligenceHost.ts`).
@@ -403,6 +403,37 @@ it actually wrote, so events in Phase 4 are raised for new things only.
   rescans from seq 0 (the ledger prevents double awards). Settings saved
   over IPC cannot switch the module on or off. Each user action writes one
   audit line through the host's callback.
+
+**Phase 5 notes.**
+
+- `apps/desktop/src/main/realityRpgHost.ts`: migrations, the module, IPC
+  reads (`dexnest:reality-rpg-status|snapshot|history|settings|update-settings`)
+  behind the trusted-main-frame check, `dispose()`. History page requests are
+  validated and capped at 200 rows. Settings over IPC cannot switch the module
+  on and are audited. No data boundary is needed: the module reads no files,
+  only `event_log` rows of named types.
+- `runRealityRpgAction` maps each `reality_rpg.*` action and its params to the
+  module, in the host file (tested) rather than in `main.ts`. `main.ts` routes
+  every `reality_rpg.*` id there, journals the result with `logActionEvent`,
+  starts the host after Developer Intelligence (independently of it), and
+  disposes it on quit. `reality_rpg.open` navigates to the `rpg` view.
+- As with Standup, a user action writes two audit lines: the action's own
+  journal line and the module's audit line (which also covers scheduled runs).
+- Preload: `realityRpgStatus/Snapshot/History/Settings/UpdateSettings`.
+  Renderer typings come with the view (Phase 6).
+
+### Needs Windows check (running list)
+
+- Electron IPC: the trusted-frame check against a real `BrowserWindow`; the
+  preload bridge under context isolation.
+- `reality-rpg-settings.json` written under the real settings root, not AppData.
+- The `reality_rpg.*` actions from the Command palette and the view, and
+  `reality_rpg.open` landing on the view.
+- Real audit rows from a Windows install: `payload.module` / `actionId` values
+  as the app writes them, so rules match what users expect.
+- Local day and ISO week in the Windows time zone (Intl on Windows uses ICU
+  zone names mapped from Windows zones).
+- Idle behaviour: no timer when off; one light timer when on.
 
 ## 14. Phases for this module
 
