@@ -12,3 +12,4 @@ export * from './export.ts';
 export * from './events.ts';
 export * from './settings.ts';
 export * from './read-api.ts';
+export * from './timeline.ts';

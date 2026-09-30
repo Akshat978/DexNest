@@ -4,7 +4,7 @@ Module id `object_os` · table prefix `obj_` · event namespace `object.` ·
 event stream `object` · view id `object` · package `@dexnest/object-os` ·
 branch `cloud/object-os`.
 
-Status: **Phase 1 (contracts) done.** `packages/object-os/src/domain/` exists; nothing is stored or wired yet. Read with `AGENTS.md` and
+Status: **Phase 2 (store) done.** Domain and store exist; nothing is wired into the app yet. Read with `AGENTS.md` and
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`. Shaped after Developer
 Intelligence's runtime/host split and the modules built before it on other
 branches (Skill Constellation, Reality RPG, GhostOS).
@@ -290,6 +290,27 @@ carry counts, not keys.
   outside `files/<object id>/`.
 - The read API is a fixed field list (`PUBLIC_OBJECT_FIELDS`) copied field by
   field: no serial, notes, photo or files, even if the record grows.
+
+### Refinements made in Phase 2
+
+- Module settings live in `obj_kv` (the plan said `obj_state_kv`).
+- Every stock change goes through `obj_stock_log`, including a part's first
+  quantity (`restocked`) and an edit that changes it (`corrected`); a
+  maintenance entry's parts are taken (`used`) in the same transaction, and
+  not enough stock refuses the whole entry.
+- A settings snapshot gets a new version only when its values change.
+- Deleting a schedule keeps its maintenance log (unlinked); deleting a
+  maintenance entry keeps the stock it used as used; deleting a part removes
+  its fits and stock log, and unlinks it from maintenance entries.
+- Search matches name, make, model, serial, location, tags and the short id
+  as printed (`PRN0-0000`), locally.
+- Exporting some objects drops parent links to objects not exported, and a
+  part's fits to them. Import keeps a part already here (by id) as it is and
+  adds its fits to the new objects; it records parts used by imported
+  maintenance but does not take stock again (the file's quantities already
+  reflect it).
+- The read API is `createObjectReadApi(store)`: list, get, components and
+  attention, public fields only.
 
 ## 15. Phases for this module
 
