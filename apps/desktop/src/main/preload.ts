@@ -154,6 +154,16 @@ contextBridge.exposeInMainWorld("dexNest", {
   standupGenerate: (input?: { forceNew?: boolean }) => ipcRenderer.invoke("dexnest:standup-generate", input),
   standupLatest: () => ipcRenderer.invoke("dexnest:standup-latest"),
   standupList: (limit?: number) => ipcRenderer.invoke("dexnest:standup-list", limit),
+  // ObjectOS: reads only. Every change - saving, files, reminders, export and
+  // import - is an object_os.* action, run through runAction.
+  objectOsStatus: () => ipcRenderer.invoke("dexnest:object-os-status"),
+  objectOsList: (filter?: unknown) => ipcRenderer.invoke("dexnest:object-os-list", filter),
+  objectOsDetail: (id: string) => ipcRenderer.invoke("dexnest:object-os-detail", id),
+  objectOsTimeline: (query: unknown) => ipcRenderer.invoke("dexnest:object-os-timeline", query),
+  objectOsAttention: () => ipcRenderer.invoke("dexnest:object-os-attention"),
+  objectOsSettingsDiff: (query: unknown) => ipcRenderer.invoke("dexnest:object-os-settings-diff", query),
+  objectOsLocations: () => ipcRenderer.invoke("dexnest:object-os-locations"),
+  objectOsPhoto: (fileId: string) => ipcRenderer.invoke("dexnest:object-os-photo", fileId),
   // GhostOS: reads and settings. Saving, forgetting, sources, sync, export and
   // import are ghost_os.* actions, run through runAction.
   ghostOsStatus: () => ipcRenderer.invoke("dexnest:ghost-os-status"),

@@ -23,6 +23,7 @@ import { createActionRegistry, createStreamDeckActionCatalog, seededActions, str
 import { createLocalDb } from "@dexnest/local-db";
 import { createAutopilotHost, type AutopilotHost } from "./autopilotHost.js";
 import { createDevIntelligenceHost, type DevIntelligenceHost } from "./devIntelligenceHost.js";
+import { createObjectOsHost, objectJournalLine, runObjectOsAction, type ObjectOsHost } from "./objectOsHost.js";
 import { createGhostOsHost, runGhostOsAction, type GhostOsHost } from "./ghostOsHost.js";
 import { createRealityRpgHost, runRealityRpgAction, type RealityRpgHost } from "./realityRpgHost.js";
 import { createSkillConstellationHost, type SkillConstellationHost } from "./skillConstellationHost.js";
@@ -483,6 +484,67 @@ function startGhostOsHost(): void {
     // A broken module must never prevent DexNest from starting.
     console.warn("[ghost-os] host failed to start", error);
     ghostOsHost = null;
+  }
+}
+
+// --- ObjectOS ---------------------------------------------------------------
+// The owner's physical things: records, schedules, parts, files. Reads and
+// writes only its own obj_ tables and files/objects/ in the data root; never
+// another module's data. Nothing runs in the background until the owner turns
+// daily reminders on (one light job).
+let objectOsHost: ObjectOsHost | null = null;
+
+function startObjectOsHost(): void {
+  try {
+    objectOsHost = createObjectOsHost({
+      database: localDb.getSqlDatabase(),
+      events: localDb.getEventLog(),
+      dataRoot: localDataRoot,
+      otherDataRoots: [CANONICAL_DATA_ROOT, resolve(repoRoot, "local-data")],
+      scheduler: hostScheduler,
+      ipcMain,
+      getWindow: () => mainWindow,
+      dialogs: {
+        async chooseAttachSource() {
+          const options = { title: "Attach a file", properties: ["openFile" as const] };
+          const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+          return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0] ?? null;
+        },
+        async chooseExportPath(defaultName) {
+          const options = { title: "Export ObjectOS", defaultPath: defaultName, filters: [{ name: "ObjectOS export", extensions: ["zip"] }] };
+          const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
+          return result.canceled || !result.filePath ? null : result.filePath;
+        },
+        async chooseImportPath() {
+          const options = { title: "Import ObjectOS", properties: ["openFile" as const], filters: [{ name: "ObjectOS export", extensions: ["zip"] }] };
+          const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+          return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0] ?? null;
+        }
+      },
+      shell: {
+        openPath: (path) => shell.openPath(path),
+        showItemInFolder: (path) => { shell.showItemInFolder(path); }
+      },
+      notify: (title, body) => {
+        try {
+          if (Notification.isSupported()) new Notification({ title, body, silent: true }).show();
+        } catch { /* a notification is not worth an error */ }
+      },
+      audit: (summary, metadata, status) => {
+        localDb.appendActionEvent({
+          module: "object_os",
+          eventType: "object_os",
+          status: status === "success" ? "success" : "failed",
+          source: "system",
+          summary,
+          metadataJson: metadata
+        });
+      }
+    });
+  } catch (error) {
+    // A broken module must never prevent DexNest from starting.
+    console.warn("[object-os] host failed to start", error);
+    objectOsHost = null;
   }
 }
 
@@ -19884,6 +19946,7 @@ function navigationTargetForAction(actionId: string): { view: string; focusAssis
     "settings.open": { view: "settings", message: "DexNest opened Settings." },
     "audit.open_history": { view: "audit", message: "DexNest opened Audit." },
     "autopilot.open": { view: "autopilot", message: "DexNest opened Autopilot." },
+    "object_os.open": { view: "object", message: "DexNest opened ObjectOS." },
     "ghost_os.open": { view: "ghost", message: "DexNest opened GhostOS." },
     "reality_rpg.open": { view: "rpg", message: "DexNest opened Reality RPG." },
     "skill_constellation.open": { view: "skills", message: "DexNest opened Skill Constellation." },
@@ -20458,6 +20521,25 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
       const reason = error instanceof Error ? error.message : "GhostOS could not finish.";
       logActionEvent(action, "failed", source, "GhostOS action failed.", {}, reason, Date.now() - startedAt);
       return { ok: false, actionId: action.id, error: reason };
+    }
+  }
+
+  if (actionId.startsWith("object_os.") && actionId !== "object_os.open") {
+    if (!objectOsHost) return { ok: false, actionId: action.id, error: "ObjectOS is not running." };
+    const params = typeof payload === "object" && payload !== null ? payload as Record<string, unknown> : {};
+    try {
+      const result = await runObjectOsAction(objectOsHost, actionId, params, { source, allowedTriggers: action.allowedTriggers });
+      if (result) {
+        // Journalled as fixed text with counts; never what the owner typed.
+        const line = objectJournalLine(result);
+        logActionEvent(action, result.ok ? "success" : result.cancelled ? "cancelled" : "failed", source, line.summary, {}, line.error, Date.now() - startedAt);
+        return { ...result, actionId: action.id };
+      }
+    } catch (error) {
+      // An unexpected failure is journalled without its message: it could quote a path.
+      console.warn("[object-os] action failed", error);
+      logActionEvent(action, "failed", source, "ObjectOS action failed.", {}, "ObjectOS could not finish.", Date.now() - startedAt);
+      return { ok: false, actionId: action.id, error: "ObjectOS could not finish." };
     }
   }
 
@@ -23288,8 +23370,6 @@ if (gotSingleInstanceLock) {
       actionId: "system.lifecycle.second_instance",
       eventType: "second_instance_focused",
       status: "success",
-  startGhostOsHost();
-  startRealityRpgHost();
       source: "system",
       summary: "Focused the existing DexNest instance instead of opening a duplicate.",
       metadataJson: {}
@@ -23314,6 +23394,9 @@ app.whenReady().then(() => {
   startAutopilotHost();
   startDevIntelligenceHost();
   startSkillConstellationHost();
+  startRealityRpgHost();
+  startGhostOsHost();
+  startObjectOsHost();
   syncAppLifecycleLoginItemStatus();
   cleanupClipboardHistory(false, "system");
   startActionEndpoint();
@@ -23349,9 +23432,7 @@ app.whenReady().then(() => {
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-  ghostOsHost?.dispose();
       createWindow();
-  realityRpgHost?.dispose();
     }
   });
 });
@@ -23376,6 +23457,9 @@ app.on("before-quit", () => {
   reapStaleSidecars(SPEECH_WORKER_MARKER, speechWorkerDiag.pid);
   destroyVoiceOverlay();
   stopHeatmapTimer();
+  objectOsHost?.dispose();
+  ghostOsHost?.dispose();
+  realityRpgHost?.dispose();
   skillConstellationHost?.dispose();
   devIntelligenceHost?.dispose();
   void hostScheduler.dispose();

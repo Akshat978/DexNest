@@ -1,0 +1,390 @@
+/* ObjectOS. DexNest design tokens only - no literal colours. Accent is the
+   existing --accent-tools token; fonts are --font-ui and, for ids, serials,
+   part numbers, amounts, numbers and dates, --font-tech. Nothing animates. */
+
+.objectos {
+  font-family: var(--font-ui);
+}
+
+.objectos .technical {
+  font-family: var(--font-tech);
+}
+
+.objectos-notice {
+  margin: 0;
+  color: var(--text);
+}
+
+.objectos-notice--error,
+.objectos-error {
+  color: var(--error);
+}
+
+.objectos-error {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.objectos-hint,
+.objectos-meta {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.objectos-intro {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.objectos-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.objectos button:focus-visible,
+.objectos input:focus-visible,
+.objectos select:focus-visible,
+.objectos textarea:focus-visible,
+.objectos [role="tabpanel"]:focus-visible {
+  outline: 2px solid var(--accent-tools);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px var(--focus-ring);
+}
+
+.objectos-layout {
+  display: grid;
+  grid-template-columns: minmax(16rem, 0.8fr) minmax(0, 1.6fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .objectos-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.objectos-column,
+.objectos-stack {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.objectos-stack h4 {
+  margin: 0 0 var(--space-2);
+}
+
+.objectos-search {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.objectos-search label {
+  flex-basis: 100%;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.objectos-search input {
+  flex: 1 1 10rem;
+}
+
+.objectos-filters,
+.objectos-inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--space-2);
+}
+
+.objectos-filters label,
+.objectos-inline-form > label,
+.objectos-inline {
+  display: grid;
+  gap: var(--space-1);
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.objectos-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.objectos-item {
+  display: grid;
+  gap: var(--space-1);
+  width: 100%;
+  margin: 0;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font-family: var(--font-ui);
+  padding: var(--space-2) var(--space-3);
+}
+
+button.objectos-item:hover {
+  background: var(--surface-hover);
+}
+
+.objectos-item[aria-current="true"] {
+  border-color: var(--accent-tools);
+}
+
+.objectos-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: start;
+  gap: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: var(--space-2);
+}
+
+.objectos-row > span {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.objectos-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+  display: grid;
+  gap: var(--space-2);
+}
+
+.objectos-card h3,
+.objectos-card h4,
+.objectos-card p {
+  margin: 0;
+}
+
+.objectos-detail {
+  display: grid;
+  gap: var(--space-3);
+  border-top: 2px solid var(--accent-tools);
+  padding-top: var(--space-3);
+}
+
+.objectos-detail-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: start;
+  gap: var(--space-3);
+}
+
+.objectos-detail-head h3 {
+  margin: 0;
+}
+
+.objectos-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: var(--space-2);
+}
+
+.objectos-tabs [role="tab"] {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-family: var(--font-ui);
+  padding: var(--space-1) var(--space-3);
+}
+
+.objectos-tabs [role="tab"][aria-selected="true"] {
+  border-color: var(--accent-tools);
+  color: var(--text);
+}
+
+.objectos-panel {
+  padding-top: var(--space-2);
+}
+
+.objectos-photo {
+  max-width: min(100%, 24rem);
+  max-height: 18rem;
+  object-fit: contain;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.objectos-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+}
+
+.objectos-facts > div {
+  display: contents;
+}
+
+.objectos-facts dt {
+  color: var(--text-muted);
+}
+
+.objectos-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.objectos-values {
+  flex-basis: 100%;
+  font-size: 0.85rem;
+}
+
+.objectos-notes {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.objectos-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.objectos-table th,
+.objectos-table td {
+  text-align: left;
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.objectos-table thead th {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.objectos-form {
+  display: grid;
+  gap: var(--space-2);
+  max-width: 44rem;
+}
+
+.objectos-form h3,
+.objectos-form h4 {
+  margin: 0;
+}
+
+.objectos-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
+  gap: var(--space-2) var(--space-3);
+}
+
+.objectos-field {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.objectos-field label,
+.objectos-check {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.objectos-field textarea {
+  font-family: var(--font-ui);
+}
+
+.objectos-field textarea.technical {
+  font-family: var(--font-tech);
+}
+
+.objectos-field [aria-invalid="true"] {
+  border-color: var(--error);
+}
+
+.objectos-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.objectos-link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent-tools);
+  font-family: var(--font-ui);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.objectos-danger {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.objectos-confirm {
+  border: 1px solid var(--error);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  display: grid;
+  gap: var(--space-2);
+}
+
+.objectos-confirm p {
+  margin: 0;
+}
+
+.objectos-due {
+  font-size: 0.85rem;
+}
+
+/* Tone is never colour alone: every toned line also says it in words. */
+.objectos-tone-bad {
+  color: var(--error);
+}
+
+.objectos-tone-warn {
+  color: var(--warning);
+}
+
+.objectos-tone-ok {
+  color: var(--success);
+}
+
+.objectos-tone-quiet {
+  color: var(--text-muted);
+}
+
+.objectos-item.objectos-tone-bad,
+.objectos-item.objectos-tone-warn {
+  color: var(--text);
+  border-left: 3px solid var(--warning);
+}
+
+.objectos-item.objectos-tone-bad {
+  border-left-color: var(--error);
+}
+
+.objectos-diff {
+  display: grid;
+  gap: var(--space-1);
+  font-size: 0.85rem;
+}
