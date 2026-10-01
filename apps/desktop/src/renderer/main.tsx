@@ -59,9 +59,11 @@ import { SkillConstellationView, type SkillConstellationBridge } from "./views/S
 import { RealityRpgView, type RealityRpgBridge } from "./views/RealityRpgView";
 import { GhostOsView, type GhostOsBridge } from "./views/GhostOsView";
 import { ObjectOsView, type ObjectOsBridge } from "./views/ObjectOsView";
+import { ViewErrorBoundary } from "./components/ViewErrorBoundary";
 import { BackupView } from "./views/BackupView";
 import { ExternalDevicesView } from "./views/ExternalDevicesView";
 import logoUrl from "./logo.png";
+import "@dexnest/shared-ui/fonts.css";
 import "@dexnest/shared-ui/tokens.css";
 import "./styles.css";
 import "./theme.css";
@@ -6198,6 +6200,11 @@ function DexNestApp() {
             exit={{ opacity: 0, y: -6 }}
             transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
           >
+          <ViewErrorBoundary
+            key={activeView}
+            viewLabel={views.find((view) => view.id === activeView)?.label ?? activeView}
+            onLeave={activeView === "command" ? undefined : () => void navigate("command")}
+          >
           {activeView === "command" && (
             <CommandView
               userName={userName}
@@ -6480,6 +6487,7 @@ function DexNestApp() {
               onRefresh={refreshShellData}
             />
           )}
+          </ViewErrorBoundary>
           </motion.div>
           </AnimatePresence>
           </div>
