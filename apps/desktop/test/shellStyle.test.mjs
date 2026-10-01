@@ -28,3 +28,49 @@ test("checkboxes and radios are not stretched to full width by the global input 
   const selector = rule[1].replace(/\/\*[\s\S]*?\*\//g, "").trim();
   assert.match(selector, /^input:where\(:not\(\[type="checkbox"\], \[type="radio"\]\)\),\s*textarea,\s*select$/);
 });
+
+const repo = fileURLToPath(new URL("../../..", import.meta.url));
+
+test("Inter and JetBrains Mono are bundled and loaded locally, never from the network", () => {
+  const css = readFileSync(join(repo, "packages/shared-ui/src/fonts.css"), "utf8");
+  const faces = [...css.matchAll(/@font-face \{([\s\S]*?)\}/g)].map((m) => m[1]);
+  const families = new Set(faces.map((f) => f.match(/font-family: "([^"]+)"/)?.[1]));
+  assert.deepEqual([...families].sort(), ["Inter", "JetBrains Mono"]);
+  assert.doesNotMatch(css, /https?:|\/\/fonts\./, "no remote font URLs");
+  for (const f of faces) {
+    for (const [, file] of f.matchAll(/url\("\.\/(fonts\/[^"]+\.woff2)"\)/g)) {
+      assert.ok(readFileSync(join(repo, "packages/shared-ui/src", file)).length > 1000, file);
+    }
+  }
+  for (const lic of ["inter-LICENSE.txt", "jetbrains-mono-LICENSE.txt"]) {
+    assert.match(readFileSync(join(repo, "packages/shared-ui/src/fonts", lic), "utf8"), /SIL Open Font License/);
+  }
+  // The token names the families exactly as declared.
+  const tokens = readFileSync(join(repo, "packages/shared-ui/src/tokens.css"), "utf8");
+  assert.match(tokens, /--font-ui: Inter,/);
+  assert.match(tokens, /--font-tech: "JetBrains Mono",/);
+  const shell = readFileSync(join(renderer, "main.tsx"), "utf8");
+  assert.ok(shell.indexOf('import "@dexnest/shared-ui/fonts.css";') >= 0 && shell.indexOf('import "@dexnest/shared-ui/fonts.css";') < shell.indexOf('import "@dexnest/shared-ui/tokens.css";'));
+});
+
+test("focus outlines are solid and control outlines meet 3:1", () => {
+  const tokens = readFileSync(join(repo, "packages/shared-ui/src/tokens.css"), "utf8");
+  assert.match(tokens, /--focus-outline: var\(--accent\);/);
+  assert.match(tokens, /--border-strong: #666666;/);
+  const css = readFileSync(join(renderer, "styles.css"), "utf8");
+  assert.doesNotMatch(css, /outline: 2px solid var\(--focus-ring\)/, "the 40% ring is a glow, not an outline");
+  assert.match(css, /select \{\s*width: 100%;[\s\S]*?border: 1px solid var\(--border-strong\);/);
+});
+
+test("every view is wrapped in the error boundary, keyed by the view", () => {
+  const shell = readFileSync(join(renderer, "main.tsx"), "utf8");
+  const open = shell.indexOf("<ViewErrorBoundary");
+  const close = shell.indexOf("</ViewErrorBoundary>");
+  assert.ok(open > 0 && close > open);
+  assert.match(shell.slice(open, open + 120), /key=\{activeView\}/);
+  const inside = shell.slice(open, close);
+  const allViews = [...shell.matchAll(/\{activeView === "([a-z]+)" &&/g)].map((m) => m[1]);
+  const wrapped = [...inside.matchAll(/\{activeView === "([a-z]+)" &&/g)].map((m) => m[1]);
+  assert.ok(wrapped.length >= 20, `${wrapped.length} views wrapped`);
+  assert.deepEqual(allViews.filter((v) => !wrapped.includes(v)), []);
+});

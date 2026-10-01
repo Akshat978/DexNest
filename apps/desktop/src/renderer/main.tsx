@@ -55,9 +55,11 @@ import type { PinInput, PinsContextValue } from "./components/pins";
 import { ClipboardView } from "./views/ClipboardView";
 import { AuditView } from "./views/AuditView";
 import { AutopilotView } from "./views/AutopilotView";
+import { ViewErrorBoundary } from "./components/ViewErrorBoundary";
 import { BackupView } from "./views/BackupView";
 import { ExternalDevicesView } from "./views/ExternalDevicesView";
 import logoUrl from "./logo.png";
+import "@dexnest/shared-ui/fonts.css";
 import "@dexnest/shared-ui/tokens.css";
 import "./styles.css";
 import "./theme.css";
@@ -6194,6 +6196,11 @@ function DexNestApp() {
             exit={{ opacity: 0, y: -6 }}
             transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
           >
+          <ViewErrorBoundary
+            key={activeView}
+            viewLabel={views.find((view) => view.id === activeView)?.label ?? activeView}
+            onLeave={activeView === "command" ? undefined : () => void navigate("command")}
+          >
           {activeView === "command" && (
             <CommandView
               userName={userName}
@@ -6472,6 +6479,7 @@ function DexNestApp() {
               onRefresh={refreshShellData}
             />
           )}
+          </ViewErrorBoundary>
           </motion.div>
           </AnimatePresence>
           </div>
