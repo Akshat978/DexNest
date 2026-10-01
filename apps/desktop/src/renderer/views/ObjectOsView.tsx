@@ -98,6 +98,8 @@ type Run = (actionId: string, params?: Record<string, unknown>) => Promise<boole
 type Ask = (confirm: Confirm) => void;
 
 const HISTORY_PAGE = 50;
+/** How many "needs attention" items show before "Show all". */
+export const ATTENTION_PREVIEW = 5;
 
 function errorText(e: unknown): string {
   return e instanceof Error ? e.message : "Something went wrong.";
@@ -131,6 +133,7 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
   const [filter, setFilter] = useState<{ category: string; status: string; location: string }>({ category: "", status: "", location: "" });
   const [history, setHistory] = useState<TimelineItem[]>(initial?.history ?? []);
   const [moreHistory, setMoreHistory] = useState(false);
+  const [showAllAttention, setShowAllAttention] = useState(false);
   const tabRefs = useRef(new Map<Tab, HTMLButtonElement>());
 
   const listFilter = useCallback(
@@ -288,7 +291,7 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
   return (
     <section className="view-stack objectos" aria-labelledby="objectos-title" aria-busy={state.kind === "loading" || busy}>
       <PageHeader eyebrow="Your things, and everything about them" title="ObjectOS" titleId="objectos-title" actions={headerActions} />
-      <div aria-live="polite">
+      <div className="objectos-live" aria-live="polite">
         {notice && <p className={notice.ok ? "objectos-notice" : "objectos-notice objectos-notice--error"} role={notice.ok ? "status" : "alert"}>{notice.text}</p>}
       </div>
 
@@ -297,7 +300,9 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
       {state.kind === "error" && (
         <div className="objectos-error" role="alert">
           <p>ObjectOS could not load: {state.message}</p>
-          <button type="button" onClick={() => void load()}>Try again</button>
+          <div className="button-row">
+            <button type="button" onClick={() => void load()}>Try again</button>
+          </div>
         </div>
       )}
 
@@ -305,6 +310,10 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
         <div className="empty-state objectos-intro">
           <p>ObjectOS keeps one record for each thing you own: what it is, where it is, its maintenance, parts, settings, measurements, files and receipts, and everything that happened to it.</p>
           <p>Nothing is in it yet. Add your first object, or import an ObjectOS export. Everything stays on this computer; ObjectOS never reads Finance, Vault or any other module's data.</p>
+          <div className="button-row">
+            <button type="button" className="objectos-primary" disabled={busy} onClick={() => { setEditing(EMPTY_OBJECT_FORM); setDetail(null); }}>Add your first object</button>
+            <button type="button" disabled={busy} onClick={() => void run("object_os.import")}>Import an export…</button>
+          </div>
         </div>
       )}
 
@@ -319,8 +328,8 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
                   <h3 id="objectos-attention-title">Needs attention</h3>
                   <p className="objectos-meta">{attentionSummaryText(attention.summary.counts)}</p>
                   {attention.summary.items.length > 0 && (
-                    <ul className="objectos-list" aria-label="Needs attention">
-                      {attention.summary.items.map((item, i) => {
+                    <ul className="objectos-list" id="objectos-attention-list" aria-label="Needs attention">
+                      {(showAllAttention ? attention.summary.items : attention.summary.items.slice(0, ATTENTION_PREVIEW)).map((item, i) => {
                         const line = attentionLabel(item, attention.names);
                         return (
                           <li key={i}>
@@ -339,6 +348,11 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
                         );
                       })}
                     </ul>
+                  )}
+                  {attention.summary.items.length > ATTENTION_PREVIEW && (
+                    <button type="button" className="objectos-link" aria-expanded={showAllAttention} aria-controls="objectos-attention-list" onClick={() => setShowAllAttention(!showAllAttention)}>
+                      {showAllAttention ? "Show the most urgent only" : `Show all ${attention.summary.items.length}`}
+                    </button>
                   )}
                 </section>
               )}
@@ -421,12 +435,9 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
                   </div>
                   <div className="button-row">
                     <button type="button" disabled={busy} onClick={() => setEditing(formFromObject(detail.object))}>Edit</button>
-                    <label className="objectos-inline">
-                      Status
-                      <select value={detail.object.status} disabled={busy} onChange={(e) => void run("object_os.object.set_status", { input: { id: detail.object.id, status: e.target.value } })}>
-                        {STATUS_LIST.map((s) => <option key={s} value={s}>{STATUS_LABELS[s]}</option>)}
-                      </select>
-                    </label>
+                    <select className="objectos-status-select" aria-label="Status" value={detail.object.status} disabled={busy} onChange={(e) => void run("object_os.object.set_status", { input: { id: detail.object.id, status: e.target.value } })}>
+                      {STATUS_LIST.map((s) => <option key={s} value={s}>{STATUS_LABELS[s]}</option>)}
+                    </select>
                     <button type="button" disabled={busy} onClick={() => void run("object_os.export", { objectIds: [detail.object.id] })}>Export…</button>
                     <button
                       type="button"
@@ -500,21 +511,43 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
 
 function ConfirmBox({ confirm, busy, onConfirm, onCancel }: { confirm: Confirm; busy: boolean; onConfirm(): void; onCancel(): void }) {
   const cancelRef = useRef<HTMLButtonElement>(null);
+  const confirmRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     // The safe choice has focus: Enter on an unexpected dialog does nothing harmful.
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     cancelRef.current?.focus();
+    // Back to whatever opened it when it closes.
+    return () => opener?.focus();
   }, [confirm]);
+  function onKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      onCancel();
+      return;
+    }
+    if (e.key !== "Tab") return;
+    // Focus stays inside the dialog: two buttons, wrapping both ways.
+    const order = [confirmRef.current, cancelRef.current].filter((b): b is HTMLButtonElement => b !== null && !b.disabled);
+    if (order.length === 0) return;
+    const at = order.indexOf(document.activeElement as HTMLButtonElement);
+    e.preventDefault();
+    const next = e.shiftKey ? (at <= 0 ? order.length - 1 : at - 1) : (at + 1) % order.length;
+    order[next]?.focus();
+  }
   return (
-    <div
-      className="objectos-confirm"
-      role="alertdialog"
-      aria-labelledby="objectos-confirm-text"
-      onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); onCancel(); } }}
-    >
-      <p id="objectos-confirm-text">{confirm.question}</p>
-      <div className="button-row">
-        <button type="button" className="objectos-danger" disabled={busy} onClick={onConfirm}>Delete</button>
-        <button type="button" ref={cancelRef} onClick={onCancel}>Cancel</button>
+    <div className="objectos-backdrop">
+      <div
+        className="objectos-confirm"
+        role="alertdialog"
+        aria-labelledby="objectos-confirm-text"
+        aria-modal="true"
+        onKeyDown={onKeyDown}
+      >
+        <p id="objectos-confirm-text">{confirm.question}</p>
+        <div className="button-row">
+          <button type="button" ref={confirmRef} className="objectos-danger" disabled={busy} onClick={onConfirm}>Delete</button>
+          <button type="button" ref={cancelRef} onClick={onCancel}>Cancel</button>
+        </div>
       </div>
     </div>
   );
@@ -546,7 +579,7 @@ function ObjectFormPanel(props: {
   return (
     <form className="objectos-form" aria-labelledby="objectos-form-title" onSubmit={props.onSubmit}>
       <h3 id="objectos-form-title">{form.id ? "Edit object" : "Add an object"}</h3>
-      <Field id="objectos-f-name" label="Name">
+      <Field id="objectos-f-name" label="Name (required)">
         <input id="objectos-f-name" required maxLength={120} value={form.name} onChange={(e) => set("name", e.target.value)} />
       </Field>
       <div className="objectos-grid">

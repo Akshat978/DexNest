@@ -193,12 +193,20 @@ button.objectos-item:hover {
   margin: 0;
 }
 
+/* One row, scrolling sideways when nine tabs do not fit. */
 .objectos-tabs {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: var(--space-1);
+  overflow-x: auto;
+  scrollbar-width: thin;
   border-bottom: 1px solid var(--border);
   padding-bottom: var(--space-2);
+}
+
+.objectos-tabs [role="tab"] {
+  flex: none;
+  white-space: nowrap;
 }
 
 .objectos-tabs [role="tab"] {
@@ -340,12 +348,26 @@ button.objectos-item:hover {
   color: var(--error);
 }
 
-.objectos-confirm {
-  border: 1px solid var(--error);
-  border-radius: var(--radius-md);
-  padding: var(--space-3);
+/* The confirmation is a modal over the view, next to nothing it could be mistaken for. */
+.objectos-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
   display: grid;
-  gap: var(--space-2);
+  place-items: center;
+  padding: var(--space-5);
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+}
+
+.objectos-confirm {
+  width: min(32rem, 100%);
+  background: var(--surface);
+  border: 1px solid var(--error);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  display: grid;
+  gap: var(--space-4);
+  box-shadow: var(--shadow-panel);
 }
 
 .objectos-confirm p {
@@ -387,4 +409,42 @@ button.objectos-item:hover {
   display: grid;
   gap: var(--space-1);
   font-size: 0.85rem;
+}
+
+/* An empty live region takes no grid row (it stays rendered, so it still
+   announces); with a notice in it, it is in the flow again. */
+.objectos-live:empty {
+  position: absolute;
+}
+
+.objectos-error {
+  justify-items: start;
+}
+
+.objectos-primary {
+  background: color-mix(in srgb, var(--accent-tools) 16%, var(--surface-2));
+  border-color: color-mix(in srgb, var(--accent-tools) 60%, var(--border));
+  color: var(--text);
+}
+
+.objectos-status-select {
+  width: auto;
+}
+
+/* Row actions sit side by side, never stacked. */
+.objectos-row > .button-row,
+.objectos-table .button-row {
+  display: flex;
+  flex-wrap: nowrap;
+}
+
+.objectos-table th,
+.objectos-table td {
+  vertical-align: middle;
+}
+
+/* Dates, sizes and amounts never break across lines. */
+.objectos-table .technical,
+.objectos-table time {
+  white-space: nowrap;
 }
