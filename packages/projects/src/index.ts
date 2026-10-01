@@ -23,3 +23,8 @@ export * from "./store/store.ts";
 export * from "./store/legacyMigration.ts";
 export * from "./node/legacyFile.ts";
 export * from "./module/manifest.ts";
+export * from "./git/readOnlyArgv.ts";
+export * from "./git/runner.ts";
+export * from "./git/parse.ts";
+export * from "./git/reader.ts";
+export * from "./node/gitRunner.ts";

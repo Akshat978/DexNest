@@ -86,8 +86,9 @@ function sources(dir: string): string[] {
 }
 
 test("the domain is pure: no I/O, no process, no network, no LLM, never git-ops or Developer Intelligence", () => {
-  const forbidden = /from\s+["'](node:)?(fs|child_process|net|http|https|dgram|tls|worker_threads|electron|axios|got|node-fetch|undici)["']|@dexnest\/git-ops|@dexnest\/dev-intelligence|\b(openai|anthropic|@ai-sdk|langchain|ollama)\b|(?<![.\w])fetch\(|\bprocess\.env\b|(?<![.\w])spawn\(|(?<![.\w])exec(File|Sync)?\(/;
-  const offenders = sources(join(SRC, "domain")).filter((file) => forbidden.test(readFileSync(file, "utf8")));
+  const forbidden = /from\s+["'](node:)?(fs|child_process|net|http|https|dgram|tls|worker_threads|electron|axios|got|node-fetch|undici)["']|@dexnest\/git-ops|@dexnest\/dev-intelligence|\b(openai|anthropic|@ai-sdk|langchain|ollama)\b|(?<![.\w-])fetch\(|\bprocess\.env\b|(?<![.\w-])spawn\(|(?<![.\w-])exec(File|Sync)?\(/;
+  // git/ is the read engine: it reaches git and the disk only through injected ports.
+  const offenders = [...sources(join(SRC, "domain")), ...sources(join(SRC, "git"))].filter((file) => forbidden.test(readFileSync(file, "utf8")));
   assert.deepEqual(offenders, []);
 });
 

@@ -5,7 +5,7 @@ event stream `projects` · view id `dev` (kept, see 16) · packages
 `@dexnest/projects` and `@dexnest/git-ops` · host
 `apps/desktop/src/main/projectsHost.ts` · branch `cloud/projects`.
 
-Status: **Phase 2 (store) done.** Owner accepted every default in 18. Read with `AGENTS.md`,
+Status: **Phase 3 (git read engine) done.** Owner accepted every default in 18. Read with `AGENTS.md`,
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md` and `docs/ui-audit/REPORT.md` (on
 `cloud/ui-audit`). Shaped after Developer Intelligence's runtime/host split
 and the modules built before it (ObjectOS, GhostOS, Reality RPG, Skill
@@ -669,6 +669,49 @@ All ten defaults in section 18 are accepted as written.
   a commit message and file path never reach the journal.
 - Manifest: view `dev` titled "Projects", job `scheduled_fetch` (heavy,
   30 min default, only scheduled when enabled - Phase 6).
+
+### Refinements made in Phase 3
+
+- **Ports**: the engine (`src/git/`) reaches git through a `GitRunner` port
+  and the disk through a two-method `RepoFsPort` (does a marker file exist;
+  FETCH_HEAD's mtime). Node implementations live in `src/node/gitRunner.ts`
+  (argv only, `shell: false`, `windowsHide`, timeout and AbortSignal kill,
+  output cap; a missing working folder is reported as such rather than as a
+  missing git). git-ops will reuse the runner with its own validator.
+- **Allowlist as built**: `rev-parse`, `status --porcelain*`,
+  `for-each-ref`, `rev-list`, `log`, `merge-base`, `ls-files`,
+  `diff` (stats only, and only with `--no-ext-diff --no-textconv`),
+  `cat-file -e/-t`, `stash list|show`, `worktree list`, `remote` /
+  `remote -v` / `remote get-url`, `config --get*` (optionally `--file`),
+  `version`. Only the engine's own global options may precede the verb.
+  `--output`, `--ext-diff`, `--textconv`, `--upload-pack`, `--receive-pack`,
+  `--exec` are refused anywhere.
+- **Every read** runs with `--no-optional-locks`, `GIT_OPTIONAL_LOCKS=0`,
+  `-c core.fsmonitor=false`, `-c core.quotepath=false`, no colour, no pager,
+  `GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`. The mutation check showed
+  the optional-locks guard matters: without it a plain status rewrites the
+  index, which the "reading never changes the repository" test (hashing
+  every file under `.git`) catches.
+- **Ahead/behind vs upstream** comes from `for-each-ref`'s
+  `%(upstream:track)` (one call for every branch, and it reports `gone`);
+  vs the default branch is one `rev-list --left-right --count` per branch,
+  4 at a time, for the 50 most recent branches (local + remote, 100 refs)
+  unless all are asked for. "Merged into default" = 0 commits ahead of it.
+- **Default branch**: the remote's `HEAD` symref (origin first), else
+  `main`, else `master`; compared against the local branch if it exists,
+  else the remote one.
+- **Upstreams that are local branches** (`remote = .`) are treated as no
+  upstream: there is nothing to push to.
+- `--path-format=absolute` needs git 2.31+ and `stash show
+  --include-untracked` 2.32+ (needs Windows check of the installed git).
+  A folder git refuses for ownership (`safe.directory`) is reported in
+  plain words, not as an error.
+- **Errors vs states**: a missing folder, a plain folder, a bare repository
+  and an untrusted folder are `isRepo: false` states; git missing, a
+  timeout and a cancel are `GitReadError`s, so the view can say which.
+- Submodules come from `.gitmodules` (`config --file`), listed and not
+  recursed into. History marks commits on a remote with
+  `rev-list HEAD --not --remotes`.
 
 ## 19. Phases for this module
 
