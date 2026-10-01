@@ -1,5 +1,28 @@
 # DexNest UI audit - new module views
 
+> **Update - fixed so far** (branch `cloud/ui-fixes`, based on `main`, commit
+> `548f485`; merged into this branch for the screenshots in
+> `screenshots/after-fixes/`):
+> - **X1 sidebar accent** - tints are built with `color-mix()` (`accentTint()`
+>   in `lib/moduleMeta.ts`) for the sidebar and the three other module-accent
+>   tints (pinned actions, pins, Deck catalogue). Every new module's active
+>   entry now shows its tint, border and glow:
+>   `after-fixes/sidebar-object-1280x800.jpg` (before:
+>   `sidebar-object-1280x800.jpg`), and the same for ghost, rpg and skills.
+> - **X7 checkbox width** - the global rule now applies to
+>   `input:where(:not([type="checkbox"], [type="radio"]))`; specificity is
+>   unchanged, so classes still win. Reality RPG's quest form:
+>   `after-fixes/rpg-tab-quests-1280x800.jpg` (before:
+>   `rpg-tab-quests-1280x800.jpg`).
+> - **No change to existing views**: Command, Tools, Calendar's sidebar entry
+>   and four Settings sections (89 existing checkboxes live in Settings and
+>   elsewhere) were shot before and after; no pixel differs by more than 11
+>   of 255 levels (JPEG noise and the 7% vs 7.06% tint rounding). After
+>   shots: `after-fixes/existing-*`.
+> - Tests: `apps/desktop/test/shellStyle.test.mjs` (both mutations - a hex
+>   suffix back in the sidebar, checkboxes back in the global rule - fail it);
+>   desktop 168 pass on `main` + the fix.
+
 Branch `cloud/ui-audit` = `main` + Skill Constellation (`claude/admiring-babbage-kbw2ew`)
 + Reality RPG (`cloud/reality-rpg`) + GhostOS (`cloud/ghost-os`) + ObjectOS
 (`cloud/object-os`). **Report only: no module code was changed.**
@@ -244,10 +267,8 @@ token-only set would replace both:
 
 ## Recommended fix order
 
-1. **Sidebar active state** (X1) - small change in `main.tsx`, visible on every
-   new module today.
-2. **Global checkbox width** (X7) - one CSS rule, fixes Reality RPG's broken
-   quest form.
+1. ~~**Sidebar active state** (X1)~~ - done, `cloud/ui-fixes`.
+2. ~~**Global checkbox width** (X7)~~ - done, `cloud/ui-fixes`.
 3. **Bundle the fonts** (X3) and **add the view error boundary** (X4) - both
    app-wide, both small.
 4. **Token fixes**: `--border-strong`, a readable accent-text token, a solid
