@@ -28,3 +28,6 @@ export * from "./git/runner.ts";
 export * from "./git/parse.ts";
 export * from "./git/reader.ts";
 export * from "./node/gitRunner.ts";
+export * from "./inspect/detect.ts";
+export * from "./inspect/inspect.ts";
+export * from "./node/inspectFs.ts";

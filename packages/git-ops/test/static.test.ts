@@ -9,10 +9,10 @@ import { fileURLToPath } from "node:url";
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 const files = readdirSync(SRC).filter((f) => f.endsWith(".ts")).map((f) => join(SRC, f));
 
-test("git-ops imports only the foundation, projects and node:crypto", () => {
+test("git-ops imports only the foundation, projects, node:crypto and node:path", () => {
   for (const file of files) {
     for (const [, spec] of readFileSync(file, "utf8").matchAll(/from\s+["']([^"']+)["']/g)) {
-      assert.ok(["@dexnest/foundation", "@dexnest/projects", "node:crypto"].includes(spec) || spec.startsWith("./"), `${file}: ${spec}`);
+      assert.ok(["@dexnest/foundation", "@dexnest/projects", "node:crypto", "node:path"].includes(spec) || spec.startsWith("./"), `${file}: ${spec}`);
     }
   }
 });

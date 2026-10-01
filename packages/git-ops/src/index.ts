@@ -4,3 +4,4 @@
 export * from "./argv.ts";
 export * from "./env.ts";
 export * from "./executor.ts";
+export * from "./clone.ts";

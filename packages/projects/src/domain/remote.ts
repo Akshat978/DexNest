@@ -50,6 +50,8 @@ export function parseRemote(url: string): ParsedRemote | null {
     host = withScheme[2];
     path = withScheme[3];
   } else {
+    // `D:\repos\x` is a Windows path, not `host:path`.
+    if (/^[A-Za-z]:[\\/]/.test(clean)) return null;
     const scp = SCP_LIKE.exec(clean);
     if (!scp || clean.includes("://")) return null;
     host = scp[2];
@@ -72,7 +74,13 @@ export function parseRemote(url: string): ParsedRemote | null {
 /** A key under which two remotes are "the same repository" (case-insensitive host and path, no `.git`, any protocol). */
 export function remoteIdentity(url: string): string | null {
   const parsed = parseRemote(url);
-  return parsed ? `${parsed.host}/${parsed.path.toLowerCase()}` : null;
+  if (parsed) return `${parsed.host}/${parsed.path.toLowerCase()}`;
+  // A remote on this PC or a network share: a path, or file://path.
+  const local = url.trim().replace(/^file:\/\//i, "");
+  if (/^(\/|[A-Za-z]:[\\/]|\\\\)/.test(local)) {
+    return `local:${local.replace(/\\/g, "/").replace(/\/+$/, "").replace(/\.git$/i, "").toLowerCase()}`;
+  }
+  return null;
 }
 
 function encodeRef(ref: string): string {

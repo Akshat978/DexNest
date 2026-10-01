@@ -5,7 +5,7 @@ event stream `projects` · view id `dev` (kept, see 16) · packages
 `@dexnest/projects` and `@dexnest/git-ops` · host
 `apps/desktop/src/main/projectsHost.ts` · branch `cloud/projects`.
 
-Status: **Phase 4 (git-ops) done.** Owner accepted every default in 18. Read with `AGENTS.md`,
+Status: **Phase 5 (add-project backend) done.** Owner accepted every default in 18. Read with `AGENTS.md`,
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md` and `docs/ui-audit/REPORT.md` (on
 `cloud/ui-audit`). Shaped after Developer Intelligence's runtime/host split
 and the modules built before it (ObjectOS, GhostOS, Reality RPG, Skill
@@ -759,6 +759,50 @@ All ten defaults in section 18 are accepted as written.
   second one `busy`.
 - Clone is added in Phase 5 as one more exact shape, with the URL checked by
   `checkCloneUrl` first.
+
+### Refinements made in Phase 5
+
+- **Inspector** (`src/inspect/`): pure detection (`detect.ts`: package
+  manager - `packageManager` field first, then lockfile; framework from
+  dependencies, or Rust/Go/Python/.NET/Flutter from marker files; scripts ->
+  slot commands (`dev`/`start`/`serve`, `build`, `test`,
+  `typecheck`/`type-check`...) plus up to 8 others, `deploy`/`publish`/
+  `release`/`clean`-like ones marked "ask before running"; ports from
+  scripts, vite config and `.env.example`, else the framework's default)
+  and an orchestrator over a read-only `InspectFsPort` (`realpath`, `kind`,
+  top-level `list`, size-capped `readText`). `.env` is never read (bait
+  test). Names: scoped package names lose their scope; without a
+  package.json the GitHub repo name, else the folder name.
+- **Order of checks**: the data-root check runs on the written path before
+  anything about the folder is looked at, then again on the resolved path;
+  then missing / file / drive root; then duplicate by resolved path; then
+  the files and git; then duplicate by remote. A test proves nothing inside
+  the data root is listed or read and git isn't asked.
+- **The inspector and clone resolve links themselves** - not only through
+  the boundary they're given. The first mutation run showed the foundation's
+  boundary already resolves links, so the module's own check was untested;
+  tests with a written-path-only boundary now cover each layer on its own.
+- **Saving re-inspects** the folder (a duplicate or boundary problem that
+  appeared since the form opened is still refused); the owner's edits win
+  over the inspection; the resolved path is stored for duplicate checks.
+- **Remote identity** now covers local remotes (`D:\repos\x.git`,
+  `/srv/git/x`, `file://...`), and a Windows drive path is no longer misread
+  as an scp-style `host:path` remote (both found by the duplicate test).
+- **Suggestions** come from a `DiscoveredReposPort` (the host implements it
+  over Developer Intelligence's `listRepositories()`), skipping existing and
+  archived projects (by resolved and written path), the data root, missing
+  folders and repeats; newest first. "Add selected" inspects and saves each
+  one and reports the rest.
+- **Clone** (`git-ops/src/clone.ts`): URL checked by `checkCloneUrl`
+  (https/ssh only, no credentials in it, no `ext::`/`fd::`); same remote
+  already a project -> refused before any network; parent must exist, be a
+  folder and not be in the data root (written or resolved); the new folder
+  name is one plain segment (no separators, no `..`, no leading `-`, no
+  Windows reserved names) that doesn't exist yet. One argv shape:
+  `clone --no-recurse-submodules -- <url> <absolute dest>`, validated
+  again before spawning, with the same no-prompt environment. Clone is not
+  journalled (there is no project yet); it emits `projects.op.started` /
+  `finished` with `verb: "clone"` and no project id.
 
 ## 19. Phases for this module
 

@@ -37,6 +37,7 @@ test("GitHub remotes are recognised in every common form, others are not", () =>
   }
   assert.equal(parseRemote("https://gitlab.com/group/sub/repo.git")?.hosting, "other");
   assert.equal(parseRemote("not a url"), null);
+  assert.equal(parseRemote("D:\\repos\\app.git"), null, "a Windows path is not host:path");
   assert.equal(parseRemote("https://github.com/"), null);
   assert.equal(parseRemote("https://github.com/a/../b"), null);
 });
@@ -44,6 +45,9 @@ test("GitHub remotes are recognised in every common form, others are not", () =>
 test("the same repository over https and ssh is a duplicate", () => {
   assert.equal(remoteIdentity("https://github.com/Me/App.git"), remoteIdentity("git@github.com:me/app"));
   assert.notEqual(remoteIdentity("https://github.com/me/app"), remoteIdentity("https://github.com/me/app2"));
+  assert.equal(remoteIdentity("D:\\repos\\App.git"), remoteIdentity("d:/repos/app"));
+  assert.equal(remoteIdentity("/srv/git/app.git"), remoteIdentity("file:///srv/git/app"));
+  assert.equal(remoteIdentity("relative/path"), null);
 });
 
 test("GitHub links: repo, branch (with slashes) and compare; nothing for other hosts", () => {
