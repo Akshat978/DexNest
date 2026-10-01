@@ -112,8 +112,9 @@ test("tabs: one tab stop, the selected tab controls a labelled panel", () => {
 
 test("timeline: filterable by type, searchable, each row says where it came from", () => {
   const html = render({ initial: { status: full, items } });
-  assert.match(html, /<legend>Show types<\/legend>/);
-  assert.equal((html.match(/type="checkbox"/g) ?? []).length, 11);
+  assert.match(html, /<div class="ghost-filter" role="group" aria-labelledby="ghost-filter-label"><span id="ghost-filter-label" class="ghost-meta">Show types \(all\)<\/span>/);
+  assert.equal((html.match(/class="ghost-chip" aria-pressed="false"/g) ?? []).length, 11);
+  assert.match(html, /<span class="technical">3<\/span> entries · <span class="technical">2<\/span> connections · <span class="technical">5<\/span> observations/);
   assert.match(html, /<form class="ghost-search" role="search" aria-label="Search GhostOS">/);
   assert.match(html, /<label for="ghost-search-input">/);
   assert.match(html, /Zephyr app: 2 commits observed/);
@@ -121,6 +122,26 @@ test("timeline: filterable by type, searchable, each row says where it came from
   assert.match(html, /Person · <time[^>]*>2026-06-01<\/time> · entered by you/);
   assert.match(html, /<span>Zephyr app stopped: uses Go<\/span><span class="ghost-meta">Connection ended · <time[^>]*>2026-05-01<\/time>/i);
   assert.match(html, />Sync now</);
+});
+
+test("empty: the first steps are buttons in the empty state", () => {
+  const html = render({ initial: { status: empty } });
+  assert.match(html, /<button type="button" class="ghost-primary">Add an entry<\/button><button type="button">Open Sources<\/button>/);
+});
+
+test("entity detail: the entry's own actions sit in its header, next to its title", () => {
+  const html = render({ initial: { status: full, items, detail } });
+  assert.match(html, /<div class="ghost-detail-head"><div><p class="ghost-meta">Project<\/p><h3 id="ghost-detail-title">Zephyr app<\/h3><\/div><div class="button-row"><button type="button" aria-label="Forget Zephyr app">Forget…<\/button><\/div><\/div>/);
+  // The connection form starts from words, not a stored id.
+  assert.match(html, /<input id="ghost-rel-type" list="ghost-rel-types" value="related to"\/>/);
+  assert.match(html, /<option value="worked on"><\/option>/);
+});
+
+test("links are readable text with an accent underline, not accent-coloured text", () => {
+  const css = readFileSync(join(desktop, "src/renderer/views/GhostOs.css"), "utf8");
+  const link = css.match(/\.ghost-link \{([^}]*)\}/)?.[1] ?? "";
+  assert.match(link, /color: var\(--text\);/);
+  assert.match(link, /text-decoration-color: var\(--accent-search\);/);
 });
 
 test("entity detail: every fact with its source and its evidence", () => {

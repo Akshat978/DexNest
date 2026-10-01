@@ -15,6 +15,8 @@ import {
   pickerOptionId,
   pickerState,
   RELATION_TYPE_LIST,
+  relationTypeFromText,
+  relationTypeText,
   shortDate,
   shortDateTime,
   originLabel,
@@ -89,6 +91,8 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
     initial?.confirmForget && initial.detail ? { kind: "entity", id: initial.detail.entity.id } : null
   );
   const tabRefs = useRef(new Map<Tab, HTMLButtonElement>());
+  // The timeline row the owner clicked; other rows of the same entry are only marked related.
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
   const loadTimeline = useCallback(
     async (append: TimelineItem | null, filter: EntityType[]) => {
@@ -220,7 +224,9 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
       {state.kind === "error" && (
         <div className="ghost-error" role="alert">
           <p>GhostOS could not load: {state.message}</p>
-          <button type="button" onClick={() => void load()}>Try again</button>
+          <div className="button-row">
+            <button type="button" onClick={() => void load()}>Try again</button>
+          </div>
         </div>
       )}
 
@@ -228,6 +234,10 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
         <div className="empty-state ghost-intro">
           <p>GhostOS keeps a local model of you: people, projects, skills, memories, decisions and habits, and how they connect over time. Every fact says where it came from and how sure it is.</p>
           <p>Nothing is in it yet. Add something yourself, or turn on Developer Intelligence under Sources. GhostOS never reads your vault, finance, journal, clipboard, captures or chat histories, and nothing leaves this computer.</p>
+          <div className="button-row">
+            <button type="button" className="ghost-primary" onClick={() => setTab("add")}>Add an entry</button>
+            <button type="button" onClick={() => setTab("sources")}>Open Sources</button>
+          </div>
         </div>
       )}
 
@@ -261,15 +271,19 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
                     <button type="submit">Search</button>
                     {results && <button type="button" onClick={() => { setResults(null); setQuery(""); }}>Clear</button>}
                   </form>
-                  <fieldset className="ghost-filter">
-                    <legend>Show types</legend>
+                  <div className="ghost-filter" role="group" aria-labelledby="ghost-filter-label">
+                    <span id="ghost-filter-label" className="ghost-meta">Show types{types.length ? "" : " (all)"}</span>
                     {ENTITY_TYPE_LIST.map((t) => (
-                      <label key={t} className="ghost-chip">
-                        <input type="checkbox" checked={types.includes(t)} onChange={() => void toggleType(t)} />
+                      <button key={t} type="button" className="ghost-chip" aria-pressed={types.includes(t)} onClick={() => void toggleType(t)}>
                         {TYPE_LABELS[t]}
-                      </label>
+                      </button>
                     ))}
-                  </fieldset>
+                  </div>
+                  {status.counts.entity > 0 && (
+                    <p className="ghost-meta">
+                      <span className="technical">{status.counts.entity.toLocaleString("en")}</span> entries · <span className="technical">{status.counts.relation.toLocaleString("en")}</span> connections · <span className="technical">{status.counts.observation.toLocaleString("en")}</span> observations
+                    </p>
+                  )}
 
                   {results ? (
                     <ul className="ghost-list" aria-label="Search results">
@@ -288,7 +302,12 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
                       {items.length === 0 && <li className="ghost-hint">Nothing on the timeline{types.length ? " for these types" : ""} yet.</li>}
                       {items.map((item) => (
                         <li key={`${item.kind}:${item.id}`}>
-                          <button type="button" className="ghost-item" aria-current={detail?.entity.id === item.entityId ? "true" : undefined} onClick={() => void openEntity(item.entityId)}>
+                          <button
+                            type="button"
+                            className={detail?.entity.id === item.entityId && selectedKey !== `${item.kind}:${item.id}` ? "ghost-item ghost-item--related" : "ghost-item"}
+                            aria-current={selectedKey === `${item.kind}:${item.id}` && detail?.entity.id === item.entityId ? "true" : undefined}
+                            onClick={() => { setSelectedKey(`${item.kind}:${item.id}`); void openEntity(item.entityId); }}
+                          >
                             <span>{timelineLabel(item)}</span>
                             <span className="ghost-meta">
                               {timelineKind(item)} · <time className="technical" dateTime={item.at}>{shortDate(item.at)}</time> · {originLabel(item.origin, item.confidence)}
@@ -535,7 +554,7 @@ function EntityDetailPanel(props: {
   const { entity } = detail;
   const d = entity.details as Record<string, unknown>;
   const [statement, setStatement] = useState("");
-  const [relType, setRelType] = useState("related_to");
+  const [relType, setRelType] = useState(relationTypeText("related_to"));
   const [relTo, setRelTo] = useState<PickerOption | null>(props.picker?.chosen ?? null);
   const [outcome, setOutcome] = useState("");
 
@@ -549,7 +568,7 @@ function EntityDetailPanel(props: {
   async function addRelation(event: React.FormEvent) {
     event.preventDefault();
     if (!relTo) return;
-    if (await props.run("ghost_os.relation.save", { relation: { fromId: entity.id, toId: relTo.id, type: relType } })) {
+    if (await props.run("ghost_os.relation.save", { relation: { fromId: entity.id, toId: relTo.id, type: relationTypeFromText(relType) } })) {
       setRelTo(null);
       props.reload();
     }
@@ -562,8 +581,16 @@ function EntityDetailPanel(props: {
   const confirming = confirmForget !== null;
   return (
     <article className="ghost-card ghost-detail" aria-labelledby="ghost-detail-title">
-      <p className="ghost-meta">{TYPE_LABELS[entity.type]}</p>
-      <h3 id="ghost-detail-title">{entity.title}</h3>
+      <div className="ghost-detail-head">
+        <div>
+          <p className="ghost-meta">{TYPE_LABELS[entity.type]}</p>
+          <h3 id="ghost-detail-title">{entity.title}</h3>
+        </div>
+        <div className="button-row">
+          {entity.provenance.origin === "manual" && <button type="button" disabled={busy} onClick={props.onEdit}>Edit</button>}
+          <button type="button" disabled={busy} onClick={() => props.onAskForget({ kind: "entity", id: entity.id })} aria-label={`Forget ${entity.title}`}>Forget…</button>
+        </div>
+      </div>
       <SourceLine provenance={entity.provenance} />
       {entity.tags.length > 0 && <p className="ghost-meta">Tags: {entity.tags.join(", ")}</p>}
       {entity.notes && <p className="ghost-notes">{entity.notes}</p>}
@@ -589,10 +616,6 @@ function EntityDetailPanel(props: {
         <p className="ghost-meta">{d.mode === "detected" ? "Detected from your activity" : "Declared by you"} · {String(d.cadence)}</p>
       )}
 
-      <div className="button-row">
-        {entity.provenance.origin === "manual" && <button type="button" disabled={busy} onClick={props.onEdit}>Edit</button>}
-        <button type="button" disabled={busy} onClick={() => props.onAskForget({ kind: "entity", id: entity.id })} aria-label={`Forget ${entity.title}`}>Forget…</button>
-      </div>
       {confirming && (
         <div className="ghost-confirm" role="alertdialog" aria-labelledby="ghost-confirm-text">
           <p id="ghost-confirm-text">Forget this {confirmForget.kind === "entity" ? "entry" : confirmForget.kind} and everything GhostOS derived from it? This cannot be undone, and a source cannot bring it back.</p>
@@ -633,7 +656,7 @@ function EntityDetailPanel(props: {
       <form className="ghost-form ghost-form--inline" aria-label="New connection" onSubmit={(e) => void addRelation(e)}>
         <label htmlFor="ghost-rel-type">Connection</label>
         <input id="ghost-rel-type" list="ghost-rel-types" value={relType} onChange={(e) => setRelType(e.target.value)} />
-        <datalist id="ghost-rel-types">{RELATION_TYPE_LIST.map((t) => <option key={t} value={t} />)}</datalist>
+        <datalist id="ghost-rel-types">{RELATION_TYPE_LIST.map((t) => <option key={t} value={relationTypeText(t)} />)}</datalist>
         <ConnectionPicker excludeId={entity.id} chosen={relTo} onChoose={setRelTo} search={props.search} initial={props.picker} />
         <button type="submit" disabled={busy || !relTo}>Connect</button>
       </form>
