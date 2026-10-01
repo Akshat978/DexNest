@@ -5,7 +5,7 @@ event stream `projects` · view id `dev` (kept, see 16) · packages
 `@dexnest/projects` and `@dexnest/git-ops` · host
 `apps/desktop/src/main/projectsHost.ts` · branch `cloud/projects`.
 
-Status: **Phase 0 (plan) - waiting for approval.** Read with `AGENTS.md`,
+Status: **Phase 1 (contracts) done.** Owner accepted every default in 18. Read with `AGENTS.md`,
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md` and `docs/ui-audit/REPORT.md` (on
 `cloud/ui-audit`). Shaped after Developer Intelligence's runtime/host split
 and the modules built before it (ObjectOS, GhostOS, Reality RPG, Skill
@@ -589,6 +589,50 @@ Kept small (other branches touch `main.ts`):
 10. Existing Run commands use `exec` through a shell (F22, F19). Keep as is
     (owner-written commands), only moved? [keep - changing it would break
     commands that use pipes or `&&`]
+
+### Decisions (owner: "go with your defaults")
+
+All ten defaults in section 18 are accepted as written.
+
+### Refinements made in Phase 1
+
+- **Steps are data, not argv.** A plan holds structured `GitStep`s
+  (`{op: "push", remote, branch, setUpstream}` ...). `@dexnest/projects`
+  never spells a mutating git command line (static test); git-ops turns
+  steps into argv in Phase 4 and checks them again.
+- **A leading `+` is refused in branch names** (found while writing the
+  tests): on a push command line `+main` is a force-push refspec. Git itself
+  allows such names, so an existing `+x` branch is simply never pushed,
+  switched or deleted by DexNest.
+- **Requests are parsed strictly.** `parseOperationRequest` refuses NEVER
+  operations by name (`force_push`, `reset_hard`, `clean`, `rebase`,
+  `amend`...), NEVER flags on any allowed operation (`force`,
+  `forceWithLease`, `mirror`, `hard`, `rebase`, `amend`...), and any unknown
+  field, rather than ignoring it.
+- **Discard is a stash.** The plan's only step is
+  `stash push -- <paths>` (with `-u` when new files are included); undo
+  applies that stash by sha. There is no checkout/restore/clean step anywhere.
+- **Pull is planned even when the last fetch says "nothing to pull"** (the
+  fetch may be stale and pull fetches first); diverged is refused. Push
+  refuses on the cached counts (behind, diverged, nothing to push); git
+  rejects a non-fast-forward push on its own if the remote moved since.
+- **Stash pop** always applies then drops only if clean, so a conflicting
+  pop keeps the stash. When the stash's files overlap current changes (or are
+  unknown while the tree is dirty) the plan is caution class.
+- **Undo** needs facts the state doesn't carry (`commitOnRemote`,
+  `objectExists`); the read engine supplies them (Phase 3). Undo of a commit
+  is refused unless the engine can say the commit is on no remote-tracking
+  ref. The first commit of a repository has no undo.
+- **Delete branch** is caution when merged into the default branch, strong
+  (type the name) otherwise or when that is unknown. The default branch and
+  the current branch are never deleted; nor a remote default branch.
+- **Pull all** takes only clean projects that are behind and not ahead.
+- **Triggers**: `PROJECTS_ACTIONS` is the contract the registry entries
+  will be generated from; `deckSafe` is tested over the whole list and
+  `triggerAllowed` is what the runtime will enforce.
+- **Remote URLs**: `stripUrlCredentials` drops any userinfo from http(s)
+  and any password from ssh; `redactCredentials` also removes GitHub token
+  shapes (`ghp_...`, `github_pat_...`) from free text such as stderr.
 
 ## 19. Phases for this module
 

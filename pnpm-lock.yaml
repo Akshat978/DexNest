@@ -253,6 +253,16 @@ importers:
         specifier: ^22.13.14
         version: 22.20.0
 
+  packages/projects:
+    dependencies:
+      '@dexnest/foundation':
+        specifier: workspace:*
+        version: link:../foundation
+    devDependencies:
+      '@types/node':
+        specifier: ^22.13.14
+        version: 22.20.0
+
   packages/run-queue: {}
 
   packages/shared-types: {}
