@@ -1,31 +1,81 @@
 # DexNest UI audit - new module views
 
-> **Update - fixed so far** (branch `cloud/ui-fixes`, based on `main`, commit
-> `548f485`; merged into this branch for the screenshots in
-> `screenshots/after-fixes/`):
-> - **X1 sidebar accent** - tints are built with `color-mix()` (`accentTint()`
->   in `lib/moduleMeta.ts`) for the sidebar and the three other module-accent
->   tints (pinned actions, pins, Deck catalogue). Every new module's active
->   entry now shows its tint, border and glow:
->   `after-fixes/sidebar-object-1280x800.jpg` (before:
->   `sidebar-object-1280x800.jpg`), and the same for ghost, rpg and skills.
-> - **X7 checkbox width** - the global rule now applies to
->   `input:where(:not([type="checkbox"], [type="radio"]))`; specificity is
->   unchanged, so classes still win. Reality RPG's quest form:
->   `after-fixes/rpg-tab-quests-1280x800.jpg` (before:
->   `rpg-tab-quests-1280x800.jpg`).
-> - **No change to existing views**: Command, Tools, Calendar's sidebar entry
->   and four Settings sections (89 existing checkboxes live in Settings and
->   elsewhere) were shot before and after; no pixel differs by more than 11
->   of 255 levels (JPEG noise and the 7% vs 7.06% tint rounding). After
->   shots: `after-fixes/existing-*`.
-> - Tests: `apps/desktop/test/shellStyle.test.mjs` (both mutations - a hex
->   suffix back in the sidebar, checkboxes back in the global rule - fail it);
->   desktop 168 pass on `main` + the fix.
+> **Update - fixed so far.** Every fix is on its own branch, merged into this
+> one for the screenshots in `screenshots/after-fixes/` (same names as the
+> "before" shots in `screenshots/`). Merged tree: typecheck clean, desktop
+> tests 328 pass.
+>
+> **App-wide** (`cloud/ui-fixes`, based on `main`; `548f485`, `30c3bee`):
+> - **X1 sidebar accent** - tints built with `color-mix()` (`accentTint()` in
+>   `lib/moduleMeta.ts`) for the sidebar, pinned actions, pins and the Deck
+>   catalogue. `after-fixes/sidebar-object-*` (and ghost, rpg, skills).
+> - **X7 checkbox width** - the global input rule skips checkboxes and radios
+>   (`:where()`, so specificity is unchanged). `after-fixes/rpg-tab-quests-*`.
+> - **X3 fonts** - Inter and JetBrains Mono (variable woff2, latin and
+>   latin-ext, OFL licences alongside) ship in `packages/shared-ui/fonts/`,
+>   declared in `shared-ui/src/fonts.css` and loaded before `tokens.css`. Local
+>   files only: no CDN, CSP unchanged. Every after shot renders in Inter.
+> - **X4 view error boundary** - `components/ViewErrorBoundary.tsx` wraps the
+>   active view, keyed by view, so switching views resets it. The sidebar stays;
+>   the view shows "<View> stopped working", the message, "Try again" and "Go
+>   to Command". Errors go to the local console only.
+>   `after-fixes/existing-autopilot-*` (before: a black window).
+> - **X9 control outlines and focus** - new tokens `--border-strong`
+>   (`#666666`, 3.45:1 on surface) for inputs, selects and textareas, and
+>   `--focus-outline` (solid accent) replacing the 2.3:1 `--focus-ring`
+>   outlines in `styles.css`.
+> - Tests: `test/shellStyle.test.mjs` (6), `test/viewErrorBoundary.test.mjs`
+>   (2). Existing views were re-shot (`after-fixes/existing-*`); only the font
+>   and outline changes show.
+>
+> **ObjectOS** (`cloud/object-os`; `e3accaf`, `46e6674`):
+> - "Needs attention" shows the 5 most urgent, then "Show all N"
+>   (`after-fixes/object-large-*`).
+> - Status is an `aria-label`led select, so the header buttons keep one height;
+>   the nine tabs stay on one line and scroll sideways.
+> - Delete confirmation is a modal (focus trapped, Escape, focus returned to
+>   the button that opened it) - `after-fixes/object-confirm-delete-*`.
+> - Tables: actions side by side and vertically centred; dates, sizes and
+>   button labels never break (`after-fixes/object-tab-files-*`).
+> - Empty state has "Add your first object" and "Import an export..."; the
+>   retry button is normal width; Name is marked "(required)".
+>
+> **GhostOS** (`cloud/ghost-os`; `697f19d`):
+> - Links are `--text` with an accent underline (no 4.4:1 accent text).
+> - Connection types read "related to", "worked on".
+> - Edit and Forget sit in the detail header.
+> - The type filter is one row of `aria-pressed` chips; counts are shown.
+> - Only the clicked timeline row is selected; the entry's other rows get a
+>   subtle marker.
+> - Empty state has "Add an entry" and "Open Sources"; normal-width retry.
+>
+> **Reality RPG** (`cloud/reality-rpg`; `b45361e`):
+> - Deleting a rule and abandoning a quest ask first (modal confirm).
+> - Stats are a grid of cards with a bar relative to the top stat.
+> - History rows lead with the rule name; the event source is small print.
+> - Rules read as a sentence ("+5 Craft each time, at most 20 a day") with ids
+>   as technical meta.
+> - Refresh is hidden while off; solid focus outline; normal-width retry.
+>
+> **Skill Constellation** (`claude/admiring-babbage-kbw2ew`; `376fda3`):
+> - At most 15 labels (strongest first) plus the hovered, focused or selected
+>   star - `after-fixes/skills-large-*`. Hidden stars say ", hidden" in their
+>   accessible name.
+> - Detail stats one per row, values unbroken; "1 repository".
+> - "Build once" while off; solid focus outline; normal-width retry.
+>
+> **Still open** (needs the shared kit, step 5 below): X2 two visual
+> generations, X5 tab styles, X6 skeleton loading and shared state layouts, X8
+> header spacing, X10 custom selects and date inputs; category marks and a list
+> view for Skill Constellation; ObjectOS maintenance layout and facts grid;
+> GhostOS per-row action column; the coverage gaps (step 7) and the DI and
+> Standup views (step 8). Fonts and outlines need a Windows check in the real
+> Electron window.
 
 Branch `cloud/ui-audit` = `main` + Skill Constellation (`claude/admiring-babbage-kbw2ew`)
 + Reality RPG (`cloud/reality-rpg`) + GhostOS (`cloud/ghost-os`) + ObjectOS
-(`cloud/object-os`). **Report only: no module code was changed.**
+(`cloud/object-os`). The audit itself changed no module code; the fixes above
+were made afterwards on their own branches.
 
 ## How this was done
 
@@ -70,6 +120,11 @@ Branch `cloud/ui-audit` = `main` + Skill Constellation (`claude/admiring-babbage
 | Reality RPG | Needs work | Needs work | Needs work | Needs work |
 | GhostOS | Needs work | Needs work | Needs work | Good |
 | ObjectOS | Needs work | Needs work | Good | Needs work |
+
+After the fixes: Accessibility is Good for all four (solid focus outlines,
+3:1 control outlines, modal confirms, readable links, culled labels). Polish
+moves to Good-with-gaps (see "Still open" above). Consistency stays Needs work
+until the shared kit lands, and Coverage is unchanged (no features were added).
 
 All four follow the rules (tokens only, Inter/JetBrains Mono through
 `--font-ui`/`--font-tech`, dark theme, labelled controls, loading/empty/error
@@ -269,18 +324,19 @@ token-only set would replace both:
 
 1. ~~**Sidebar active state** (X1)~~ - done, `cloud/ui-fixes`.
 2. ~~**Global checkbox width** (X7)~~ - done, `cloud/ui-fixes`.
-3. **Bundle the fonts** (X3) and **add the view error boundary** (X4) - both
-   app-wide, both small.
-4. **Token fixes**: `--border-strong`, a readable accent-text token, a solid
-   focus outline (X9; GhostOS links; Skill Constellation and Reality RPG
-   focus).
+3. ~~**Bundle the fonts** (X3) and **add the view error boundary** (X4)~~ -
+   done, `cloud/ui-fixes`.
+4. ~~**Token fixes**: `--border-strong`, a solid focus outline (X9; Skill
+   Constellation and Reality RPG focus); GhostOS links~~ - done (GhostOS
+   links are underlined `--text`, so no accent-text token was needed).
 5. **Build the shared set** in `packages/shared-ui` (token-only), starting with
    `PageHeader`, `Card`/`SectionTitle`, `Button`, `Tabs`, `ConfirmDialog` and
    the three states.
-6. **Move the four new views onto it** (X2, X5, X6, X8), fixing per module as
-   they move: ObjectOS's attention cap, header and tabs; Skill Constellation's
-   labels and list view; Reality RPG's confirmations and stats layout;
-   GhostOS's relation labels and detail actions.
+6. **Move the four new views onto it** (X2, X5, X6, X8). The per-module
+   fixes are done in place (see the update at the top); the module confirm
+   dialogs and tabs can then become the shared `ConfirmDialog` and `Tabs`.
+   Still to do per module: Skill Constellation's category marks and list
+   view; ObjectOS's maintenance layout and facts grid.
 7. **Coverage gaps**: Reality RPG custom achievements (create/delete); ObjectOS
    part editing and a Move control; interval settings for Skill
    Constellation, Reality RPG and GhostOS.
