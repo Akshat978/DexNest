@@ -3,7 +3,8 @@ import type { AwardView, RealityRpgSettings, RealityRpgSnapshot, RealityRpgStatu
 import { PageHeader } from "../components/shared";
 import {
   actionMessage,
-  awardLabel,
+  awardSource,
+  awardTitle,
   conditionUnit,
   EMPTY_QUEST_FORM,
   EMPTY_RULE_FORM,
@@ -13,7 +14,9 @@ import {
   progressText,
   questFromForm,
   ruleFromForm,
+  ruleSentence,
   shortDate,
+  statShare,
   TAB_LABELS,
   TABS,
   viewState,
@@ -37,8 +40,18 @@ export interface RealityRpgViewProps {
   /** Runs a registered reality_rpg.* action through the action registry. */
   onAction(actionId: string, params?: Record<string, unknown>): Promise<unknown>;
   /** Tests only: start from a known state instead of loading. */
-  initial?: { snapshot: RealityRpgSnapshot | null; error?: string | null; tab?: Tab };
+  initial?: { snapshot: RealityRpgSnapshot | null; error?: string | null; tab?: Tab; confirm?: Confirm | null };
 }
+
+/** A change that asks first: deleting a rule, abandoning a quest. */
+export interface Confirm {
+  actionId: string;
+  params: Record<string, unknown>;
+  question: string;
+  confirmLabel: string;
+}
+
+type Ask = (confirm: Confirm) => void;
 
 function errorText(e: unknown): string {
   return e instanceof Error ? e.message : "Something went wrong.";
@@ -50,6 +63,7 @@ export function RealityRpgView({ bridge, onAction, initial }: RealityRpgViewProp
   const [error, setError] = useState<string | null>(initial?.error ?? null);
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [confirm, setConfirm] = useState<Confirm | null>(initial?.confirm ?? null);
   const [tab, setTab] = useState<Tab>(initial?.tab ?? "character");
   const tabRefs = useRef(new Map<Tab, HTMLButtonElement>());
 
@@ -106,7 +120,7 @@ export function RealityRpgView({ bridge, onAction, initial }: RealityRpgViewProp
         titleId="rpg-title"
         actions={state.kind === "ready" || state.kind === "off" ? (
           <>
-            <button type="button" disabled={busy} onClick={() => void run("reality_rpg.refresh")}>Refresh</button>
+            {snapshot?.enabled && <button type="button" disabled={busy} onClick={() => void run("reality_rpg.refresh")}>Refresh</button>}
             {snapshot?.enabled ? (
               <button type="button" disabled={busy} onClick={() => void run("reality_rpg.disable")}>Turn off</button>
             ) : (
@@ -116,13 +130,27 @@ export function RealityRpgView({ bridge, onAction, initial }: RealityRpgViewProp
         ) : undefined}
       />
       {notice && <p className={notice.ok ? "rpg-notice" : "rpg-notice rpg-notice--error"} role={notice.ok ? "status" : "alert"}>{notice.text}</p>}
+      {confirm && (
+        <ConfirmDialog
+          confirm={confirm}
+          busy={busy}
+          onCancel={() => setConfirm(null)}
+          onConfirm={() => {
+            const c = confirm;
+            setConfirm(null);
+            void run(c.actionId, c.params);
+          }}
+        />
+      )}
 
       {state.kind === "loading" && <p className="empty-state" role="status">Loading your character…</p>}
 
       {state.kind === "error" && (
         <div className="rpg-error" role="alert">
           <p>Reality RPG could not load: {state.message}</p>
-          <button type="button" onClick={() => void load()}>Try again</button>
+          <div className="button-row">
+            <button type="button" onClick={() => void load()}>Try again</button>
+          </div>
         </div>
       )}
 
@@ -157,10 +185,10 @@ export function RealityRpgView({ bridge, onAction, initial }: RealityRpgViewProp
           </div>
           <div className="rpg-panel" role="tabpanel" id={`rpg-panel-${tab}`} aria-labelledby={`rpg-tab-${tab}`} tabIndex={0}>
             {tab === "character" && <CharacterPanel snapshot={snapshot} />}
-            {tab === "quests" && <QuestsPanel snapshot={snapshot} busy={busy} run={run} />}
+            {tab === "quests" && <QuestsPanel snapshot={snapshot} busy={busy} run={run} ask={setConfirm} />}
             {tab === "achievements" && <AchievementsPanel snapshot={snapshot} />}
             {tab === "history" && <HistoryPanel snapshot={snapshot} bridge={bridge} />}
-            {tab === "rules" && <RulesPanel snapshot={snapshot} busy={busy} run={run} />}
+            {tab === "rules" && <RulesPanel snapshot={snapshot} busy={busy} run={run} ask={setConfirm} />}
           </div>
         </>
       )}
@@ -188,8 +216,9 @@ function CharacterPanel({ snapshot }: { snapshot: RealityRpgSnapshot }) {
         <ul className="rpg-stats">
           {sheet.stats.map((s) => (
             <li key={s.stat}>
-              <span>{s.stat}</span>
+              <span className="rpg-stat__name">{s.stat}</span>
               <span className="technical">{s.xp} XP</span>
+              <span className="rpg-stat__bar" aria-hidden="true"><span style={{ width: `${statShare(s.xp, Math.max(...sheet.stats.map((x) => x.xp)))}%` }} /></span>
             </li>
           ))}
         </ul>
@@ -221,7 +250,7 @@ function AchievementsPanel({ snapshot }: { snapshot: RealityRpgSnapshot }) {
   );
 }
 
-function QuestsPanel({ snapshot, busy, run }: { snapshot: RealityRpgSnapshot; busy: boolean; run(actionId: string, params?: Record<string, unknown>): Promise<boolean> }) {
+function QuestsPanel({ snapshot, busy, run, ask }: { snapshot: RealityRpgSnapshot; busy: boolean; run(actionId: string, params?: Record<string, unknown>): Promise<boolean>; ask: Ask }) {
   const [form, setForm] = useState<QuestForm>(EMPTY_QUEST_FORM);
   const active = snapshot.quests.filter((q) => q.quest.status === "active");
   const done = snapshot.quests.filter((q) => q.quest.status !== "active");
@@ -240,7 +269,14 @@ function QuestsPanel({ snapshot, busy, run }: { snapshot: RealityRpgSnapshot; bu
                 {quest.window.kind === "fixed" && !progress.open ? " · window closed" : ""}
               </p>
               {completions > 0 && <p className="rpg-hint">Completed {completions} time{completions === 1 ? "" : "s"}</p>}
-              <button type="button" disabled={busy} onClick={() => void run("reality_rpg.quest.abandon", { questId: quest.id })} aria-label={`Abandon ${quest.title}`}>Abandon</button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => ask({ actionId: "reality_rpg.quest.abandon", params: { questId: quest.id }, question: `Abandon "${quest.title}"? Its progress so far is kept in history, but the quest stops counting.`, confirmLabel: "Abandon" })}
+                aria-label={`Abandon ${quest.title}`}
+              >
+                Abandon…
+              </button>
             </li>
           ))}
         </ul>
@@ -315,7 +351,10 @@ function HistoryPanel({ snapshot, bridge }: { snapshot: RealityRpgSnapshot; brid
       <ul className="rpg-history">
         {rows.map((a) => (
           <li key={a.id}>
-            <span>{awardLabel(a)}</span>
+            <span className="rpg-history__what">
+              <span>{awardTitle(a)}</span>
+              <span className="rpg-hint technical">{awardSource(a)}</span>
+            </span>
             <span className="technical">+{a.xp} {a.stat}</span>
             <time className="technical" dateTime={a.occurredAt} title={a.occurredAt}>{shortDate(a.occurredAt)}</time>
           </li>
@@ -345,7 +384,7 @@ function HistoryPanel({ snapshot, bridge }: { snapshot: RealityRpgSnapshot; brid
   );
 }
 
-function RulesPanel({ snapshot, busy, run }: { snapshot: RealityRpgSnapshot; busy: boolean; run(actionId: string, params?: Record<string, unknown>): Promise<boolean> }) {
+function RulesPanel({ snapshot, busy, run, ask }: { snapshot: RealityRpgSnapshot; busy: boolean; run(actionId: string, params?: Record<string, unknown>): Promise<boolean>; ask: Ask }) {
   const [form, setForm] = useState<RuleForm>(EMPTY_RULE_FORM);
   const existing = new Set(snapshot.rules.map((r) => r.id));
   const templates = snapshot.starter.rules.filter((r) => !existing.has(r.id));
@@ -361,7 +400,7 @@ function RulesPanel({ snapshot, busy, run }: { snapshot: RealityRpgSnapshot; bus
       ) : (
         <ul className="rpg-list">
           {snapshot.rules.map((rule) => (
-            <RuleRow key={rule.id} rule={rule} busy={busy} run={run} />
+            <RuleRow key={rule.id} rule={rule} busy={busy} run={run} ask={ask} />
           ))}
         </ul>
       )}
@@ -421,12 +460,13 @@ function RulesPanel({ snapshot, busy, run }: { snapshot: RealityRpgSnapshot; bus
   );
 }
 
-function RuleRow({ rule, busy, run }: { rule: Rule; busy: boolean; run(actionId: string, params?: Record<string, unknown>): Promise<boolean> }) {
+function RuleRow({ rule, busy, run, ask }: { rule: Rule; busy: boolean; run(actionId: string, params?: Record<string, unknown>): Promise<boolean>; ask: Ask }) {
   return (
     <li className={rule.enabled ? "rpg-item" : "rpg-item rpg-item--off"}>
       <p className="rpg-item__title">{rule.name}{rule.enabled ? "" : " · off"}</p>
-      <p className="technical">
-        {rule.match.types.join(", ")}{rule.match.actionIds ? ` · ${rule.match.actionIds.join(", ")}` : ""} · +{rule.award.xp} {rule.award.stat}{rule.dailyCap ? ` · max ${rule.dailyCap}/day` : ""}
+      <p>{ruleSentence(rule)}</p>
+      <p className="rpg-hint technical">
+        {rule.match.types.join(", ")}{rule.match.actionIds ? ` · ${rule.match.actionIds.join(", ")}` : ""}
       </p>
       <p className="rpg-hint">Counts from <time className="technical" dateTime={rule.effectiveFrom}>{shortDate(rule.effectiveFrom)}</time></p>
       <div className="button-row">
@@ -436,8 +476,51 @@ function RuleRow({ rule, busy, run }: { rule: Rule; busy: boolean; run(actionId:
         {rule.enabled && (
           <button type="button" disabled={busy} onClick={() => void run("reality_rpg.backfill", { ruleId: rule.id })} aria-label={`Apply ${rule.name} to past activity`}>Apply to past activity</button>
         )}
-        <button type="button" disabled={busy} onClick={() => void run("reality_rpg.rule.delete", { ruleId: rule.id })} aria-label={`Delete ${rule.name}`}>Delete</button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => ask({ actionId: "reality_rpg.rule.delete", params: { ruleId: rule.id }, question: `Delete the rule "${rule.name}"? XP it already awarded stays; it awards nothing from now on. This cannot be undone.`, confirmLabel: "Delete" })}
+          aria-label={`Delete ${rule.name}`}
+        >
+          Delete…
+        </button>
       </div>
     </li>
+  );
+}
+
+/** Asks before a change that cannot be undone. Modal: focus stays inside, Cancel is focused, Escape cancels. */
+function ConfirmDialog({ confirm, busy, onConfirm, onCancel }: { confirm: Confirm; busy: boolean; onConfirm(): void; onCancel(): void }) {
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    cancelRef.current?.focus();
+    return () => opener?.focus();
+  }, [confirm]);
+  function onKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      onCancel();
+      return;
+    }
+    if (e.key !== "Tab") return;
+    const order = [confirmRef.current, cancelRef.current].filter((b): b is HTMLButtonElement => b !== null && !b.disabled);
+    if (order.length === 0) return;
+    const at = order.indexOf(document.activeElement as HTMLButtonElement);
+    e.preventDefault();
+    const next = e.shiftKey ? (at <= 0 ? order.length - 1 : at - 1) : (at + 1) % order.length;
+    order[next]?.focus();
+  }
+  return (
+    <div className="rpg-backdrop">
+      <div className="rpg-confirm" role="alertdialog" aria-labelledby="rpg-confirm-text" aria-modal="true" onKeyDown={onKeyDown}>
+        <p id="rpg-confirm-text">{confirm.question}</p>
+        <div className="button-row">
+          <button type="button" ref={confirmRef} className="rpg-danger" disabled={busy} onClick={onConfirm}>{confirm.confirmLabel}</button>
+          <button type="button" ref={cancelRef} onClick={onCancel}>Cancel</button>
+        </div>
+      </div>
+    </div>
   );
 }
