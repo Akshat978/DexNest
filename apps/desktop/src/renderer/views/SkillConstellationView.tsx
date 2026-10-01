@@ -17,6 +17,8 @@ import {
   percent,
   shortDate,
   starLabel,
+  labelledIds,
+  countOf,
   starRadius,
   viewState,
   visibleSkills
@@ -52,6 +54,7 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
   const [notice, setNotice] = useState<string | null>(null);
   const [showHidden, setShowHidden] = useState(false);
   const [focusedId, setFocusedId] = useState<string | null>(initial?.selectedId ?? null);
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(initial?.selectedId ?? null);
   const starRefs = useRef(new Map<string, SVGGElement>());
 
@@ -98,6 +101,7 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
   const points = useMemo(() => (snapshot ? snapshot.layout.filter((p) => shownIds.has(p.skillId)) : []), [snapshot, shownIds]);
   const selected = snapshot?.skills.find((s) => s.id === selectedId) ?? null;
   const rovingId = focusedId && shownIds.has(focusedId) ? focusedId : points[0]?.skillId ?? null;
+  const labelled = labelledIds(skills, [hoveredId, focusedId, selectedId]);
 
   function focusStar(id: string | null) {
     if (!id) return;
@@ -132,7 +136,7 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
       actions={state.kind === "loading" || state.kind === "error" ? undefined : (
         <>
           <button type="button" disabled={busy !== null} onClick={() => void run("skill_constellation.rebuild", "rebuild")}>
-            {busy === "rebuild" ? "Rebuilding…" : "Rebuild"}
+            {busy === "rebuild" ? "Rebuilding…" : snapshot?.enabled ? "Rebuild" : "Build once"}
           </button>
           {snapshot?.enabled ? (
             <button type="button" disabled={busy !== null} onClick={() => void run("skill_constellation.disable", "toggle")}>Turn off</button>
@@ -154,7 +158,9 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
       {state.kind === "error" && (
         <div className="skill-error" role="alert">
           <p>Skill Constellation could not load: {state.message}</p>
-          <button type="button" onClick={() => void load()}>Try again</button>
+          <div className="button-row">
+            <button type="button" onClick={() => void load()}>Try again</button>
+          </div>
         </div>
       )}
 
@@ -223,11 +229,13 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
                         setSelectedId(skill.id);
                       }}
                       onFocus={() => setFocusedId(skill.id)}
+                      onMouseEnter={() => setHoveredId(skill.id)}
+                      onMouseLeave={() => setHoveredId((current) => (current === skill.id ? null : current))}
                       onKeyDown={(event) => onStarKey(event, skill.id)}
                     >
                       <circle className="skill-star__halo" r={r + 6} />
                       <circle className="skill-star__core" r={r} />
-                      <text className="skill-star__label" y={r + 18} textAnchor="middle">{skill.name}</text>
+                      {labelled.has(skill.id) && <text className="skill-star__label" y={r + 18} textAnchor="middle">{skill.name}</text>}
                     </g>
                   );
                 })}
@@ -347,7 +355,7 @@ function EvidencePanel({
         <div><dt>Strength</dt><dd className="technical">{percent(s.score)}</dd></div>
         <div><dt>Volume</dt><dd className="technical">{percent(s.volume)} · {skill.evidenceCount} evidence</dd></div>
         <div><dt>Recency</dt><dd className="technical">{percent(s.recency)} · last {shortDate(skill.lastEvidenceAt)}</dd></div>
-        <div><dt>Variety</dt><dd className="technical">{percent(s.variety)} · {skill.repositoryCount} repos, {skill.evidenceKinds} kinds</dd></div>
+        <div><dt>Variety</dt><dd className="technical">{percent(s.variety)} · {countOf(skill.repositoryCount, "repository", "repositories")}, {countOf(skill.evidenceKinds, "kind", "kinds")}</dd></div>
       </dl>
 
       {history.length > 1 && (

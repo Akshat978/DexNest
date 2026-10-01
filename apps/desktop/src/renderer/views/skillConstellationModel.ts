@@ -144,5 +144,24 @@ export function shortDate(iso: string): string {
 export function starLabel(skill: ConstellationSkill): string {
   const repos = skill.repositoryCount === 1 ? "1 repository" : `${skill.repositoryCount} repositories`;
   const evidence = skill.evidenceCount === 1 ? "1 piece of evidence" : `${skill.evidenceCount} pieces of evidence`;
-  return `${skill.name}, ${CATEGORY_LABELS[skill.category]}, strength ${percent(skill.strength.score)}, ${evidence} in ${repos}`;
+  return `${skill.name}, ${CATEGORY_LABELS[skill.category]}, strength ${percent(skill.strength.score)}, ${evidence} in ${repos}${skill.hidden ? ", hidden" : ""}`;
 }
+
+/** How many stars carry a written label; the rest show theirs on hover, focus or selection. */
+export const LABEL_LIMIT = 15;
+
+/**
+ * Which stars are labelled: the LABEL_LIMIT strongest (ties by name), plus any
+ * star the owner is pointing at, has focused or has selected. With dozens of
+ * skills, labelling every star made them unreadable.
+ */
+export function labelledIds(skills: readonly Pick<ConstellationSkill, "id" | "name" | "strength">[], always: readonly (string | null)[] = []): Set<string> {
+  const top = [...skills]
+    .sort((a, b) => b.strength.score - a.strength.score || a.name.localeCompare(b.name))
+    .slice(0, LABEL_LIMIT)
+    .map((s) => s.id);
+  return new Set([...top, ...always.filter((id): id is string => id !== null)]);
+}
+
+/** "1 repository", "3 repositories". */
+export const countOf = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
