@@ -237,9 +237,24 @@
   gap: var(--space-2);
 }
 
+/* Solid module accent: --focus-ring alone is a 40% glow, about 2.3:1. */
 .skill-constellation button:focus-visible,
 .skill-constellation input:focus-visible,
 .skill-constellation summary:focus-visible {
-  outline: 2px solid var(--focus-ring);
+  box-shadow: 0 0 0 4px var(--focus-ring);
+  outline: 2px solid var(--accent-dev);
   outline-offset: 2px;
+}
+
+.skill-error {
+  justify-items: start;
+}
+
+/* One measure per row in the narrow evidence panel: values never break mid-date. */
+.skill-strength {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.skill-strength dd {
+  white-space: nowrap;
 }

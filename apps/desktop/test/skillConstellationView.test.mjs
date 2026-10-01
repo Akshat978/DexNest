@@ -96,8 +96,22 @@ test("off: explains it reads only Developer Intelligence, and offers to turn on 
   const html = render({ initial: { snapshot: { ...ready, enabled: false, skills: [], layout: [], links: [], lastBuild: null } } });
   assert.match(html, /never scans your disk/);
   assert.match(html, />Turn on</);
-  assert.match(html, />Rebuild</);
+  // While it is off, the one-off build says what it does.
+  assert.match(html, />Build once</);
+  assert.doesNotMatch(html, />Rebuild</);
   assert.doesNotMatch(html, /<svg/);
+});
+
+test("labels: only the fifteen strongest stars are written, plus the selected one; every star keeps its accessible name", () => {
+  const many = Array.from({ length: 30 }, (_, i) => skill(`s${i}`, `Skill ${String(i).padStart(2, "0")}`, 1 - i / 40));
+  const snapshot = { ...ready, skills: many, links: [], layout: many.map((m, i) => ({ skillId: m.id, x: 30 * i + 20, y: 500 })) };
+  const html = render({ initial: { snapshot, selectedId: "s29" } });
+  assert.equal(count(html, 'class="skill-star__label"'), 16);
+  assert.match(html, />Skill 00<\/text>/);
+  assert.match(html, />Skill 14<\/text>/);
+  assert.doesNotMatch(html, />Skill 15<\/text>/);
+  assert.match(html, />Skill 29<\/text>/, "the selected star is labelled");
+  assert.equal(count(html, 'role="button" tabindex='), 30);
 });
 
 test("empty: says why there is nothing and what to do", () => {
@@ -136,7 +150,7 @@ test("a selected star shows why: repositories, files, dates, the numbers behind 
   assert.match(html, /datetime="2026-04-02T00:00:00.000Z"/i);
   assert.match(html, /<q class="skill-evidence__todo">TODO: tidy the router<\/q>/);
   assert.match(html, /abcdef1234/, "a commit shows its sha, not a subject");
-  assert.match(html, /Variety<\/dt><dd class="technical">45% · 2 repos, 2 kinds/);
+  assert.match(html, /Variety<\/dt><dd class="technical">45% · 2 repositories, 2 kinds/);
   assert.match(html, /aria-label="Close evidence for TypeScript"/);
 });
 

@@ -4,7 +4,10 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import type { ConstellationSkill, ConstellationSnapshot, EvidenceView } from "@dexnest/skill-constellation";
 import {
+  countOf,
   groupEvidence,
+  LABEL_LIMIT,
+  labelledIds,
   linkOpacity,
   nextStar,
   percent,
@@ -105,4 +108,22 @@ test("labels say what the numbers are, not a level", () => {
   assert.equal(starLabel(skill("go")), "GO, language, strength 42%, 3 pieces of evidence in 2 repositories");
   assert.equal(starLabel(skill("go", { evidenceCount: 1, repositoryCount: 1 })), "GO, language, strength 42%, 1 piece of evidence in 1 repository");
   assert.match(starLabel(skill("pnpm", { category: "packageManager" })), /^PNPM, package manager,/);
+});
+
+test("only the strongest stars are labelled, plus whatever the owner is pointing at", () => {
+  const many = Array.from({ length: 25 }, (_, i) => skill(`s${String(i).padStart(2, "0")}`, { strength: { volume: 0, recency: 0, variety: 0, score: 1 - i / 50 } }));
+  const ids = labelledIds(many);
+  assert.equal(ids.size, LABEL_LIMIT);
+  assert.ok(ids.has("s00") && ids.has("s14") && !ids.has("s15"));
+  const withHover = labelledIds(many, ["s24", null, "s20"]);
+  assert.ok(withHover.has("s24") && withHover.has("s20"));
+  assert.equal(withHover.size, LABEL_LIMIT + 2);
+  assert.equal(labelledIds(many.slice(0, 3)).size, 3);
+});
+
+test("a hidden star says so in its accessible name; counts read as words", () => {
+  assert.match(starLabel(skill("go", { hidden: true })), /, hidden$/);
+  assert.doesNotMatch(starLabel(skill("go")), /hidden/);
+  assert.equal(countOf(1, "repository", "repositories"), "1 repository");
+  assert.equal(countOf(3, "kind", "kinds"), "3 kinds");
 });
