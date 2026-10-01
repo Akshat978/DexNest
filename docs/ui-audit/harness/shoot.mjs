@@ -8,7 +8,8 @@ import { fileURLToPath } from "node:url";
 const require = createRequire("/opt/node22/lib/node_modules/");
 const { chromium } = require("playwright");
 const here = dirname(fileURLToPath(import.meta.url));
-const out = join(here, "..", "screenshots");
+// SHOTS_DIR overrides where they go (e.g. screenshots/after-fixes).
+const out = process.env.SHOTS_DIR ?? join(here, "..", "screenshots");
 mkdirSync(out, { recursive: true });
 const base = "http://127.0.0.1:5199/docs/ui-audit/harness/index.html";
 const filter = process.argv[2] ?? "";
