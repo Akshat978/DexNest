@@ -5,7 +5,7 @@ event stream `projects` · view id `dev` (kept, see 16) · packages
 `@dexnest/projects` and `@dexnest/git-ops` · host
 `apps/desktop/src/main/projectsHost.ts` · branch `cloud/projects`.
 
-Status: **Phase 1 (contracts) done.** Owner accepted every default in 18. Read with `AGENTS.md`,
+Status: **Phase 2 (store) done.** Owner accepted every default in 18. Read with `AGENTS.md`,
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md` and `docs/ui-audit/REPORT.md` (on
 `cloud/ui-audit`). Shaped after Developer Intelligence's runtime/host split
 and the modules built before it (ObjectOS, GhostOS, Reality RPG, Skill
@@ -633,6 +633,42 @@ All ten defaults in section 18 are accepted as written.
 - **Remote URLs**: `stripUrlCredentials` drops any userinfo from http(s)
   and any password from ssh; `redactCredentials` also removes GitHub token
   shapes (`ghp_...`, `github_pat_...`) from free text such as stderr.
+
+### Refinements made in Phase 2
+
+- **Tables as built** (`src/store/migrations.ts`): `proj_projects` also holds
+  `remote_identity` (host + path, lowercased, any protocol) so duplicate
+  remotes are one indexed lookup; command slots are rows in `proj_commands`
+  (`kind` = slot, or `list` with the commandList id), as planned.
+  `proj_ports` and `proj_tags` keep their order (`position`).
+- **One running operation per project is enforced by the database** - a
+  partial unique index on `proj_operations (project_id) WHERE state =
+  'running'` - not only by the store's check. The journal has no foreign key
+  to projects, so history outlives a removed project. `state` gained
+  `refused`; `outcome` holds the finer result (`auth_needed`, `timed_out`...).
+- **Undo is offered for the latest finished operation only**, and only if it
+  succeeded, has an undo record and was not undone; a later failed or
+  interrupted operation hides older undos. `markUndone` works once.
+- **Crash recovery**: `recoverInterrupted` turns `running` rows into
+  `interrupted` on start, which frees the project again.
+- **`projects.json` migration order**: read -> (corrupt: import nothing,
+  mark nothing, leave the file alone) -> backup copy with `wx` (never
+  overwrites an earlier backup) and hash verification -> one transaction for
+  all projects + the `legacy_import` marker. A crash after the backup simply
+  runs again. A missing file is marked "absent" so a file that appears later
+  is reported ("changed since import"), never auto-imported. "Import
+  projects.json" afterwards adds only entries whose id is not a project yet.
+  A UTF-8 BOM is tolerated.
+- **Round-trip fidelity**: `lastOpenedAt` became optional in the old shape
+  too, so an entry that never had it comes back without it (found by the
+  migration test).
+- **`realPath`** joined `Project` (set by the host in Phase 5/6, cleared when
+  the path changes); the store looks duplicates up by it.
+- Remote URLs are credential-stripped again at the store boundary; a test
+  reads the SQLite file's bytes to prove a token never lands there, and that
+  a commit message and file path never reach the journal.
+- Manifest: view `dev` titled "Projects", job `scheduled_fetch` (heavy,
+  30 min default, only scheduled when enabled - Phase 6).
 
 ## 19. Phases for this module
 

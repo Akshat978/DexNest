@@ -63,6 +63,8 @@ export interface Project {
   id: string;
   name: string;
   path: string;
+  /** The path with junctions and symlinks resolved, set by the host; used for duplicate checks. */
+  realPath: string | null;
   description: string;
   accent: Accent;
   projectType: ProjectType | null;
@@ -252,6 +254,7 @@ export function normaliseProjectInput(input: ProjectInput, ctx: NormaliseContext
     id,
     name,
     path,
+    realPath: prev && prev.path === path ? prev.realPath : null,
     description: trimmed(input.description, prev?.description ?? ""),
     accent,
     projectType,

@@ -132,6 +132,7 @@ export function legacyProjectToProject(
     id,
     name,
     path,
+    realPath: null,
     description: str(entry.description),
     accent: isAccent(entry.accent) ? entry.accent : "dev",
     projectType: isProjectType(entry.projectType) ? entry.projectType : null,
@@ -168,9 +169,9 @@ export function legacyProjectToProject(
 }
 
 /** Map a whole parsed projects.json. Anything that is not an array imports nothing. */
-export function importLegacyProjects(parsed: unknown, ctx: LegacyImportContext): LegacyImportResult {
+export function importLegacyProjects(parsed: unknown, ctx: LegacyImportContext, existingIds: Iterable<string> = []): LegacyImportResult {
   if (!Array.isArray(parsed)) return { projects: [], skipped: [{ index: -1, reason: "projects.json is not a list" }] };
-  const taken = new Set<string>();
+  const taken = new Set<string>(existingIds);
   const projects: Project[] = [];
   const skipped: Array<{ index: number; reason: string }> = [];
   parsed.forEach((entry, index) => {
@@ -199,10 +200,10 @@ export function projectToLegacy(project: Project): LegacyProject {
     urls: [...project.localUrls],
     notes: project.notes,
     createdAt: project.createdAt,
-    updatedAt: project.updatedAt,
-    lastOpenedAt: project.lastOpenedAt
+    updatedAt: project.updatedAt
   };
   const optional: Array<[keyof LegacyProject, unknown, boolean]> = [
+    ["lastOpenedAt", project.lastOpenedAt, project.lastOpenedAt !== null],
     ["ports", [...project.ports], project.ports.length > 0],
     ["stopCommand", project.stopCommand, project.stopCommand !== ""],
     ["logCommand", project.logCommand, project.logCommand !== ""],

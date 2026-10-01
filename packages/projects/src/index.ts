@@ -17,3 +17,9 @@ export * from "./domain/events.ts";
 export * from "./domain/settings.ts";
 export * from "./domain/actions.ts";
 export * from "./domain/hosting.ts";
+
+export * from "./store/migrations.ts";
+export * from "./store/store.ts";
+export * from "./store/legacyMigration.ts";
+export * from "./node/legacyFile.ts";
+export * from "./module/manifest.ts";

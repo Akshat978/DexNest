@@ -60,6 +60,11 @@ export function opStartedPayload(opId: string, projectId: string, plan: Operatio
   };
 }
 
+/** What the journal keeps about a plan: the same allowlist as the events. */
+export function journalParams(plan: OperationPlan): EventPayload {
+  return { verb: plan.kind, safety: plan.safety, network: plan.network, branch: plan.branch, steps: plan.steps.length, counts: counts(plan.counts) };
+}
+
 export function opRefusedPayload(opId: string, projectId: string, refusal: Refusal): EventPayload {
   return { opId, projectId, verb: refusal.kind, outcome: "refused", code: refusal.code };
 }
