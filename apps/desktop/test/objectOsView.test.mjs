@@ -263,10 +263,36 @@ test("history: newest first, with kind and time; empty says so", () => {
   assert.match(render({ initial: { ...ready, detail, tab: "history", history: [] } }), /No history yet\./);
 });
 
+test("needs attention shows the five most urgent, then a toggle for the rest", () => {
+  const many = { ...attention, summary: { ...attention.summary, items: Array.from({ length: 8 }, (_, i) => ({ kind: "warranty", objectId: printer.id, state: "ending", daysLeft: i + 1 })) } };
+  const html = render({ initial: { ...ready, attention: many } });
+  const list = section(html, "Needs attention");
+  assert.equal((list.match(/<li>/g) ?? []).length, 5);
+  assert.match(html, /<button type="button" class="objectos-link" aria-expanded="false" aria-controls="objectos-attention-list">Show all 8<\/button>/);
+  assert.doesNotMatch(render({ initial: ready }), /Show all/, "no toggle for three items");
+});
+
+test("the empty state offers the first steps itself", () => {
+  const html = render({ initial: { status: status(0) } });
+  assert.match(html, /<button type="button" class="objectos-primary">Add your first object<\/button>/);
+  assert.match(html, />Import an export…<\/button>/);
+});
+
+test("the detail header's status select is named, not labelled above, so the header buttons stay one height", () => {
+  const html = render({ initial: { ...ready, detail } });
+  assert.match(html, /<select class="objectos-status-select" aria-label="Status">/);
+  assert.doesNotMatch(html, /<label class="objectos-inline">Status/);
+});
+
+test("the add form marks the name as required", () => {
+  const html = render({ initial: { ...ready, editing: { id: null, name: "", category: "other", make: "", model: "", serial: "", location: "", status: "active", parentId: "", tags: "", notes: "" } } });
+  assert.match(html, /<label for="objectos-f-name">Name \(required\)<\/label><input id="objectos-f-name" required=""/);
+});
+
 test("delete asks first: an alert dialog that names what is kept", () => {
   const confirm = { actionId: "object_os.object.delete", params: { input: { id: printer.id } }, question: "Delete Workshop printer with all its records and attached files? Its 1 component will be kept. This cannot be undone." };
   const html = render({ initial: { ...ready, detail, confirm } });
-  assert.match(html, /role="alertdialog" aria-labelledby="objectos-confirm-text"/);
+  assert.match(html, /<div class="objectos-backdrop"><div class="objectos-confirm" role="alertdialog" aria-labelledby="objectos-confirm-text" aria-modal="true">/);
   assert.match(html, /Its 1 component will be kept/);
   assert.match(html, />Delete<\/button><button type="button">Cancel<\/button>/);
 });
@@ -289,7 +315,9 @@ test("every form control has a label", () => {
     const html = render({ initial: { ...ready, detail, tab } });
     for (const [tag] of html.matchAll(/<(input|select|textarea)\b[^>]*>/g)) {
       const id = tag.match(/ id="([^"]+)"/)?.[1];
-      if (id) {
+      if (/ aria-label="[^"]+"/.test(tag)) {
+        // Named directly (the header's status select).
+      } else if (id) {
         assert.match(html, new RegExp(`<label for="${id}">`), `${tab}: ${tag}`);
       } else {
         // No id: it must sit inside a <label>.
