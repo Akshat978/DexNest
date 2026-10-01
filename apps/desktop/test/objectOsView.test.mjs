@@ -343,6 +343,13 @@ test("design tokens only: no literal colours; fonts from tokens; the tools accen
   assert.doesNotMatch(css, /animation|transition/, "nothing animates");
 });
 
+test("table buttons keep their label on one line", () => {
+  const css = readFileSync(join(desktop, "src/renderer/views/ObjectOs.css"), "utf8");
+  const rule = css.match(/([^{}]*\.objectos-table button[^{}]*)\{([^}]*)\}/);
+  assert.ok(rule, "a rule targets buttons inside ObjectOS tables");
+  assert.match(rule[2], /white-space:\s*nowrap/);
+});
+
 test("the shell routes to it: sidebar entry, icon, action", () => {
   const meta = readFileSync(join(desktop, "src/renderer/lib/moduleMeta.ts"), "utf8");
   const shell = readFileSync(join(desktop, "src/renderer/main.tsx"), "utf8");

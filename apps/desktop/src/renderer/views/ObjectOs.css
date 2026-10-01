@@ -443,8 +443,9 @@ button.objectos-item:hover {
   vertical-align: middle;
 }
 
-/* Dates, sizes and amounts never break across lines. */
+/* Dates, sizes, amounts and button labels never break across lines. */
 .objectos-table .technical,
-.objectos-table time {
+.objectos-table time,
+.objectos-table button {
   white-space: nowrap;
 }
