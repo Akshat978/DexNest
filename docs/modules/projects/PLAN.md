@@ -5,7 +5,7 @@ event stream `projects` · view id `dev` (kept, see 16) · packages
 `@dexnest/projects` and `@dexnest/git-ops` · host
 `apps/desktop/src/main/projectsHost.ts` · branch `cloud/projects`.
 
-Status: **Phase 3 (git read engine) done.** Owner accepted every default in 18. Read with `AGENTS.md`,
+Status: **Phase 4 (git-ops) done.** Owner accepted every default in 18. Read with `AGENTS.md`,
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md` and `docs/ui-audit/REPORT.md` (on
 `cloud/ui-audit`). Shaped after Developer Intelligence's runtime/host split
 and the modules built before it (ObjectOS, GhostOS, Reality RPG, Skill
@@ -712,6 +712,53 @@ All ten defaults in section 18 are accepted as written.
 - Submodules come from `.gitmodules` (`config --file`), listed and not
   recursed into. History marks commits on a remote with
   `rev-list HEAD --not --remotes`.
+
+### Refinements made in Phase 4
+
+- **Two layers at argv level.** `stepToArgv` builds only a fixed set of
+  command shapes; `assertSafeMutatingArgv` then re-checks the finished argv
+  against an allowlist of exact shapes (with typed slots: checked branch
+  name, full sha, remote name, `branch:refs/heads/branch` refspec) *and* a
+  NEVER-token list (`--force*`, `-f`, `--mirror`, `--hard`/`--mixed`/...,
+  `--rebase`, `--amend`, `--no-verify`, `+` refspecs, `--upload-pack`...).
+  Pushes always use an explicit `branch:refs/heads/branch` refspec (never a
+  bare name, never `+`). Every argv starts with git-ops' own fixed `-c`
+  options (`protocol.ext.allow=never`, `credential.interactive=never`,
+  `core.fsmonitor=false`...), and nothing else may precede the verb.
+- **Commit messages go to git on stdin** (`commit --file=-`), never on the
+  command line, never in the journal or events (tests scan argv, the
+  database file and the event log).
+- **Branch deletion** uses `branch -D` only after git-ops re-reads the tip
+  and finds the exact sha the plan showed; undo-commit checks HEAD the same
+  way before `reset --soft <parent sha>` (the only reset shape allowed).
+- **Stale previews**: each plan has a fingerprint; `execute` with the
+  fingerprint the owner saw returns `stale` (and the new plan) instead of
+  running something different - e.g. "Push 2 commits" after the owner
+  confirmed "Push 1 commit".
+- **Undo** is only for the project's most recent finished operation; an
+  undo of a discard asks first only when today's changes touch the backup's
+  files.
+- **Cancel** is checked before every step as well as by the runner (a race
+  found while testing: a cancel landing between steps must stop the next
+  step - e.g. after "stash" and before "switch" the changes stay safe in
+  the stash and the switch never runs).
+- **Non-interactive callers** (deck, hotkey, bulk): anything needing a
+  confirmation or a choice is refused with "Open DexNest to do it."
+- **Environment**: `GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`, empty
+  `GIT_ASKPASS`/`SSH_ASKPASS`, `SSH_ASKPASS_REQUIRE=never`, `GIT_EDITOR=:`,
+  `GIT_ALLOW_PROTOCOL=https:ssh:git:file`; `GIT_SSH_COMMAND="ssh -o
+  BatchMode=yes"` unless `core.sshCommand`, `GIT_SSH` or `GIT_SSH_COMMAND`
+  is already set (decision 6).
+- **Failures in plain words**: `auth_needed` (-> "open a terminal here"),
+  `offline`, `not_fast_forward`, `rejected`, `local_changes`, `locked`
+  (index.lock: reported, never deleted), `hook_failed` (hook output shown),
+  `conflict`. Output lines are credential-redacted and capped at 400.
+- **The journal row is always finished**, even when the validator throws or
+  the runner fails; `recordFetch` tolerates a project removed mid-fetch.
+- Two DexNest instances on one database: the partial unique index makes the
+  second one `busy`.
+- Clone is added in Phase 5 as one more exact shape, with the URL checked by
+  `checkCloneUrl` first.
 
 ## 19. Phases for this module
 

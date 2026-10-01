@@ -14,6 +14,8 @@ export interface GitRunRequest {
   signal?: AbortSignal;
   /** Added to the runner's base environment. */
   env?: Readonly<Record<string, string>>;
+  /** Written to git's stdin, then closed (git-ops sends commit messages this way). */
+  stdin?: string;
 }
 
 export interface GitRunResult {

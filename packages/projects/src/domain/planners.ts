@@ -544,11 +544,13 @@ export function planUndo(state: RepoStateOk, record: UndoRecord, facts: UndoFact
     case "apply_stash":
     case "pop_stash": {
       if (facts.objectExists === false) return gone();
-      const inList = state.stashes.some((s) => s.sha === record.sha);
+      const entry = state.stashes.find((s) => s.sha === record.sha);
       const steps: OperationPlan["steps"] = [{ op: "stash_apply", sha: record.sha }];
-      if (inList) steps.push({ op: "stash_drop_if_clean", sha: record.sha });
+      if (entry) steps.push({ op: "stash_drop_if_clean", sha: record.sha });
       const words = record.kind === "apply_stash" ? "Bring back the discarded changes." : "Bring back the stashed changes.";
-      const dirty = isDirty(state.workingTree);
+      // Only ask when today's changes may collide with the backup (unknown files count as "may").
+      const changed = changedPaths(state.workingTree);
+      const dirty = entry?.files ? entry.files.some((file) => changed.has(file)) : isDirty(state.workingTree);
       return plan({
         ...base,
         safety: dirty ? "caution" : "normal",

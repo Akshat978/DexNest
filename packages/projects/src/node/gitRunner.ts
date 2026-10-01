@@ -42,7 +42,7 @@ export function createNodeGitRunner(options: NodeGitRunnerOptions = {}): GitRunn
           env: { ...(options.env ?? process.env), ...(request.env ?? {}) },
           shell: false,
           windowsHide: true,
-          stdio: ["ignore", "pipe", "pipe"]
+          stdio: [request.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"]
         });
         const kill = () => {
           if (child.exitCode === null && !child.killed) child.kill("SIGKILL");
@@ -69,8 +69,12 @@ export function createNodeGitRunner(options: NodeGitRunnerOptions = {}): GitRunn
           if (isOut) outBytes += piece.length;
           else errBytes += piece.length;
         };
-        child.stdout.on("data", (chunk: Buffer) => collect(out, chunk, true));
-        child.stderr.on("data", (chunk: Buffer) => collect(err, chunk, false));
+        if (request.stdin !== undefined && child.stdin) {
+          child.stdin.on("error", () => undefined);
+          child.stdin.end(request.stdin, "utf8");
+        }
+        child.stdout?.on("data", (chunk: Buffer) => collect(out, chunk, true));
+        child.stderr?.on("data", (chunk: Buffer) => collect(err, chunk, false));
         const finish = (exitCode: number | null) => {
           if (settled) return;
           settled = true;
