@@ -12,6 +12,14 @@ export const ENTITY_TYPE_LIST: readonly EntityType[] = [
 
 export const RELATION_TYPE_LIST = ["worked_on", "uses", "about", "involves", "at", "part_of", "related_to", "learned_from", "led_to"] as const;
 
+/** "related_to" as people read it: "related to". */
+export const relationTypeText = (type: string): string => type.replace(/_/g, " ");
+
+/** What the owner typed ("Related to", "learned-from") as the stored type ("related_to"). */
+export function relationTypeFromText(text: string): string {
+  return text.trim().toLowerCase().replace(/[\s-]+/g, "_");
+}
+
 export const TYPE_LABELS: Record<EntityType, string> = {
   person: "Person",
   project: "Project",

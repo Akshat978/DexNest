@@ -19,6 +19,8 @@ import {
   pickerState,
   originLabel,
   RELATION_TYPE_LIST,
+  relationTypeFromText,
+  relationTypeText,
   sourceLabel,
   timelineKind,
   timelineLabel,
@@ -139,4 +141,11 @@ test("picker: keyboard - arrows wrap, Home/End, Enter chooses only a highlighted
   assert.equal(pickerKey("ArrowDown", -1, 0), null, "no options, nothing to move to");
   assert.equal(pickerKey("a", 0, 3), null, "typing goes to the input");
   assert.equal(pickerOptionId("ent_ts000001"), "ghost-pick-ent_ts000001");
+});
+
+test("relation types read as words and are stored as ids, round trip for every built-in type", () => {
+  assert.equal(relationTypeText("learned_from"), "learned from");
+  assert.equal(relationTypeFromText("  Learned From "), "learned_from");
+  assert.equal(relationTypeFromText("part-of"), "part_of");
+  for (const t of RELATION_TYPE_LIST) assert.equal(relationTypeFromText(relationTypeText(t)), t);
 });
