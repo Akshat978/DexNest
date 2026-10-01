@@ -6,6 +6,8 @@ import type { AchievementView, AwardView, RealityRpgSnapshot } from "@dexnest/re
 import {
   actionMessage,
   awardLabel,
+  awardSource,
+  awardTitle,
   EMPTY_QUEST_FORM,
   EMPTY_RULE_FORM,
   levelProgress,
@@ -14,8 +16,10 @@ import {
   progressText,
   questFromForm,
   ruleFromForm,
+  ruleSentence,
   shortDate,
   slugId,
+  statShare,
   viewState
 } from "../src/renderer/views/realityRpgModel.ts";
 
@@ -105,4 +109,20 @@ test("tabs follow the ARIA keyboard pattern", () => {
   assert.equal(nextTab("history", "Home"), "character");
   assert.equal(nextTab("quests", "End"), "rules");
   assert.equal(nextTab("quests", "a"), null);
+});
+
+test("history rows lead with the rule's name; the event type is the small print", () => {
+  const award = { ruleName: "Copies", actionId: "clipboard.copy", eventType: "action_executed" } as Parameters<typeof awardTitle>[0];
+  assert.equal(awardTitle(award), "Copies");
+  assert.equal(awardSource(award), "clipboard.copy");
+  assert.equal(awardTitle({ ...award, ruleName: null }), "A deleted rule");
+  assert.equal(awardSource({ ...award, actionId: null }), "action_executed");
+});
+
+test("a rule reads as a sentence; stat bars are shares of the strongest stat", () => {
+  assert.equal(ruleSentence({ award: { xp: 5, stat: "Craft" }, dailyCap: 20 }), "+5 Craft each time, at most 20 a day");
+  assert.equal(ruleSentence({ award: { xp: 1, stat: "Order" } }), "+1 Order each time");
+  assert.equal(statShare(30, 120), 25);
+  assert.equal(statShare(120, 120), 100);
+  assert.equal(statShare(5, 0), 0);
 });

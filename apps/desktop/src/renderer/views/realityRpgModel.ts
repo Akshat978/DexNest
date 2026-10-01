@@ -3,7 +3,7 @@
 // JSON the module validates, and how history reads. No DOM, no bridge, no I/O.
 // The module re-validates everything; these builders only shape input.
 
-import type { AchievementView, AwardView, RealityRpgSnapshot } from "@dexnest/reality-rpg";
+import type { AchievementView, AwardView, RealityRpgSnapshot, Rule } from "@dexnest/reality-rpg";
 
 export type ViewState =
   | { kind: "loading" }
@@ -123,6 +123,26 @@ export function awardLabel(award: AwardView): string {
   const rule = award.ruleName ?? "a deleted rule";
   const what = award.actionId ?? award.eventType;
   return `${rule} · ${what}`;
+}
+
+/** What a history row leads with: the rule's name, as people named it. */
+export function awardTitle(award: AwardView): string {
+  return award.ruleName ?? "A deleted rule";
+}
+
+/** The technical source of an award, shown small under its title. */
+export function awardSource(award: AwardView): string {
+  return award.actionId ?? award.eventType;
+}
+
+/** A rule as a sentence: "+5 Craft each time, at most 20 a day". */
+export function ruleSentence(rule: Pick<Rule, "award" | "dailyCap">): string {
+  return `+${rule.award.xp} ${rule.award.stat} each time${rule.dailyCap ? `, at most ${rule.dailyCap} a day` : ""}`;
+}
+
+/** A stat's share of the strongest stat, 0-100, for its bar. */
+export function statShare(xp: number, topXp: number): number {
+  return topXp <= 0 ? 0 : Math.max(0, Math.min(100, Math.round((xp / topXp) * 100)));
 }
 
 /** A calendar date; the full time goes in the title attribute. */

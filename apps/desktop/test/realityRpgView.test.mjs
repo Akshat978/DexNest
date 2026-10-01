@@ -96,8 +96,11 @@ test("character sheet: level, XP to next, progress, stats", () => {
   assert.match(html, /Level <span class="technical">2<\/span>/);
   assert.match(html, /150 XP to level 3/);
   assert.match(html, /<progress class="rpg-bar" max="100" value="25" aria-label="Progress to level 3">/);
-  assert.match(html, /<span>Craft<\/span><span class="technical">120 XP<\/span>/);
+  // Stats are cards with a bar against the strongest stat (Craft 120 is the top, Focus 30 a quarter of it).
+  assert.match(html, /<span class="rpg-stat__name">Craft<\/span><span class="technical">120 XP<\/span><span class="rpg-stat__bar" aria-hidden="true"><span style="width:100%"><\/span><\/span>/);
+  assert.match(html, /<span class="rpg-stat__name">Focus<\/span><span class="technical">30 XP<\/span><span class="rpg-stat__bar" aria-hidden="true"><span style="width:25%"><\/span><\/span>/);
   assert.match(html, />Turn off</);
+  assert.match(html, />Refresh</);
 });
 
 test("tabs: one tab stop, the selected tab controls a labelled panel", () => {
@@ -126,9 +129,27 @@ test("achievements: unlocked with a date, locked with progress", () => {
 
 test("history: what earned the XP, never what the event said; deleted rules say so", () => {
   const html = render({ initial: { snapshot: base, tab: "history" } });
-  assert.match(html, /Commit observed · dev.commit.observed/);
-  assert.match(html, /a deleted rule · clipboard.copy/);
+  assert.match(html, /<span class="rpg-history__what"><span>Commit observed<\/span><span class="rpg-hint technical">dev.commit.observed<\/span><\/span>/);
+  assert.match(html, /<span>A deleted rule<\/span><span class="rpg-hint technical">clipboard.copy<\/span>/);
   assert.match(html, /\+5 Craft/);
+});
+
+test("off: no Refresh while processing is off", () => {
+  const html = render({ initial: { snapshot: off } });
+  assert.doesNotMatch(html, />Refresh</);
+  assert.match(html, />Turn on</);
+});
+
+test("deleting a rule and abandoning a quest ask first, in a modal", () => {
+  const rules = render({ initial: { snapshot: base, tab: "rules" } });
+  assert.match(rules, /aria-label="Delete Commit observed">Delete…<\/button>/);
+  assert.match(rules, /<p>\+5 Craft each time, at most 20 a day<\/p><p class="rpg-hint technical">dev.commit.observed<\/p>/);
+  const quests = render({ initial: { snapshot: base, tab: "quests" } });
+  assert.match(quests, /aria-label="Abandon Commit today">Abandon…<\/button>/);
+  const confirm = { actionId: "reality_rpg.rule.delete", params: { ruleId: "commits" }, question: "Delete the rule \"Commit observed\"? XP it already awarded stays.", confirmLabel: "Delete" };
+  const html = render({ initial: { snapshot: base, tab: "rules", confirm } });
+  assert.match(html, /<div class="rpg-backdrop"><div class="rpg-confirm" role="alertdialog" aria-labelledby="rpg-confirm-text" aria-modal="true">/);
+  assert.match(html, /<button type="button" class="rpg-danger">Delete<\/button><button type="button">Cancel<\/button>/);
 });
 
 test("rules: on/off, backfill only for rules that are on, delete, starter set, invalid warning", () => {
