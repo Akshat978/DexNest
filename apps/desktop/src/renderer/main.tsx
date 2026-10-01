@@ -33,7 +33,7 @@ import { AssistantOrb } from "./components/ui/AssistantOrb";
 import { VoiceWaveform } from "./components/ui/VoiceWaveform";
 import { ModuleLoadingOverlay, InlineLoadingState, LoadingStatusCard } from "./components/ui/ModuleLoading";
 import { previewForUi, formatBytes, formatDate, formatDuration } from "./lib/format";
-import { MODULE_META, SIDEBAR_VIEWS, SIDEBAR_HIDDEN_VIEWS, type ViewId } from "./lib/moduleMeta";
+import { accentTint, MODULE_META, SIDEBAR_VIEWS, SIDEBAR_HIDDEN_VIEWS, type ViewId } from "./lib/moduleMeta";
 import { getPerfStats, subscribePerf, recordModuleSwitch, recordModuleDataLoaded } from "./lib/perf";
 import {
   emptyCommandStats, defaultPerformanceModeSettings, defaultPerformanceModeState, defaultExternalDevicesState,
@@ -6052,7 +6052,7 @@ function DexNestApp() {
                 data-testid={`nav-${view.id}`}
                 onClick={() => void navigate(view.id)}
                 className={`group relative flex w-full items-center gap-3 rounded-lg border px-2.5 py-2 text-sm outline-none transition-colors ${sidebarCollapsed ? "justify-center" : ""} ${active ? "border-transparent text-[#F5F5F5]" : "border-transparent text-[#A3A3A3] hover:bg-[#0d0d0d] hover:text-[#F5F5F5]"}`}
-                style={active ? { background: `${meta.accent}12`, borderColor: `${meta.accent}26`, boxShadow: `inset 0 0 18px ${meta.accent}10` } : undefined}
+                style={active ? { background: accentTint(meta.accent, 7), borderColor: accentTint(meta.accent, 15), boxShadow: `inset 0 0 18px ${accentTint(meta.accent, 6)}` } : undefined}
               >
                 {active && (
                   <span className="absolute -left-px top-1/2 h-5 w-[2.5px] -translate-y-1/2 rounded-r-full" style={{ background: meta.accent, boxShadow: `0 0 8px ${meta.accent}` }} />
@@ -8021,9 +8021,9 @@ function CommandView({
                   type="button"
                   onClick={() => void runRegistryActionFromSource(action, "module_ui")}
                   className="glass-card lift group flex flex-col gap-2.5 p-3.5 text-left"
-                  style={{ boxShadow: `inset 0 0 22px ${meta.accent}0d` }}
+                  style={{ boxShadow: `inset 0 0 22px ${accentTint(meta.accent, 5)}` }}
                 >
-                  <div className="flex h-8 w-8 items-center justify-center rounded-lg" style={{ background: `${meta.accent}18`, color: meta.accent }}>
+                  <div className="flex h-8 w-8 items-center justify-center rounded-lg" style={{ background: accentTint(meta.accent, 9), color: meta.accent }}>
                     <Icon className="h-4 w-4" />
                   </div>
                   <div>
@@ -8057,7 +8057,7 @@ function CommandView({
               return (
                 <div key={pin.id} className="glass-card group flex items-center gap-3 p-2.5">
                   <button type="button" onClick={openPin} className="flex min-w-0 flex-1 items-center gap-3 text-left">
-                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ background: `${meta.accent}18`, color: meta.accent }}><Icon className="h-4 w-4" /></div>
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ background: accentTint(meta.accent, 9), color: meta.accent }}><Icon className="h-4 w-4" /></div>
                     <div className="min-w-0">
                       <p className="truncate text-sm font-medium text-[#F5F5F5]">{pin.title}</p>
                       <p className="truncate font-mono text-[10px] text-[#525252]">{pin.type} · {pin.module}{pin.subtitle ? ` · ${pin.subtitle}` : ""}</p>
@@ -15547,9 +15547,9 @@ function DeckView({
                       const pinned = Boolean(item.actionId && pinnedActionIds.includes(item.actionId));
                       const disabled = item.placeholder || !item.actionId || !action;
                       return (
-                        <article key={`${group.id}-${item.file}`} className="glass-card flex min-h-[7.25rem] flex-col justify-between p-3" style={{ boxShadow: `inset 0 0 18px ${meta.accent}0f` }}>
+                        <article key={`${group.id}-${item.file}`} className="glass-card flex min-h-[7.25rem] flex-col justify-between p-3" style={{ boxShadow: `inset 0 0 18px ${accentTint(meta.accent, 6)}` }}>
                           <div className="flex items-start gap-2.5">
-                            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ background: `${meta.accent}18`, color: meta.accent }}><Icon className="h-4 w-4" /></div>
+                            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg" style={{ background: accentTint(meta.accent, 9), color: meta.accent }}><Icon className="h-4 w-4" /></div>
                             <div className="min-w-0 flex-1">
                               <div className="flex items-start gap-2">
                                 <strong className="min-w-0 flex-1 truncate text-sm text-[#F5F5F5]">{item.title}</strong>

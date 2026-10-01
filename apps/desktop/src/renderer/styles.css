@@ -120,7 +120,11 @@ select {
   font: inherit;
 }
 
-input,
+/* Text-like controls fill their column. Checkboxes and radios keep their own
+   size (a full-width checkbox pushes its label to the far edge); :where()
+   keeps this rule's specificity at a plain element selector, so classes still
+   win. */
+input:where(:not([type="checkbox"], [type="radio"])),
 textarea,
 select {
   width: 100%;
