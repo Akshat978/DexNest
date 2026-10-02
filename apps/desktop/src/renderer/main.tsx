@@ -31,7 +31,7 @@ import { ActionButton } from "./components/ui/ActionButton";
 import { AssistantOrb } from "./components/ui/AssistantOrb";
 import { VoiceWaveform } from "./components/ui/VoiceWaveform";
 import { InlineLoadingState } from "./components/ui/ModuleLoading";
-import { ErrorState, LoadingState } from "./components/ui/kit";
+import { ErrorState, LoadingState, PageHeader as KitPageHeader } from "./components/ui/kit";
 import { previewForUi, formatBytes, formatDate, formatDuration } from "./lib/format";
 import { accentTint, MODULE_META, SIDEBAR_VIEWS, SIDEBAR_HIDDEN_VIEWS, type ViewId } from "./lib/moduleMeta";
 import { getPerfStats, subscribePerf, recordModuleSwitch, recordModuleDataLoaded } from "./lib/perf";
@@ -8632,10 +8632,12 @@ function NewsView({
 
   return (
     <div className="space-y-5">
-      <PageHeader
-        eyebrow="Selected headlines, cached locally."
+      <KitPageHeader
+        icon={<Newspaper />}
         title="News"
         titleId="news-title"
+        subtitle="Selected headlines, cached locally."
+        accent="news"
         actions={(
           <div className="flex flex-wrap items-center justify-end gap-2">
             <StatusChip tone={newsTone(newsState.status, newsState.settings.newsEnabled)}>{newsStatusText(newsState)}</StatusChip>

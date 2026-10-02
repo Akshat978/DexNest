@@ -1,6 +1,8 @@
 import React from "react";
 import { formatLocalDateTime } from "@dexnest/shared-types";
-import { PageHeader, LimitedList } from "../components/shared";
+import { ScrollText } from "lucide-react";
+import { LimitedList } from "../components/shared";
+import { Button, EmptyNote, PageHeader } from "../components/ui/kit";
 import type { EventEntry } from "../main";
 
 export function AuditView({
@@ -20,19 +22,17 @@ export function AuditView({
   return (
     <section className="view-stack" aria-labelledby="audit-title">
       <PageHeader
-        eyebrow="SQLite event log"
-        title="Recent Events"
+        icon={<ScrollText />}
+        title="Audit"
         titleId="audit-title"
-        actions={(
-          <button type="button" onClick={() => void refresh()}>
-          Refresh
-          </button>
-        )}
+        subtitle="Recent events from the SQLite event log"
+        accent="command"
+        actions={<Button onClick={() => void refresh()}>Refresh</Button>}
       />
 
       <div className="event-list">
         {events.length === 0 ? (
-          <p className="empty-state">No events yet. Run an action to populate Audit.</p>
+          <EmptyNote>No events yet. Run an action to populate Audit.</EmptyNote>
         ) : (
           <LimitedList items={events} step={50}>
             {(event) => (
