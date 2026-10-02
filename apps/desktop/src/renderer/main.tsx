@@ -59,6 +59,7 @@ import { RealityRpgView, type RealityRpgBridge } from "./views/RealityRpgView";
 import { GhostOsView, type GhostOsBridge } from "./views/GhostOsView";
 import { ObjectOsView, type ObjectOsBridge } from "./views/ObjectOsView";
 import { ProjectsView } from "./views/projects/ProjectsView";
+import { uniqueById } from "./lib/uniqueById";
 import { ViewErrorBoundary } from "./components/ViewErrorBoundary";
 import { BackupView } from "./views/BackupView";
 import { ExternalDevicesView } from "./views/ExternalDevicesView";
@@ -12132,8 +12133,9 @@ function CalendarView({
   }
 
   const ACCENT_CAL = "#14B8A6";
-  const calReminders = [...calendarState.todayNudges, ...calendarState.upcomingNudges].slice(0, 4);
-  const nudgeList = [...calendarState.todayNudges, ...calendarState.upcomingNudges].slice(0, 8);
+  // Today's nudges are also in upcomingNudges: list each one once.
+  const calReminders = uniqueById([...calendarState.todayNudges, ...calendarState.upcomingNudges]).slice(0, 4);
+  const nudgeList = uniqueById([...calendarState.todayNudges, ...calendarState.upcomingNudges]).slice(0, 8);
   const nudgeColor = (p: string): string => p === "urgent" ? "#EF4444" : p === "normal" ? "#F59E0B" : "#14B8A6";
 
   function CalendarEventChip({ event, compact = false }: { event: CalendarEvent; compact?: boolean }) {
@@ -12591,20 +12593,25 @@ function CalendarView({
               <div className="space-y-2">
                 {upcomingVisibleEvents.slice(0, 6).map((e) => {
                   const bday = /birthday/i.test(e.title);
+                  const open = () => { if (isProviderEvent(e)) { setSelectedDate(e.date); setSelectedEventId(e.id); } else loadEvent(e); };
+                  // A div, not a <button>: the row holds a PinButton, and a
+                  // button inside a button is invalid HTML.
                   return (
-                    <button
+                    <div
                       key={e.id}
-                      type="button"
+                      role="button"
+                      tabIndex={0}
                       className="calendar-side-event"
                       // loadEvent fills the edit form, which is the wrong
                       // destination for something DexNest cannot save.
-                      onClick={() => { if (isProviderEvent(e)) { setSelectedDate(e.date); setSelectedEventId(e.id); } else loadEvent(e); }}
+                      onClick={open}
+                      onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); open(); } }}
                     >
                       <div className="flex h-8 w-8 items-center justify-center rounded-lg" style={{ background: `${ACCENT_CAL}14`, color: ACCENT_CAL }}>{bday ? <Cake className="h-4 w-4" /> : <CalendarDays className="h-4 w-4" />}</div>
                       <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{e.title}</p><p className="font-mono text-[10px] text-[#525252]">{formatLocalDate(e.date)} / {e.allDay ? "all-day" : e.startTime || "-"}</p></div>
                       <PinButton input={{ type: "event", module: "calendar", entityId: e.id, title: e.title, subtitle: formatLocalDate(e.date) }} />
                       <span className="font-mono text-[10px] text-[#14B8A6]">{e.sourceModule}</span>
-                    </button>
+                    </div>
                   );
                 })}
               </div>

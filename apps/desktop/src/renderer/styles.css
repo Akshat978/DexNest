@@ -525,6 +525,24 @@ button:focus-visible {
   background: color-mix(in srgb, var(--surface-2) 78%, transparent);
 }
 
+/* Upcoming rows are role="button" divs (they contain a pin button), so they
+   take the global button box here. */
+div.calendar-side-event[role="button"] {
+  min-height: 2.25rem;
+  padding: var(--space-2) var(--space-3);
+  color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--accent-calendar) 28%, var(--border));
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+div.calendar-side-event[role="button"]:hover {
+  background: var(--surface-hover);
+}
+div.calendar-side-event[role="button"]:focus-visible {
+  outline: 2px solid var(--focus-outline);
+  outline-offset: 2px;
+}
+
 .calendar-agenda-event {
   display: grid;
   grid-template-columns: 5.2rem minmax(0, 1fr) auto;
