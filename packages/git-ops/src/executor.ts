@@ -30,8 +30,12 @@ import {
   selectPullAll,
   PROJECTS_EVENT_STREAM,
   PROJECTS_MODULE_ID,
-  type Confirmation,
+  type BulkProject,
   type EventPayload,
+  type ExecuteInput,
+  type ExecuteResult,
+  type GitOpsPort,
+  type PreviewResult,
   type GitReader,
   type GitRunner,
   type OpOutcome,
@@ -61,55 +65,10 @@ export interface GitOpsOptions {
   localTimeoutMs?: number;
 }
 
-export interface ExecuteInput {
-  projectId: string;
-  path: string;
-  /** Untrusted: parsed and validated here. */
-  request: unknown;
-  confirmation?: Confirmation;
-  /** The preview the owner saw. When given and the fresh plan differs, nothing runs. */
-  expectedFingerprint?: string;
-  /** The trigger: module_ui, command, deck... */
-  source: string;
-  /** Deck / hotkey: refuse anything that would need a choice or a confirmation. */
-  nonInteractive?: boolean;
-  onOutput?: (line: string) => void;
-}
+/** Everything in the port except clone (see clone.ts; the host composes the two). */
+export type GitOps = Omit<GitOpsPort, "clone">;
 
-export type ExecuteResult =
-  | { status: "refused"; opId: string; refusal: Refusal }
-  | { status: "needs_confirmation"; plan: OperationPlan; fingerprint: string }
-  | { status: "stale"; plan: OperationPlan; fingerprint: string }
-  | { status: "busy"; runningOpId: string; runningVerb: string }
-  | {
-      status: "done";
-      opId: string;
-      outcome: OpOutcome;
-      plan: OperationPlan;
-      message: string;
-      errorCode: FailureCode | "stale_state" | null;
-      output: string[];
-      undoAvailable: boolean;
-      state: RepoState | null;
-    };
-
-export type PreviewResult = { refused: false; plan: OperationPlan; fingerprint: string } | { refused: true; refusal: Refusal };
-
-export interface BulkProject {
-  projectId: string;
-  path: string;
-}
-
-export interface GitOps {
-  preview(input: { projectId: string; path: string; request: unknown }): Promise<PreviewResult>;
-  execute(input: ExecuteInput): Promise<ExecuteResult>;
-  cancel(opId: string): boolean;
-  isBusy(projectId: string): boolean;
-  fetchAll(projects: readonly BulkProject[], options: { source: string; concurrency?: number }): Promise<Array<{ projectId: string; result: ExecuteResult }>>;
-  pullAll(projects: readonly BulkProject[], options: { source: string }): Promise<{ pulled: Array<{ projectId: string; result: ExecuteResult }>; skipped: Array<{ projectId: string; reason: string }> }>;
-  /** On start: journal rows left "running" by a crash become "interrupted", with an event each. */
-  recoverInterrupted(): Array<{ opId: string; projectId: string; verb: string }>;
-}
+export type { BulkProject, ExecuteInput, ExecuteResult, PreviewResult };
 
 const MAX_OUTPUT_LINES = 400;
 

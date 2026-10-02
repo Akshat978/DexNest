@@ -5,7 +5,7 @@ event stream `projects` · view id `dev` (kept, see 16) · packages
 `@dexnest/projects` and `@dexnest/git-ops` · host
 `apps/desktop/src/main/projectsHost.ts` · branch `cloud/projects`.
 
-Status: **Phase 5 (add-project backend) done.** Owner accepted every default in 18. Read with `AGENTS.md`,
+Status: **Phase 6 (host and actions) done.** Owner accepted every default in 18. Read with `AGENTS.md`,
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md` and `docs/ui-audit/REPORT.md` (on
 `cloud/ui-audit`). Shaped after Developer Intelligence's runtime/host split
 and the modules built before it (ObjectOS, GhostOS, Reality RPG, Skill
@@ -803,6 +803,53 @@ All ten defaults in section 18 are accepted as written.
   again before spawning, with the same no-prompt environment. Clone is not
   journalled (there is no project yet); it emits `projects.op.started` /
   `finished` with `verb: "clone"` and no project id.
+
+### Refinements made in Phase 6
+
+- **Runtime** (`src/module/runtime.ts`, `createProjectsModule`): the one
+  entry point for the host, IPC and actions. Git operations reach it through
+  a `GitOpsPort` whose types now live in `projects/src/domain/gitOpsPort.ts`
+  (git-ops implements them), so the read side still never imports git-ops.
+  The runtime enforces `allowedTriggers` itself; anything not started from
+  the Projects view is non-interactive; "open" accepts only the project's
+  own folder or one of its listed folders (the old `payload.path` could name
+  any folder) and never the data root; a project whose stored path is in
+  the data root is never read or operated on.
+- **Launchers** (`src/node/launch.ts`): VS Code = the owner's configured
+  path, `%LOCALAPPDATA%`/`%ProgramFiles%` installs, or the `Code.exe` beside
+  `code.cmd` on PATH (never `code.cmd` itself); opens the
+  `.code-workspace` when there is one; "not found" is said, not logged as
+  success. Terminal = Windows Terminal (`wt.exe -d`) when installed and
+  chosen/auto, else PowerShell `Set-Location -LiteralPath` exactly as the Dev
+  dashboard did. The host spawns detached, argv only, `shell: false`.
+- **Host** (`apps/desktop/src/main/projectsHost.ts`): wiring only; 33 IPC
+  channels `dexnest:projects-*`, all through one helper that applies the
+  shared, tested `isTrustedMainFrame` (`trustedFrame.ts`); live operation
+  output is sent on `dexnest:projects-output`. Developer Intelligence is read
+  through `listRepositories()` (suggestions) and Standup's `collectFacts` +
+  `scoreRepository` over the last 7 days for the repository whose root
+  matches the project's resolved path ("where you left off").
+- **main.ts** (kept small): `startProjectsHost()` before
+  `registerIpcHandlers()`, disposed in `before-quit`;
+  `loadProjects`/`upsertProject`/`deleteProject`/`touchProject` delegate to
+  the runtime (falling back to projects.json only if the host failed to
+  start); `deleteProject` now archives; `saveProjects` (used only by demo
+  seed/clear) syncs - an id missing from the list is archived and removed
+  (entry only). `projects.*` actions route to `runAction` and are logged
+  with `logActionEvent`; `dev.project.<id>.git_push` now pushes through
+  git-ops (fresh plan, journal, never forced, never asks) and keeps its old
+  `project_push_*` events; `open_vscode`/`open_terminal` use the launchers.
+  `dev.git_status_all` and `dexnest:projects-git` still use `gitStatus.ts`'s
+  read (on the DB-backed project list) until the Dev view is replaced in
+  Phase 8.
+- **Registry**: 29 `projects.*` entries generated from `PROJECTS_ACTIONS`
+  (a desktop test keeps them in step: danger level, confirmation, triggers,
+  no phone exposure, caution/strong = module_ui only); module id `projects`
+  added to `DexNestModuleId`.
+- **Scheduled fetch**: scheduled only while enabled (heavy, never at
+  startup); one `projects.fetch.scheduled` event per slot via an
+  idempotency key on the occurrence id, and an in-flight guard.
+- **"Push current project"** = the project with the latest `lastOpenedAt`.
 
 ## 19. Phases for this module
 

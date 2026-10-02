@@ -26,6 +26,9 @@ importers:
       '@dexnest/foundation':
         specifier: workspace:*
         version: link:../../packages/foundation
+      '@dexnest/git-ops':
+        specifier: workspace:*
+        version: link:../../packages/git-ops
       '@dexnest/local-db':
         specifier: workspace:*
         version: link:../../packages/local-db
@@ -38,9 +41,15 @@ importers:
       '@dexnest/module-dev':
         specifier: workspace:*
         version: link:../../modules/dev
+      '@dexnest/projects':
+        specifier: workspace:*
+        version: link:../../packages/projects
       '@dexnest/shared-types':
         specifier: workspace:*
         version: link:../../packages/shared-types
+      '@dexnest/standup':
+        specifier: workspace:*
+        version: link:../../packages/standup
       '@dexnest/today':
         specifier: workspace:*
         version: link:../../packages/today

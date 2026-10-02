@@ -6,7 +6,9 @@
 // those, the command fails, and the failure is reported as "authentication
 // needed - open a terminal here" so the owner can do it themselves.
 
-import { redactCredentials } from "@dexnest/projects";
+import { redactCredentials, type FailureCode } from "@dexnest/projects";
+
+export type { FailureCode };
 
 export function mutatingEnv(options: { overrideSsh: boolean }): Record<string, string> {
   const env: Record<string, string> = {
@@ -27,18 +29,6 @@ export function mutatingEnv(options: { overrideSsh: boolean }): Record<string, s
   if (options.overrideSsh) env.GIT_SSH_COMMAND = "ssh -o BatchMode=yes";
   return env;
 }
-
-export type FailureCode =
-  | "auth_needed"
-  | "offline"
-  | "not_fast_forward"
-  | "rejected"
-  | "local_changes"
-  | "locked"
-  | "hook_failed"
-  | "conflict"
-  | "nothing_to_commit"
-  | "failed";
 
 export interface Failure {
   code: FailureCode;

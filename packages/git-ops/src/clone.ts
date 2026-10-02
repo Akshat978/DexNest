@@ -16,6 +16,8 @@ import {
   redactCredentials,
   PROJECTS_EVENT_STREAM,
   PROJECTS_MODULE_ID,
+  type CloneRequest,
+  type CloneResult,
   type DuplicateLookup,
   type GitRunner,
   type InspectFsPort
@@ -37,19 +39,8 @@ export interface CloneDeps {
   newOpId?: () => string;
 }
 
-export interface CloneInput {
-  url: string;
-  parentDir: string;
-  /** Defaults to the repository's name. */
-  folderName?: string;
-  source: string;
-  signal?: AbortSignal;
-  onOutput?: (line: string) => void;
-}
-
-export type CloneResult =
-  | { status: "refused"; reason: string; duplicateOf?: { id: string; name: string } }
-  | { status: "done"; outcome: "succeeded" | "failed" | "auth_needed" | "cancelled" | "timed_out"; path: string; message: string; errorCode: FailureCode | null; output: string[] };
+export type CloneInput = CloneRequest;
+export type { CloneResult };
 
 const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
 
