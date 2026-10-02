@@ -27,6 +27,7 @@ import { createSkillConstellationHost, type SkillConstellationHost } from "./ski
 import { createRealityRpgHost, runRealityRpgAction, type RealityRpgHost } from "./realityRpgHost.js";
 import { createGhostOsHost, runGhostOsAction, type GhostOsHost } from "./ghostOsHost.js";
 import { createObjectOsHost, objectJournalLine, runObjectOsAction, type ObjectOsHost } from "./objectOsHost.js";
+import { createProjectsHost, type ProjectsHost } from "./projectsHost.js";
 import { createHostScheduler } from "@dexnest/foundation";
 import { createCompanionApi, hashToken, openPairing } from "./companionApi.js";
 import { buildAgenda, localDate, weekdayOf, type TodayAgenda } from "@dexnest/today";
@@ -235,6 +236,7 @@ const performanceModeSettingsPath = join(settingsRoot, "performance-mode-setting
 const devIntelligenceSettingsPath = join(settingsRoot, "dev-intelligence-settings.json");
 const skillConstellationSettingsPath = join(settingsRoot, "skill-constellation-settings.json");
 const realityRpgSettingsPath = join(settingsRoot, "reality-rpg-settings.json");
+const projectsSettingsPath = join(settingsRoot, "projects-settings.json");
 const appLifecycleSettingsPath = join(settingsRoot, "app-lifecycle-settings.json");
 const searchIndexStatusPath = join(settingsRoot, "search-index-status.json");
 const dataManagementStatusPath = join(settingsRoot, "data-management-status.json");
@@ -545,6 +547,46 @@ function startObjectOsHost(): void {
     // A broken module must never prevent DexNest from starting.
     console.warn("[object-os] host failed to start", error);
     objectOsHost = null;
+  }
+}
+
+// --- Projects (docs/modules/projects/PLAN.md) ------------------------------
+// The project list lives in proj_ tables; projects.json is imported once, kept
+// as a backup and no longer read. If the host can't start, the functions
+// below fall back to projects.json so the rest of DexNest keeps working.
+let projectsHost: ProjectsHost | null = null;
+
+function startProjectsHost(): void {
+  try {
+    projectsHost = createProjectsHost({
+      database: localDb.getSqlDatabase(),
+      events: localDb.getEventLog(),
+      dataRoot: localDataRoot,
+      otherDataRoots: [CANONICAL_DATA_ROOT, resolve(repoRoot, "local-data")],
+      scheduler: hostScheduler,
+      settingsRoot,
+      readSettings: () => readJsonFile<unknown>(projectsSettingsPath, {}),
+      writeSettings: (settings) => { writeJsonFile(projectsSettingsPath, settings); },
+      ipcMain,
+      getWindow: () => mainWindow,
+      pickFolder: async (title) => {
+        const result = mainWindow
+          ? await dialog.showOpenDialog(mainWindow, { title, properties: ["openDirectory"] })
+          : await dialog.showOpenDialog({ title, properties: ["openDirectory"] });
+        return result.canceled ? null : result.filePaths[0] ?? null;
+      },
+      openPath: (path) => shell.openPath(path),
+      openExternal: (url) => shell.openExternal(url),
+      getDevIntelligence: () => devIntelligenceHost?.module ?? null
+    });
+    const started = projectsHost.module.start();
+    if (started.legacy.kind === "imported" || started.legacy.kind === "corrupt" || started.legacy.kind === "error") {
+      console.info(`[projects] projects.json: ${started.legacy.kind}`);
+    }
+  } catch (error) {
+    // A broken module must never prevent DexNest from starting.
+    console.warn("[projects] host failed to start", error);
+    projectsHost = null;
   }
 }
 
@@ -4718,10 +4760,15 @@ function slugifyProjectId(value: string): string {
 }
 
 function loadProjects(): DexNestProject[] {
+  if (projectsHost) return projectsHost.module.legacyProjects() as unknown as DexNestProject[];
   return readJsonFile<DexNestProject[]>(projectsConfigPath, []);
 }
 
 function saveProjects(projects: DexNestProject[]): void {
+  if (projectsHost) {
+    projectsHost.module.syncLegacy(projects as unknown as Parameters<ProjectsHost["module"]["syncLegacy"]>[0]);
+    return;
+  }
   writeJsonFile(projectsConfigPath, projects);
 }
 
@@ -12198,6 +12245,20 @@ function runProjectCommand(
 }
 
 function upsertProject(input: ProjectInput): DexNestProject {
+  if (projectsHost) {
+    const existed = Boolean(input.id && projectsHost.module.get(input.id));
+    const saved = projectsHost.module.saveLegacy(input as unknown as Record<string, unknown>) as unknown as DexNestProject;
+    localDb.appendActionEvent({
+      module: "DexNest Dev",
+      actionId: existed ? "dev.project.updated" : "dev.project.created",
+      eventType: existed ? "project_updated" : "project_created",
+      status: "success",
+      source: "module_ui",
+      summary: existed ? `Updated project ${saved.name}.` : `Created project ${saved.name}.`,
+      metadataJson: projectMetadata(saved)
+    });
+    return saved;
+  }
   const projects = loadProjects();
   const now = new Date().toISOString();
   const existingIndex = input.id ? projects.findIndex((project) => project.id === input.id) : -1;
@@ -12286,7 +12347,9 @@ function deleteProject(projectId: string): void {
     throw new Error(`Project not found: ${projectId}`);
   }
 
-  saveProjects(projects.filter((item) => item.id !== projectId));
+  // Projects archives instead of deleting: nothing is lost, and it can be restored.
+  if (projectsHost) projectsHost.module.archiveLegacy(projectId);
+  else saveProjects(projects.filter((item) => item.id !== projectId));
   localDb.appendActionEvent({
     module: "DexNest Dev",
     actionId: "dev.project.deleted",
@@ -12299,6 +12362,10 @@ function deleteProject(projectId: string): void {
 }
 
 function touchProject(project: DexNestProject): DexNestProject {
+  if (projectsHost) {
+    projectsHost.module.touch(project.id);
+    return projectsHost.module.legacyProjects().find((item) => item.id === project.id) as unknown as DexNestProject ?? project;
+  }
   const projects = loadProjects();
   const updatedProject = {
     ...project,
@@ -20631,6 +20698,14 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
     return { ok: true, actionId: action.id, message, projects: rows };
   }
 
+  if (actionId.startsWith("projects.")) {
+    if (!projectsHost) return { ok: false, actionId: action.id, error: "Projects is not running." };
+    const outcome = await projectsHost.module.runAction(actionId, source, payload);
+    logActionEvent(action, outcome.ok ? "success" : "failed", source, outcome.message, { actionId });
+    if (source === "stream_deck_http" || source === "keyboard_shortcut") notifyHotkeyOutcome(outcome.message, outcome.ok ? "success" : "error");
+    return outcome.ok ? { ok: true, actionId: action.id, message: outcome.message, data: outcome.data } : { ok: false, actionId: action.id, error: outcome.message, data: outcome.data };
+  }
+
   const projectMatch = actionId.match(/^dev\.project\.([a-z0-9-]+)\.(.+)$/);
   if (projectMatch) {
     return runProjectAction(actionId, projectMatch[1], projectMatch[2], source, payload);
@@ -21730,8 +21805,16 @@ async function runProjectAction(actionId: string, projectId: string, operation: 
   }
 
   if (operation === "open_vscode") {
-    const child = spawn("code", [targetPath], { detached: true, stdio: "ignore" });
-    child.unref();
+    // Through Projects' launcher: finds Code.exe (code.cmd can't be spawned
+    // without a shell), refuses folders that aren't the project's, and says so
+    // when VS Code isn't installed instead of logging success regardless.
+    if (projectsHost) {
+      const opened = await projectsHost.module.open(project.id, "vscode", { path: targetPath }, source);
+      if (!opened.ok) return { ok: false, actionId, error: opened.message };
+    } else {
+      const child = spawn("code", [targetPath], { detached: true, stdio: "ignore" });
+      child.unref();
+    }
     touchProject(project);
     localDb.appendActionEvent({
       module: "DexNest Dev",
@@ -21746,12 +21829,17 @@ async function runProjectAction(actionId: string, projectId: string, operation: 
   }
 
   if (operation === "open_terminal") {
-    const command = `Set-Location -LiteralPath '${targetPath.replace(/'/g, "''")}'`;
-    const child = spawn("powershell.exe", ["-NoExit", "-Command", command], {
-      detached: true,
-      stdio: "ignore"
-    });
-    child.unref();
+    if (projectsHost) {
+      const opened = await projectsHost.module.open(project.id, "terminal", { path: targetPath }, source);
+      if (!opened.ok) return { ok: false, actionId, error: opened.message };
+    } else {
+      const command = `Set-Location -LiteralPath '${targetPath.replace(/'/g, "''")}'`;
+      const child = spawn("powershell.exe", ["-NoExit", "-Command", command], {
+        detached: true,
+        stdio: "ignore"
+      });
+      child.unref();
+    }
     touchProject(project);
     localDb.appendActionEvent({
       module: "DexNest Dev",
@@ -21868,7 +21956,16 @@ async function runProjectAction(actionId: string, projectId: string, operation: 
     // No arguments beyond the verb. Every flag that would change where this
     // goes or what it overwrites is one this must never pass, and the upstream
     // has already been confirmed to exist.
-    const result = await runGit(project.path, ["push"], 120_000);
+    // Through @dexnest/git-ops: re-planned on fresh state, journalled, never
+    // forced, never prompting. Never asks either - refused if it would.
+    const pushed = projectsHost
+      ? await projectsHost.module.execute(project.id, { kind: "push" }, { source })
+      : null;
+    const result = pushed === null
+      ? { ok: false, stderr: "Projects is not running, so DexNest won't push." }
+      : pushed.status === "done"
+        ? { ok: pushed.outcome === "succeeded", stderr: pushed.outcome === "succeeded" ? "" : pushed.message }
+        : { ok: false, stderr: pushed.status === "refused" ? pushed.refusal.reason : pushed.status === "busy" ? `Busy: ${pushed.runningVerb} is running.` : "The push needs a decision. Open Projects." };
     const durationMs = Date.now() - startedAt;
 
     if (!result.ok) {
@@ -23390,6 +23487,7 @@ app.whenReady().then(() => {
   ensureSearchRoot();
   ensureSpeechRoot();
   ensureBackupRoot();
+  startProjectsHost();
   registerIpcHandlers();
   startAutopilotHost();
   startDevIntelligenceHost();
@@ -23462,6 +23560,7 @@ app.on("before-quit", () => {
   ghostOsHost?.dispose();
   objectOsHost?.dispose();
   devIntelligenceHost?.dispose();
+  projectsHost?.dispose();
   void hostScheduler.dispose();
   if (weatherRefreshTimer) {
     clearTimeout(weatherRefreshTimer);

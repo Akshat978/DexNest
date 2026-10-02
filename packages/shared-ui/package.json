@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./tokens.css": "./src/tokens.css"
+    "./tokens.css": "./src/tokens.css",
+    "./fonts.css": "./src/fonts.css"
   },
   "scripts": {
     "build": "echo shared-ui has no build step",

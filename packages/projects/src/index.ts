@@ -1,0 +1,36 @@
+// @dexnest/projects - every code project, its branches and how far they are
+// from this PC. See docs/modules/projects/PLAN.md.
+//
+// This package only ever reads git. Anything that changes a repository goes
+// through @dexnest/git-ops, which this package must never import.
+
+export * from "./domain/safety.ts";
+export * from "./domain/names.ts";
+export * from "./domain/remote.ts";
+export * from "./domain/project.ts";
+export * from "./domain/legacy.ts";
+export * from "./domain/repoState.ts";
+export * from "./domain/badge.ts";
+export * from "./domain/operations.ts";
+export * from "./domain/planners.ts";
+export * from "./domain/events.ts";
+export * from "./domain/settings.ts";
+export * from "./domain/actions.ts";
+export * from "./domain/hosting.ts";
+
+export * from "./store/migrations.ts";
+export * from "./store/store.ts";
+export * from "./store/legacyMigration.ts";
+export * from "./node/legacyFile.ts";
+export * from "./module/manifest.ts";
+export * from "./git/readOnlyArgv.ts";
+export * from "./git/runner.ts";
+export * from "./git/parse.ts";
+export * from "./git/reader.ts";
+export * from "./node/gitRunner.ts";
+export * from "./inspect/detect.ts";
+export * from "./inspect/inspect.ts";
+export * from "./node/inspectFs.ts";
+export * from "./domain/gitOpsPort.ts";
+export * from "./node/launch.ts";
+export * from "./module/runtime.ts";

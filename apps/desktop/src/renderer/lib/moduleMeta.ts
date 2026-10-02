@@ -42,7 +42,7 @@ export const SIDEBAR_VIEWS: SidebarView[] = [
   { id: "finder", label: "Finder", accentClass: "accent-finder", actionId: "finder.open" },
   { id: "capture", label: "Capture", accentClass: "accent-capture", actionId: "capture.open" },
   { id: "finance", label: "Finance", accentClass: "accent-finance", actionId: "finance.open" },
-  { id: "dev", label: "Dev", accentClass: "accent-dev", actionId: "dev.open_dashboard" },
+  { id: "dev", label: "Projects", accentClass: "accent-dev", actionId: "dev.open_dashboard" },
   { id: "autopilot", label: "Autopilot", accentClass: "accent-dev", actionId: "autopilot.open" },
   { id: "skills", label: "Skills", accentClass: "accent-dev", actionId: "skill_constellation.open" },
   { id: "rpg", label: "Reality RPG", accentClass: "accent-loop", actionId: "reality_rpg.open" },
@@ -61,6 +61,15 @@ export const SIDEBAR_VIEWS: SidebarView[] = [
 export const SIDEBAR_HIDDEN_VIEWS: ViewId[] = ["audit"];
 
 // Icon + accent for each module, shared across the shell and module views.
+/**
+ * A module accent at a given opacity. Works for hex accents and for token
+ * accents (`var(--accent-tools)`); appending hex alpha digits only works for
+ * hex and turns a token into invalid CSS.
+ */
+export function accentTint(accent: string, percent: number): string {
+  return `color-mix(in srgb, ${accent} ${percent}%, transparent)`;
+}
+
 export const MODULE_META: Record<string, { icon: LucideIcon; accent: string }> = {
   command: { icon: Command, accent: "#22D3EE" },
   dev: { icon: Code2, accent: "#3B82F6" },

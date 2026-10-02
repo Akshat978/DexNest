@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 contextBridge.exposeInMainWorld("dexNest", {
   appName: "DexNest",
@@ -187,6 +187,55 @@ contextBridge.exposeInMainWorld("dexNest", {
   objectOsSettingsDiff: (query: unknown) => ipcRenderer.invoke("dexnest:object-os-settings-diff", query),
   objectOsLocations: () => ipcRenderer.invoke("dexnest:object-os-locations"),
   objectOsPhoto: (fileId: string) => ipcRenderer.invoke("dexnest:object-os-photo", fileId),
+  // --- Projects (docs/modules/projects/PLAN.md) ----------------------------
+  // Every channel is checked against the trusted main frame in projectsHost.ts.
+  projectsList: (options?: { includeArchived?: boolean }) => ipcRenderer.invoke("dexnest:projects-list", options),
+  projectsGet: (projectId: string) => ipcRenderer.invoke("dexnest:projects-get", projectId),
+  projectsSettings: () => ipcRenderer.invoke("dexnest:projects-settings"),
+  projectsUpdateSettings: (settings: unknown) => ipcRenderer.invoke("dexnest:projects-update-settings", settings),
+  projectsGroups: () => ipcRenderer.invoke("dexnest:projects-groups"),
+  projectsSaveGroup: (group: { id: string; name: string; position?: number }) => ipcRenderer.invoke("dexnest:projects-save-group", group),
+  projectsDeleteGroup: (groupId: string) => ipcRenderer.invoke("dexnest:projects-delete-group", groupId),
+  projectsRepoState: (projectId: string, options?: { allBranches?: boolean }) => ipcRenderer.invoke("dexnest:projects-repo-state", projectId, options),
+  projectsRepoStates: (projectIds?: string[]) => ipcRenderer.invoke("dexnest:projects-repo-states", projectIds),
+  projectsHistory: (projectId: string, limit?: number) => ipcRenderer.invoke("dexnest:projects-history", projectId, limit),
+  projectsDiffStat: (projectId: string) => ipcRenderer.invoke("dexnest:projects-diff-stat", projectId),
+  projectsOperations: (projectId: string) => ipcRenderer.invoke("dexnest:projects-operations", projectId),
+  projectsLeftOff: (projectId: string) => ipcRenderer.invoke("dexnest:projects-left-off", projectId),
+  projectsPickFolder: (title?: string) => ipcRenderer.invoke("dexnest:projects-pick-folder", title),
+  projectsInspect: (path: string, options?: { projectId?: string }) => ipcRenderer.invoke("dexnest:projects-inspect", path, options),
+  projectsAdd: (input: unknown, source?: "wizard" | "suggestion" | "clone") => ipcRenderer.invoke("dexnest:projects-add", input, source),
+  projectsUpdate: (projectId: string, input: unknown) => ipcRenderer.invoke("dexnest:projects-update", projectId, input),
+  projectsTouch: (projectId: string) => ipcRenderer.invoke("dexnest:projects-touch", projectId),
+  projectsArchive: (projectId: string) => ipcRenderer.invoke("dexnest:projects-archive", projectId),
+  projectsRestore: (projectId: string) => ipcRenderer.invoke("dexnest:projects-restore", projectId),
+  projectsRemove: (projectId: string) => ipcRenderer.invoke("dexnest:projects-remove", projectId),
+  projectsSuggestions: () => ipcRenderer.invoke("dexnest:projects-suggestions"),
+  projectsAddSuggestions: (paths: string[]) => ipcRenderer.invoke("dexnest:projects-add-suggestions", paths),
+  projectsClone: (input: { url: string; parentDir: string; folderName?: string }) => ipcRenderer.invoke("dexnest:projects-clone", input),
+  projectsImportLegacy: () => ipcRenderer.invoke("dexnest:projects-import-legacy"),
+  projectsLegacyChanged: () => ipcRenderer.invoke("dexnest:projects-legacy-changed"),
+  projectsPreview: (projectId: string, request: unknown) => ipcRenderer.invoke("dexnest:projects-preview", projectId, request),
+  projectsExecute: (projectId: string, request: unknown, options?: { confirmation?: { confirmed?: boolean; typed?: string }; fingerprint?: string }) =>
+    ipcRenderer.invoke("dexnest:projects-execute", projectId, request, options),
+  projectsCancel: (opId: string) => ipcRenderer.invoke("dexnest:projects-cancel", opId),
+  projectsFetchAll: () => ipcRenderer.invoke("dexnest:projects-fetch-all"),
+  projectsPullAll: () => ipcRenderer.invoke("dexnest:projects-pull-all"),
+  projectsOpen: (projectId: string, target: "vscode" | "terminal" | "folder" | "github", options?: { path?: string; branch?: string; base?: string }) =>
+    ipcRenderer.invoke("dexnest:projects-open", projectId, target, options),
+  // A folder dropped on the window: its real path (Electron no longer puts it on File).
+  projectsPathForFile: (file: File) => {
+    try {
+      return webUtils.getPathForFile(file) || null;
+    } catch {
+      return null;
+    }
+  },
+  onProjectsOutput: (callback: (payload: { projectId: string; line: string }) => void) => {
+    const listener = (_event: unknown, payload: { projectId: string; line: string }) => callback(payload);
+    ipcRenderer.on("dexnest:projects-output", listener);
+    return () => ipcRenderer.removeListener("dexnest:projects-output", listener);
+  },
   autopilotReadiness: (project: string) => ipcRenderer.invoke("dexnest:autopilot-readiness", project),
   autopilotRerunForm: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-rerun-form", runId),
   autopilotRunChanges: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-run-changes", runId),
