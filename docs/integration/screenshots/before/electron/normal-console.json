@@ -1,0 +1,351 @@
+{
+ "seeded": {
+  "summary": {
+   "projects": 7,
+   "diRepositories": 6,
+   "skills": 13,
+   "ghost": 13,
+   "objects": 8,
+   "rpgXp": 220
+  },
+  "log": []
+ },
+ "log": [
+  {
+   "view": "command",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "search",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "clipboard",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "drop",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "tools",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "vault",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "journal",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "calendar",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": [
+    "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted \u2014 the behavior is unsupported and could change in a future version. demo-nudge-1790970747283-c75qs7",
+    "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted \u2014 the behavior is unsupported and could change in a future version. backup-reminder-2026-10-02",
+    "In HTML, %s cannot be a descendant of <%s>.\nThis will cause a hydration error.%s <button> button \n\n  ...\n    <AnimatePresence mode=\"wait\">\n      <PresenceChild isPresent={true} initial={undefined} custom={undefined} presenceAffectsLayout={true} mode=\"wait\" ...>\n        <motion.div initial={{opacity:0,y:10}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-6}} ...>\n          <div style={{opacity:0, ...}} ref={function}>\n            <ViewErrorBoundary viewLabel=\"Calendar\" onLeave={function}>\n              <CalendarView calendarState={{events:[...], ...}} initialView=\"day\" speechState={{...}} ...>\n                <div className=\"space-y-6\">\n                  <div>\n                  <div className=\"grid grid-...\">\n                    <div>\n                    <div className=\"space-y-5 ...\">\n                      <GlassCard>\n                      <GlassCard>\n                      <GlassCard hover={false}>\n                        <div className=\"glass-card...\" style={{}}>\n                          <SectionTitle>\n                          <div className=\"space-y-2\">\n>                           <button type=\"button\" className=\"calendar-side-event\" onClick={function onClick}>\n                              <div>\n                              <div>\n                              <PinButton input={{type:\"event\", ...}}>\n>                               <button\n>                                 type=\"button\"\n>                                 className=\"pin-btn\"\n>                                 title=\"Pin\"\n>                                 aria-label=\"Pin\"\n>                                 aria-pressed={false}\n>                                 onClick={function onClick}\n>                               >\n                              ...\n                            ...\n                      ...\n",
+    "<%s> cannot contain a nested %s.\nSee this log for the ancestor stack trace. button <button>",
+    "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted \u2014 the behavior is unsupported and could change in a future version. demo-nudge-1790970747283-c75qs7",
+    "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted \u2014 the behavior is unsupported and could change in a future version. backup-reminder-2026-10-02"
+   ]
+  },
+  {
+   "view": "timetable",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "utilities",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "news",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "finder",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "capture",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "finance",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "dev",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "autopilot",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "skills",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "rpg",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "ghost",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "object",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "deck",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "heatmap",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "devices",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "backup",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "health",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "settings",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "audit",
+   "size": "1280x800",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "command",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "search",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "clipboard",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "drop",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "tools",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "vault",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "journal",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "calendar",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": [
+    "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted \u2014 the behavior is unsupported and could change in a future version. demo-nudge-1790970747283-c75qs7",
+    "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted \u2014 the behavior is unsupported and could change in a future version. backup-reminder-2026-10-02",
+    "In HTML, %s cannot be a descendant of <%s>.\nThis will cause a hydration error.%s <button> button \n\n  ...\n    <AnimatePresence mode=\"wait\">\n      <PresenceChild isPresent={true} initial={undefined} custom={undefined} presenceAffectsLayout={true} mode=\"wait\" ...>\n        <motion.div initial={{opacity:0,y:10}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-6}} ...>\n          <div style={{opacity:0, ...}} ref={function}>\n            <ViewErrorBoundary viewLabel=\"Calendar\" onLeave={function}>\n              <CalendarView calendarState={{events:[...], ...}} initialView=\"day\" speechState={{...}} ...>\n                <div className=\"space-y-6\">\n                  <div>\n                  <div className=\"grid grid-...\">\n                    <div>\n                    <div className=\"space-y-5 ...\">\n                      <GlassCard>\n                      <GlassCard>\n                      <GlassCard hover={false}>\n                        <div className=\"glass-card...\" style={{}}>\n                          <SectionTitle>\n                          <div className=\"space-y-2\">\n>                           <button type=\"button\" className=\"calendar-side-event\" onClick={function onClick}>\n                              <div>\n                              <div>\n                              <PinButton input={{type:\"event\", ...}}>\n>                               <button\n>                                 type=\"button\"\n>                                 className=\"pin-btn\"\n>                                 title=\"Pin\"\n>                                 aria-label=\"Pin\"\n>                                 aria-pressed={false}\n>                                 onClick={function onClick}\n>                               >\n                              ...\n                            ...\n                      ...\n",
+    "<%s> cannot contain a nested %s.\nSee this log for the ancestor stack trace. button <button>"
+   ]
+  },
+  {
+   "view": "timetable",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "utilities",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "news",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "finder",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "capture",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "finance",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "dev",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "autopilot",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "skills",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "rpg",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "ghost",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "object",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "deck",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "heatmap",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "devices",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "backup",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "health",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "settings",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": []
+  },
+  {
+   "view": "audit",
+   "size": "1920x1080",
+   "state": "normal",
+   "consoleErrors": []
+  }
+ ]
+}

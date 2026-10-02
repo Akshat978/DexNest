@@ -1,0 +1,496 @@
+[
+ {
+  "step": "01-projects-home-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [],
+  "consoleErrors": []
+ },
+ {
+  "step": "02-projects-wizard-open-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [],
+  "consoleErrors": []
+ },
+ {
+  "step": "03-projects-wizard-paste-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [],
+  "consoleErrors": []
+ },
+ {
+  "step": "04-projects-wizard-saved-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Added notes-app.×",
+   "Added notes-app.×"
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "05-projects-detail-shop-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [],
+  "consoleErrors": [
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02"
+  ]
+ },
+ {
+  "step": "06-projects-tab-branches-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [],
+  "consoleErrors": []
+ },
+ {
+  "step": "07-projects-tab-changes-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [],
+  "consoleErrors": []
+ },
+ {
+  "step": "08-projects-tab-history-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [],
+  "consoleErrors": []
+ },
+ {
+  "step": "09-projects-tab-run-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [],
+  "consoleErrors": []
+ },
+ {
+  "step": "10-projects-tab-links-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [],
+  "consoleErrors": []
+ },
+ {
+  "step": "11-projects-tab-settings-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [],
+  "consoleErrors": []
+ },
+ {
+  "step": "12-projects-edit-description-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Saved Shop web.×",
+   "Saved Shop web.×"
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "13-projects-op-dialog-push-preview-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [],
+  "consoleErrors": [
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02"
+  ]
+ },
+ {
+  "step": "14-projects-op-dialog-push-result-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Push done. Now: uncommitted changes.×",
+   "Push done. Now: uncommitted changes.×",
+   "Push done. Now: uncommitted changes."
+  ],
+  "consoleErrors": [
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02"
+  ]
+ },
+ {
+  "step": "15-projects-op-dialog-closed-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Push done. Now: uncommitted changes.×",
+   "Push done. Now: uncommitted changes.×"
+  ],
+  "consoleErrors": [
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02"
+  ]
+ },
+ {
+  "step": "16-projects-archive-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Archived Shop web. Find it under Status: Archived.×",
+   "Archived Shop web. Find it under Status: Archived.×"
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "17-projects-archived-filter-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [],
+  "consoleErrors": []
+ },
+ {
+  "step": "18-projects-remove-confirm-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [],
+  "consoleErrors": [
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02",
+   "Encountered two children with the same key, `%s`. Keys should be unique so that components maintain their identity across updates. Non-unique keys may cause children to be duplicated and/or omitted — the behavior is unsupported and could change in a future version. event · 2026-10-02"
+  ]
+ },
+ {
+  "step": "19-projects-removed-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Removed Shop web from DexNest.×",
+   "Removed Shop web from DexNest.×"
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "20-ghost-timeline-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [],
+  "consoleErrors": []
+ },
+ {
+  "step": "21-ghost-add-form-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [],
+  "consoleErrors": []
+ },
+ {
+  "step": "22-ghost-add-saved-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Saved to GhostOS."
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "23-ghost-detail-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Saved to GhostOS.",
+   "Type to search your entries."
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "24-ghost-forget-confirm-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Saved to GhostOS.",
+   "Forget this entry and everything GhostOS derived from it? This cannot be undone, and a source cannot bring it back.ForgetCancel",
+   "Type to search your entries."
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "25-ghost-forget-done-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Forget in GhostOS requires confirmation.",
+   "Forget this entry and everything GhostOS derived from it? This cannot be undone, and a source cannot bring it back.ForgetCancel",
+   "Type to search your entries."
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "26-object-home-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [],
+  "consoleErrors": []
+ },
+ {
+  "step": "27-object-add-form-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [],
+  "consoleErrors": []
+ },
+ {
+  "step": "28-object-add-saved-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Object saved."
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "29-object-detail-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Object saved."
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "30-object-tab-maintenance-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Object saved."
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "31-object-tab-parts-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Object saved."
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "32-object-tab-modifications-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Object saved."
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "33-object-tab-settings-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Object saved."
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "34-object-tab-measurements-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Object saved."
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "35-object-tab-files-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Object saved."
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "36-object-tab-purchase-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Object saved."
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "37-object-tab-history-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Object saved."
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "38-object-edit-form-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Object saved."
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "39-object-edit-saved-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Object saved."
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "40-object-delete-confirm-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Object saved.",
+   "Delete Kitchen scale with all its records and attached files? Its 0 components will be kept. This cannot be undone.DeleteCancel"
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "41-object-deleted-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Object deleted with 0 files; 0 components kept."
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "42-skills-graph-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [],
+  "consoleErrors": []
+ },
+ {
+  "step": "43-skills-star-detail-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [],
+  "consoleErrors": []
+ },
+ {
+  "step": "44-skills-settings-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [],
+  "consoleErrors": []
+ },
+ {
+  "step": "45-rpg-character-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [],
+  "consoleErrors": []
+ },
+ {
+  "step": "46-rpg-quests-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [],
+  "consoleErrors": []
+ },
+ {
+  "step": "47-rpg-quest-created-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Quest created: Back up twice this month."
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "48-rpg-quest-abandon-confirm-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Quest created: Back up twice this month.",
+   "Abandon \"Keep the workshop running\"? Its progress so far is kept in history, but the quest stops counting.AbandonCancel"
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "49-rpg-quest-abandoned-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Quest abandoned: Keep the workshop running."
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "50-rpg-achievements-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Quest abandoned: Keep the workshop running."
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "51-rpg-history-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Quest abandoned: Keep the workshop running."
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "52-rpg-rules-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Quest abandoned: Keep the workshop running."
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "53-rpg-rule-delete-confirm-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Quest abandoned: Keep the workshop running.",
+   "Delete the rule \"Memory kept in GhostOS\"? XP it already awarded stays; it awards nothing from now on. This cannot be undone.DeleteCancel"
+  ],
+  "consoleErrors": []
+ },
+ {
+  "step": "54-rpg-rule-deleted-1280x800.jpg",
+  "ok": true,
+  "error": null,
+  "said": [
+   "Rule deleted. XP it awarded is kept."
+  ],
+  "consoleErrors": []
+ }
+]
