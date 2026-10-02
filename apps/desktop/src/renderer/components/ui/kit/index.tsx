@@ -332,13 +332,16 @@ export function Tabs<T extends string>({
   tabs,
   value,
   onChange,
-  idPrefix
+  idPrefix,
+  wrap = false
 }: {
   label: string;
   tabs: ReadonlyArray<{ id: T; label: string; badge?: React.ReactNode }>;
   value: T;
   onChange: (id: T) => void;
   idPrefix: string;
+  /** Many tabs in a narrow column: wrap onto a second row instead of scrolling sideways. */
+  wrap?: boolean;
 }) {
   const refs = useRef<Array<HTMLButtonElement | null>>([]);
   const onKeyDown = (event: React.KeyboardEvent, index: number) => {
@@ -350,7 +353,7 @@ export function Tabs<T extends string>({
     refs.current[next]?.focus();
   };
   return (
-    <div className="kit-tabs" role="tablist" aria-label={label}>
+    <div className={cx("kit-tabs", wrap && "kit-tabs--wrap")} role="tablist" aria-label={label}>
       {tabs.map((tab, index) => (
         <button
           key={tab.id}

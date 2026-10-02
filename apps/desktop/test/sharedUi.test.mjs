@@ -140,3 +140,10 @@ test("views take tabs and view switchers from the kit: no hand-made tablist outs
   assert.match(main, /<Segmented\s+label="Timetable view"\s+value=\{mode\}\s+options=\{TIMETABLE_MODES\}/);
   assert.match(main, /<Segmented label="Calendar view" value=\{viewMode\} onChange=\{setViewMode\} options=\{CALENDAR_VIEW_MODES\} \/>/);
 });
+
+test("tabs can wrap onto a second row; without wrap they stay one scrolling row", () => {
+  const tabs = [{ id: "a", label: "A" }, { id: "b", label: "B" }];
+  assert.match(render(kit.Tabs, { label: "T", idPrefix: "t", value: "a", onChange: noop, tabs, wrap: true }), /^<div class="kit-tabs kit-tabs--wrap" role="tablist"/);
+  assert.match(render(kit.Tabs, { label: "T", idPrefix: "t", value: "a", onChange: noop, tabs }), /^<div class="kit-tabs" role="tablist"/);
+  assert.match(readFileSync(join(ui, "kit/kit.css"), "utf8"), /\.kit-tabs--wrap \{\n  flex-wrap: wrap;\n  overflow-x: visible;\n\}/);
+});

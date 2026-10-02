@@ -491,6 +491,10 @@
   border-bottom: 1px solid var(--border);
   scrollbar-width: thin;
 }
+.kit-tabs--wrap {
+  flex-wrap: wrap;
+  overflow-x: visible;
+}
 .kit-tab {
   display: inline-flex;
   align-items: center;
