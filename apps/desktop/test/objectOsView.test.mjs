@@ -356,7 +356,8 @@ test("the shell routes to it: sidebar entry, icon, action", () => {
   assert.match(meta, /\{ id: "object", label: "ObjectOS", accentClass: "accent-tools", actionId: "object_os.open" \}/);
   assert.match(meta, /object: \{ icon: Package, accent: "var\(--accent-tools\)" \}/);
   assert.match(shell, /activeView === "object" && <ObjectOsView bridge=\{getBridge\(\)\}/);
-  assert.match(shell, /export interface DexNestBridge extends ObjectOsBridge/);
+  // After integration the shell bridge extends every module's bridge; ObjectOS's must be one of them.
+  assert.match(shell, /export interface DexNestBridge extends [^{]*\bObjectOsBridge\b[^{]*\{/);
 });
 
 test("the view imports only types from the package, so the renderer never bundles the store", () => {
