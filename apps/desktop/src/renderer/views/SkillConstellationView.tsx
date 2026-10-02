@@ -19,6 +19,8 @@ import {
   shortDate,
   starLabel,
   labelledIds,
+  labelOffset,
+  labelSides,
   countOf,
   starRadius,
   viewState,
@@ -103,6 +105,12 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
   const selected = snapshot?.skills.find((s) => s.id === selectedId) ?? null;
   const rovingId = focusedId && shownIds.has(focusedId) ? focusedId : points[0]?.skillId ?? null;
   const labelled = labelledIds(skills, [hoveredId, focusedId, selectedId]);
+  const sides = labelSides(
+    points.flatMap((p) => {
+      const skill = skills.find((s) => s.id === p.skillId);
+      return skill && labelled.has(skill.id) ? [{ id: skill.id, name: skill.name, x: p.x, y: p.y, r: starRadius(skill.strength.score) }] : [];
+    })
+  );
 
   function focusStar(id: string | null) {
     if (!id) return;
@@ -230,7 +238,7 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
                     >
                       <circle className="skill-star__halo" r={r + 6} />
                       <circle className="skill-star__core" r={r} />
-                      {labelled.has(skill.id) && <text className="skill-star__label" y={r + 18} textAnchor="middle">{skill.name}</text>}
+                      {labelled.has(skill.id) && <text className="skill-star__label" y={labelOffset(r, sides.get(skill.id) ?? "below")} textAnchor="middle">{skill.name}</text>}
                     </g>
                   );
                 })}

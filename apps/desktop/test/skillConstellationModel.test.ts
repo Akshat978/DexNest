@@ -4,6 +4,8 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import type { ConstellationSkill, ConstellationSnapshot, EvidenceView } from "@dexnest/skill-constellation";
 import {
+  labelOffset,
+  labelSides,
   countOf,
   groupEvidence,
   LABEL_LIMIT,
@@ -126,4 +128,30 @@ test("a hidden star says so in its accessible name; counts read as words", () =>
   assert.doesNotMatch(starLabel(skill("go")), /hidden/);
   assert.equal(countOf(1, "repository", "repositories"), "1 repository");
   assert.equal(countOf(3, "kind", "kinds"), "3 kinds");
+});
+
+test("labels: two close stars never write their names over each other; the upper one's label goes above it", () => {
+  // Next.js and React as laid out on the seeded data: 59 units apart, side by side.
+  const sides = labelSides([
+    { id: "react", name: "React", x: 740, y: 609, r: 9 },
+    { id: "next", name: "Next.js", x: 706, y: 603, r: 9 }
+  ]);
+  assert.equal(sides.get("next"), "below", "placed first (higher), keeps the default");
+  assert.equal(sides.get("react"), "above");
+  assert.equal(labelOffset(9, "below"), 27);
+  assert.equal(labelOffset(9, "above"), -19);
+});
+
+test("labels: stars far apart keep every label below; the result does not depend on input order", () => {
+  const stars = [
+    { id: "a", name: "TypeScript", x: 100, y: 100, r: 10 },
+    { id: "b", name: "Rust", x: 600, y: 100, r: 8 },
+    { id: "c", name: "Zod", x: 100, y: 600, r: 8 }
+  ];
+  assert.deepEqual([...labelSides(stars).values()], ["below", "below", "below"]);
+  const close = [
+    { id: "x", name: "Vitest", x: 300, y: 500, r: 8 },
+    { id: "y", name: "Vite", x: 340, y: 505, r: 8 }
+  ];
+  assert.deepEqual(Object.fromEntries(labelSides(close)), Object.fromEntries(labelSides([...close].reverse())));
 });

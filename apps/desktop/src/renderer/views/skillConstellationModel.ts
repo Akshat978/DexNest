@@ -163,5 +163,47 @@ export function labelledIds(skills: readonly Pick<ConstellationSkill, "id" | "na
   return new Set([...top, ...always.filter((id): id is string => id !== null)]);
 }
 
+/** Approximate width of a label at the 22-unit label font. */
+const LABEL_CHAR_WIDTH = 12;
+
+export interface LabelStar {
+  id: string;
+  name: string;
+  x: number;
+  y: number;
+  /** The star's radius. */
+  r: number;
+}
+
+/** The label's box for a side: below the star (the default) or above it. */
+function labelBox(star: LabelStar, side: "above" | "below") {
+  const half = (star.name.length * LABEL_CHAR_WIDTH) / 2;
+  const baseline = side === "below" ? star.y + star.r + 18 : star.y - star.r - 10;
+  return { left: star.x - half - 4, right: star.x + half + 4, top: baseline - 20, bottom: baseline + 6 };
+}
+
+/** The label's baseline, relative to the star's centre. */
+export const labelOffset = (r: number, side: "above" | "below"): number => (side === "below" ? r + 18 : -(r + 10));
+
+/**
+ * Which side of its star each label goes. Below by default; a label that
+ * would overlap one already placed goes above instead, so two close stars
+ * ("Next.js" and "React") never write their names over each other. Stars
+ * are placed top to bottom, left to right, so the result is deterministic.
+ */
+export function labelSides(stars: readonly LabelStar[]): Map<string, "above" | "below"> {
+  const placed: Array<ReturnType<typeof labelBox>> = [];
+  const overlaps = (box: ReturnType<typeof labelBox>) => placed.some((p) => box.left < p.right && p.left < box.right && box.top < p.bottom && p.top < box.bottom);
+  const sides = new Map<string, "above" | "below">();
+  for (const star of [...stars].sort((a, b) => a.y - b.y || a.x - b.x || a.id.localeCompare(b.id))) {
+    const below = labelBox(star, "below");
+    const above = labelBox(star, "above");
+    const side = overlaps(below) && !overlaps(above) ? "above" : "below";
+    sides.set(star.id, side);
+    placed.push(side === "below" ? below : above);
+  }
+  return sides;
+}
+
 /** "1 repository", "3 repositories". */
 export const countOf = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
