@@ -81,7 +81,7 @@ const render = (props) => renderToStaticMarkup(createElement(View, { bridge, onA
 
 test("loading: a status, busy, no controls yet", () => {
   const html = render({});
-  assert.match(html, /role="status"[^>]*>Loading GhostOS/);
+  assert.match(html, /role="status"[^>]*>(?:<[^>]+>)*Loading GhostOS…/);
   assert.match(html, /aria-busy="true"/);
   assert.doesNotMatch(html, /role="tablist"/);
 });
@@ -126,14 +126,15 @@ test("timeline: filterable by type, searchable, each row says where it came from
 
 test("empty: the first steps are buttons in the empty state", () => {
   const html = render({ initial: { status: empty } });
-  assert.match(html, /<button type="button" class="ghost-primary">Add an entry<\/button><button type="button">Open Sources<\/button>/);
+  assert.match(html, /<section class="kit-empty" aria-label="Nothing in GhostOS yet">/);
+  assert.match(html, /<div class="kit-empty__actions"><button type="button" class="kit-button kit-button--primary kit-button--md">Add an entry<\/button><button type="button" class="kit-button kit-button--secondary kit-button--md">Open Sources<\/button><\/div>/);
 });
 
 test("entity detail: the entry's own actions sit in its header, next to its title", () => {
   const html = render({ initial: { status: full, items, detail } });
-  assert.match(html, /<div class="ghost-detail-head"><div><p class="ghost-meta">Project<\/p><h3 id="ghost-detail-title">Zephyr app<\/h3><\/div><div class="button-row"><button type="button" aria-label="Forget Zephyr app">Forget…<\/button><\/div><\/div>/);
+  assert.match(html, /<div class="ghost-detail-head"><div><p class="ghost-meta">Project<\/p><h3 id="ghost-detail-title">Zephyr app<\/h3><\/div><div class="button-row"><button type="button" class="kit-button kit-button--ghost kit-button--sm" aria-label="Forget Zephyr app">Forget…<\/button><\/div><\/div>/);
   // The connection form starts from words, not a stored id.
-  assert.match(html, /<input id="ghost-rel-type" list="ghost-rel-types" value="related to"\/>/);
+  assert.match(html, /<input class="kit-input" id="ghost-rel-type" list="ghost-rel-types" value="related to"\/>/);
   assert.match(html, /<option value="worked on"><\/option>/);
 });
 
@@ -170,11 +171,11 @@ test("entity detail: every fact with its source and its evidence", () => {
 
 test("connection picker: a labelled combobox that searches every entry, with an empty state", () => {
   const html = render({ initial: { status: full, items, detail } });
-  assert.match(html, /<label for="ghost-rel-to">To<\/label><input id="ghost-rel-to" type="text" role="combobox" autoComplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls="ghost-rel-to-list" aria-describedby="ghost-rel-to-status"/i);
+  assert.match(html, /<label for="ghost-rel-to">To<\/label><input class="kit-input" id="ghost-rel-to" type="text" role="combobox" autoComplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls="ghost-rel-to-list" aria-describedby="ghost-rel-to-status"/i);
   assert.match(html, /role="status" aria-live="polite">Type to search your entries\.<\/p>/);
   assert.match(html, /<ul id="ghost-rel-to-list" role="listbox" aria-label="Matching entries" class="ghost-picker-list" hidden="">/);
   assert.doesNotMatch(html, /<select id="ghost-rel-to"/, "no longer limited to the loaded timeline");
-  assert.match(html, /<button type="submit" disabled="">Connect<\/button>/);
+  assert.match(html, /<button type="submit" class="kit-button kit-button--secondary kit-button--md" disabled="">Connect<\/button>/);
 });
 
 test("connection picker: results with the highlighted option announced; the entry itself never offered", () => {
@@ -197,15 +198,15 @@ test("connection picker: no results, and a chosen entry", () => {
   assert.match(none, />Nothing matches “zzz”\.</);
   assert.match(none, /aria-expanded="false"/);
   const chosen = render({ initial: { status: full, items, detail, picker: { query: "", results: null, chosen: { id: "ent_far00001", title: "Someone far back", typeLabel: "Person" } } } });
-  assert.match(chosen, /<span>To<\/span> <strong>Someone far back<\/strong> <span class="ghost-meta">\(Person\)<\/span> <button type="button" aria-label="Change the entry, now Someone far back">Change<\/button>/);
-  assert.match(chosen, /<button type="submit">Connect<\/button>/);
+  assert.match(chosen, /<span>To<\/span> <strong>Someone far back<\/strong> <span class="ghost-meta">\(Person\)<\/span> <button type="button" class="kit-button kit-button--ghost kit-button--sm" aria-label="Change the entry, now Someone far back">Change<\/button>/);
+  assert.match(chosen, /<button type="submit" class="kit-button kit-button--secondary kit-button--md">Connect<\/button>/);
 });
 
 test("forget asks first, and says what it removes", () => {
   const html = render({ initial: { status: full, items, detail, confirmForget: true } });
   assert.match(html, /role="alertdialog"/);
-  assert.match(html, /Forget this entry and everything GhostOS derived from it\? This cannot be undone, and a source cannot bring it back\./);
-  assert.match(html, />Cancel</);
+  assert.match(html, /class="kit-dialog__title">Forget this entry\?<\/h2><p [^>]*>GhostOS also forgets everything it derived from it\. This cannot be undone, and a source cannot bring it back\.<\/p>/);
+  assert.match(html, />Cancel<\/button><button type="button" class="kit-button kit-button--danger kit-button--md kit-confirm__ok">Forget<\/button>/);
 });
 
 test("an entry you made can be edited; a decision offers its outcome; a file is a reference", () => {
@@ -246,13 +247,23 @@ test("sources: what Developer Intelligence gives, what it never gives, and off r
   assert.doesNotMatch(missing, />Turn on</);
 });
 
+test("a refused forget is reported inside the confirmation, next to the question, not at the top of the page", () => {
+  const refused = { ok: false, text: "Forget in GhostOS requires confirmation." };
+  const html = render({ initial: { status: full, items, detail, confirmForget: true, notice: refused } });
+  assert.match(html, /<footer class="kit-dialog__footer"><p class="kit-inline-error" role="alert">Forget in GhostOS requires confirmation\.<\/p>/);
+  assert.equal(html.split("Forget in GhostOS requires confirmation.").length - 1, 1, "said once");
+  // Without a confirmation open, the same failure is reported at the top.
+  const plain = render({ initial: { status: full, items, detail, notice: refused } });
+  assert.match(plain, /<\/header><p class="kit-inline-error" role="alert">Forget in GhostOS requires confirmation\.<\/p>/);
+});
+
 test("sources: turning the source off asks first (it deletes what it added), then offers Turn off / Cancel", () => {
   const on = render({ initial: { status: full, tab: "sources" } });
-  assert.doesNotMatch(on, /ghost-disable-text/, "no confirmation until asked");
+  assert.doesNotMatch(on, /role="alertdialog"/, "no confirmation until asked");
   const asking = render({ initial: { status: full, tab: "sources", confirmDisable: true } });
-  assert.match(asking, /role="alertdialog" aria-labelledby="ghost-disable-text"/);
-  assert.match(asking, /delete everything it added to GhostOS\? This cannot be undone\./);
-  assert.match(asking, />Turn off<\/button><button type="button">Cancel<\/button>/);
+  assert.match(asking, /role="alertdialog" aria-modal="true" aria-labelledby="([^"]+)"[^>]*>[\s\S]*<h2 id="\1" class="kit-dialog__title">Turn off Developer Intelligence\?<\/h2>/);
+  assert.match(asking, /Everything it added to GhostOS is deleted, including detected habits\. This cannot be undone\./);
+  assert.match(asking, />Cancel<\/button><button type="button" class="kit-button kit-button--danger kit-button--md kit-confirm__ok">Turn off<\/button>/);
 });
 
 test("design tokens only: no literal colours; fonts from tokens; the module accent", () => {

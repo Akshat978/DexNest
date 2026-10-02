@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { EntityDetail, EntityType, GhostOsSettings, GhostOsStatus, Observation, Parsed, SearchHit, TimelineItem } from "@dexnest/ghost-os";
-import { PageHeader } from "../components/shared";
+import { Ghost } from "lucide-react";
+import { accentStyle, Button, ConfirmDialog, EmptyState, ErrorState, InlineError, LoadingState, Notice, PageHeader, Select, TabPanel, Tabs, TextArea, TextInput } from "../components/ui/kit";
 import {
   actionMessage,
   confirmed,
@@ -10,7 +11,6 @@ import {
   evidenceLabel,
   fieldsFor,
   formFromDetail,
-  nextTab,
   pickerKey,
   pickerMessage,
   pickerOptionId,
@@ -59,6 +59,7 @@ export interface GhostOsViewProps {
     error?: string | null;
     confirmForget?: boolean;
     confirmDisable?: boolean;
+    notice?: { ok: boolean; text: string };
     form?: EntityForm;
     picker?: PickerInitial;
   };
@@ -85,7 +86,7 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
   const [detail, setDetail] = useState<EntityDetail | null>(initial?.detail ?? null);
   const [loading, setLoading] = useState(initial === undefined);
   const [error, setError] = useState<string | null>(initial?.error ?? null);
-  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
+  const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(initial?.notice ?? null);
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<Tab>(initial?.tab ?? "timeline");
   const [form, setForm] = useState<EntityForm>(initial?.form ?? EMPTY_ENTITY_FORM);
@@ -93,7 +94,6 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
   const [confirmForget, setConfirmForget] = useState<{ kind: "entity" | "relation" | "observation"; id: string } | null>(
     initial?.confirmForget && initial.detail ? { kind: "entity", id: initial.detail.entity.id } : null
   );
-  const tabRefs = useRef(new Map<Tab, HTMLButtonElement>());
   // The timeline row the owner clicked; other rows of the same entry are only marked related.
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
@@ -198,81 +198,88 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
     }
   }
 
-  function onTabKey(event: React.KeyboardEvent) {
-    const next = nextTab(tab, event.key);
-    if (!next) return;
-    event.preventDefault();
-    setTab(next);
-    tabRefs.current.get(next)?.focus();
-  }
-
   const state = viewState({ loading, error, status });
   const di = status?.adapters.find((a) => a.id === "developer_intelligence");
   const anySourceOn = status?.adapters.some((a) => a.enabled) ?? false;
 
+  // While a confirmation is open, its refusal shows inside it, next to the question.
+  const confirming = confirmForget !== null || confirmDisable;
+  const refusal = confirming && notice && !notice.ok ? notice.text : null;
+
   return (
-    <section className="view-stack ghost" aria-labelledby="ghost-title" aria-busy={state.kind === "loading"}>
+    <section className="view-stack ghost" style={accentStyle("search")} aria-labelledby="ghost-title" aria-busy={state.kind === "loading"}>
       <PageHeader
-        eyebrow="Your life, as evidence"
+        icon={<Ghost />}
         title="GhostOS"
         titleId="ghost-title"
+        subtitle="Your life, as evidence"
         actions={state.kind === "ready" || state.kind === "empty" ? (
-          anySourceOn ? <button type="button" disabled={busy} onClick={() => void run("ghost_os.adapter.sync")}>Sync now</button> : undefined
+          anySourceOn ? <Button disabled={busy} onClick={() => void run("ghost_os.adapter.sync")}>Sync now</Button> : undefined
         ) : undefined}
       />
-      {notice && <p className={notice.ok ? "ghost-notice" : "ghost-notice ghost-notice--error"} role={notice.ok ? "status" : "alert"}>{notice.text}</p>}
+      {notice && !refusal && (notice.ok ? <Notice>{notice.text}</Notice> : <InlineError>{notice.text}</InlineError>)}
 
-      {state.kind === "loading" && <p className="empty-state" role="status">Loading GhostOS…</p>}
+      {state.kind === "loading" && <LoadingState label="Loading GhostOS" />}
 
-      {state.kind === "error" && (
-        <div className="ghost-error" role="alert">
-          <p>GhostOS could not load: {state.message}</p>
-          <div className="button-row">
-            <button type="button" onClick={() => void load()}>Try again</button>
-          </div>
-        </div>
-      )}
+      {state.kind === "error" && <ErrorState title="GhostOS could not load" message={state.message} onRetry={() => void load()} />}
 
       {state.kind === "empty" && (
-        <div className="empty-state ghost-intro">
+        <EmptyState
+          icon={<Ghost />}
+          title="Nothing in GhostOS yet"
+          actions={
+            <>
+              <Button variant="primary" onClick={() => setTab("add")}>Add an entry</Button>
+              <Button onClick={() => setTab("sources")}>Open Sources</Button>
+            </>
+          }
+        >
           <p>GhostOS keeps a local model of you: people, projects, skills, memories, decisions and habits, and how they connect over time. Every fact says where it came from and how sure it is.</p>
-          <p>Nothing is in it yet. Add something yourself, or turn on Developer Intelligence under Sources. GhostOS never reads your vault, finance, journal, clipboard, captures or chat histories, and nothing leaves this computer.</p>
-          <div className="button-row">
-            <button type="button" className="ghost-primary" onClick={() => setTab("add")}>Add an entry</button>
-            <button type="button" onClick={() => setTab("sources")}>Open Sources</button>
-          </div>
-        </div>
+          <p>Add something yourself, or turn on Developer Intelligence under Sources. GhostOS never reads your vault, finance, journal, clipboard, captures or chat histories, and nothing leaves this computer.</p>
+        </EmptyState>
+      )}
+
+      {confirmForget && (
+        <ConfirmDialog
+          title={`Forget this ${FORGET_NOUN[confirmForget.kind]}?`}
+          confirmLabel="Forget"
+          busy={busy}
+          error={refusal}
+          accent="search"
+          onConfirm={() => void forget()}
+          onCancel={() => { setConfirmForget(null); setNotice(null); }}
+        >
+          GhostOS also forgets everything it derived from it. This cannot be undone, and a source cannot bring it back.
+        </ConfirmDialog>
+      )}
+
+      {confirmDisable && (
+        <ConfirmDialog
+          title="Turn off Developer Intelligence?"
+          confirmLabel="Turn off"
+          busy={busy}
+          error={refusal}
+          accent="search"
+          onConfirm={() => void run("ghost_os.adapter.disable", confirmed({ adapterId: "developer_intelligence" })).then((ok) => ok && setConfirmDisable(false))}
+          onCancel={() => { setConfirmDisable(false); setNotice(null); }}
+        >
+          Everything it added to GhostOS is deleted, including detected habits. This cannot be undone.
+        </ConfirmDialog>
       )}
 
       {(state.kind === "ready" || state.kind === "empty") && status && (
         <>
-          <div className="ghost-tabs" role="tablist" aria-label="GhostOS sections" onKeyDown={onTabKey}>
-            {TABS.map((t) => (
-              <button
-                key={t}
-                ref={(el) => { if (el) tabRefs.current.set(t, el); else tabRefs.current.delete(t); }}
-                type="button"
-                role="tab"
-                id={`ghost-tab-${t}`}
-                aria-selected={tab === t}
-                aria-controls={`ghost-panel-${t}`}
-                tabIndex={tab === t ? 0 : -1}
-                onClick={() => setTab(t)}
-              >
-                {TAB_LABELS[t]}
-              </button>
-            ))}
-          </div>
+          <Tabs label="GhostOS sections" idPrefix="ghost" value={tab} onChange={setTab} tabs={TABS.map((t) => ({ id: t, label: TAB_LABELS[t] }))} />
 
-          <div role="tabpanel" id={`ghost-panel-${tab}`} aria-labelledby={`ghost-tab-${tab}`} className="ghost-panel">
+          <TabPanel idPrefix="ghost" id={tab}>
             {tab === "timeline" && (
               <div className="ghost-timeline-layout">
                 <div className="ghost-column">
                   <form className="ghost-search" role="search" aria-label="Search GhostOS" onSubmit={(e) => void search(e)}>
                     <label htmlFor="ghost-search-input">Search titles, notes and tags</label>
-                    <input id="ghost-search-input" type="search" value={query} onChange={(e) => setQuery(e.target.value)} />
-                    <button type="submit">Search</button>
-                    {results && <button type="button" onClick={() => { setResults(null); setQuery(""); }}>Clear</button>}
+                    <TextInput id="ghost-search-input" type="search" value={query} onChange={(e) => setQuery(e.target.value)} />
+                    <Button type="submit">Search</Button>
+                    {results && <Button variant="ghost" onClick={() => { setResults(null); setQuery(""); }}>Clear</Button>}
                   </form>
                   <div className="ghost-filter" role="group" aria-labelledby="ghost-filter-label">
                     <span id="ghost-filter-label" className="ghost-meta">Show types{types.length ? "" : " (all)"}</span>
@@ -320,7 +327,7 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
                       ))}
                     </ol>
                   )}
-                  {!results && more && <button type="button" disabled={busy} onClick={() => void loadTimeline(items[items.length - 1] ?? null, types)}>Show older</button>}
+                  {!results && more && <Button variant="ghost" disabled={busy} onClick={() => void loadTimeline(items[items.length - 1] ?? null, types)}>Show older</Button>}
                 </div>
 
                 <div className="ghost-column">
@@ -330,9 +337,7 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
                       busy={busy}
                       search={async (text) => unwrap(await bridge.ghostOsSearch({ text }))}
                       picker={initial?.picker}
-                      confirmForget={confirmForget}
-                      onAskForget={setConfirmForget}
-                      onForget={() => void forget()}
+                      onAskForget={(target) => { setNotice(null); setConfirmForget(target); }}
                       onOpen={(id) => void openEntity(id)}
                       onEdit={() => { setForm(formFromDetail(detail)); setTab("add"); }}
                       run={run}
@@ -361,50 +366,39 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
                         <span className="technical">{di.counts.entity}</span> entries, <span className="technical">{di.counts.relation}</span> connections, <span className="technical">{di.counts.observation}</span> observations
                       </p>
                       <div className="button-row">
-                        <button type="button" disabled={busy} onClick={() => void run("ghost_os.adapter.sync")}>Sync now</button>
-                        <button type="button" disabled={busy || confirmDisable} onClick={() => setConfirmDisable(true)} aria-describedby="ghost-di-off-note">
+                        <Button disabled={busy} onClick={() => void run("ghost_os.adapter.sync")}>Sync now</Button>
+                        <Button variant="danger" disabled={busy || confirmDisable} onClick={() => { setNotice(null); setConfirmDisable(true); }} aria-describedby="ghost-di-off-note">
                           Turn off and remove what it added
-                        </button>
+                        </Button>
                       </div>
                       <p id="ghost-di-off-note" className="ghost-hint">Turning it off deletes everything it contributed, including detected habits. Things you forgot stay forgotten.</p>
-                      {confirmDisable && (
-                        <div className="ghost-confirm" role="alertdialog" aria-labelledby="ghost-disable-text">
-                          <p id="ghost-disable-text">Turn off Developer Intelligence and delete everything it added to GhostOS? This cannot be undone.</p>
-                          <div className="button-row">
-                            <button
-                              type="button"
-                              disabled={busy}
-                              onClick={() => void run("ghost_os.adapter.disable", confirmed({ adapterId: "developer_intelligence" })).then((ok) => ok && setConfirmDisable(false))}
-                            >
-                              Turn off
-                            </button>
-                            <button type="button" onClick={() => setConfirmDisable(false)}>Cancel</button>
-                          </div>
-                        </div>
-                      )}
                     </>
                   ) : (
-                    <button type="button" disabled={busy} onClick={() => void run("ghost_os.adapter.enable", { adapterId: "developer_intelligence" })}>Turn on</button>
+                    <div className="button-row">
+                      <Button variant="primary" disabled={busy} onClick={() => void run("ghost_os.adapter.enable", { adapterId: "developer_intelligence" })}>Turn on</Button>
+                    </div>
                   )}
-                  {status.lastError && <p className="ghost-notice--error" role="alert">Last sync failed: {status.lastError}</p>}
+                  {status.lastError && <InlineError>Last sync failed: {status.lastError}</InlineError>}
                 </section>
                 <section className="ghost-card" aria-labelledby="ghost-files-title">
                   <h3 id="ghost-files-title">Export and import</h3>
                   <p>Export saves everything GhostOS holds as one JSON file where you choose. Import merges an export back in; nothing already here is overwritten.</p>
                   <div className="button-row">
-                    <button type="button" disabled={busy} onClick={() => void run("ghost_os.export")}>Export…</button>
-                    <button type="button" disabled={busy} onClick={() => void run("ghost_os.import")}>Import…</button>
+                    <Button disabled={busy} onClick={() => void run("ghost_os.export")}>Export…</Button>
+                    <Button disabled={busy} onClick={() => void run("ghost_os.import")}>Import…</Button>
                   </div>
                   <p className="ghost-meta">Search: <span className="technical">{status.searchMode === "fts" ? "full-text" : "simple"}</span></p>
                 </section>
               </div>
             )}
-          </div>
+          </TabPanel>
         </>
       )}
     </section>
   );
 }
+
+const FORGET_NOUN = { entity: "entry", relation: "connection", observation: "observation" } as const;
 
 function SourceLine({ provenance }: { provenance: EntityDetail["entity"]["provenance"] }) {
   return (
@@ -513,7 +507,7 @@ function ConnectionPicker(props: {
       <p className="ghost-picked">
         <span>To</span>{" "}
         <strong>{props.chosen.title}</strong> <span className="ghost-meta">({props.chosen.typeLabel})</span>{" "}
-        <button type="button" onClick={() => props.onChoose(null)} aria-label={`Change the entry, now ${props.chosen.title}`}>Change</button>
+        <Button variant="ghost" size="sm" onClick={() => props.onChoose(null)} aria-label={`Change the entry, now ${props.chosen.title}`}>Change</Button>
       </p>
     );
   }
@@ -521,7 +515,7 @@ function ConnectionPicker(props: {
   return (
     <div className="ghost-picker">
       <label htmlFor="ghost-rel-to">To</label>
-      <input
+      <TextInput
         id="ghost-rel-to"
         type="text"
         role="combobox"
@@ -560,15 +554,13 @@ function EntityDetailPanel(props: {
   busy: boolean;
   search(text: string): Promise<SearchHit[]>;
   picker?: PickerInitial;
-  confirmForget: { kind: "entity" | "relation" | "observation"; id: string } | null;
-  onAskForget(target: { kind: "entity" | "relation" | "observation"; id: string } | null): void;
-  onForget(): void;
+  onAskForget(target: { kind: "entity" | "relation" | "observation"; id: string }): void;
   onOpen(id: string): void;
   onEdit(): void;
   run(actionId: string, params?: Record<string, unknown>): Promise<boolean>;
   reload(): void;
 }) {
-  const { detail, busy, confirmForget } = props;
+  const { detail, busy } = props;
   const { entity } = detail;
   const d = entity.details as Record<string, unknown>;
   const [statement, setStatement] = useState("");
@@ -596,7 +588,6 @@ function EntityDetailPanel(props: {
     if (await props.run("ghost_os.decision.record_outcome", { outcome: { id: entity.id, outcome } })) props.reload();
   }
 
-  const confirming = confirmForget !== null;
   return (
     <article className="ghost-card ghost-detail" aria-labelledby="ghost-detail-title">
       <div className="ghost-detail-head">
@@ -605,8 +596,8 @@ function EntityDetailPanel(props: {
           <h3 id="ghost-detail-title">{entity.title}</h3>
         </div>
         <div className="button-row">
-          {entity.provenance.origin === "manual" && <button type="button" disabled={busy} onClick={props.onEdit}>Edit</button>}
-          <button type="button" disabled={busy} onClick={() => props.onAskForget({ kind: "entity", id: entity.id })} aria-label={`Forget ${entity.title}`}>Forget…</button>
+          {entity.provenance.origin === "manual" && <Button size="sm" disabled={busy} onClick={props.onEdit}>Edit</Button>}
+          <Button variant="ghost" size="sm" disabled={busy} onClick={() => props.onAskForget({ kind: "entity", id: entity.id })} aria-label={`Forget ${entity.title}`}>Forget…</Button>
         </div>
       </div>
       <SourceLine provenance={entity.provenance} />
@@ -634,21 +625,13 @@ function EntityDetailPanel(props: {
         <p className="ghost-meta">{d.mode === "detected" ? "Detected from your activity" : "Declared by you"} · {String(d.cadence)}</p>
       )}
 
-      {confirming && (
-        <div className="ghost-confirm" role="alertdialog" aria-labelledby="ghost-confirm-text">
-          <p id="ghost-confirm-text">Forget this {confirmForget.kind === "entity" ? "entry" : confirmForget.kind} and everything GhostOS derived from it? This cannot be undone, and a source cannot bring it back.</p>
-          <div className="button-row">
-            <button type="button" disabled={busy} onClick={props.onForget}>Forget</button>
-            <button type="button" onClick={() => props.onAskForget(null)}>Cancel</button>
-          </div>
-        </div>
-      )}
-
       {entity.type === "decision" && entity.provenance.origin === "manual" && typeof d.outcome !== "string" && (
         <form className="ghost-form" aria-label="Record the outcome" onSubmit={(e) => void recordOutcome(e)}>
           <label htmlFor="ghost-outcome">How did it turn out?</label>
-          <textarea id="ghost-outcome" value={outcome} onChange={(e) => setOutcome(e.target.value)} />
-          <button type="submit" disabled={busy || !outcome.trim()}>Record outcome</button>
+          <TextArea id="ghost-outcome" value={outcome} onChange={(e) => setOutcome(e.target.value)} />
+          <div className="button-row">
+            <Button type="submit" variant="primary" disabled={busy || !outcome.trim()}>Record outcome</Button>
+          </div>
         </form>
       )}
 
@@ -666,17 +649,17 @@ function EntityDetailPanel(props: {
                 </p>
                 <SourceLine provenance={relation.provenance} />
               </div>
-              <button type="button" disabled={busy} onClick={() => props.onAskForget({ kind: "relation", id: relation.id })} aria-label={`Forget connection ${relation.type} ${other?.title ?? ""}`.trim()}>Forget…</button>
+              <Button variant="ghost" size="sm" disabled={busy} onClick={() => props.onAskForget({ kind: "relation", id: relation.id })} aria-label={`Forget connection ${relation.type} ${other?.title ?? ""}`.trim()}>Forget…</Button>
             </li>
           ))}
         </ul>
       )}
       <form className="ghost-form ghost-form--inline" aria-label="New connection" onSubmit={(e) => void addRelation(e)}>
         <label htmlFor="ghost-rel-type">Connection</label>
-        <input id="ghost-rel-type" list="ghost-rel-types" value={relType} onChange={(e) => setRelType(e.target.value)} />
+        <TextInput id="ghost-rel-type" list="ghost-rel-types" value={relType} onChange={(e) => setRelType(e.target.value)} />
         <datalist id="ghost-rel-types">{RELATION_TYPE_LIST.map((t) => <option key={t} value={relationTypeText(t)} />)}</datalist>
         <ConnectionPicker excludeId={entity.id} chosen={relTo} onChoose={setRelTo} search={props.search} initial={props.picker} />
-        <button type="submit" disabled={busy || !relTo}>Connect</button>
+        <Button type="submit" disabled={busy || !relTo}>Connect</Button>
       </form>
 
       <h4>Observations</h4>
@@ -688,15 +671,15 @@ function EntityDetailPanel(props: {
                 <p><time className="technical" dateTime={o.observedAt}>{shortDate(o.observedAt)}</time> · {o.statement}</p>
                 <SourceLine provenance={o.provenance} />
               </div>
-              <button type="button" disabled={busy} onClick={() => props.onAskForget({ kind: "observation", id: o.id })} aria-label={`Forget observation from ${shortDate(o.observedAt)}`}>Forget…</button>
+              <Button variant="ghost" size="sm" disabled={busy} onClick={() => props.onAskForget({ kind: "observation", id: o.id })} aria-label={`Forget observation from ${shortDate(o.observedAt)}`}>Forget…</Button>
             </li>
           ))}
         </ul>
       )}
       <form className="ghost-form ghost-form--inline" aria-label="New observation" onSubmit={(e) => void addObservation(e)}>
         <label htmlFor="ghost-obs">Something you observed</label>
-        <input id="ghost-obs" value={statement} onChange={(e) => setStatement(e.target.value)} />
-        <button type="submit" disabled={busy || !statement.trim()}>Add</button>
+        <TextInput id="ghost-obs" value={statement} onChange={(e) => setStatement(e.target.value)} />
+        <Button type="submit" disabled={busy || !statement.trim()}>Add</Button>
       </form>
 
       {detail.derivedFrom.length > 0 && (
@@ -712,36 +695,36 @@ function EntityFormPanel({ form, setForm, busy, onSubmit }: { form: EntityForm; 
   return (
     <form className="ghost-form ghost-card" aria-label={form.id ? "Edit entry" : "New entry"} onSubmit={onSubmit}>
       <label htmlFor="ghost-f-type">Type</label>
-      <select id="ghost-f-type" value={form.type} disabled={form.id !== null} onChange={(e) => set("type", e.target.value as EntityType)}>
+      <Select id="ghost-f-type" value={form.type} disabled={form.id !== null} onChange={(e) => set("type", e.target.value as EntityType)}>
         {ENTITY_TYPE_LIST.map((t) => <option key={t} value={t}>{TYPE_LABELS[t]}</option>)}
-      </select>
+      </Select>
       <label htmlFor="ghost-f-title">Title</label>
-      <input id="ghost-f-title" required value={form.title} onChange={(e) => set("title", e.target.value)} />
-      {fields.includes("when") && (<><label htmlFor="ghost-f-when">{whenLabel(form.type)}</label><input id="ghost-f-when" type="date" value={form.when} onChange={(e) => set("when", e.target.value)} /></>)}
-      {fields.includes("endedAt") && (<><label htmlFor="ghost-f-ended">Ended</label><input id="ghost-f-ended" type="date" value={form.endedAt} onChange={(e) => set("endedAt", e.target.value)} /></>)}
-      {fields.includes("text") && (<><label htmlFor="ghost-f-text">{form.type === "conversation" ? "Paste the conversation" : "What happened"}</label><textarea id="ghost-f-text" value={form.text} onChange={(e) => set("text", e.target.value)} /></>)}
-      {fields.includes("participants") && (<><label htmlFor="ghost-f-participants">Participants (comma separated)</label><input id="ghost-f-participants" value={form.participants} onChange={(e) => set("participants", e.target.value)} /></>)}
-      {fields.includes("choice") && (<><label htmlFor="ghost-f-choice">What you chose</label><input id="ghost-f-choice" value={form.choice} onChange={(e) => set("choice", e.target.value)} /></>)}
-      {fields.includes("alternatives") && (<><label htmlFor="ghost-f-alts">Alternatives (one per line)</label><textarea id="ghost-f-alts" value={form.alternatives} onChange={(e) => set("alternatives", e.target.value)} /></>)}
-      {fields.includes("rationale") && (<><label htmlFor="ghost-f-why">Why</label><textarea id="ghost-f-why" value={form.rationale} onChange={(e) => set("rationale", e.target.value)} /></>)}
+      <TextInput id="ghost-f-title" required value={form.title} onChange={(e) => set("title", e.target.value)} />
+      {fields.includes("when") && (<><label htmlFor="ghost-f-when">{whenLabel(form.type)}</label><TextInput id="ghost-f-when" type="date" value={form.when} onChange={(e) => set("when", e.target.value)} /></>)}
+      {fields.includes("endedAt") && (<><label htmlFor="ghost-f-ended">Ended</label><TextInput id="ghost-f-ended" type="date" value={form.endedAt} onChange={(e) => set("endedAt", e.target.value)} /></>)}
+      {fields.includes("text") && (<><label htmlFor="ghost-f-text">{form.type === "conversation" ? "Paste the conversation" : "What happened"}</label><TextArea id="ghost-f-text" value={form.text} onChange={(e) => set("text", e.target.value)} /></>)}
+      {fields.includes("participants") && (<><label htmlFor="ghost-f-participants">Participants (comma separated)</label><TextInput id="ghost-f-participants" value={form.participants} onChange={(e) => set("participants", e.target.value)} /></>)}
+      {fields.includes("choice") && (<><label htmlFor="ghost-f-choice">What you chose</label><TextInput id="ghost-f-choice" value={form.choice} onChange={(e) => set("choice", e.target.value)} /></>)}
+      {fields.includes("alternatives") && (<><label htmlFor="ghost-f-alts">Alternatives (one per line)</label><TextArea id="ghost-f-alts" value={form.alternatives} onChange={(e) => set("alternatives", e.target.value)} /></>)}
+      {fields.includes("rationale") && (<><label htmlFor="ghost-f-why">Why</label><TextArea id="ghost-f-why" value={form.rationale} onChange={(e) => set("rationale", e.target.value)} /></>)}
       {fields.includes("cadence") && (
         <>
           <label htmlFor="ghost-f-cadence">How often</label>
-          <select id="ghost-f-cadence" value={form.cadence} onChange={(e) => set("cadence", e.target.value as EntityForm["cadence"])}>
+          <Select id="ghost-f-cadence" value={form.cadence} onChange={(e) => set("cadence", e.target.value as EntityForm["cadence"])}>
             <option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="irregular">Irregular</option>
-          </select>
+          </Select>
         </>
       )}
-      {fields.includes("path") && (<><label htmlFor="ghost-f-path">Path (a reference; GhostOS never opens it)</label><input id="ghost-f-path" className="technical" value={form.path} onChange={(e) => set("path", e.target.value)} /></>)}
-      {fields.includes("label") && (<><label htmlFor="ghost-f-label">Label</label><input id="ghost-f-label" value={form.label} onChange={(e) => set("label", e.target.value)} /></>)}
+      {fields.includes("path") && (<><label htmlFor="ghost-f-path">Path (a reference; GhostOS never opens it)</label><TextInput id="ghost-f-path" className="technical" value={form.path} onChange={(e) => set("path", e.target.value)} /></>)}
+      {fields.includes("label") && (<><label htmlFor="ghost-f-label">Label</label><TextInput id="ghost-f-label" value={form.label} onChange={(e) => set("label", e.target.value)} /></>)}
       <label htmlFor="ghost-f-notes">Notes</label>
-      <textarea id="ghost-f-notes" value={form.notes} onChange={(e) => set("notes", e.target.value)} />
+      <TextArea id="ghost-f-notes" value={form.notes} onChange={(e) => set("notes", e.target.value)} />
       <label htmlFor="ghost-f-tags">Tags (comma separated)</label>
-      <input id="ghost-f-tags" value={form.tags} onChange={(e) => set("tags", e.target.value)} />
+      <TextInput id="ghost-f-tags" value={form.tags} onChange={(e) => set("tags", e.target.value)} />
       <p className="ghost-hint">Saved as entered by you.</p>
       <div className="button-row">
-        <button type="submit" disabled={busy || !form.title.trim()}>{form.id ? "Save changes" : "Save"}</button>
-        {form.id && <button type="button" onClick={() => setForm(EMPTY_ENTITY_FORM)}>Cancel edit</button>}
+        <Button type="submit" variant="primary" disabled={busy || !form.title.trim()}>{form.id ? "Save changes" : "Save"}</Button>
+        {form.id && <Button variant="ghost" onClick={() => setForm(EMPTY_ENTITY_FORM)}>Cancel edit</Button>}
       </div>
     </form>
   );

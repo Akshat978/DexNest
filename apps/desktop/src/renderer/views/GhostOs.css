@@ -10,21 +10,6 @@
   font-family: var(--font-tech);
 }
 
-.ghost-notice {
-  margin: 0;
-  color: var(--text);
-}
-
-.ghost-notice--error,
-.ghost-error {
-  color: var(--error);
-}
-
-.ghost-error {
-  display: grid;
-  gap: var(--space-2);
-}
-
 .ghost-hint,
 .ghost-meta {
   margin: 0;
@@ -32,44 +17,14 @@
   font-size: 0.85rem;
 }
 
-.ghost-intro {
-  display: grid;
-  gap: var(--space-2);
-}
-
-.ghost-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  border-bottom: 1px solid var(--border);
-  padding-bottom: var(--space-2);
-}
-
-.ghost-tabs [role="tab"] {
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  font-family: var(--font-ui);
-  padding: var(--space-1) var(--space-3);
-}
-
-.ghost-tabs [role="tab"][aria-selected="true"] {
-  border-color: var(--accent-search);
-  color: var(--text);
-}
-
-.ghost button:focus-visible,
-.ghost input:focus-visible,
-.ghost select:focus-visible,
-.ghost textarea:focus-visible {
+/* Chips, timeline rows and links are native buttons; kit controls bring their own focus ring. */
+.ghost-chip:focus-visible,
+.ghost-item:focus-visible,
+.ghost-link:focus-visible,
+.ghost-picker input:focus-visible {
   outline: 2px solid var(--accent-search);
   outline-offset: 2px;
   box-shadow: 0 0 0 4px var(--focus-ring);
-}
-
-.ghost-panel {
-  padding-top: var(--space-3);
 }
 
 .ghost-timeline-layout {
@@ -101,10 +56,12 @@
 .ghost-search label {
   flex-basis: 100%;
   color: var(--text-muted);
-  font-size: 0.85rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
 }
 
-.ghost-search input {
+.ghost-search .kit-input {
+  width: auto;
   flex: 1 1 12rem;
 }
 
@@ -240,32 +197,18 @@
   cursor: pointer;
 }
 
-.ghost-confirm {
-  border: 1px solid var(--error);
-  border-radius: var(--radius-md);
-  padding: var(--space-3);
-  display: grid;
-  gap: var(--space-2);
-}
-
-.ghost-confirm p {
-  margin: 0;
-}
-
 .ghost-form {
   display: grid;
   gap: var(--space-2);
   max-width: 40rem;
 }
 
-.ghost-form label {
+/* Labels as the kit's Field labels. */
+.ghost-form label,
+.ghost-picker label {
   color: var(--text-muted);
-  font-size: 0.85rem;
-}
-
-.ghost-form textarea {
-  min-height: 5rem;
-  font-family: var(--font-ui);
+  font-size: 0.8125rem;
+  font-weight: 500;
 }
 
 .ghost-form--inline {
@@ -273,6 +216,11 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
+}
+
+.ghost-form--inline > .kit-input {
+  width: auto;
+  flex: 1 1 10rem;
 }
 
 .ghost-sources {
@@ -321,16 +269,6 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-1);
-}
-
-.ghost-error {
-  justify-items: start;
-}
-
-.ghost-primary {
-  background: color-mix(in srgb, var(--accent-search) 18%, var(--surface-2));
-  border-color: color-mix(in srgb, var(--accent-search) 60%, var(--border));
-  color: var(--text);
 }
 
 /* Type filter: toggle chips on one wrapping line. */

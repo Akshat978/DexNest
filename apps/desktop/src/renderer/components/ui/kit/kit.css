@@ -573,6 +573,11 @@
   padding: var(--space-3) var(--space-5) var(--space-5);
   border-top: 1px solid var(--border);
 }
+/* A refusal in a dialog sits on its own line above the buttons. */
+.kit-dialog__footer .kit-inline-error {
+  flex-basis: 100%;
+  text-align: right;
+}
 @keyframes kit-rise {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: none; }

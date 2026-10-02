@@ -37,20 +37,23 @@ export function PageHeader({
   title,
   subtitle,
   accent,
-  actions
+  actions,
+  titleId
 }: {
   icon?: React.ReactNode;
   title: React.ReactNode;
   subtitle?: React.ReactNode;
   accent?: string;
   actions?: React.ReactNode;
+  /** For a view whose <section> is labelled by its title. */
+  titleId?: string;
 }) {
   return (
     <header className="kit-header" style={accent ? accentStyle(accent) : undefined}>
       <div className="kit-header__lead">
         {icon && <div className="kit-header__icon" aria-hidden="true">{icon}</div>}
         <div>
-          <h1 className="kit-header__title">{title}</h1>
+          <h1 id={titleId} className="kit-header__title">{title}</h1>
           {subtitle && <p className="kit-header__subtitle">{subtitle}</p>}
         </div>
       </div>
@@ -358,9 +361,9 @@ export function Tabs<T extends string>({
   );
 }
 
-export function TabPanel({ idPrefix, id, children }: { idPrefix: string; id: string; children: React.ReactNode }) {
+export function TabPanel({ idPrefix, id, children, className }: { idPrefix: string; id: string; children: React.ReactNode; className?: string }) {
   return (
-    <div role="tabpanel" id={`${idPrefix}-panel-${id}`} aria-labelledby={`${idPrefix}-tab-${id}`} className="kit-tabpanel" tabIndex={0}>
+    <div role="tabpanel" id={`${idPrefix}-panel-${id}`} aria-labelledby={`${idPrefix}-tab-${id}`} className={cx("kit-tabpanel", className)} tabIndex={0}>
       {children}
     </div>
   );
