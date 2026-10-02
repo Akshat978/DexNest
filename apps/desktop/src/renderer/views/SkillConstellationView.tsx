@@ -6,7 +6,8 @@ import type {
   SkillConstellationSettings,
   SkillStrengthSnapshot
 } from "@dexnest/skill-constellation";
-import { PageHeader } from "../components/shared";
+import { Stars } from "lucide-react";
+import { accentStyle, Button, EmptyNote, EmptyState, ErrorState, Field, InlineError, LoadingState, Notice, PageHeader, TextInput } from "../components/ui/kit";
 import {
   CATEGORY_LABELS,
   EVIDENCE_LABELS,
@@ -130,18 +131,19 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
 
   const header = (
     <PageHeader
-      eyebrow="From Developer Intelligence"
+      icon={<Stars />}
       title="Skill Constellation"
       titleId="skills-title"
+      subtitle="From Developer Intelligence"
       actions={state.kind === "loading" || state.kind === "error" ? undefined : (
         <>
-          <button type="button" disabled={busy !== null} onClick={() => void run("skill_constellation.rebuild", "rebuild")}>
+          <Button disabled={busy !== null} onClick={() => void run("skill_constellation.rebuild", "rebuild")}>
             {busy === "rebuild" ? "Rebuilding…" : snapshot?.enabled ? "Rebuild" : "Build once"}
-          </button>
+          </Button>
           {snapshot?.enabled ? (
-            <button type="button" disabled={busy !== null} onClick={() => void run("skill_constellation.disable", "toggle")}>Turn off</button>
+            <Button variant="ghost" disabled={busy !== null} onClick={() => void run("skill_constellation.disable", "toggle")}>Turn off</Button>
           ) : (
-            <button type="button" disabled={busy !== null} onClick={() => void run("skill_constellation.enable", "toggle")}>Turn on</button>
+            <Button variant="primary" disabled={busy !== null} onClick={() => void run("skill_constellation.enable", "toggle")}>Turn on</Button>
           )}
         </>
       )}
@@ -149,32 +151,25 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
   );
 
   return (
-    <section className="view-stack skill-constellation" aria-labelledby="skills-title" aria-busy={state.kind === "loading"}>
+    <section className="view-stack skill-constellation" style={accentStyle("dev")} aria-labelledby="skills-title" aria-busy={state.kind === "loading"}>
       {header}
-      {notice && <p className="skill-notice" role="status">{notice}</p>}
+      {notice && <Notice tone="info">{notice}</Notice>}
 
-      {state.kind === "loading" && <p className="empty-state" role="status">Loading your constellation…</p>}
+      {state.kind === "loading" && <LoadingState label="Loading your constellation" />}
 
-      {state.kind === "error" && (
-        <div className="skill-error" role="alert">
-          <p>Skill Constellation could not load: {state.message}</p>
-          <div className="button-row">
-            <button type="button" onClick={() => void load()}>Try again</button>
-          </div>
-        </div>
-      )}
+      {state.kind === "error" && <ErrorState title="Skill Constellation could not load" message={state.message} onRetry={() => void load()} />}
 
       {state.kind === "off" && (
-        <div className="empty-state skill-intro">
+        <EmptyState icon={<Stars />} title="Skill Constellation is off">
           <p>Skill Constellation draws your skills from what Developer Intelligence has already recorded about your repositories - technologies, TODOs and commits. It never scans your disk itself, and every star shows the evidence behind it.</p>
-          <p>It is off. Turn it on to rebuild after each new Developer Intelligence scan, or build it once now.</p>
-        </div>
+          <p>Turn it on to rebuild after each new Developer Intelligence scan, or build it once now.</p>
+        </EmptyState>
       )}
 
       {state.kind === "empty" && (
-        <p className="empty-state">
-          No evidence yet. Skill Constellation reads only what Developer Intelligence has recorded, so scan your repositories in Developer Intelligence first, then rebuild.
-        </p>
+        <EmptyState icon={<Stars />} title="No evidence yet">
+          <p>Skill Constellation reads only what Developer Intelligence has recorded, so scan your repositories in Developer Intelligence first, then rebuild.</p>
+        </EmptyState>
       )}
 
       {state.kind === "ready" && (
@@ -347,7 +342,7 @@ function EvidencePanel({
     >
       <div className="skill-panel__head">
         <h3 id="skill-panel-title">{skill.name}</h3>
-        <button type="button" onClick={onClose} aria-label={`Close evidence for ${skill.name}`}>Close</button>
+        <Button variant="ghost" size="sm" onClick={onClose} aria-label={`Close evidence for ${skill.name}`}>Close</Button>
       </div>
       <p className="skill-panel__category">{CATEGORY_LABELS[skill.category]}{skill.hidden ? " · hidden" : ""}</p>
 
@@ -365,9 +360,9 @@ function EvidencePanel({
         </p>
       )}
 
-      {error && <p className="skill-error" role="alert">Could not load the evidence: {error}</p>}
-      {!error && !evidence && <p className="empty-state" role="status">Loading evidence…</p>}
-      {evidence && evidence.length === 0 && <p className="empty-state">No evidence rows are stored for this skill.</p>}
+      {error && <InlineError>Could not load the evidence: {error}</InlineError>}
+      {!error && !evidence && <LoadingState label="Loading evidence" rows={1} />}
+      {evidence && evidence.length === 0 && <EmptyNote>No evidence rows are stored for this skill.</EmptyNote>}
 
       {groups.map((group) => (
         <section key={group.repositoryId} className="skill-repo" aria-label={`Evidence in ${group.repositoryName}`}>
@@ -439,16 +434,15 @@ function SettingsPanel({ bridge, onSaved }: { bridge: SkillConstellationBridge; 
           void save({ ...settings, myEmails: emails.split(/[,\s]+/).filter(Boolean) });
         }}
       >
-        <label>
-          My commit emails
-          <input
+        <Field label="My commit emails">
+          <TextInput
             type="text"
             className="technical"
             value={emails}
             placeholder="you@example.com"
             onChange={(event) => setEmails(event.target.value)}
           />
-        </label>
+        </Field>
         <p className="skill-hint">Only commits by these authors count. Commits recorded before authors were tracked still count.</p>
         <label className="skill-check">
           <input
@@ -458,7 +452,9 @@ function SettingsPanel({ bridge, onSaved }: { bridge: SkillConstellationBridge; 
           />
           Include libraries that are not in the curated list
         </label>
-        <button type="submit">Save emails</button>
+        <div className="button-row">
+          <Button type="submit">Save emails</Button>
+        </div>
         {status && <p role="status" className="skill-hint">{status}</p>}
       </form>
     </details>

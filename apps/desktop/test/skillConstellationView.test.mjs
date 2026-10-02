@@ -80,7 +80,7 @@ const count = (html, needle) => html.split(needle).length - 1;
 
 test("loading: announced as a status, busy, no actions yet", () => {
   const html = render({});
-  assert.match(html, /role="status"[^>]*>Loading your constellation/);
+  assert.match(html, /role="status"[^>]*>(?:<[^>]+>)*Loading your constellation…/);
   assert.match(html, /aria-busy="true"/);
   assert.doesNotMatch(html, />Rebuild</);
 });
@@ -89,7 +89,7 @@ test("error: an alert with the reason and a way to retry", () => {
   const html = render({ initial: { snapshot: null, error: "database is locked" } });
   assert.match(html, /role="alert"/);
   assert.match(html, /database is locked/);
-  assert.match(html, /<button type="button">Try again<\/button>/);
+  assert.match(html, /<button type="button" class="kit-button kit-button--ghost kit-button--sm">(?:<[^>]+>)*<\/span>Try again<\/button>/);
 });
 
 test("off: explains it reads only Developer Intelligence, and offers to turn on or build once", () => {
@@ -99,7 +99,7 @@ test("off: explains it reads only Developer Intelligence, and offers to turn on 
   // While it is off, the one-off build says what it does.
   assert.match(html, />Build once</);
   assert.doesNotMatch(html, />Rebuild</);
-  assert.doesNotMatch(html, /<svg/);
+  assert.doesNotMatch(html, /<svg viewBox="0 0 1000 1000"/, "no constellation drawn");
 });
 
 test("labels: only the fifteen strongest stars are written, plus the selected one; every star keeps its accessible name", () => {
@@ -118,7 +118,7 @@ test("empty: says why there is nothing and what to do", () => {
   const html = render({ initial: { snapshot: { ...ready, skills: [], layout: [], links: [] } } });
   assert.match(html, /No evidence yet/);
   assert.match(html, /scan your repositories in Developer Intelligence/);
-  assert.doesNotMatch(html, /<svg/);
+  assert.doesNotMatch(html, /<svg viewBox="0 0 1000 1000"/, "no constellation drawn");
 });
 
 test("ready: stars are labelled buttons with one tab stop; hidden skills are not drawn", () => {
