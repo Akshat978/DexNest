@@ -187,7 +187,7 @@ test("overview: photo with alt text, facts with the serial in technical type, co
 test("maintenance: due state in words, pause, delete asks first, and a labelled log form", () => {
   const html = render({ initial: { ...ready, detail, tab: "maintenance" } });
   assert.match(html, /Replace nozzle <span class="objectos-meta">every 200 print hours<\/span>/);
-  assert.match(html, /class="objectos-due objectos-tone-bad">Overdue by 12 print hours</);
+  assert.match(html, /<span class="kit-badge kit-badge--error"><span class="kit-badge__dot" aria-hidden="true"><\/span>Overdue by 12 print hours<\/span>/);
   assert.match(html, />Pause</);
   assert.match(html, /aria-label="Delete schedule Replace nozzle">Delete…</);
   for (const id of ["objectos-s-title", "objectos-s-kind", "objectos-s-every", "objectos-l-schedule", "objectos-l-title", "objectos-l-date", "objectos-l-by", "objectos-l-amount", "objectos-l-currency", "objectos-l-reading", "objectos-l-part", "objectos-l-qty", "objectos-l-notes"]) {

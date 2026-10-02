@@ -275,10 +275,6 @@ button.objectos-item:hover {
   cursor: pointer;
 }
 
-.objectos-due {
-  font-size: 0.85rem;
-}
-
 /* Tone is never colour alone: every toned line also says it in words. */
 .objectos-tone-bad {
   color: var(--error);

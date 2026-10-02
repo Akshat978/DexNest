@@ -10,7 +10,7 @@ import type {
   TimelineItem
 } from "@dexnest/object-os";
 import { Package } from "lucide-react";
-import { accentStyle, Button, ConfirmDialog, EmptyState, ErrorState, Field, InlineError, LoadingState, Notice, PageHeader, Select, TabPanel, Tabs, TextArea, TextInput } from "../components/ui/kit";
+import { accentStyle, Badge, Button, ConfirmDialog, EmptyState, ErrorState, Field, InlineError, LoadingState, Notice, PageHeader, Select, TabPanel, Tabs, TextArea, TextInput } from "../components/ui/kit";
 import {
   deleteObjectConfirm,
   actionMessage,
@@ -104,6 +104,8 @@ type Run = (actionId: string, params?: Record<string, unknown>) => Promise<boole
 type Ask = (confirm: Confirm) => void;
 
 const HISTORY_PAGE = 50;
+/** A schedule's due state as a badge; the words say it too, never colour alone. */
+const DUE_BADGE = { bad: "error", warn: "warning", ok: "success", quiet: "neutral" } as const;
 /** How many "needs attention" items show before "Show all". */
 export const ATTENTION_PREVIEW = 5;
 
@@ -715,7 +717,7 @@ function MaintenancePanel({ detail, busy, run, ask }: PanelProps) {
             {detail.schedules.map(({ schedule, status }) => (
               <li key={schedule.id} className="objectos-row">
                 <span>{schedule.title} <span className="objectos-meta">{ruleLabel(schedule.rule)}</span></span>
-                <span className={`objectos-due objectos-tone-${dueTone(status)}`}>{dueLabel(status)}</span>
+                <Badge tone={DUE_BADGE[dueTone(status)]}>{dueLabel(status)}</Badge>
                 <span className="button-row">
                   <Button
                     size="sm"
