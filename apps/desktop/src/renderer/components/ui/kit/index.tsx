@@ -259,8 +259,22 @@ export function Notice({ tone = "success", children }: { tone?: "success" | "inf
 
 // --- Form controls --------------------------------------------------------------
 
-/** A labelled control: the label above, an optional hint below. */
-export function Field({ label, hint, children, className }: { label: React.ReactNode; hint?: React.ReactNode; children: React.ReactNode; className?: string }) {
+/**
+ * A labelled control: the label above, an optional hint below. Without
+ * `htmlFor` the label wraps the control. With it the label points at the
+ * control's id and the hint gets the id `<htmlFor>-hint`, for the control's
+ * aria-describedby.
+ */
+export function Field({ label, hint, children, className, htmlFor }: { label: React.ReactNode; hint?: React.ReactNode; children: React.ReactNode; className?: string; htmlFor?: string }) {
+  if (htmlFor) {
+    return (
+      <div className={cx("kit-field", className)}>
+        <label htmlFor={htmlFor} className="kit-field__label">{label}</label>
+        {children}
+        {hint && <span className="kit-field__hint" id={`${htmlFor}-hint`}>{hint}</span>}
+      </div>
+    );
+  }
   return (
     <label className={cx("kit-field", className)}>
       <span className="kit-field__label">{label}</span>

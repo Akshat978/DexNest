@@ -113,6 +113,7 @@ test("form controls: one input style; selects draw a token chevron; a field labe
   assert.match(render(kit.Select, { value: "a", onChange: noop }, createElement("option", { value: "a" }, "A")), /^<select class="kit-input kit-select">/);
   assert.match(render(kit.TextArea, {}), /^<textarea class="kit-input kit-textarea">/);
   assert.equal(render(kit.Field, { label: "Name", hint: "Required" }, createElement(kit.TextInput, {})), '<label class="kit-field"><span class="kit-field__label">Name</span><input class="kit-input"/><span class="kit-field__hint">Required</span></label>');
+  assert.equal(render(kit.Field, { label: "Tags", hint: "Separate with commas.", htmlFor: "f-tags" }, createElement(kit.TextInput, { id: "f-tags", "aria-describedby": "f-tags-hint" })), '<div class="kit-field"><label for="f-tags" class="kit-field__label">Tags</label><input class="kit-input" id="f-tags" aria-describedby="f-tags-hint"/><span class="kit-field__hint" id="f-tags-hint">Separate with commas.</span></div>');
   const css = readFileSync(join(ui, "kit/kit.css"), "utf8");
   assert.match(css, /\.kit-select \{\n  appearance: none;/);
 });
