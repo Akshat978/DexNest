@@ -1,12 +1,12 @@
 // Real Electron, on a seeded data root: click through each new module's main
 // flows. Every step is screenshotted and logged (passed / failed + what the
 // screen said), with console errors per step.
-// node shoot-flows.mjs <outDir> <seededDataRoot> <codeDir>
+// node shoot-flows.mjs <outDir> <seededDataRoot> <workDir>   (the folder make-repos.sh made)
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { launch, size, open, shot } from "./electron.mjs";
 
-const [out, dataRoot, codeDir] = process.argv.slice(2);
+const [out, dataRoot, workDir] = process.argv.slice(2);
 mkdirSync(out, { recursive: true });
 const { app, win, consoleErrors } = await launch({ dataRoot });
 await size(app, win, 1280, 800);
@@ -32,7 +32,7 @@ const main = () => win.locator("main");
 await open(win, "dev");
 await step("projects-home", async () => {});
 await step("projects-wizard-open", async () => { await main().getByRole("button", { name: "Add project" }).first().click(); });
-await step("projects-wizard-paste", async () => { await win.locator("#projects-wizard-path").fill(`${codeDir}/notes-app`); await btn("Inspect").click(); await win.waitForTimeout(1500); });
+await step("projects-wizard-paste", async () => { await win.locator("#projects-wizard-path").fill(`${workDir}/later/notes-app`); await btn("Inspect").click(); await win.waitForTimeout(1500); });
 await step("projects-wizard-saved", async () => { await btn("Save project").click(); await win.waitForTimeout(1500); });
 await step("projects-detail-shop", async () => { await win.locator(".projects-card__name", { hasText: "Shop web" }).first().click(); await win.waitForTimeout(2000); });
 for (const t of ["Branches", "Changes", "History", "Run", "Links", "Settings"]) await step(`projects-tab-${t.toLowerCase()}`, async () => { await win.getByRole("tab", { name: new RegExp(`^${t}`) }).click(); await win.waitForTimeout(800); });

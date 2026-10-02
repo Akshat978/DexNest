@@ -64,4 +64,9 @@ mk rust-cli; cd "$W/code/rust-cli"
 printf '[package]\nname = "rust-cli"\nversion = "0.1.0"\n\n[dependencies]\nclap = "4"\nserde = "1"\n' > Cargo.toml
 mkdir -p src; echo 'fn main() {}' > src/main.rs; g add -A; commit "$(day 15)" "cli skeleton with clap"
 echo '// parse' >> src/main.rs; g add -A; commit "$(day 3)" "parse config"; g push -q origin main
+# 7. notes-app: for the add-project flow only. Outside code/, so the seed and
+#    the Developer Intelligence scan never see it.
+mkdir -p "$W/later/notes-app"; cd "$W/later/notes-app"; g init -q
+printf '{ "name": "notes-app", "private": true, "dependencies": { "svelte": "^4.0.0" } }\n' > package.json
+echo '# notes' > README.md; g add -A; commit "$(day 8)" "notes app skeleton"
 echo "done: $W"; ls "$W/code"
