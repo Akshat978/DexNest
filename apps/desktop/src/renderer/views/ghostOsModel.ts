@@ -224,6 +224,15 @@ export function whenLabel(type: EntityType): string {
   return "Started";
 }
 
+/**
+ * Params for an action the user has just confirmed in the view. Danger-level
+ * and requires-confirmation actions (forget, turning a source off) are refused
+ * by the main process without this flag; send it only after the confirm box.
+ */
+export function confirmed(params: Record<string, unknown>): Record<string, unknown> {
+  return { ...params, confirmedDangerous: true };
+}
+
 /** The message an action returned, or its error. */
 export function actionMessage(result: unknown): { ok: boolean; text: string | null } {
   if (typeof result !== "object" || result === null) return { ok: false, text: "No answer from DexNest." };

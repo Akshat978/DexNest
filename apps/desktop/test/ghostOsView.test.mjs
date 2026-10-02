@@ -246,6 +246,15 @@ test("sources: what Developer Intelligence gives, what it never gives, and off r
   assert.doesNotMatch(missing, />Turn on</);
 });
 
+test("sources: turning the source off asks first (it deletes what it added), then offers Turn off / Cancel", () => {
+  const on = render({ initial: { status: full, tab: "sources" } });
+  assert.doesNotMatch(on, /ghost-disable-text/, "no confirmation until asked");
+  const asking = render({ initial: { status: full, tab: "sources", confirmDisable: true } });
+  assert.match(asking, /role="alertdialog" aria-labelledby="ghost-disable-text"/);
+  assert.match(asking, /delete everything it added to GhostOS\? This cannot be undone\./);
+  assert.match(asking, />Turn off<\/button><button type="button">Cancel<\/button>/);
+});
+
 test("design tokens only: no literal colours; fonts from tokens; the module accent", () => {
   const files = ["GhostOsView.tsx", "GhostOs.css", "ghostOsModel.ts"].map((f) => readFileSync(join(desktop, "src/renderer/views", f), "utf8"));
   for (const text of files) {

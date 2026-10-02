@@ -3,6 +3,7 @@ import type { EntityDetail, EntityType, GhostOsSettings, GhostOsStatus, Observat
 import { PageHeader } from "../components/shared";
 import {
   actionMessage,
+  confirmed,
   EMPTY_ENTITY_FORM,
   ENTITY_TYPE_LIST,
   entityFromForm,
@@ -57,6 +58,7 @@ export interface GhostOsViewProps {
     tab?: Tab;
     error?: string | null;
     confirmForget?: boolean;
+    confirmDisable?: boolean;
     form?: EntityForm;
     picker?: PickerInitial;
   };
@@ -87,6 +89,7 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState<Tab>(initial?.tab ?? "timeline");
   const [form, setForm] = useState<EntityForm>(initial?.form ?? EMPTY_ENTITY_FORM);
+  const [confirmDisable, setConfirmDisable] = useState(initial?.confirmDisable ?? false);
   const [confirmForget, setConfirmForget] = useState<{ kind: "entity" | "relation" | "observation"; id: string } | null>(
     initial?.confirmForget && initial.detail ? { kind: "entity", id: initial.detail.entity.id } : null
   );
@@ -188,7 +191,7 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
   async function forget() {
     if (!confirmForget) return;
     const target = confirmForget;
-    if (await run("ghost_os.forget", target)) {
+    if (await run("ghost_os.forget", confirmed(target))) {
       setConfirmForget(null);
       if (target.kind === "entity") setDetail(null);
       else if (detail) await openEntity(detail.entity.id);
@@ -359,11 +362,26 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
                       </p>
                       <div className="button-row">
                         <button type="button" disabled={busy} onClick={() => void run("ghost_os.adapter.sync")}>Sync now</button>
-                        <button type="button" disabled={busy} onClick={() => void run("ghost_os.adapter.disable", { adapterId: "developer_intelligence" })} aria-describedby="ghost-di-off-note">
+                        <button type="button" disabled={busy || confirmDisable} onClick={() => setConfirmDisable(true)} aria-describedby="ghost-di-off-note">
                           Turn off and remove what it added
                         </button>
                       </div>
                       <p id="ghost-di-off-note" className="ghost-hint">Turning it off deletes everything it contributed, including detected habits. Things you forgot stay forgotten.</p>
+                      {confirmDisable && (
+                        <div className="ghost-confirm" role="alertdialog" aria-labelledby="ghost-disable-text">
+                          <p id="ghost-disable-text">Turn off Developer Intelligence and delete everything it added to GhostOS? This cannot be undone.</p>
+                          <div className="button-row">
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => void run("ghost_os.adapter.disable", confirmed({ adapterId: "developer_intelligence" })).then((ok) => ok && setConfirmDisable(false))}
+                            >
+                              Turn off
+                            </button>
+                            <button type="button" onClick={() => setConfirmDisable(false)}>Cancel</button>
+                          </div>
+                        </div>
+                      )}
                     </>
                   ) : (
                     <button type="button" disabled={busy} onClick={() => void run("ghost_os.adapter.enable", { adapterId: "developer_intelligence" })}>Turn on</button>
