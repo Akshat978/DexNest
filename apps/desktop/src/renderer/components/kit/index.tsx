@@ -193,6 +193,63 @@ export function Segmented<T extends string>({
   );
 }
 
+/** Tabs with roving focus: arrows move and select, Home/End jump; the panel is labelled by its tab. */
+export function Tabs<T extends string>({
+  label,
+  tabs,
+  value,
+  onChange,
+  idPrefix
+}: {
+  label: string;
+  tabs: ReadonlyArray<{ id: T; label: string; badge?: React.ReactNode }>;
+  value: T;
+  onChange: (id: T) => void;
+  idPrefix: string;
+}) {
+  const refs = useRef<Array<HTMLButtonElement | null>>([]);
+  const onKeyDown = (event: React.KeyboardEvent, index: number) => {
+    const last = tabs.length - 1;
+    const next = event.key === "ArrowRight" ? (index === last ? 0 : index + 1) : event.key === "ArrowLeft" ? (index === 0 ? last : index - 1) : event.key === "Home" ? 0 : event.key === "End" ? last : null;
+    if (next === null) return;
+    event.preventDefault();
+    onChange(tabs[next].id);
+    refs.current[next]?.focus();
+  };
+  return (
+    <div className="kit-tabs" role="tablist" aria-label={label}>
+      {tabs.map((tab, index) => (
+        <button
+          key={tab.id}
+          ref={(node) => {
+            refs.current[index] = node;
+          }}
+          type="button"
+          role="tab"
+          id={`${idPrefix}-tab-${tab.id}`}
+          aria-selected={tab.id === value}
+          aria-controls={`${idPrefix}-panel-${tab.id}`}
+          tabIndex={tab.id === value ? 0 : -1}
+          className={cx("kit-tab", tab.id === value && "kit-tab--on")}
+          onClick={() => onChange(tab.id)}
+          onKeyDown={(event) => onKeyDown(event, index)}
+        >
+          {tab.label}
+          {tab.badge}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export function TabPanel({ idPrefix, id, children }: { idPrefix: string; id: string; children: React.ReactNode }) {
+  return (
+    <div role="tabpanel" id={`${idPrefix}-panel-${id}`} aria-labelledby={`${idPrefix}-tab-${id}`} className="kit-tabpanel" tabIndex={0}>
+      {children}
+    </div>
+  );
+}
+
 const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 /** A modal: focus moves in and is trapped, Escape closes, focus returns to the opener. */

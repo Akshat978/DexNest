@@ -50,6 +50,8 @@ export interface ProjectsBridge {
   projectsInspect(path: string, options?: { projectId?: string }): Promise<InspectResult>;
   projectsAdd(input: ProjectInput, source?: "wizard" | "suggestion" | "clone"): Promise<SaveResult>;
   projectsUpdate(projectId: string, input: ProjectInput): Promise<SaveResult>;
+  /** Opened in DexNest: "push current project" pushes the most recently opened one. */
+  projectsTouch(projectId: string): Promise<void>;
   projectsArchive(projectId: string): Promise<Project>;
   projectsRestore(projectId: string): Promise<Project>;
   projectsRemove(projectId: string): Promise<void>;
@@ -88,6 +90,7 @@ export const fallbackProjectsBridge: ProjectsBridge = {
   projectsInspect: async () => ({ kind: "refused", code: "missing", reason: unavailable }),
   projectsAdd: async () => ({ ok: false, reason: unavailable }),
   projectsUpdate: async () => ({ ok: false, reason: unavailable }),
+  projectsTouch: async () => undefined,
   projectsArchive: async () => {
     throw new Error(unavailable);
   },

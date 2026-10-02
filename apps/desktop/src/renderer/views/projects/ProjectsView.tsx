@@ -14,6 +14,8 @@ import type { ExecuteResult } from "@dexnest/projects/domain";
 import { Button, EmptyState, ErrorState, LoadingState, PageHeader, SectionTitle, Segmented, Toasts, useToasts } from "../../components/kit";
 import { AddProjectWizard } from "./AddProjectWizard";
 import { OperationDialog } from "./OperationDialog";
+import { ProjectDetail, type RunActionResult } from "./ProjectDetail";
+import type { RunResultView } from "./DetailTabs";
 import { ProjectCard } from "./ProjectCard";
 import { getProjectsBridge, type ProjectsBridge } from "./projectsBridge";
 import {
@@ -216,7 +218,7 @@ export function ProjectsHome(props: ProjectsHomeProps) {
         {sections.map((section) => (
           <section key={section.section} aria-labelledby={`projects-section-${section.section}`}>
             <SectionTitle id={`projects-section-${section.section}`} count={section.entries.length}>
-              {SECTION_TITLES[section.section]}
+              {filters.status === "archived" ? "Archived" : SECTION_TITLES[section.section]}
             </SectionTitle>
             <ul className={layout === "grid" ? "projects-grid" : "projects-list"}>
               {section.entries.map((entry) => {
@@ -249,9 +251,13 @@ export function ProjectsHome(props: ProjectsHomeProps) {
 }
 
 export interface ProjectsViewProps {
-  /** Until the detail view exists (Phase 8): the classic Dev view for one project. */
-  renderClassic?(projectId: string, back: () => void): React.ReactNode;
   bridge?: ProjectsBridge;
+  /** The Run tab: the shell's registered-action runner and the Dev dashboard's command results. */
+  runAction?(actionId: string, source?: string, params?: unknown): Promise<RunActionResult>;
+  commandResults?: Readonly<Record<string, RunResultView>>;
+  clearCommandResult?(actionId: string): Promise<void>;
+  /** Projects changed (saved, archived...): the shell refreshes its own list (Deck, actions, search). */
+  onProjectsChanged?(): void;
 }
 
 const FILTERS_KEY = "dexnest.projects.filters";
@@ -269,7 +275,7 @@ function hasDraggedFiles(event: DragEvent): boolean {
   return Boolean(event.dataTransfer && [...event.dataTransfer.types].includes("Files"));
 }
 
-export function ProjectsView({ renderClassic, bridge: given }: ProjectsViewProps) {
+export function ProjectsView({ bridge: given, runAction, commandResults, clearCommandResult, onProjectsChanged }: ProjectsViewProps) {
   const bridge = useMemo(() => given ?? getProjectsBridge(), [given]);
   const [summaries, setSummaries] = useState<ProjectSummary[] | null>(null);
   const [states, setStates] = useState<Record<string, RepoState | { error: string }>>({});
@@ -284,7 +290,8 @@ export function ProjectsView({ renderClassic, bridge: given }: ProjectsViewProps
   const [wizard, setWizard] = useState<{ open: boolean; path: string | null }>({ open: false, path: null });
   const [dragging, setDragging] = useState(false);
   const [operation, setOperation] = useState<{ projectId: string; name: string; request: Record<string, unknown>; key: number } | null>(null);
-  const [classic, setClassic] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [version, setVersion] = useState(0);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const { toasts, push, dismiss } = useToasts();
 
@@ -304,13 +311,13 @@ export function ProjectsView({ renderClassic, bridge: given }: ProjectsViewProps
   const load = useCallback(async () => {
     try {
       setError(null);
-      const [list, s, g] = await Promise.all([bridge.projectsList(), bridge.projectsSettings(), bridge.projectsGroups()]);
+      const [list, s, g] = await Promise.all([bridge.projectsList({ includeArchived: true }), bridge.projectsSettings(), bridge.projectsGroups()]);
       setSummaries(list);
       setSettings(s);
       setGroups(g);
       setNow(new Date().toISOString());
       void bridge.projectsLegacyChanged().then(setLegacyChanged, () => setLegacyChanged(false));
-      if (list.length === 0) void bridge.projectsSuggestions().then((x) => setSuggestionsCount(x.length), () => setSuggestionsCount(0));
+      if (list.every((x) => x.project.archivedAt !== null)) void bridge.projectsSuggestions().then((x) => setSuggestionsCount(x.length), () => setSuggestionsCount(0));
       void readStates();
     } catch (e) {
       setError((e as Error).message);
@@ -404,6 +411,7 @@ export function ProjectsView({ renderClassic, bridge: given }: ProjectsViewProps
       return next;
     });
     if (result.status === "done") push(result.outcome === "succeeded" ? "success" : "error", result.message);
+    setVersion((v) => v + 1);
     void readStates([projectId]);
   };
 
@@ -419,19 +427,68 @@ export function ProjectsView({ renderClassic, bridge: given }: ProjectsViewProps
     setOperation({ projectId: p.id, name: p.name, request: { kind: action }, key: Date.now() });
   };
 
-  if (classic && renderClassic) {
-    return (
-      <div className="projects-classic">
-        <Button variant="ghost" size="sm" onClick={() => setClassic(null)}>
-          ← Projects
-        </Button>
-        {renderClassic(classic, () => setClassic(null))}
-      </div>
-    );
-  }
+  const changed = () => {
+    void load();
+    onProjectsChanged?.();
+  };
+  const selectedProject = selected ? summaries?.find((x) => x.project.id === selected)?.project ?? null : null;
 
   if (error) return <ErrorState title="Projects couldn't load" message={error} onRetry={() => void load()} />;
   if (summaries === null || settings === null) return <LoadingState label="Loading projects" rows={6} />;
+
+  const dialogs = (
+    <>
+      {operation && (
+        <OperationDialog
+          key={operation.key}
+          bridge={bridge}
+          projectId={operation.projectId}
+          projectName={operation.name}
+          request={operation.request}
+          onClose={() => {
+            setBusy((b) => {
+              const next = new Set(b);
+              next.delete(operation.projectId);
+              return next;
+            });
+            setOperation(null);
+          }}
+          onFinished={finished(operation.projectId)}
+          onRequest={(request) => setOperation({ ...operation, request, key: Date.now() })}
+          onOpenTerminal={() => void bridge.projectsOpen(operation.projectId, "terminal").then((o) => push(o.ok ? "success" : "error", o.message))}
+        />
+      )}
+      <Toasts toasts={toasts} onDismiss={dismiss} />
+    </>
+  );
+
+  if (selectedProject) {
+    return (
+      <>
+        <ProjectDetail
+          bridge={bridge}
+          project={selectedProject}
+          groups={groups}
+          now={now}
+          staleDays={settings.staleDays}
+          version={version}
+          dialogOpen={operation !== null}
+          commandResults={commandResults ?? {}}
+          runAction={async (actionId, params) => (runAction ? runAction(actionId, "module_ui", params) : { ok: false, error: "Commands run in the desktop app only." })}
+          clearCommandResult={async (actionId) => clearCommandResult?.(actionId)}
+          onBack={() => setSelected(null)}
+          onAsk={(request) => {
+            setBusy((b) => new Set(b).add(selectedProject.id));
+            setOperation({ projectId: selectedProject.id, name: selectedProject.name, request, key: Date.now() });
+          }}
+          onToast={push}
+          onChanged={changed}
+          onGroups={setGroups}
+        />
+        {dialogs}
+      </>
+    );
+  }
 
   return (
     <>
@@ -466,13 +523,14 @@ export function ProjectsView({ renderClassic, bridge: given }: ProjectsViewProps
           void load();
         }}
         onOpen={(entry) => {
-          if (renderClassic) setClassic(entry.project.id);
+          void bridge.projectsTouch(entry.project.id).catch(() => undefined);
+          setSelected(entry.project.id);
         }}
         onQuick={(entry, action) => void quick(entry, action)}
         onToggleFavourite={async (entry) => {
           const result = await bridge.projectsUpdate(entry.project.id, { favourite: !entry.project.favourite });
           if (!result.ok) push("error", result.reason);
-          void load();
+          changed();
         }}
       />
       {wizard.open && (
@@ -485,32 +543,12 @@ export function ProjectsView({ renderClassic, bridge: given }: ProjectsViewProps
           onAdded={(message) => {
             setWizard({ open: false, path: null });
             push("success", message);
-            void load();
+            changed();
           }}
           onOpenExisting={(projectId) => {
             setWizard({ open: false, path: null });
-            if (renderClassic) setClassic(projectId);
+            setSelected(projectId);
           }}
-        />
-      )}
-      {operation && (
-        <OperationDialog
-          key={operation.key}
-          bridge={bridge}
-          projectId={operation.projectId}
-          projectName={operation.name}
-          request={operation.request}
-          onClose={() => {
-            setBusy((b) => {
-              const next = new Set(b);
-              next.delete(operation.projectId);
-              return next;
-            });
-            setOperation(null);
-          }}
-          onFinished={finished(operation.projectId)}
-          onRequest={(request) => setOperation({ ...operation, request, key: Date.now() })}
-          onOpenTerminal={() => void bridge.projectsOpen(operation.projectId, "terminal").then((o) => push(o.ok ? "success" : "error", o.message))}
         />
       )}
       {dragging && !wizard.open && (
@@ -518,7 +556,7 @@ export function ProjectsView({ renderClassic, bridge: given }: ProjectsViewProps
           Drop a folder to add it as a project
         </div>
       )}
-      <Toasts toasts={toasts} onDismiss={dismiss} />
+      {dialogs}
     </>
   );
 }

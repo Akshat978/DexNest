@@ -173,6 +173,7 @@ contextBridge.exposeInMainWorld("dexNest", {
   projectsInspect: (path: string, options?: { projectId?: string }) => ipcRenderer.invoke("dexnest:projects-inspect", path, options),
   projectsAdd: (input: unknown, source?: "wizard" | "suggestion" | "clone") => ipcRenderer.invoke("dexnest:projects-add", input, source),
   projectsUpdate: (projectId: string, input: unknown) => ipcRenderer.invoke("dexnest:projects-update", projectId, input),
+  projectsTouch: (projectId: string) => ipcRenderer.invoke("dexnest:projects-touch", projectId),
   projectsArchive: (projectId: string) => ipcRenderer.invoke("dexnest:projects-archive", projectId),
   projectsRestore: (projectId: string) => ipcRenderer.invoke("dexnest:projects-restore", projectId),
   projectsRemove: (projectId: string) => ipcRenderer.invoke("dexnest:projects-remove", projectId),

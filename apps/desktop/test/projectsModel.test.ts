@@ -135,3 +135,108 @@ test("the project form round-trips the wizard's draft, and says what stops Save"
     "localhost:3000 isn't an http(s) URL."
   ]);
 });
+
+// --- Phase 8: the project detail -------------------------------------------------
+
+import {
+  availability,
+  branchRows,
+  changeRows,
+  detailShortcut,
+  lifecycleActions,
+  operationLines,
+  runCommands
+} from "../src/renderer/views/projects/projectsModel.ts";
+import { remoteBranch } from "../../../packages/projects/test/fixtures.ts";
+
+test("detail shortcuts: F/P/U open the dialog, 1-7 switch tabs, Esc goes back - never while typing or with modifiers", () => {
+  assert.deepEqual(detailShortcut("f", "DIV", false), { kind: "op", request: { kind: "fetch" } });
+  assert.deepEqual(detailShortcut("P", "BODY", false), { kind: "op", request: { kind: "pull" } });
+  assert.deepEqual(detailShortcut("u", "BUTTON", false), { kind: "op", request: { kind: "push" } });
+  assert.deepEqual(detailShortcut("3", "DIV", false), { kind: "tab", tab: "changes" });
+  assert.deepEqual(detailShortcut("7", "DIV", false), { kind: "tab", tab: "settings" });
+  assert.deepEqual(detailShortcut("Escape", "DIV", false), { kind: "back" });
+  assert.equal(detailShortcut("8", "DIV", false), null);
+  assert.equal(detailShortcut("f", "INPUT", false), null);
+  assert.equal(detailShortcut("f", "TEXTAREA", false), null);
+  assert.equal(detailShortcut("f", "DIV", true), null);
+  assert.equal(detailShortcut("f", "DIV", false, true), null, "Ctrl+F stays the browser's");
+});
+
+test("availability: refusals the dialog can resolve (stash and switch, push and set upstream) still open it", () => {
+  const dirty = repo({ branches: [branch("main", { isCurrent: true }), branch("other")], workingTree: tree({ unstaged: [{ path: "a", status: "modified" }] }) });
+  assert.equal(availability(dirty, { kind: "switch", branch: "other" }), null);
+  const noUp = repo({ branches: [branch("main", { isCurrent: true, upstream: null })] });
+  assert.equal(availability(noUp, { kind: "push" }), null);
+  assert.match(availability(withCounts(1, 1), { kind: "push" })!, /never force-pushes/);
+  assert.equal(availability(null, { kind: "push" }), "Reading git state…");
+  assert.equal(availability({ isRepo: false, reason: "Not a git repository.", readAt: NOW }, { kind: "fetch" }), "Not a git repository.");
+});
+
+test("branch rows: current first, then by recency; remote-only branches after; gone, stale and Autopilot marked", () => {
+  const state = repo({
+    branches: [
+      branch("main", { isCurrent: true }),
+      branch("old", { lastCommitAt: "2026-01-01T00:00:00.000Z", upstream: { ref: "origin/old", remote: "origin", branch: "old", gone: true, counts: null } }),
+      branch("fresh", { lastCommitAt: "2026-09-30T23:00:00.000Z", upstream: null, vsDefault: { ahead: 2, behind: 1 }, mergedIntoDefault: false }),
+      branch("autopilot/run-1", { checkedOutElsewhere: { path: "/w/dexnest-worktrees/run-1", owner: "autopilot" } })
+    ],
+    remoteBranches: [remoteBranch("main", { trackedBy: "main" }), remoteBranch("theirs", { lastCommitAt: "2026-09-29T00:00:00.000Z" })]
+  });
+  const rows = branchRows(state, NOW, 30);
+  assert.deepEqual(rows.map((r) => r.key), ["l:main", "l:fresh", "l:autopilot/run-1", "l:old", "r:origin/theirs"]);
+  const by = Object.fromEntries(rows.map((r) => [r.key, r]));
+  assert.equal(by["l:main"].vsDefault, "default");
+  assert.equal(by["l:fresh"].vsUpstream, "local only");
+  assert.equal(by["l:fresh"].vsDefault, "2 ahead · 1 behind");
+  assert.equal(by["l:old"].vsUpstream, "upstream gone");
+  assert.equal(by["l:old"].stale, true);
+  assert.equal(by["l:autopilot/run-1"].elsewhere, "autopilot");
+  assert.equal(by["r:origin/theirs"].vsUpstream, "remote only");
+});
+
+test("change rows: conflicts first, then staged, changed and new; line counts from the diff stat", () => {
+  const state = repo({ workingTree: tree({ conflicted: ["c.ts"], staged: [{ path: "s.ts", status: "added" }], unstaged: [{ path: "u.ts", status: "modified" }], untracked: ["n.ts"] }) });
+  const rows = changeRows(state, { staged: [{ path: "s.ts", added: 10, deleted: 0 }], unstaged: [{ path: "u.ts", added: 2, deleted: 3 }] });
+  assert.deepEqual(rows.map((r) => [r.group, r.path, r.status, r.added, r.deleted]), [
+    ["conflicted", "c.ts", "U", null, null],
+    ["staged", "s.ts", "A", 10, 0],
+    ["unstaged", "u.ts", "M", 2, 3],
+    ["untracked", "n.ts", "?", null, null]
+  ]);
+});
+
+test("Run tab parity with the Dev dashboard: the same action ids, confirmation and lifecycle conditions", () => {
+  const p = project("shop", {
+    commands: { start: "pnpm dev", build: "pnpm build", test: "", typecheck: "tsc", custom: "rm -rf dist" },
+    commandList: [{ id: "deploy", label: "Deploy", command: "pnpm deploy", requiresConfirmation: true }, { id: "lint", label: "Lint", command: "pnpm lint", requiresConfirmation: false }]
+  });
+  assert.deepEqual(runCommands(p).map((c) => [c.actionId, c.label, c.confirm]), [
+    ["dev.project.shop.run_start", "dev", false],
+    ["dev.project.shop.run_build", "build", false],
+    ["dev.project.shop.run_typecheck", "typecheck", false],
+    ["dev.project.shop.run_custom", "custom", true],
+    ["dev.project.shop.run_cmd_deploy", "Deploy", true],
+    ["dev.project.shop.run_cmd_lint", "Lint", false]
+  ]);
+  assert.deepEqual(lifecycleActions(project("bare")), []);
+  assert.deepEqual(lifecycleActions(project("x", { commands: { start: "go", build: "", test: "", typecheck: "", custom: "" } })).map((a) => a.op), ["stop", "restart", "check_health"]);
+  const full = lifecycleActions(project("y", { ports: [3000], dockerCompose: true, logPath: "a.log", localUrls: ["http://localhost:3000"] }));
+  assert.deepEqual(full.map((a) => [a.op, a.dangerous]), [
+    ["stop", true], ["restart", true], ["check_health", false], ["kill_ports", true], ["show_processes", false], ["docker_down", true], ["open_logs", false], ["open_urls", false]
+  ]);
+});
+
+test("recent operations: only the latest finished one can be undone, and only once", () => {
+  const rec = (id: string, state: string, undo: unknown, undoneBy: string | null = null) => ({ id, verb: "commit", outcome: state, state, startedAt: NOW, undo, undoneBy });
+  assert.deepEqual(operationLines([rec("b", "succeeded", { kind: "uncommit" }), rec("a", "succeeded", { kind: "x" })]).map((l) => l.undoable), [true, false]);
+  assert.deepEqual(operationLines([rec("c", "refused", null), rec("b", "succeeded", { kind: "uncommit" })]).map((l) => l.undoable), [false, true], "a refusal isn't an operation that ran");
+  assert.deepEqual(operationLines([rec("b", "failed", null), rec("a", "succeeded", { kind: "x" })]).map((l) => l.undoable), [false, false]);
+  assert.deepEqual(operationLines([rec("a", "succeeded", { kind: "x" }, "u1")]).map((l) => [l.undoable, l.undone]), [[false, true]]);
+});
+
+test("archived projects appear only under Archived", () => {
+  const entries: ViewEntry[] = [{ project: project("live"), state: repo() }, { project: project("old", { archivedAt: NOW }), state: null }];
+  assert.deepEqual(filterEntries(entries, DEFAULT_FILTERS, NOW, 30).map((e) => e.project.name), ["live"]);
+  assert.deepEqual(homeSections(entries, { ...DEFAULT_FILTERS, status: "archived" }, NOW, 30).map((s) => s.entries.map((e) => e.project.name)), [["old"]]);
+});

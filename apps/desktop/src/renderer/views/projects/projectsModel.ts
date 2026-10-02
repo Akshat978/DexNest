@@ -24,7 +24,7 @@ import {
   type RepoState
 } from "@dexnest/projects/domain";
 
-export type StatusFilter = "all" | "attention" | "to_push" | "to_pull" | "uncommitted" | "all_pushed" | "not_git" | "favourites";
+export type StatusFilter = "all" | "attention" | "to_push" | "to_pull" | "uncommitted" | "all_pushed" | "not_git" | "favourites" | "archived";
 
 export const STATUS_FILTERS: ReadonlyArray<{ value: StatusFilter; label: string }> = [
   { value: "all", label: "Any status" },
@@ -34,7 +34,8 @@ export const STATUS_FILTERS: ReadonlyArray<{ value: StatusFilter; label: string 
   { value: "uncommitted", label: "Uncommitted" },
   { value: "all_pushed", label: "All pushed" },
   { value: "not_git", label: "Not a git repo" },
-  { value: "favourites", label: "Favourites" }
+  { value: "favourites", label: "Favourites" },
+  { value: "archived", label: "Archived" }
 ];
 
 export interface HomeFilters {
@@ -62,6 +63,9 @@ function matchesQuery(entry: ViewEntry, query: string): boolean {
 }
 
 function matchesStatus(entry: ViewEntry, status: StatusFilter, now: string, staleDays: number): boolean {
+  // Archived projects appear only under "Archived", and nowhere else.
+  if (status === "archived") return entry.project.archivedAt !== null;
+  if (entry.project.archivedAt !== null) return false;
   if (status === "all") return true;
   if (status === "favourites") return entry.project.favourite || entry.project.pinned;
   if (status === "attention") return attentionReasons(entry, now, staleDays).length > 0;
@@ -81,7 +85,12 @@ export function filterEntries(entries: readonly ViewEntry[], filters: HomeFilter
 }
 
 export function homeSections(entries: readonly ViewEntry[], filters: HomeFilters, now: string, staleDays: number): HomeGroup[] {
-  return groupForHome(filterEntries(entries, filters, now, staleDays), { now, staleDays, sort: filters.sort });
+  const filtered = filterEntries(entries, filters, now, staleDays);
+  if (filters.status === "archived") {
+    const sorted = [...filtered].sort((a, b) => a.project.name.localeCompare(b.project.name));
+    return sorted.length > 0 ? [{ section: "all", entries: sorted }] : [];
+  }
+  return groupForHome(filtered, { now, staleDays, sort: filters.sort });
 }
 
 export const SECTION_TITLES: Record<HomeGroup["section"], string> = {
@@ -324,4 +333,212 @@ export function formProblems(form: ProjectForm): string[] {
 
 export function currentBranchName(state: RepoState | null): string | null {
   return state?.isRepo ? currentBranch(state)?.name ?? state.head.branch : null;
+}
+
+// --- project detail (Phase 8) -----------------------------------------------------
+
+export const DETAIL_TABS = [
+  { id: "overview", label: "Overview" },
+  { id: "branches", label: "Branches" },
+  { id: "changes", label: "Changes" },
+  { id: "history", label: "History" },
+  { id: "run", label: "Run" },
+  { id: "links", label: "Links" },
+  { id: "settings", label: "Settings" }
+] as const;
+export type DetailTab = (typeof DETAIL_TABS)[number]["id"];
+
+export type DetailShortcut = { kind: "op"; request: { kind: "fetch" | "pull" | "push" } } | { kind: "tab"; tab: DetailTab } | { kind: "back" } | null;
+
+/** F fetch, P pull, U push (each opens the operation dialog), 1-7 tabs, Esc back - never while typing. */
+export function detailShortcut(key: string, targetTag: string | undefined, editable: boolean, modifiers = false): DetailShortcut {
+  if (modifiers || editable || ["INPUT", "TEXTAREA", "SELECT"].includes((targetTag ?? "").toUpperCase())) return null;
+  const k = key.toLowerCase();
+  if (k === "f") return { kind: "op", request: { kind: "fetch" } };
+  if (k === "p") return { kind: "op", request: { kind: "pull" } };
+  if (k === "u") return { kind: "op", request: { kind: "push" } };
+  if (k === "escape") return { kind: "back" };
+  const n = Number(key);
+  if (Number.isInteger(n) && n >= 1 && n <= DETAIL_TABS.length) return { kind: "tab", tab: DETAIL_TABS[n - 1].id };
+  return null;
+}
+
+/**
+ * Whether a button for this request should be enabled, and if not, why. A
+ * refusal that comes with an offer the dialog can act on (stash and switch,
+ * push and set upstream) still opens the dialog.
+ */
+export function availability(state: RepoState | null, request: OperationRequestLike): string | null {
+  if (!state) return "Reading git state…";
+  if (!state.isRepo) return state.reason;
+  const result = planOperation(state, request as Parameters<typeof planOperation>[1]);
+  if (!result.refused) return null;
+  return result.offers.some((o) => o === "stash_and_switch" || o === "push_set_upstream") ? null : result.reason;
+}
+
+export type OperationRequestLike = { kind: string } & Record<string, unknown>;
+
+export interface BranchRowView {
+  key: string;
+  kind: "local" | "remote";
+  name: string;
+  current: boolean;
+  upstream: string | null;
+  vsUpstream: string;
+  vsDefault: string;
+  merged: boolean | null;
+  lastCommitAt: string | null;
+  subject: string | null;
+  stale: boolean;
+  elsewhere: "autopilot" | "other" | null;
+  remote: string | null;
+}
+
+function counts(c: { ahead: number; behind: number } | null): string {
+  if (!c) return "-";
+  if (c.ahead === 0 && c.behind === 0) return "in sync";
+  return [c.ahead > 0 ? `${c.ahead} ahead` : "", c.behind > 0 ? `${c.behind} behind` : ""].filter(Boolean).join(" · ");
+}
+
+/** Local branches (current first, then by recency), then remote branches no local branch tracks. */
+export function branchRows(state: RepoState | null, now: string, staleDays: number): BranchRowView[] {
+  if (!state?.isRepo) return [];
+  const stale = (at: string | null) => Boolean(at) && Date.parse(now) - Date.parse(at as string) > staleDays * 86_400_000;
+  const locals: BranchRowView[] = state.branches.map((b) => ({
+    key: `l:${b.name}`,
+    kind: "local",
+    name: b.name,
+    current: b.isCurrent,
+    upstream: b.upstream ? (b.upstream.gone ? `${b.upstream.ref} (gone)` : b.upstream.ref) : null,
+    vsUpstream: !b.upstream ? "local only" : b.upstream.gone ? "upstream gone" : counts(b.upstream.counts),
+    vsDefault: b.name === state.defaultBranch ? "default" : counts(b.vsDefault),
+    merged: b.mergedIntoDefault,
+    lastCommitAt: b.lastCommitAt,
+    subject: b.lastSubject,
+    stale: stale(b.lastCommitAt),
+    elsewhere: b.checkedOutElsewhere ? (b.checkedOutElsewhere.owner === "autopilot" ? "autopilot" : "other") : null,
+    remote: b.upstream?.remote ?? null
+  }));
+  locals.sort((a, b) => Number(b.current) - Number(a.current) || (b.lastCommitAt ?? "").localeCompare(a.lastCommitAt ?? ""));
+  const remotes: BranchRowView[] = state.remoteBranches
+    .filter((r) => r.trackedBy === null)
+    .map((r) => ({
+      key: `r:${r.ref}`,
+      kind: "remote",
+      name: r.name,
+      current: false,
+      upstream: r.ref,
+      vsUpstream: "remote only",
+      vsDefault: r.name === state.defaultBranch ? "default" : counts(r.vsDefault),
+      merged: r.mergedIntoDefault,
+      lastCommitAt: r.lastCommitAt,
+      subject: r.lastSubject,
+      stale: stale(r.lastCommitAt),
+      elsewhere: null,
+      remote: r.remote
+    }));
+  remotes.sort((a, b) => (b.lastCommitAt ?? "").localeCompare(a.lastCommitAt ?? ""));
+  return [...locals, ...remotes];
+}
+
+export interface ChangeRowView {
+  path: string;
+  from?: string;
+  group: "conflicted" | "staged" | "unstaged" | "untracked";
+  status: string;
+  added: number | null;
+  deleted: number | null;
+}
+
+const STATUS_LETTER: Record<string, string> = { added: "A", modified: "M", deleted: "D", renamed: "R", copied: "C", type_changed: "T" };
+
+export function changeRows(state: RepoState | null, stat: { staged: Array<{ path: string; added: number | null; deleted: number | null }>; unstaged: Array<{ path: string; added: number | null; deleted: number | null }> } | null): ChangeRowView[] {
+  if (!state?.isRepo) return [];
+  const t = state.workingTree;
+  const find = (list: Array<{ path: string; added: number | null; deleted: number | null }> | undefined, path: string) => list?.find((r) => r.path === path);
+  return [
+    ...t.conflicted.map((path) => ({ path, group: "conflicted" as const, status: "U", added: null, deleted: null })),
+    ...t.staged.map((f) => ({ path: f.path, from: f.from, group: "staged" as const, status: STATUS_LETTER[f.status] ?? "M", added: find(stat?.staged, f.path)?.added ?? null, deleted: find(stat?.staged, f.path)?.deleted ?? null })),
+    ...t.unstaged.map((f) => ({ path: f.path, group: "unstaged" as const, status: STATUS_LETTER[f.status] ?? "M", added: find(stat?.unstaged, f.path)?.added ?? null, deleted: find(stat?.unstaged, f.path)?.deleted ?? null })),
+    ...t.untracked.map((path) => ({ path, group: "untracked" as const, status: "?", added: null, deleted: null }))
+  ];
+}
+
+/** The Dev dashboard's rule, kept identical (main.ts isDangerousCommand): such a command always asks first. */
+export function isDangerousCommand(command: string): boolean {
+  return /\b(rm\s+-rf|del\s+\/|rmdir\s+\/s|format\b|diskpart\b|Remove-Item\b.*-Recurse|git\s+reset\s+--hard|git\s+clean\s+-fd)\b/i.test(command);
+}
+
+export function stripAnsi(value: string): string {
+  return value.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+}
+
+export interface RunCommand {
+  actionId: string;
+  label: string;
+  command: string;
+  /** Asks before running: marked by the owner, or the command looks destructive. */
+  confirm: boolean;
+}
+
+/** The Run tab's command buttons - the same action ids the Dev dashboard and Stream Deck cards use. */
+export function runCommands(project: Project): RunCommand[] {
+  const out: RunCommand[] = [];
+  const slots: Array<[CommandSlot, string]> = [["start", "dev"], ["build", "build"], ["typecheck", "typecheck"], ["test", "test"], ["custom", "custom"]];
+  for (const [slot, label] of slots) {
+    const command = project.commands[slot].trim();
+    if (command) out.push({ actionId: `dev.project.${project.id}.run_${slot}`, label, command, confirm: isDangerousCommand(command) });
+  }
+  for (const entry of project.commandList) {
+    out.push({ actionId: `dev.project.${project.id}.run_cmd_${entry.id}`, label: entry.label, command: entry.command, confirm: entry.requiresConfirmation || isDangerousCommand(entry.command) });
+  }
+  return out;
+}
+
+export interface LifecycleAction {
+  op: "stop" | "restart" | "check_health" | "kill_ports" | "show_processes" | "docker_down" | "open_logs" | "open_urls";
+  label: string;
+  /** Stops or kills something: asks first. */
+  dangerous: boolean;
+}
+
+/** The Dev dashboard's lifecycle card, with the same conditions for each button. */
+export function lifecycleActions(project: Project): LifecycleAction[] {
+  const hasPorts = project.ports.length > 0;
+  const any = hasPorts || project.commands.start.trim() !== "" || project.stopCommand.trim() !== "" || project.dockerCompose || project.logPath.trim() !== "" || project.logCommand.trim() !== "";
+  if (!any) return [];
+  const out: LifecycleAction[] = [
+    { op: "stop", label: "Stop", dangerous: true },
+    { op: "restart", label: "Restart", dangerous: true },
+    { op: "check_health", label: "Health", dangerous: false }
+  ];
+  if (hasPorts) out.push({ op: "kill_ports", label: "Kill ports", dangerous: true }, { op: "show_processes", label: "Processes", dangerous: false });
+  if (project.dockerCompose) out.push({ op: "docker_down", label: "Docker down", dangerous: true });
+  if (project.logPath.trim() || project.logCommand.trim()) out.push({ op: "open_logs", label: "Logs", dangerous: false });
+  if (project.localUrls.length > 0) out.push({ op: "open_urls", label: "Open URLs", dangerous: false });
+  return out;
+}
+
+export interface OperationLine {
+  id: string;
+  verb: string;
+  outcome: string | null;
+  state: string;
+  startedAt: string;
+  undoable: boolean;
+  undone: boolean;
+}
+
+/** The journal, newest first; only the latest finished operation can be undone, and only once. */
+export function operationLines(records: ReadonlyArray<{ id: string; verb: string; outcome: string | null; state: string; startedAt: string; undo: unknown; undoneBy: string | null }>): OperationLine[] {
+  const latestFinished = records.find((r) => r.state === "succeeded" || r.state === "failed" || r.state === "interrupted");
+  return records.map((r) => ({
+    id: r.id,
+    verb: r.verb,
+    outcome: r.outcome,
+    state: r.state,
+    startedAt: r.startedAt,
+    undone: r.undoneBy !== null,
+    undoable: r === latestFinished && r.state === "succeeded" && r.undo !== null && r.undoneBy === null
+  }));
 }

@@ -6229,18 +6229,17 @@ function DexNestApp() {
             />
           )}
           {activeView === "dev" && (
-            // Projects home; one project opens the classic Dev view (commands,
-            // lifecycle, output) until the Projects detail view replaces it.
+            // Projects (docs/modules/projects/PLAN.md). Its Run tab drives the
+            // same dev.project.<id>.* actions and command results as the Dev
+            // dashboard did, through the shell's own runner.
             <ProjectsView
-              renderClassic={(projectId) => (
-                <DevView
-                  projects={projects}
-                  commandResults={commandResults}
-                  onAction={runAction}
-                  onProjectsChanged={refreshProjectsAndActions}
-                  initialProjectId={projectId}
-                />
-              )}
+              runAction={runAction}
+              commandResults={commandResults}
+              clearCommandResult={async (actionId) => {
+                await getBridge().clearCommandResult(actionId);
+                await refreshProjectsAndActions();
+              }}
+              onProjectsChanged={() => void refreshProjectsAndActions()}
             />
           )}
           {activeView === "deck" && (

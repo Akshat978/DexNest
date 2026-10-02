@@ -194,6 +194,7 @@ export function createProjectsHost(options: ProjectsHostOptions): ProjectsHost {
   handle("dexnest:projects-inspect", (path, o) => projects.inspect(String(path ?? ""), { projectId: typeof opt(o).projectId === "string" ? (opt(o).projectId as string) : undefined }));
   handle("dexnest:projects-add", (input, source) => projects.add(opt(input), source === "suggestion" || source === "clone" ? source : "wizard"));
   handle("dexnest:projects-update", (projectId, input) => projects.update(id(projectId), opt(input)));
+  handle("dexnest:projects-touch", (projectId) => projects.touch(id(projectId)));
   handle("dexnest:projects-archive", (projectId) => projects.archive(id(projectId)));
   handle("dexnest:projects-restore", (projectId) => projects.restore(id(projectId)));
   handle("dexnest:projects-remove", (projectId) => projects.remove(id(projectId)));

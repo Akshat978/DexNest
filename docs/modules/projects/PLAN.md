@@ -892,6 +892,39 @@ All ten defaults in section 18 are accepted as written.
 - **Badge**: a repository with no remote at all now says "local only", not
   "not pushed yet" (seen in a screenshot).
 
+### Refinements made in Phase 8
+
+- **The detail view replaces the classic Dev view** when a project is
+  opened: header (VS Code / Terminal / Folder / GitHub; Fetch / Pull / Push
+  with `F` / `P` / `U`, each disabled with the planner's reason), then tabs
+  Overview, Branches, Changes, History, Run, Links, Settings (`1`-`7`, `Esc`
+  back). Shortcuts never fire while typing, with a modifier held, or while a
+  dialog is open; every one opens the operation dialog - nothing runs
+  without its preview.
+- **`DevView` stays in `main.tsx`, unused**, until Phase 10 proves F1-F49
+  parity; then it is deleted.
+- **Run tab parity**: Run, lifecycle (stop, restart, health, kill ports,
+  processes, Docker down, logs, URLs) and command output go through the
+  existing `dev.project.<id>.*` actions and the same command-result store as
+  before, so Deck, Command and the event log see no difference. A command
+  flagged "ask first", or one matching the existing dangerous-command
+  pattern, and every destructive lifecycle action, asks in a dialog first.
+- **Undo** is offered only on the latest finished operation, and only when
+  it succeeded, recorded an undo and was not already undone.
+- **Branches table**: locals first (current, then by recency), then remote
+  branches nothing tracks; a branch in another worktree is badged
+  ("Autopilot worktree") and its actions are disabled by the planners.
+  Actions wrap inside their cell (they clipped at 1280 px - seen in a
+  screenshot).
+- **Archived filter** on Home; archived projects are hidden everywhere else.
+  Settings shows Restore and "Remove from DexNest..." (decision 4, caution)
+  for an archived project.
+- **New IPC `dexnest:projects-touch`** (trusted frame only): opening a
+  project records `lastOpenedAt`, which "push current project" relies on
+  (decision 3). `projectsUpdate(id, {})` did not set it.
+- **Kit**: `Tabs` (roving tabindex, arrows / Home / End, `aria-selected`,
+  `aria-controls`) and `TabPanel`.
+
 ## 19. Phases for this module
 
 Each phase ends with the master gate (typecheck, tests, new tests,
