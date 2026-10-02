@@ -1,7 +1,8 @@
 // Clone, from a local bare repository (no network).
 
 import { strict as assert } from "node:assert";
-import { existsSync, mkdirSync, realpathSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { makeTestLink } from "@dexnest/foundation/testing";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
 
@@ -53,7 +54,7 @@ test("refuses before any git runs: bad URLs, existing folders, the data root (al
   const { w, parent, dataRoot, deps } = setup();
   mkdirSync(join(parent, "taken"));
   const link = join(w.b.root, "looks-fine");
-  symlinkSync(dataRoot, link, "dir");
+  makeTestLink(dataRoot, link);
   const app = w.store.get("app")!;
   w.store.save({ ...app, git: { ...app.git, remoteUrl: "https://github.com/me/existing.git" } });
   const strict = { ...deps, allowLocalUrls: false };
@@ -85,7 +86,7 @@ test("clone resolves the parent folder itself, even if the boundary it was given
   const { w, dataRoot, deps } = setup();
   const writtenOnly = createDataBoundary({ dataRoot });
   const link = join(w.b.root, "plain-looking");
-  symlinkSync(dataRoot, link, "dir");
+  makeTestLink(dataRoot, link);
   const r = await cloneRepository({ url: w.bare, parentDir: link, folderName: "x", source: "module_ui" }, { ...deps, isSensitive: (p) => writtenOnly.isSensitive(p) });
   assert.equal(r.status, "refused");
   assert.equal(existsSync(join(dataRoot, "x")), false);

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, truncateSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, truncateSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assertSafeTestPath, createTestDatabase, type TestDatabase } from '@dexnest/foundation/testing';
+import { assertSafeTestPath, createTestDatabase, type TestDatabase, makeTestLink } from '@dexnest/foundation/testing';
 import {
   createObjectEngine,
   EXPORT_JSON_NAME,
@@ -161,9 +161,12 @@ describe('opening, removing, deleting', () => {
     if (!r.ok) throw new Error('setup');
     const stored = join(w.port.folderOf(id), r.value.storedName);
     unlinkSync(stored);
-    symlinkSync(source(w, 'elsewhere.pdf'), stored);
-    expect(w.engine.decideOpen(r.value.id)).toMatchObject({ ok: false });
-    unlinkSync(stored);
+    // A file link needs admin rights on Windows; where it can't be made, only
+    // the missing-file half of this test applies.
+    if (makeTestLink(source(w, 'elsewhere.pdf'), stored)) {
+      expect(w.engine.decideOpen(r.value.id)).toMatchObject({ ok: false });
+      unlinkSync(stored);
+    }
     expect(w.engine.decideOpen(r.value.id).ok).toBe(false);
     expect(w.engine.decideOpen('not-an-id').ok).toBe(false);
   });

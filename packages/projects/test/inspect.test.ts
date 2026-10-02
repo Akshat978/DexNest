@@ -2,12 +2,12 @@
 // suggestions - synthetic folders in temp directories only.
 
 import { strict as assert } from "node:assert";
-import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
 
 import { createDataBoundary } from "@dexnest/foundation";
-import { createTestDatabase, type TestDatabase } from "@dexnest/foundation/testing";
+import { createTestDatabase, type TestDatabase, makeTestLink } from "@dexnest/foundation/testing";
 
 import { detectFramework, detectPorts, suggestCommands } from "../src/inspect/detect.ts";
 import { addSuggestions, inspectFolder, listSuggestions, saveInspectedProject, type InspectDeps } from "../src/inspect/inspect.ts";
@@ -109,7 +109,7 @@ test("refused: inside the data root by path, through a symlink, a missing path, 
   const inside = await inspectFolder(join(e.dataRoot, "files", "vault"), e.deps);
   assert.equal(inside.kind === "refused" && inside.code, "data_root");
   const link = join(e.b.root, "innocent-looking");
-  symlinkSync(join(e.dataRoot, "files"), link, "dir");
+  makeTestLink(join(e.dataRoot, "files"), link);
   const viaLink = await inspectFolder(link, e.deps);
   assert.equal(viaLink.kind === "refused" && viaLink.code, "data_root");
   const nested = await inspectFolder(join(link, "vault"), e.deps);
@@ -127,7 +127,7 @@ test("the inspector resolves links itself, even if the boundary it was given doe
   const e = env();
   const writtenOnly = createDataBoundary({ dataRoot: e.dataRoot });
   const link = join(e.b.root, "plain-looking");
-  symlinkSync(join(e.dataRoot, "files"), link, "dir");
+  makeTestLink(join(e.dataRoot, "files"), link);
   assert.equal(writtenOnly.isSensitive(link), false, "this boundary can't see through the link");
   const r = await inspectFolder(link, { ...e.deps, isSensitive: (p) => writtenOnly.isSensitive(p) });
   assert.equal(r.kind === "refused" && r.code, "data_root");
@@ -152,7 +152,7 @@ test("duplicates: the same folder (also through a link), or the same repository 
   const again = await inspectFolder(app, e.deps);
   assert.deepEqual(again.kind === "duplicate" && [again.by, again.existing.name], ["path", "Shop"]);
   const link = join(e.b.root, "shortcut");
-  symlinkSync(app, link, "dir");
+  makeTestLink(app, link);
   const viaLink = await inspectFolder(link, e.deps);
   assert.equal(viaLink.kind === "duplicate" && viaLink.by, "path");
   const second = e.b.clone(bare, "second-copy");

@@ -5,7 +5,7 @@
 // `code` on PATH. On Windows `code` is `code.cmd`, which current Node refuses
 // to spawn without a shell, so the `Code.exe` beside it is used instead.
 
-import { dirname, join } from "node:path";
+import { join, posix, win32 } from "node:path";
 
 import type { TerminalChoice } from "../domain/settings.ts";
 
@@ -22,6 +22,11 @@ export interface LaunchCommand {
   cwd?: string;
 }
 
+/** Path rules of the platform being asked about, not the machine running this. */
+function pathsOf(env: LaunchEnv): typeof win32 {
+  return env.platform === "win32" ? win32 : posix;
+}
+
 function pathDirs(env: LaunchEnv): string[] {
   const raw = env.env.PATH ?? env.env.Path ?? "";
   return raw.split(env.platform === "win32" ? ";" : ":").filter(Boolean);
@@ -30,6 +35,7 @@ function pathDirs(env: LaunchEnv): string[] {
 /** The VS Code executable, or null when it can't be found. */
 export function findVsCode(env: LaunchEnv, configured: string | null): string | null {
   if (configured && env.exists(configured)) return configured;
+  const { dirname, join } = pathsOf(env);
   if (env.platform === "win32") {
     const candidates = [
       env.env.LOCALAPPDATA && join(env.env.LOCALAPPDATA, "Programs", "Microsoft VS Code", "Code.exe"),
@@ -64,6 +70,7 @@ export function powershellSetLocation(path: string): string {
 }
 
 export function terminalCommand(env: LaunchEnv, choice: TerminalChoice, folder: string): LaunchCommand | null {
+  const { join } = pathsOf(env);
   if (env.platform === "win32") {
     const wt = env.env.LOCALAPPDATA ? join(env.env.LOCALAPPDATA, "Microsoft", "WindowsApps", "wt.exe") : null;
     if (choice !== "powershell" && wt && env.exists(wt)) return { file: wt, args: ["-d", folder], cwd: folder };

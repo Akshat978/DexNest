@@ -3,7 +3,7 @@
 // "fetch all". Real git against local bare repositories; no network.
 
 import { strict as assert } from "node:assert";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { after, test } from "node:test";
 
 import { normaliseProjectInput, type GitRunResult } from "@dexnest/projects";
@@ -81,7 +81,9 @@ test("a folder with spaces and unicode: commit, push and undo all work, the path
   const undone = done(await w.ops.execute({ projectId: "uni", path: dir, request: { kind: "undo", opId: committed.opId }, source: "module_ui" }));
   assert.equal(undone.outcome, "succeeded");
   assert.match(w.b.git(dir, "status", "--porcelain"), /ノート\.md|\\343/, "the change is back, staged");
-  for (const call of w.calls) if (call.cwd.includes("ünïcødé")) assert.equal(call.cwd, dir, "cwd passed through untouched");
+  // Untouched means the same folder, unicode intact. On Windows git reports its
+  // own paths with forward slashes, which name the same folder.
+  for (const call of w.calls) if (call.cwd.includes("ünïcødé")) assert.equal(resolve(call.cwd), resolve(dir), "cwd passed through untouched");
 });
 
 test("fetch all with one project offline: the others are fetched, the offline one says so, nothing throws", async () => {

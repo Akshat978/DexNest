@@ -12,6 +12,9 @@ import { build } from "vite";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
+// Source files are checked out with CRLF on Windows; the patterns below are written for LF.
+const readSource = (path) => readFileSync(path, "utf8").replace(/\r\n/g, "\n");
+
 const desktop = fileURLToPath(new URL("..", import.meta.url));
 const ui = join(desktop, "src/renderer/components/ui");
 let scratch = "";
@@ -58,7 +61,7 @@ function filesUnder(dir) {
 test("the kit, the status chip and the inline loader use design tokens only", () => {
   const files = [...filesUnder(join(ui, "kit")), join(ui, "StatusChip.tsx"), join(ui, "ModuleLoading.tsx"), join(desktop, "src/renderer/components/ViewErrorBoundary.tsx")];
   for (const file of files) {
-    const text = readFileSync(file, "utf8");
+    const text = readSource(file);
     assert.doesNotMatch(text, /#[0-9a-fA-F]{3,8}\b(?![\w-])/, `${file}: hex colour`);
     assert.doesNotMatch(text, /\b(rgb|rgba|hsl|hsla)\s*\(/i, `${file}: rgb/hsl colour`);
     for (const [, family] of text.matchAll(/font-family:\s*([^;]+);/g)) assert.match(family.trim(), /^var\(--font-(ui|tech)\)$/, `${file}: ${family}`);
@@ -66,7 +69,7 @@ test("the kit, the status chip and the inline loader use design tokens only", ()
 });
 
 test("accent: set once at the root and inherited, so a view's accent reaches every kit component inside it", () => {
-  const css = readFileSync(join(ui, "kit/kit.css"), "utf8");
+  const css = readSource(join(ui, "kit/kit.css"));
   const declarations = [...css.matchAll(/--kit-accent:\s*[^;]+;/g)];
   assert.equal(declarations.length, 1, "only the :root default may set --kit-accent");
   assert.match(css, /:root \{\n  --kit-accent: var\(--accent-dev\);\n\}/);
@@ -114,7 +117,7 @@ test("form controls: one input style; selects draw a token chevron; a field labe
   assert.match(render(kit.TextArea, {}), /^<textarea class="kit-input kit-textarea">/);
   assert.equal(render(kit.Field, { label: "Name", hint: "Required" }, createElement(kit.TextInput, {})), '<label class="kit-field"><span class="kit-field__label">Name</span><input class="kit-input"/><span class="kit-field__hint">Required</span></label>');
   assert.equal(render(kit.Field, { label: "Tags", hint: "Separate with commas.", htmlFor: "f-tags" }, createElement(kit.TextInput, { id: "f-tags", "aria-describedby": "f-tags-hint" })), '<div class="kit-field"><label for="f-tags" class="kit-field__label">Tags</label><input class="kit-input" id="f-tags" aria-describedby="f-tags-hint"/><span class="kit-field__hint" id="f-tags-hint">Separate with commas.</span></div>');
-  const css = readFileSync(join(ui, "kit/kit.css"), "utf8");
+  const css = readSource(join(ui, "kit/kit.css"));
   assert.match(css, /\.kit-select \{\n  appearance: none;/);
 });
 
@@ -131,11 +134,15 @@ test("StatusChip is the kit badge: the old tone names map to token tones, no inl
 
 test("views take tabs and view switchers from the kit: no hand-made tablist outside it (Autopilot is listed for local review)", () => {
   const renderer = join(desktop, "src/renderer");
-  const files = filesUnder(renderer).filter((f) => /\.tsx$/.test(f) && !f.includes("/components/ui/kit/") && !/\/views\/Autopilot[A-Za-z]*\.tsx$/.test(f));
+  // Compared with forward slashes, so the exclusions hold on Windows paths too.
+  const files = filesUnder(renderer).filter((f) => {
+    const path = f.split("\\").join("/");
+    return /\.tsx$/.test(path) && !path.includes("/components/ui/kit/") && !/\/views\/Autopilot[A-Za-z]*\.tsx$/.test(path);
+  });
   for (const file of files) {
-    assert.doesNotMatch(readFileSync(file, "utf8"), /role="tablist"/, file);
+    assert.doesNotMatch(readSource(file), /role="tablist"/, file);
   }
-  const main = readFileSync(join(renderer, "main.tsx"), "utf8");
+  const main = readSource(join(renderer, "main.tsx"));
   assert.match(main, /<Segmented label="Utilities section" value=\{tab\} onChange=\{setTab\} options=\{UTILITIES_TABS\} \/>/);
   assert.match(main, /<Segmented\s+label="Timetable view"\s+value=\{mode\}\s+options=\{TIMETABLE_MODES\}/);
   assert.match(main, /<Segmented label="Calendar view" value=\{viewMode\} onChange=\{setViewMode\} options=\{CALENDAR_VIEW_MODES\} \/>/);
@@ -145,5 +152,5 @@ test("tabs can wrap onto a second row; without wrap they stay one scrolling row"
   const tabs = [{ id: "a", label: "A" }, { id: "b", label: "B" }];
   assert.match(render(kit.Tabs, { label: "T", idPrefix: "t", value: "a", onChange: noop, tabs, wrap: true }), /^<div class="kit-tabs kit-tabs--wrap" role="tablist"/);
   assert.match(render(kit.Tabs, { label: "T", idPrefix: "t", value: "a", onChange: noop, tabs }), /^<div class="kit-tabs" role="tablist"/);
-  assert.match(readFileSync(join(ui, "kit/kit.css"), "utf8"), /\.kit-tabs--wrap \{\n  flex-wrap: wrap;\n  overflow-x: visible;\n\}/);
+  assert.match(readSource(join(ui, "kit/kit.css")), /\.kit-tabs--wrap \{\n  flex-wrap: wrap;\n  overflow-x: visible;\n\}/);
 });

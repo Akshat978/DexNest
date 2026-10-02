@@ -7,7 +7,10 @@ import { test } from "node:test";
 
 import { SHELL_DATA_VIEWS, shellLoadOverlay } from "../src/renderer/lib/shellLoad.ts";
 
-const main = readFileSync(new URL("../src/renderer/main.tsx", import.meta.url), "utf8");
+// Source files are checked out with CRLF on Windows; the patterns below are written for LF.
+const readSource = (path: Parameters<typeof readFileSync>[0]) => readFileSync(path, "utf8").replace(/\r\n/g, "\n");
+
+const main = readSource(new URL("../src/renderer/main.tsx", import.meta.url));
 
 test("the ten shell-data views show the error card when the shared load failed, and only then", () => {
   assert.deepEqual([...SHELL_DATA_VIEWS].sort(), ["calendar", "clipboard", "command", "deck", "drop", "news", "settings", "timetable", "tools", "utilities"]);

@@ -9,11 +9,11 @@
 
 import { strict as assert } from "node:assert";
 import { afterEach, test } from "node:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createEventLog, createHostScheduler, runFoundationMigrations, type SchedulerTimers } from "@dexnest/foundation";
-import { assertSafeTestPath, createTestDatabase, type TestDatabase } from "@dexnest/foundation/testing";
+import { assertSafeTestPath, createTestDatabase, type TestDatabase, makeTestLink } from "@dexnest/foundation/testing";
 import { seededActions } from "@dexnest/action-registry";
 import {
   createGhostOsHost,
@@ -201,7 +201,7 @@ test("a file reference inside DexNest's data is refused, by path and through a l
   assert.match(String(direct?.error), /inside DexNest's data/);
 
   const link = join(s.base, "innocent-link");
-  symlinkSync(join(s.dataRoot, "files"), link);
+  makeTestLink(join(s.dataRoot, "files"), link);
   const viaLink = await s.run("ghost_os.entity.save", { entity: { type: "file", title: "f", details: { path: join(link, "vault", "secret.txt") } } });
   assert.equal(viaLink?.ok, false);
 

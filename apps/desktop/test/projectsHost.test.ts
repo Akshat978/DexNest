@@ -10,7 +10,10 @@ import { PROJECTS_ACTIONS, registryDanger } from "@dexnest/projects";
 
 import { isTrustedMainFrame } from "../src/main/trustedFrame.ts";
 
-const read = (path: string) => readFileSync(new URL(`../src/main/${path}`, import.meta.url), "utf8");
+// Source files are checked out with CRLF on Windows; the patterns below are written for LF.
+const readSource = (path: Parameters<typeof readFileSync>[0]) => readFileSync(path, "utf8").replace(/\r\n/g, "\n");
+
+const read = (path: string) => readSource(new URL(`../src/main/${path}`, import.meta.url));
 
 test("the trusted-frame check accepts only DexNest's own window's main frame", () => {
   const mainFrame = { id: "main" };

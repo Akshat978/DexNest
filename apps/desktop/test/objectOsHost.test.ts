@@ -10,12 +10,12 @@
 import { strict as assert } from "node:assert";
 import { afterEach, test } from "node:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import AdmZip from "adm-zip";
 import { createEventLog, createHostScheduler, runFoundationMigrations, type SchedulerTimers } from "@dexnest/foundation";
-import { assertSafeTestPath, createTestDatabase, type TestDatabase } from "@dexnest/foundation/testing";
+import { assertSafeTestPath, createTestDatabase, type TestDatabase, makeTestLink } from "@dexnest/foundation/testing";
 import { seededActions } from "@dexnest/action-registry";
 import { EXPORT_JSON_NAME, OBJECT_ACTION_IDS as A, type FileRecord, type ObjectRecord } from "@dexnest/object-os";
 import {
@@ -267,15 +267,16 @@ test("bait: sources inside DexNest's data are refused, directly and through link
   const eventsBefore = s.objectEvents().length;
 
   const fileLink = join(s.home, "innocent.pdf");
-  symlinkSync(join(s.dataRoot, "files", "vault", "secret.txt"), fileLink);
+  // A file link needs admin rights on Windows; without them it cannot exist there.
+  const fileLinked = makeTestLink(join(s.dataRoot, "files", "vault", "secret.txt"), fileLink);
   const dirLink = join(s.home, "docs");
-  symlinkSync(join(s.dataRoot, "files"), dirLink);
+  makeTestLink(join(s.dataRoot, "files"), dirLink);
   const otherObjectFile = walk(join(s.dataRoot, "files", "objects", other.id))[0] as string;
   const baits = [
     join(s.dataRoot, "files", "vault", "secret.txt"),
     join(s.dataRoot, "files", "receipts", "finance.pdf"),
     join(s.dataRoot, "files", "objects", other.id, otherObjectFile),
-    fileLink,
+    ...(fileLinked ? [fileLink] : []),
     join(dirLink, "receipts", "finance.pdf"),
     join(s.dataRoot, "files", "vault")
   ];
@@ -290,7 +291,7 @@ test("bait: sources inside DexNest's data are refused, directly and through link
   assert.deepEqual(detail.value.files, []);
 });
 
-test("a source swapped for a link between inspecting and copying is refused at copy time", async () => {
+test("a source swapped for a link between inspecting and copying is refused at copy time", async (t) => {
   const s = setup();
   const o = await s.newObject();
   const src = join(s.home, "swap.pdf");
@@ -298,7 +299,10 @@ test("a source swapped for a link between inspecting and copying is refused at c
   const info = s.host.files.inspect(src);
   assert.equal(info?.insideDataRoot, false);
   unlinkSync(src);
-  symlinkSync(join(s.dataRoot, "files", "vault", "secret.txt"), src);
+  if (!makeTestLink(join(s.dataRoot, "files", "vault", "secret.txt"), src)) {
+    t.skip("a file link needs admin rights or Developer Mode on Windows, so this swap cannot happen here");
+    return;
+  }
   await assert.rejects(() => s.host.files.copyIn(src, o.id, "fil_x-swap.pdf", 1024), /inside DexNest's data/);
   assert.deepEqual(walk(join(s.dataRoot, "files", "objects")), []);
 });
@@ -308,7 +312,7 @@ test("nothing is written when files/objects has been made a link that leads out 
   const o = await s.newObject();
   const elsewhere = join(s.base, "elsewhere");
   mkdirSync(elsewhere);
-  symlinkSync(elsewhere, join(s.dataRoot, "files", "objects"));
+  makeTestLink(elsewhere, join(s.dataRoot, "files", "objects"));
   const src = join(s.home, "a.pdf");
   writeFileSync(src, "a");
   s.dialog.attach = src;
@@ -349,17 +353,19 @@ test("a stored file replaced by a link, or a folder replaced by one, is never op
   const stored = join(s.dataRoot, "files", "objects", o.id, f.storedName);
 
   // The file itself becomes a link to the vault.
+  // (A file link needs admin rights on Windows; without them, only the folder case below can happen.)
   unlinkSync(stored);
-  symlinkSync(join(s.dataRoot, "files", "vault", "secret.txt"), stored);
-  const r1 = await s.run(A.fileOpen, { fileId: f.id });
-  assert.equal(r1?.ok, false);
+  if (makeTestLink(join(s.dataRoot, "files", "vault", "secret.txt"), stored)) {
+    const r1 = await s.run(A.fileOpen, { fileId: f.id });
+    assert.equal(r1?.ok, false);
+  }
 
   // The object's folder becomes a link to a folder holding a file of the same name.
   const decoy = join(s.base, "decoy");
   mkdirSync(decoy);
   writeFileSync(join(decoy, f.storedName), "decoy");
   rmSync(join(s.dataRoot, "files", "objects", o.id), { recursive: true, force: true });
-  symlinkSync(decoy, join(s.dataRoot, "files", "objects", o.id));
+  makeTestLink(decoy, join(s.dataRoot, "files", "objects", o.id));
   const r2 = await s.run(A.fileOpen, { fileId: f.id });
   assert.equal(r2?.ok, false);
 
@@ -394,7 +400,7 @@ test("deleting an object deletes its folder, never following a link", async () =
   writeFileSync(pdf, "pdf");
   await s.attach(o.id, pdf);
   rmSync(join(s.dataRoot, "files", "objects", o.id), { recursive: true, force: true });
-  symlinkSync(keep, join(s.dataRoot, "files", "objects", o.id));
+  makeTestLink(keep, join(s.dataRoot, "files", "objects", o.id));
   const r = await s.run(A.objectDelete, { input: { id: o.id } });
   assert.equal(r?.ok, true, String(r?.error));
   assert.equal(readFileSync(join(keep, "precious.txt"), "utf8"), "keep me");
@@ -489,7 +495,7 @@ test("export refuses DexNest's data (directly and through a link), and stops if 
   s.dialog.exportPath = join(s.dataRoot, "backups", "out.zip");
   assert.equal((await s.run(A.export))?.ok, false);
   const link = join(s.home, "backups-link");
-  symlinkSync(join(s.dataRoot, "files"), link);
+  makeTestLink(join(s.dataRoot, "files"), link);
   s.dialog.exportPath = join(link, "out.zip");
   assert.equal((await s.run(A.export))?.ok, false);
   assert.equal(existsSync(join(s.dataRoot, "files", "out.zip")), false);

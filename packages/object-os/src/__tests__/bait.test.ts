@@ -6,10 +6,10 @@
  * before a byte is read, and nothing about them is recorded.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assertSafeTestPath, createTestDatabase } from '@dexnest/foundation/testing';
+import { assertSafeTestPath, createTestDatabase, makeTestLink } from '@dexnest/foundation/testing';
 import { createObjectEngine, openObjectStore, parseObjectInput } from '../index.ts';
 import { createTestPort } from './node-port.ts';
 
@@ -38,8 +38,9 @@ function setup() {
   }
   mkdirSync(home, { recursive: true });
   // Links from an innocent-looking place into the data root.
-  symlinkSync(bait.receipt as string, join(home, 'receipt.pdf'));
-  symlinkSync(join(dataRoot, 'files', 'vault'), join(home, 'Documents')); // a folder link: a junction on Windows
+  // A file link needs admin rights on Windows; without them it cannot exist there.
+  const fileLinked = makeTestLink(bait.receipt as string, join(home, 'receipt.pdf'));
+  makeTestLink(join(dataRoot, 'files', 'vault'), join(home, 'Documents')); // a folder link: a junction on Windows
   const db = createTestDatabase('obj-bait-db-');
   cleanups.push(() => {
     db.dispose();
@@ -52,13 +53,17 @@ function setup() {
   if (!d.ok) throw new Error('setup');
   const id = engine.newObjectId();
   store.createObject(id, d.value, NOW);
-  return { base, dataRoot, home, bait, db, store, port, engine, id };
+  return { base, dataRoot, home, bait, db, store, port, engine, id, fileLinked };
 }
 
 describe('bait', () => {
   it('nothing inside the data root can be attached - directly, through a link, or through a linked folder', async () => {
     const s = setup();
-    const attempts = [...Object.values(s.bait), join(s.home, 'receipt.pdf'), join(s.home, 'Documents', 'documents', `${MARK}-passport.pdf`)];
+    const attempts = [
+      ...Object.values(s.bait),
+      ...(s.fileLinked ? [join(s.home, 'receipt.pdf')] : []),
+      join(s.home, 'Documents', 'documents', `${MARK}-passport.pdf`),
+    ];
     for (const path of attempts) {
       const r = await s.engine.attachFile({ objectId: s.id, sourcePath: path, role: 'receipt', now: NOW });
       expect(r.ok, path).toBe(false);

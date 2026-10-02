@@ -26,7 +26,9 @@ describe('hardening', () => {
   afterEach(() => {
     world?.dispose();
     world = undefined;
-    for (const c of cleanups.splice(0)) c();
+    // Last in, first out: a database closes before its folder is removed
+    // (Windows will not delete a file that is still open).
+    for (const c of cleanups.splice(0).reverse()) c();
   });
 
   async function seeded() {
