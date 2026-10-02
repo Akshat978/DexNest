@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { EntityDetail, EntityType, GhostOsSettings, GhostOsStatus, Observation, Parsed, SearchHit, TimelineItem } from "@dexnest/ghost-os";
 import { Ghost } from "lucide-react";
-import { accentStyle, Button, ConfirmDialog, EmptyState, ErrorState, InlineError, LoadingState, Notice, PageHeader, Select, TabPanel, Tabs, TextArea, TextInput } from "../components/ui/kit";
+import { accentStyle, Button, ConfirmDialog, EmptyNote, EmptyState, ErrorState, InlineError, LoadingState, Notice, PageHeader, Select, TabPanel, Tabs, TextArea, TextInput } from "../components/ui/kit";
 import {
   actionMessage,
   confirmed,
@@ -344,7 +344,7 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
                       reload={() => void openEntity(detail.entity.id)}
                     />
                   ) : (
-                    <p className="ghost-hint">Choose an entry to see its connections, observations and where each fact came from.</p>
+                    <EmptyNote>Choose an entry to see its connections, observations and where each fact came from.</EmptyNote>
                   )}
                 </div>
               </div>
