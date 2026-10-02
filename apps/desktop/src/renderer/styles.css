@@ -978,9 +978,17 @@ div.calendar-side-event[role="button"]:focus-visible {
 
 .panel {
   display: grid;
+  /* One column that may shrink below its content's width: a long path or a
+     form field must wrap or shrink inside a narrow card, not push out of it. */
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-3);
+  min-width: 0;
   min-height: 0;
   padding: var(--space-4);
+}
+
+.panel .technical {
+  overflow-wrap: anywhere;
 }
 
 .panel label:not(.checkbox-row),
@@ -997,8 +1005,10 @@ div.calendar-side-event[role="button"]:focus-visible {
 
 .panel__body {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   align-content: start;
   gap: var(--space-3);
+  min-width: 0;
 }
 
 .command-palette {
