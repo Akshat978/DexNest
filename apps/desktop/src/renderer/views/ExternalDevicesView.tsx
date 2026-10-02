@@ -5,6 +5,7 @@ import { StatusChip } from "../components/ui/StatusChip";
 import { ActionButton } from "../components/ui/ActionButton";
 import { getBridge } from "../lib/bridge";
 import type { ExternalDeviceCacheItem, ExternalDevicesState } from "../main";
+import { providerView } from "./externalDevicesModel";
 
 export function ExternalDevicesView({
   externalState,
@@ -23,7 +24,8 @@ export function ExternalDevicesView({
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
   const [brightOverride, setBrightOverride] = useState<Record<string, number>>({});
-  const connected = externalState.providerStatus === "ready";
+  const provider = providerView(externalState.providerStatus);
+  const connected = provider === "connected";
   const group = externalState.groups[0];
   const aliasOf = (d: ExternalDeviceCacheItem): string => d.userAlias || d.roomAlias || d.deviceName;
 
@@ -75,10 +77,16 @@ export function ExternalDevicesView({
           <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_DEV2}40`, background: `${ACCENT_DEV2}14`, color: ACCENT_DEV2 }}><Lightbulb className="h-5 w-5" /></div>
           <div><h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">External Devices</h1><p className="text-sm text-[#A3A3A3]">Govee &amp; smart-home control · voice-mapped</p></div>
         </div>
-        <StatusChip tone={connected ? "ready" : "error"} pulse={connected}>{connected ? "Govee connected" : "Govee " + externalState.providerStatus.replace(/_/g, " ")}</StatusChip>
+        <StatusChip tone={connected ? "ready" : provider === "off" ? "offline" : "error"} pulse={connected}>{connected ? "Govee connected" : provider === "off" ? "Govee off" : "Govee " + externalState.providerStatus.replace(/_/g, " ")}</StatusChip>
       </div>
 
-      {!connected && (
+      {provider === "off" && (
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-4 py-3">
+          <span className="text-sm text-[var(--text-muted)]">{externalState.providerMessage || "Govee is off."}</span>
+        </div>
+      )}
+
+      {provider === "problem" && (
         <div className="flex items-center justify-between gap-3 rounded-xl border border-[#EF4444]/25 bg-[#EF4444]/[0.08] px-4 py-3">
           <span className="text-sm text-[#EF4444]">{externalState.providerMessage || "Govee is not ready — check API key & network."}</span>
           <ActionButton accent="#EF4444" variant="ghost" icon={RefreshCw} disabled={busy} onClick={() => void runDevice("external.govee.refresh_devices", {}, "Refreshed devices.")}>Refresh</ActionButton>
@@ -159,7 +167,7 @@ export function ExternalDevicesView({
             <div className="glass-card flex items-center gap-3 p-3">
               <div className="flex h-9 w-9 items-center justify-center rounded-lg" style={{ background: `${ACCENT_DEV2}16`, color: ACCENT_DEV2 }}><Lightbulb className="h-4 w-4" /></div>
               <div className="flex-1"><p className="text-sm font-medium text-[#F5F5F5]">Govee</p><p className="font-mono text-[10px] text-[#525252]">{externalState.devices.length} devices · {externalState.groups.length} group{externalState.groups.length === 1 ? "" : "s"}</p></div>
-              <StatusChip tone={connected ? "ok" : "error"} />
+              <StatusChip tone={connected ? "ok" : provider === "off" ? "offline" : "error"}>{provider === "off" ? "Off" : undefined}</StatusChip>
             </div>
           </GlassCard>
 
