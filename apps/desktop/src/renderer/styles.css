@@ -275,29 +275,6 @@ button:focus-visible {
   gap: 0.5rem;
 }
 
-.calendar-view-switcher {
-  display: inline-flex;
-  gap: 0.25rem;
-  padding: 0.2rem;
-  border: 1px solid var(--border);
-  border-radius: 0.85rem;
-  background: color-mix(in srgb, var(--surface-2) 70%, transparent);
-}
-
-.calendar-view-switcher button,
-.calendar-inline-action {
-  min-height: 1.85rem;
-  border-radius: 0.65rem;
-  font-size: 0.72rem;
-  font-weight: 800;
-}
-
-.calendar-view-switcher button.is-active {
-  border-color: color-mix(in srgb, var(--accent-calendar) 55%, var(--border));
-  background: color-mix(in srgb, var(--accent-calendar) 18%, var(--surface));
-  color: var(--text);
-}
-
 .calendar-month-grid {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));

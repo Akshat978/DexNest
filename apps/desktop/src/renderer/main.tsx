@@ -31,7 +31,7 @@ import { ActionButton } from "./components/ui/ActionButton";
 import { AssistantOrb } from "./components/ui/AssistantOrb";
 import { VoiceWaveform } from "./components/ui/VoiceWaveform";
 import { InlineLoadingState } from "./components/ui/ModuleLoading";
-import { ErrorState, LoadingState, PageHeader as KitPageHeader } from "./components/ui/kit";
+import { accentStyle, ErrorState, LoadingState, PageHeader as KitPageHeader, Segmented } from "./components/ui/kit";
 import { previewForUi, formatBytes, formatDate, formatDuration } from "./lib/format";
 import { accentTint, MODULE_META, SIDEBAR_VIEWS, SIDEBAR_HIDDEN_VIEWS, type ViewId } from "./lib/moduleMeta";
 import { getPerfStats, subscribePerf, recordModuleSwitch, recordModuleDataLoaded } from "./lib/perf";
@@ -10334,6 +10334,13 @@ function safeWorldClockTime(timeZone: string): string {
   }
 }
 
+const UTILITIES_TABS = [
+  { value: "calculate", label: "Calculate" },
+  { value: "convert", label: "Convert" },
+  { value: "time", label: "Time" },
+  { value: "history", label: "History" }
+] as const;
+
 function UtilitiesView({
   utilitiesState,
   onAction,
@@ -10407,21 +10414,6 @@ function UtilitiesView({
   const timerPaused = activeTimer?.status === "paused";
   const stopwatchStatus = utilitiesState.stopwatch.status;
   const units = utilityConversionUnits[category];
-  const tabButton = (id: typeof tab, label: string) => (
-    <button
-      key={id}
-      type="button"
-      onClick={() => setTab(id)}
-      className="rounded-full border px-3 py-1.5 text-sm capitalize"
-      style={{
-        borderColor: tab === id ? ACCENT : "var(--border)",
-        background: tab === id ? "color-mix(in srgb, var(--accent-utilities) 14%, transparent)" : "var(--surface)",
-        color: tab === id ? ACCENT : "var(--text-muted)"
-      }}
-    >
-      {label}
-    </button>
-  );
   const overview = [
     { id: "calculate" as const, title: "Calculator", icon: Calculator, value: latestCalculation?.result ?? "No result yet", sub: latestCalculation?.input ?? "Expressions and percent math", accent: ACCENT },
     { id: "convert" as const, title: "Converter", icon: ArrowRightLeft, value: latestConversion?.result ?? `${convertValue} ${fromUnit}`, sub: latestConversion?.input ?? `${fromUnit} to ${toUnit}`, accent: SECONDARY },
@@ -10473,7 +10465,9 @@ function UtilitiesView({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <StatusChip tone="info">local</StatusChip>
-          {(["calculate", "convert", "time", "history"] as const).map((id) => tabButton(id, id))}
+          <span style={accentStyle("utilities")}>
+            <Segmented label="Utilities section" value={tab} onChange={setTab} options={UTILITIES_TABS} />
+          </span>
         </div>
       </div>
 
@@ -11092,6 +11086,12 @@ function TimetableViewLegacy({
   );
 }
 
+const TIMETABLE_MODES = [
+  { value: "today", label: "Today" },
+  { value: "week", label: "Week" },
+  { value: "templates", label: "Templates" }
+] as const;
+
 function TimetableView({
   timetableState,
   calendarState,
@@ -11383,27 +11383,18 @@ function TimetableView({
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-2">
-        {(["today", "week", "templates"] as const).map((tab) => (
-          <button
-            key={tab}
-            type="button"
-            onClick={() => {
-              setMode(tab);
-              if (tab === "today") {
-                setSelectedDay(timetableState.today);
-              }
-            }}
-            className="rounded-full border px-3 py-1.5 text-sm capitalize"
-            style={{
-              borderColor: mode === tab ? ACCENT : "var(--border)",
-              background: mode === tab ? "color-mix(in srgb, var(--accent-timetable) 14%, transparent)" : "var(--surface)",
-              color: mode === tab ? ACCENT : "var(--text-muted)"
-            }}
-          >
-            {tab}
-          </button>
-        ))}
+      <div className="flex flex-wrap gap-2" style={accentStyle("timetable")}>
+        <Segmented
+          label="Timetable view"
+          value={mode}
+          options={TIMETABLE_MODES}
+          onChange={(tab) => {
+            setMode(tab);
+            if (tab === "today") {
+              setSelectedDay(timetableState.today);
+            }
+          }}
+        />
       </div>
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(20rem,0.8fr)]">
@@ -11840,6 +11831,12 @@ function TimetableView({
     </div>
   );
 }
+
+const CALENDAR_VIEW_MODES = [
+  { value: "day", label: "Day" },
+  { value: "week", label: "Week" },
+  { value: "month", label: "Month" }
+] as const;
 
 function CalendarView({
   calendarState,
@@ -12485,13 +12482,9 @@ function CalendarView({
           <div><h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Calendar</h1><p className="text-sm text-[#A3A3A3]">{headerTitle} / agenda &amp; reminders</p></div>
         </div>
         <div className="calendar-header-actions">
-          <div className="calendar-view-switcher" role="tablist" aria-label="Calendar view">
-            {(["day", "week", "month"] as const).map((mode) => (
-              <button key={mode} type="button" className={viewMode === mode ? "is-active" : ""} onClick={() => setViewMode(mode)}>
-                {mode[0].toUpperCase()}{mode.slice(1)}
-              </button>
-            ))}
-          </div>
+          <span style={accentStyle("calendar")}>
+            <Segmented label="Calendar view" value={viewMode} onChange={setViewMode} options={CALENDAR_VIEW_MODES} />
+          </span>
           <button type="button" className="rounded-lg border border-[#262626] px-3 py-1.5 text-xs font-medium text-[#A3A3A3] hover:border-[#14B8A6]/40 hover:text-[#F5F5F5]" onClick={goToToday}>Today</button>
           <button type="button" className="rounded-lg border border-[#262626] px-3 py-1.5 text-xs font-medium text-[#A3A3A3] hover:border-[#14B8A6]/40 hover:text-[#F5F5F5]" onClick={() => {
             if (viewMode === "month") {

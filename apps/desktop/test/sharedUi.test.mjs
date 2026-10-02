@@ -128,3 +128,15 @@ test("StatusChip is the kit badge: the old tone names map to token tones, no inl
   assert.match(render(chip.StatusChip, { tone: "running", pulse: true }, "Multi-copy active"), /class="kit-badge kit-badge--info kit-badge--pulse"><span class="kit-badge__dot" aria-hidden="true"><\/span>Multi-copy active<\/span>/);
   assert.doesNotMatch(render(chip.StatusChip, { dot: false }), /kit-badge__dot/);
 });
+
+test("views take tabs and view switchers from the kit: no hand-made tablist outside it (Autopilot is listed for local review)", () => {
+  const renderer = join(desktop, "src/renderer");
+  const files = filesUnder(renderer).filter((f) => /\.tsx$/.test(f) && !f.includes("/components/ui/kit/") && !/\/views\/Autopilot[A-Za-z]*\.tsx$/.test(f));
+  for (const file of files) {
+    assert.doesNotMatch(readFileSync(file, "utf8"), /role="tablist"/, file);
+  }
+  const main = readFileSync(join(renderer, "main.tsx"), "utf8");
+  assert.match(main, /<Segmented label="Utilities section" value=\{tab\} onChange=\{setTab\} options=\{UTILITIES_TABS\} \/>/);
+  assert.match(main, /<Segmented\s+label="Timetable view"\s+value=\{mode\}\s+options=\{TIMETABLE_MODES\}/);
+  assert.match(main, /<Segmented label="Calendar view" value=\{viewMode\} onChange=\{setViewMode\} options=\{CALENDAR_VIEW_MODES\} \/>/);
+});
