@@ -373,6 +373,10 @@ const fallbackRpgSettings = { schemaVersion: 1 as const, enabled: false, interva
 // shows its empty state with no source installed.
 const ghostUnavailable = { ok: false as const, errors: ["GhostOS runs in the DexNest desktop app."] };
 
+// Outside Electron (the Vite preview) there is no main process, so ObjectOS
+// shows its empty state and refuses reads that need data.
+const objectOsUnavailable = { ok: false as const, errors: ["ObjectOS runs in the DexNest desktop app."] };
+
 export const fallbackBridge: DexNestBridge = {
   skillConstellationSnapshot: async () => ({
     enabled: false,
@@ -415,6 +419,14 @@ export const fallbackBridge: DexNestBridge = {
   ghostOsEntity: async () => ghostUnavailable,
   ghostOsSettings: async () => ({ schemaVersion: 1, adapters: { developer_intelligence: { enabled: false } }, syncIntervalMinutes: 60 }),
   ghostOsUpdateSettings: async () => ghostUnavailable,
+  objectOsStatus: async () => ({ remindersEnabled: false, lastReminder: null, lastError: null, objects: 0 }),
+  objectOsList: async () => ({ ok: true, value: [] }),
+  objectOsDetail: async () => objectOsUnavailable,
+  objectOsTimeline: async () => ({ ok: true, value: [] }),
+  objectOsAttention: async () => ({ summary: { items: [], counts: { overdue: 0, dueSoon: 0, warrantyEnding: 0, lowStock: 0 } }, names: {} }),
+  objectOsSettingsDiff: async () => objectOsUnavailable,
+  objectOsLocations: async () => [],
+  objectOsPhoto: async () => null,
   getAppInfo: async () => ({
     appName: "DexNest",
     dataRoot: "./local-data",

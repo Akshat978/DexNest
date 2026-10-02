@@ -1,0 +1,23 @@
+{
+  "name": "@dexnest/object-os",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ObjectOS: a persistent digital identity for each physical thing the owner has.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@dexnest/foundation": "workspace:*"
+  },
+  "devDependencies": {
+    "@dexnest/action-registry": "workspace:*",
+    "@types/node": "^22.13.14",
+    "vitest": "^5.0.1"
+  }
+}

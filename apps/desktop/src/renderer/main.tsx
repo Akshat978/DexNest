@@ -58,6 +58,7 @@ import { AutopilotView } from "./views/AutopilotView";
 import { SkillConstellationView, type SkillConstellationBridge } from "./views/SkillConstellationView";
 import { RealityRpgView, type RealityRpgBridge } from "./views/RealityRpgView";
 import { GhostOsView, type GhostOsBridge } from "./views/GhostOsView";
+import { ObjectOsView, type ObjectOsBridge } from "./views/ObjectOsView";
 import { BackupView } from "./views/BackupView";
 import { ExternalDevicesView } from "./views/ExternalDevicesView";
 import logoUrl from "./logo.png";
@@ -2080,7 +2081,7 @@ interface DataManagementDeleteResult {
   lastDeletion: DataManagementLastDeletion;
 }
 
-export interface DexNestBridge extends SkillConstellationBridge, RealityRpgBridge, GhostOsBridge {
+export interface DexNestBridge extends SkillConstellationBridge, RealityRpgBridge, GhostOsBridge, ObjectOsBridge {
   getAppInfo: () => Promise<AppInfo>;
   listActions: () => Promise<ActionDefinition[]>;
   listProjects: () => Promise<DexNestProject[]>;
@@ -6434,6 +6435,7 @@ function DexNestApp() {
           {activeView === "skills" && <SkillConstellationView bridge={getBridge()} onAction={(actionId) => runUiAction(actionId, "module_ui", {})} />}
           {activeView === "rpg" && <RealityRpgView bridge={getBridge()} onAction={(actionId, params) => runUiAction(actionId, "module_ui", params ?? {})} />}
           {activeView === "ghost" && <GhostOsView bridge={getBridge()} onAction={(actionId, params) => runUiAction(actionId, "module_ui", params ?? {})} />}
+          {activeView === "object" && <ObjectOsView bridge={getBridge()} onAction={(actionId, params) => runUiAction(actionId, "module_ui", params ?? {})} />}
           {activeView === "settings" && (
             <SettingsView
               actions={actions}
