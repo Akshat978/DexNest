@@ -825,7 +825,7 @@ All ten defaults in section 18 are accepted as written.
 - **Host** (`apps/desktop/src/main/projectsHost.ts`): wiring only; 31 IPC
   channels `dexnest:projects-*`, all through one helper that applies the
   shared, tested `isTrustedMainFrame` (`trustedFrame.ts`); live operation
- on `dexnest:projects-output`. Developer Intelligence is read
+  output is sent on `dexnest:projects-output`. Developer Intelligence is read
   through `listRepositories()` (suggestions) and Standup's `collectFacts` +
   `scoreRepository` over the last 7 days for the repository whose root
   matches the project's resolved path ("where you left off").
