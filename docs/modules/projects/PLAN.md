@@ -984,6 +984,17 @@ line, and what changed:
   with one remote unreachable. The other scenarios were already covered
   (table in `PARITY.md`).
 
+### Phase 11 (handoff)
+
+`HANDOFF.md`: what Projects does, where each safety rule is enforced,
+what happens to your data on first run (one-time import with a verified
+backup, `projects.json` never written afterwards, rollback consequences),
+where the code is, test state, deviations, open questions, and the
+**Needs Windows check** list (git and Git Credential Manager, VS Code
+launch, terminal launch, Windows paths and junctions, the Windows-only Dev
+features, first run with real data, look and idle, and the Linux baseline
+failures). A test keeps that list in step with `PARITY.md`.
+
 ## 19. Phases for this module
 
 Each phase ends with the master gate (typecheck, tests, new tests,
