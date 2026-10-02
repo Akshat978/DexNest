@@ -92,7 +92,7 @@ Test results (Linux, each package run separately):
 
 | Package | Before Projects | Now |
 |---|---|---|
-| @dexnest/projects | - | 137 pass, 0 fail |
+| @dexnest/projects | - | 139 pass, 0 fail |
 | @dexnest/git-ops | - | 45 pass, 0 fail |
 | @dexnest/desktop | 165 / 0 | 220 / 0 |
 | @dexnest/foundation | 46 / 1 | 46 / 1 |
