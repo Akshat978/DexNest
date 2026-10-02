@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { AwardView, RealityRpgSettings, RealityRpgSnapshot, RealityRpgStatus, Rule } from "@dexnest/reality-rpg";
 import { PageHeader } from "../components/shared";
 import {
+  countsFromLabel,
   actionMessage,
   awardSource,
   awardTitle,
@@ -468,7 +469,9 @@ function RuleRow({ rule, busy, run, ask }: { rule: Rule; busy: boolean; run(acti
       <p className="rpg-hint technical">
         {rule.match.types.join(", ")}{rule.match.actionIds ? ` · ${rule.match.actionIds.join(", ")}` : ""}
       </p>
-      <p className="rpg-hint">Counts from <time className="technical" dateTime={rule.effectiveFrom}>{shortDate(rule.effectiveFrom)}</time></p>
+      <p className="rpg-hint">
+        {Date.parse(rule.effectiveFrom) <= 0 ? countsFromLabel(rule.effectiveFrom) : <>Counts from <time className="technical" dateTime={rule.effectiveFrom}>{shortDate(rule.effectiveFrom)}</time></>}
+      </p>
       <div className="button-row">
         <button type="button" disabled={busy} onClick={() => void run("reality_rpg.rule.set_enabled", { ruleId: rule.id, enabled: !rule.enabled })} aria-label={`${rule.enabled ? "Switch off" : "Switch on"} ${rule.name}`}>
           {rule.enabled ? "Switch off" : "Switch on"}

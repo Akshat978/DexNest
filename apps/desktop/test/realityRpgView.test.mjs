@@ -151,6 +151,14 @@ test("deleting a rule and abandoning a quest ask first, in a modal", () => {
   assert.match(html, /<div class="rpg-backdrop"><div class="rpg-confirm" role="alertdialog" aria-labelledby="rpg-confirm-text" aria-modal="true">/);
   assert.match(html, /<button type="button" class="rpg-danger">Delete<\/button><button type="button">Cancel<\/button>/);
 });
+test("rules: a rule applied to past activity says so, not \"Counts from 1970-01-01\" (Integration QA F12)", () => {
+  const backfilled = { ...rule, id: "backfilled", name: "Backfilled", effectiveFrom: "1970-01-01T00:00:00.000Z" };
+  const html = render({ initial: { snapshot: { ...base, rules: [backfilled, rule] }, tab: "rules" } });
+  assert.match(html, /Counts all past activity/);
+  assert.doesNotMatch(html, /1970-01-01/);
+  assert.match(html, /Counts from <time class="technical" dateTime="2026-06-01T00:00:00.000Z">/);
+});
+
 
 test("rules: on/off, backfill only for rules that are on, delete, starter set, invalid warning", () => {
   const html = render({ initial: { snapshot: { ...base, invalid: { rules: [{ id: "x", errors: ["bad"] }], achievements: [], quests: [] } }, tab: "rules" } });

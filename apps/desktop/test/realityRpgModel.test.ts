@@ -17,6 +17,7 @@ import {
   questFromForm,
   ruleFromForm,
   ruleSentence,
+  countsFromLabel,
   shortDate,
   slugId,
   statShare,
@@ -125,4 +126,9 @@ test("a rule reads as a sentence; stat bars are shares of the strongest stat", (
   assert.equal(statShare(30, 120), 25);
   assert.equal(statShare(120, 120), 100);
   assert.equal(statShare(5, 0), 0);
+});
+
+test("countsFromLabel: the epoch means all past activity", () => {
+  assert.equal(countsFromLabel("1970-01-01T00:00:00.000Z"), "Counts all past activity");
+  assert.match(countsFromLabel("2026-06-01T00:00:00.000Z"), /^Counts from 2026-06-01/);
 });

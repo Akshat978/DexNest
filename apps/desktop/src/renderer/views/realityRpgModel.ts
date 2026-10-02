@@ -179,3 +179,8 @@ export function nextTab(current: Tab, key: string): Tab | null {
       return null;
   }
 }
+
+/** "Applying a rule to past activity" sets it to count from the epoch: say that, not "1970-01-01". */
+export function countsFromLabel(effectiveFrom: string): string {
+  return Date.parse(effectiveFrom) <= 0 ? "Counts all past activity" : `Counts from ${shortDate(effectiveFrom)}`;
+}
