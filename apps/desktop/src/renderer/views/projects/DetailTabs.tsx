@@ -119,8 +119,10 @@ export function OverviewTab({
             {leftOff.latestActivityAt && <p className="projects-muted">Last activity {relativeTime(leftOff.latestActivityAt, now)}</p>}
             {leftOff.evidence.length > 0 && (
               <ul className="projects-evidence">
-                {leftOff.evidence.map((e) => (
-                  <li key={e}>
+                {leftOff.evidence.map((e, i) => (
+                  // Evidence lines repeat ("event · 2026-10-02" twice); the list is
+                  // rebuilt whole each time, so its position is the key.
+                  <li key={`${i}:${e}`}>
                     <Technical>{e}</Technical>
                   </li>
                 ))}

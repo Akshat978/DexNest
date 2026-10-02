@@ -3,7 +3,7 @@
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { build } from "vite";
@@ -109,6 +109,28 @@ test("overview: status, Autopilot worktrees, where you left off, and Undo only o
   });
   for (const text of ["uncommitted changes", "origin/main", "0 staged · 1 changed · 0 new", "Autopilot", "never touches a branch checked out in an Autopilot worktree", "libs/dep", "Uncommitted changes; 3 commits", "The shop", "remember X", "auth_needed"]) assert.match(html, new RegExp(text), text);
   assert.equal((html.match(/>Undo<\/button>/g) ?? []).length, 1);
+});
+
+test("overview: repeated evidence lines all render, without a duplicate-key warning (Integration QA F6)", () => {
+  const errors = [];
+  const original = console.error;
+  console.error = (...args) => errors.push(args.map(String).join(" "));
+  try {
+    const html = render(tabs.OverviewTab, {
+      project: project("shop"),
+      state: repo(),
+      leftOff: { reason: "Most recently active", evidence: ["event · 2026-10-02", "event · 2026-10-02", "snapshot · 2026-10-02"], latestActivityAt: NOW },
+      operations: [],
+      now: NOW,
+      onAsk: noop
+    });
+    assert.equal((html.match(/event · 2026-10-02/g) ?? []).length, 2);
+  } finally {
+    console.error = original;
+  }
+  assert.deepEqual(errors.filter((e) => /same key|unique "key"|unique key/i.test(e)), []);
+  const source = readFileSync(join(desktop, "src/renderer/views/projects/DetailTabs.tsx"), "utf8");
+  assert.doesNotMatch(source, /leftOff\.evidence\.map\(\(e\) => \(\s*<li key=\{e\}>/, "evidence lines are keyed by position");
 });
 
 test("branches: the comparison table, Autopilot's branch locked with the reason, push-and-upstream offered", () => {
