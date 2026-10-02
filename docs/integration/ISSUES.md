@@ -67,6 +67,59 @@ Flow step numbers moved by three after step 25 (three GhostOS source steps were 
 - **Left for polish (phase 4):** the "Next.js" and "React" labels are no longer on top of each other but still sit close.
 - Heatmap and Audit differ between before and after only because of the data captured; they were not changed.
 
+## Phase 3 status (consistency)
+
+**The shared component set is `apps/desktop/src/renderer/components/ui/kit`.** It is the token-only kit Projects already used, moved there and extended (`ab82069`, `17692e7`):
+- page header, card, section title;
+- button, badge, tabs, segmented control;
+- field, text input, select (token-drawn arrow), text area;
+- the one loading state, empty state, error state and confirmation dialog;
+- inline error, notice and "nothing here" line.
+
+A view sets its module accent once on its root and every kit component inside it follows. `StatusChip` keeps its props but is drawn as the kit badge in token colours. `sharedUi.test.mjs` covers the set: tokens only, accent inheritance, the markup of each state, and no hand-made tablists in views.
+
+Checked in the real app (Electron under xvfb, fresh temp data root):
+- empty and seeded runs: 0 console errors;
+- flows: 57 of 57 steps passed, 0 console errors;
+- stub run (loading and error states): 0 page errors.
+
+These screenshots are not committed; the full "after" set comes in phase 5.
+
+| # | Status | Commits | What changed |
+|---|---|---|---|
+| C1 | Done, except Autopilot | `b38c2de` `9abe585` `f1630f2` `3151199` `a4a02f3` | GhostOS, ObjectOS, Reality RPG, Skill Constellation, Audit and News have the icon-tile header, kit buttons and kit cards like the other views. Autopilot is unchanged (local review, below). |
+| C2 | Done | `a28874c` + the module commits | One error state everywhere: the shell's per-view card (its icon no longer takes the module accent), the view error boundary, the four new modules and Projects. "Try again" everywhere. |
+| C3 | Done | `a28874c` + the module commits | One loading state: a label over skeleton blocks. The five spinner views (Backup, External Devices, App Health, Heatmap, Search) now show it too. |
+| C4 | Done for first-run states | module commits | First-run empty states are the kit's (GhostOS, ObjectOS, Reality RPG, Skill Constellation, Projects). "Nothing in this list" lines in those modules, Audit and App Health use the kit's note. Older views' in-panel empty boxes are unchanged (below). |
+| C5 | Done for confirmations | module commits | Every confirmation in the new modules is the kit's ConfirmDialog: an alert dialog, focus on Cancel, Escape cancels, the question as title and the consequence below. A refused GhostOS forget is reported inside the dialog. |
+| C6 | Done, except Autopilot | `64ca93d` + module commits | The new modules use the kit tabs. Utilities, Timetable and Calendar switchers are the kit segmented control; Calendar's was a tablist without tabs. |
+| C7 | Done in the new modules | module commits | Kit inputs, selects with a token arrow, and dark-scheme date inputs in GhostOS, ObjectOS and Reality RPG. |
+| C8 | Done | `ab82069` `2c985ef` | `StatusChip` is the kit badge with token colours. ObjectOS's due state is a badge. |
+| P7 | Done (found here) | `a28874c` | App Health's "No health check has run yet" is a neutral note, not a red error. |
+
+Also fixed while checking the screenshots (`d17a8ed`):
+- a double gap under the header in the new modules;
+- ObjectOS's due badge laid out as a grid;
+- full-width submit buttons in ObjectOS.
+
+The harness now makes the add-project flow's repository itself (`5298524`).
+
+**Behaviour.** Nothing a module does changed. Visible wording changes:
+- Audit's title is "Audit" (was "Recent Events");
+- the empty-state titles are new ("Nothing in GhostOS yet", "Reality RPG is off" and so on), with the same text below them;
+- confirmations are split into a question and its consequence;
+- removing an ObjectOS file says "Remove" on its button (it said "Delete").
+
+**Tests.** Where tests pinned exact markup, they were updated to the kit's markup and check the same things. One deviation: Skill Constellation's "no chart" checks now look for the chart's own SVG, since the header icon is an SVG too.
+
+### Left as is, and why
+
+- **Autopilot (for local review).** Its views still use the eyebrow header, filled tab buttons and its own boxes. Left alone per the phase 2 instruction not to touch Autopilot's views beyond a clearly broken thing. Converting them is a mechanical job like the four modules above.
+- **The older views' own markup.** Their headers, buttons (`ActionButton`) and form pop-ups are written inline in `main.tsx` with Tailwind classes. They already match the kit's look (the kit was built to match them), so no screen changes. Moving them onto the components is a large edit of `main.tsx` with no visible gain; left for a later pass.
+- **Older views' in-panel empty boxes** (for example Clipboard's dashed "No clipboard history matches." box with an icon) are unchanged.
+- **Date inputs** show `mm/dd/yyyy` because that is the Linux Chromium locale here. On Windows they follow the system date format. **Needs Windows check.**
+- **ObjectOS tabs** still scroll sideways at 1280 (P1, phase 4).
+
 ## Consistency (phase 3: one shared component set)
 
 | # | Sev | What | Evidence |
@@ -100,7 +153,7 @@ Checked and fine: the sidebar active state for every module (both sizes); Projec
 ## Counts
 
 - **13 functional:** 2 High, 3 Medium, 8 Low. All fixed in phase 2, plus two found during it (F14, F15).
-- **8 consistency:** 1 High, 6 Medium, 1 Low.
+- **8 consistency:** 1 High, 6 Medium, 1 Low. Done in phase 3, Autopilot apart (see its status).
 - **10 polish:** 3 Medium, 7 Low.
 
 Of these 31 items, 9 are pre-existing on `main`.
