@@ -10,31 +10,11 @@
   font-family: var(--font-tech);
 }
 
-.objectos-notice {
-  margin: 0;
-  color: var(--text);
-}
-
-.objectos-notice--error,
-.objectos-error {
-  color: var(--error);
-}
-
-.objectos-error {
-  display: grid;
-  gap: var(--space-2);
-}
-
 .objectos-hint,
 .objectos-meta {
   margin: 0;
   color: var(--text-muted);
   font-size: 0.85rem;
-}
-
-.objectos-intro {
-  display: grid;
-  gap: var(--space-2);
 }
 
 .objectos-sr {
@@ -46,11 +26,10 @@
   white-space: nowrap;
 }
 
-.objectos button:focus-visible,
-.objectos input:focus-visible,
-.objectos select:focus-visible,
-.objectos textarea:focus-visible,
-.objectos [role="tabpanel"]:focus-visible {
+/* Rows, links and checkboxes are native; kit controls bring their own focus ring. */
+.objectos-item:focus-visible,
+.objectos-link:focus-visible,
+.objectos input[type="checkbox"]:focus-visible {
   outline: 2px solid var(--accent-tools);
   outline-offset: 2px;
   box-shadow: 0 0 0 4px var(--focus-ring);
@@ -90,10 +69,12 @@
 .objectos-search label {
   flex-basis: 100%;
   color: var(--text-muted);
-  font-size: 0.85rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
 }
 
-.objectos-search input {
+.objectos-search .kit-input {
+  width: auto;
   flex: 1 1 10rem;
 }
 
@@ -193,36 +174,6 @@ button.objectos-item:hover {
   margin: 0;
 }
 
-/* One row, scrolling sideways when nine tabs do not fit. */
-.objectos-tabs {
-  display: flex;
-  flex-wrap: nowrap;
-  gap: var(--space-1);
-  overflow-x: auto;
-  scrollbar-width: thin;
-  border-bottom: 1px solid var(--border);
-  padding-bottom: var(--space-2);
-}
-
-.objectos-tabs [role="tab"] {
-  flex: none;
-  white-space: nowrap;
-}
-
-.objectos-tabs [role="tab"] {
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  font-family: var(--font-ui);
-  padding: var(--space-1) var(--space-3);
-}
-
-.objectos-tabs [role="tab"][aria-selected="true"] {
-  border-color: var(--accent-tools);
-  color: var(--text);
-}
-
 .objectos-panel {
   padding-top: var(--space-2);
 }
@@ -303,28 +254,9 @@ button.objectos-item:hover {
   gap: var(--space-2) var(--space-3);
 }
 
-.objectos-field {
-  display: grid;
-  gap: var(--space-1);
-  min-width: 0;
-}
-
-.objectos-field label,
 .objectos-check {
   color: var(--text-muted);
   font-size: 0.85rem;
-}
-
-.objectos-field textarea {
-  font-family: var(--font-ui);
-}
-
-.objectos-field textarea.technical {
-  font-family: var(--font-tech);
-}
-
-.objectos-field [aria-invalid="true"] {
-  border-color: var(--error);
 }
 
 .objectos-check {
@@ -341,37 +273,6 @@ button.objectos-item:hover {
   font-family: var(--font-ui);
   text-decoration: underline;
   cursor: pointer;
-}
-
-.objectos-danger {
-  border-color: var(--error);
-  color: var(--error);
-}
-
-/* The confirmation is a modal over the view, next to nothing it could be mistaken for. */
-.objectos-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  display: grid;
-  place-items: center;
-  padding: var(--space-5);
-  background: color-mix(in srgb, var(--bg) 72%, transparent);
-}
-
-.objectos-confirm {
-  width: min(32rem, 100%);
-  background: var(--surface);
-  border: 1px solid var(--error);
-  border-radius: var(--radius-lg);
-  padding: var(--space-5);
-  display: grid;
-  gap: var(--space-4);
-  box-shadow: var(--shadow-panel);
-}
-
-.objectos-confirm p {
-  margin: 0;
 }
 
 .objectos-due {
@@ -415,16 +316,6 @@ button.objectos-item:hover {
    announces); with a notice in it, it is in the flow again. */
 .objectos-live:empty {
   position: absolute;
-}
-
-.objectos-error {
-  justify-items: start;
-}
-
-.objectos-primary {
-  background: color-mix(in srgb, var(--accent-tools) 16%, var(--surface-2));
-  border-color: color-mix(in srgb, var(--accent-tools) 60%, var(--border));
-  color: var(--text);
 }
 
 .objectos-status-select {

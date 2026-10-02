@@ -29,7 +29,7 @@ import {
   CATEGORY_LIST,
   dateToStamp,
   decimalsOf,
-  deleteObjectQuestion,
+  deleteObjectConfirm,
   dueLabel,
   EMPTY_OBJECT_FORM,
   fileSize,
@@ -197,9 +197,9 @@ test("file sizes read as people read them", () => {
 });
 
 test("deleting: components are mentioned only when there are some (Integration QA F10)", () => {
-  assert.equal(deleteObjectQuestion("Kitchen scale", 0), "Delete Kitchen scale with all its records and attached files? This cannot be undone.");
-  assert.equal(deleteObjectQuestion("Printer", 1), "Delete Printer with all its records and attached files? Its 1 component will be kept. This cannot be undone.");
-  assert.equal(deleteObjectQuestion("Car", 3), "Delete Car with all its records and attached files? Its 3 components will be kept. This cannot be undone.");
+  assert.deepEqual(deleteObjectConfirm("Kitchen scale", 0), { title: "Delete Kitchen scale?", detail: "All its records and attached files are deleted. This cannot be undone." });
+  assert.deepEqual(deleteObjectConfirm("Printer", 1), { title: "Delete Printer?", detail: "All its records and attached files are deleted. Its 1 component will be kept. This cannot be undone." });
+  assert.deepEqual(deleteObjectConfirm("Car", 3), { title: "Delete Car?", detail: "All its records and attached files are deleted. Its 3 components will be kept. This cannot be undone." });
 });
 
 test("the last action's notice clears when the user opens another object or tab (Integration QA F9)", async () => {

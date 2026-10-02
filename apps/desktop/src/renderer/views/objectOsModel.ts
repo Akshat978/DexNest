@@ -326,8 +326,8 @@ export function overviewRows(o: ObjectRecord): { label: string; value: string; t
   return rows.filter((r) => r.value);
 }
 
-/** The question before deleting an object; components are only mentioned when there are some. */
-export function deleteObjectQuestion(name: string, components: number): string {
+/** The confirmation before deleting an object; components are only mentioned when there are some. */
+export function deleteObjectConfirm(name: string, components: number): { title: string; detail: string } {
   const kept = components === 0 ? "" : ` Its ${components} component${components === 1 ? "" : "s"} will be kept.`;
-  return `Delete ${name} with all its records and attached files?${kept} This cannot be undone.`;
+  return { title: `Delete ${name}?`, detail: `All its records and attached files are deleted.${kept} This cannot be undone.` };
 }

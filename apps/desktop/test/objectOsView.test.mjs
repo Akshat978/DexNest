@@ -107,7 +107,7 @@ const section = (html, label) => {
 
 test("loading: a status, busy, no controls yet", () => {
   const html = render({});
-  assert.match(html, /role="status"[^>]*>Loading ObjectOS/);
+  assert.match(html, /role="status"[^>]*>(?:<[^>]+>)*Loading ObjectOS…/);
   assert.match(html, /aria-busy="true"/);
   assert.doesNotMatch(html, /role="tablist"/);
   assert.doesNotMatch(html, />Add object</);
@@ -116,7 +116,7 @@ test("loading: a status, busy, no controls yet", () => {
 test("error: an alert with the reason and a retry", () => {
   const html = render({ initial: { status: null, error: "database is locked" } });
   assert.match(html, /role="alert"/);
-  assert.match(html, /ObjectOS could not load: database is locked/);
+  assert.match(html, /class="kit-error__title">ObjectOS could not load<\/h2><p class="kit-error__message">database is locked<\/p>/);
   assert.match(html, />Try again</);
 });
 
@@ -169,7 +169,7 @@ test("detail tabs: nine, one tab stop, the selected tab controls a labelled, foc
   assert.equal((html.match(/role="tab"[^>]*tabindex="0"/g) ?? []).length, 1);
   for (const t of ["Overview", "Maintenance", "Parts", "Modifications", "Settings", "Measurements", "Files", "Purchase", "History"]) assert.match(html, new RegExp(`role="tab"[^>]*>${t}</button>`));
   assert.match(html, /id="objectos-tab-files" aria-selected="true" aria-controls="objectos-panel-files" tabindex="0"/);
-  assert.match(html, /role="tabpanel" id="objectos-panel-files" aria-labelledby="objectos-tab-files" class="objectos-panel" tabindex="0"/);
+  assert.match(html, /role="tabpanel" id="objectos-panel-files" aria-labelledby="objectos-tab-files" class="kit-tabpanel objectos-panel" tabindex="0"/);
   assert.match(html, /<span class="technical">7K3F-9QXM<\/span> · Printer · Active/);
 });
 
@@ -191,7 +191,7 @@ test("maintenance: due state in words, pause, delete asks first, and a labelled 
   assert.match(html, />Pause</);
   assert.match(html, /aria-label="Delete schedule Replace nozzle">Delete…</);
   for (const id of ["objectos-s-title", "objectos-s-kind", "objectos-s-every", "objectos-l-schedule", "objectos-l-title", "objectos-l-date", "objectos-l-by", "objectos-l-amount", "objectos-l-currency", "objectos-l-reading", "objectos-l-part", "objectos-l-qty", "objectos-l-notes"]) {
-    assert.match(html, new RegExp(`<label for="${id}">`), id);
+    assert.match(html, new RegExp(`<label for="${id}"(?: class="kit-field__label")?>`), id);
   }
   assert.match(html, /Replaced nozzle/);
   assert.match(html, /<span class="technical">12.50 EUR<\/span>/);
@@ -211,7 +211,7 @@ test("modifications: reversible ones can be marked reverted", () => {
   assert.match(html, /Added enclosure/);
   assert.match(html, /Reversible/);
   assert.match(html, />Mark reverted</);
-  assert.match(html, /<label for="objectos-m-title">What changed<\/label>/);
+  assert.match(html, /<label for="objectos-m-title" class="kit-field__label">What changed<\/label>/);
 });
 
 test("settings: versions grouped, compare shows the differences", () => {
@@ -223,14 +223,14 @@ test("settings: versions grouped, compare shows the differences", () => {
   assert.match(html, /~ layer_height: 0.2 → 0.15/);
   assert.match(html, /\+ ironing = on/);
   assert.match(html, /1 unchanged/);
-  assert.match(html, /<label for="objectos-set-values">Values, one per line as key = value<\/label>/);
+  assert.match(html, /<label for="objectos-set-values" class="kit-field__label">Values, one per line as key = value<\/label>/);
 });
 
 test("measurements: grouped by key with the latest reading and history", () => {
   const html = render({ initial: { ...ready, detail, tab: "measurements" } });
   assert.match(html, /print hours <span class="objectos-meta">latest <span class="technical">412<\/span> h<\/span>/);
   assert.match(html, /<td class="technical">380 h<\/td>/);
-  assert.match(html, /<label for="objectos-ms-key">What<\/label>/);
+  assert.match(html, /<label for="objectos-ms-key" class="kit-field__label">What<\/label>/);
 });
 
 test("files: attach by role; open and remove each file; what happens to executables is said", () => {
@@ -251,7 +251,7 @@ test("purchase: warranty in words, price in technical type, receipt opens throug
   assert.match(html, /class="objectos-tone-warn">Warranty ends in 12 days/);
   assert.match(html, /<dd class="technical">1099.00 EUR<\/dd>/);
   assert.match(html, /<button type="button" class="objectos-link">receipt.pdf<\/button>/);
-  assert.match(html, /<label for="objectos-pu-warranty">Warranty until<\/label>/);
+  assert.match(html, /<label for="objectos-pu-warranty" class="kit-field__label">Warranty until<\/label>/);
 });
 
 test("history: newest first, with kind and time; empty says so", () => {
@@ -274,36 +274,37 @@ test("needs attention shows the five most urgent, then a toggle for the rest", (
 
 test("the empty state offers the first steps itself", () => {
   const html = render({ initial: { status: status(0) } });
-  assert.match(html, /<button type="button" class="objectos-primary">Add your first object<\/button>/);
+  assert.match(html, /<section class="kit-empty" aria-label="Nothing in ObjectOS yet">/);
+  assert.match(html, /<button type="button" class="kit-button kit-button--primary kit-button--md">Add your first object<\/button>/);
   assert.match(html, />Import an export…<\/button>/);
 });
 
 test("the detail header's status select is named, not labelled above, so the header buttons stay one height", () => {
   const html = render({ initial: { ...ready, detail } });
-  assert.match(html, /<select class="objectos-status-select" aria-label="Status">/);
+  assert.match(html, /<select class="kit-input kit-select objectos-status-select" aria-label="Status">/);
   assert.doesNotMatch(html, /<label class="objectos-inline">Status/);
 });
 
 test("the add form marks the name as required", () => {
   const html = render({ initial: { ...ready, editing: { id: null, name: "", category: "other", make: "", model: "", serial: "", location: "", status: "active", parentId: "", tags: "", notes: "" } } });
-  assert.match(html, /<label for="objectos-f-name">Name \(required\)<\/label><input id="objectos-f-name" required=""/);
+  assert.match(html, /<label for="objectos-f-name" class="kit-field__label">Name \(required\)<\/label><input class="kit-input" id="objectos-f-name" required=""/);
 });
 
 test("delete asks first: an alert dialog that names what is kept", () => {
-  const confirm = { actionId: "object_os.object.delete", params: { input: { id: printer.id } }, question: "Delete Workshop printer with all its records and attached files? Its 1 component will be kept. This cannot be undone." };
+  const confirm = { actionId: "object_os.object.delete", params: { input: { id: printer.id } }, title: "Delete Workshop printer?", detail: "All its records and attached files are deleted. Its 1 component will be kept. This cannot be undone." };
   const html = render({ initial: { ...ready, detail, confirm } });
-  assert.match(html, /<div class="objectos-backdrop"><div class="objectos-confirm" role="alertdialog" aria-labelledby="objectos-confirm-text" aria-modal="true">/);
+  assert.match(html, /<div class="kit-backdrop" style="--kit-accent:var\(--accent-tools\)"><div class="kit-dialog" role="alertdialog" aria-modal="true" aria-labelledby="([^"]+)" aria-describedby="([^"]+)"><header class="kit-dialog__header"><h2 id="\1" class="kit-dialog__title">Delete Workshop printer\?<\/h2><p id="\2" class="kit-dialog__description">/);
   assert.match(html, /Its 1 component will be kept/);
-  assert.match(html, />Delete<\/button><button type="button">Cancel<\/button>/);
+  assert.match(html, />Cancel<\/button><button type="button" class="kit-button kit-button--danger kit-button--md kit-confirm__ok">Delete<\/button>/);
 });
 
 test("add and edit: a labelled form; part-of never offers the object itself", () => {
   const add = render({ initial: { ...ready, editing: { id: null, name: "", category: "other", make: "", model: "", serial: "", location: "", status: "active", parentId: "", tags: "", notes: "" } } });
   assert.match(add, /<h3 id="objectos-form-title">Add an object<\/h3>/);
   for (const id of ["objectos-f-name", "objectos-f-category", "objectos-f-status", "objectos-f-make", "objectos-f-model", "objectos-f-serial", "objectos-f-location", "objectos-f-parent", "objectos-f-tags", "objectos-f-notes"]) {
-    assert.match(add, new RegExp(`<label for="${id}">`), id);
+    assert.match(add, new RegExp(`<label for="${id}"(?: class="kit-field__label")?>`), id);
   }
-  assert.match(add, /<button type="submit" disabled="">Add object<\/button>/, "no name, no submit");
+  assert.match(add, /<button type="submit" class="kit-button kit-button--primary kit-button--md" disabled="">Add object<\/button>/, "no name, no submit");
   const edit = render({ initial: { ...ready, editing: { id: printer.id, name: printer.name, category: "printer", make: "", model: "", serial: "", location: "", status: "active", parentId: "", tags: "", notes: "" } } });
   assert.match(edit, /Edit object/);
   assert.doesNotMatch(edit, new RegExp(`<option value="${printer.id}">`));
@@ -318,7 +319,7 @@ test("every form control has a label", () => {
       if (/ aria-label="[^"]+"/.test(tag)) {
         // Named directly (the header's status select).
       } else if (id) {
-        assert.match(html, new RegExp(`<label for="${id}">`), `${tab}: ${tag}`);
+        assert.match(html, new RegExp(`<label for="${id}"(?: class="kit-field__label")?>`), `${tab}: ${tag}`);
       } else {
         // No id: it must sit inside a <label>.
         const at = html.indexOf(tag);

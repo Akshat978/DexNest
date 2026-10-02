@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import type {
   AttentionView,
   ObjectDetail,
@@ -9,9 +9,10 @@ import type {
   SettingsSnapshot,
   TimelineItem
 } from "@dexnest/object-os";
-import { PageHeader } from "../components/shared";
+import { Package } from "lucide-react";
+import { accentStyle, Button, ConfirmDialog, EmptyState, ErrorState, Field, InlineError, LoadingState, Notice, PageHeader, Select, TabPanel, Tabs, TextArea, TextInput } from "../components/ui/kit";
 import {
-  deleteObjectQuestion,
+  deleteObjectConfirm,
   actionMessage,
   attentionLabel,
   attentionSummaryText,
@@ -30,7 +31,6 @@ import {
   measurementGroups,
   modificationLabel,
   moneyAmountText,
-  nextTab,
   objectFromForm,
   overviewRows,
   parseSettingsText,
@@ -71,7 +71,12 @@ export interface ObjectOsBridge {
 export interface Confirm {
   actionId: string;
   params: Record<string, unknown>;
-  question: string;
+  /** The question ("Delete Car?"). */
+  title: string;
+  /** What happens if the owner says yes. */
+  detail: string;
+  /** The button that does it; "Delete" unless said otherwise. */
+  confirmLabel?: string;
 }
 
 export interface ObjectOsViewProps {
@@ -135,7 +140,6 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
   const [history, setHistory] = useState<TimelineItem[]>(initial?.history ?? []);
   const [moreHistory, setMoreHistory] = useState(false);
   const [showAllAttention, setShowAllAttention] = useState(false);
-  const tabRefs = useRef(new Map<Tab, HTMLButtonElement>());
 
   const listFilter = useCallback(
     (text: string, f: typeof filter) => ({
@@ -277,55 +281,56 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
     if (next === "history" && detail) void loadHistory(detail.object.id, null).catch((e: unknown) => setNotice({ ok: false, text: errorText(e) }));
   }
 
-  function onTabKey(event: React.KeyboardEvent) {
-    const next = nextTab(tab, event.key);
-    if (!next) return;
-    event.preventDefault();
-    selectTab(next);
-    tabRefs.current.get(next)?.focus();
-  }
-
   const state = viewState({ loading, error, status });
   const filtered = Boolean(search.trim() || filter.category || filter.status || filter.location);
   const headerActions =
     state.kind === "ready" || state.kind === "empty" ? (
       <>
-        <button type="button" disabled={busy} onClick={() => { setEditing(EMPTY_OBJECT_FORM); setDetail(null); }}>Add object</button>
-        {state.kind === "ready" && <button type="button" disabled={busy} onClick={() => void run("object_os.export")}>Export all…</button>}
-        <button type="button" disabled={busy} onClick={() => void run("object_os.import")}>Import…</button>
+        <Button variant="primary" disabled={busy} onClick={() => { setEditing(EMPTY_OBJECT_FORM); setDetail(null); }}>Add object</Button>
+        {state.kind === "ready" && <Button disabled={busy} onClick={() => void run("object_os.export")}>Export all…</Button>}
+        <Button disabled={busy} onClick={() => void run("object_os.import")}>Import…</Button>
       </>
     ) : undefined;
 
   return (
-    <section className="view-stack objectos" aria-labelledby="objectos-title" aria-busy={state.kind === "loading" || busy}>
-      <PageHeader eyebrow="Your things, and everything about them" title="ObjectOS" titleId="objectos-title" actions={headerActions} />
+    <section className="view-stack objectos" style={accentStyle("tools")} aria-labelledby="objectos-title" aria-busy={state.kind === "loading" || busy}>
+      <PageHeader icon={<Package />} title="ObjectOS" titleId="objectos-title" subtitle="Your things, and everything about them" actions={headerActions} />
       <div className="objectos-live" aria-live="polite">
-        {notice && <p className={notice.ok ? "objectos-notice" : "objectos-notice objectos-notice--error"} role={notice.ok ? "status" : "alert"}>{notice.text}</p>}
+        {notice && (notice.ok ? <Notice>{notice.text}</Notice> : <InlineError>{notice.text}</InlineError>)}
       </div>
 
-      {state.kind === "loading" && <p className="empty-state" role="status">Loading ObjectOS…</p>}
+      {state.kind === "loading" && <LoadingState label="Loading ObjectOS" />}
 
-      {state.kind === "error" && (
-        <div className="objectos-error" role="alert">
-          <p>ObjectOS could not load: {state.message}</p>
-          <div className="button-row">
-            <button type="button" onClick={() => void load()}>Try again</button>
-          </div>
-        </div>
-      )}
+      {state.kind === "error" && <ErrorState title="ObjectOS could not load" message={state.message} onRetry={() => void load()} />}
 
       {state.kind === "empty" && !editing && (
-        <div className="empty-state objectos-intro">
+        <EmptyState
+          icon={<Package />}
+          title="Nothing in ObjectOS yet"
+          actions={
+            <>
+              <Button variant="primary" disabled={busy} onClick={() => { setEditing(EMPTY_OBJECT_FORM); setDetail(null); }}>Add your first object</Button>
+              <Button disabled={busy} onClick={() => void run("object_os.import")}>Import an export…</Button>
+            </>
+          }
+        >
           <p>ObjectOS keeps one record for each thing you own: what it is, where it is, its maintenance, parts, settings, measurements, files and receipts, and everything that happened to it.</p>
-          <p>Nothing is in it yet. Add your first object, or import an ObjectOS export. Everything stays on this computer; ObjectOS never reads Finance, Vault or any other module's data.</p>
-          <div className="button-row">
-            <button type="button" className="objectos-primary" disabled={busy} onClick={() => { setEditing(EMPTY_OBJECT_FORM); setDetail(null); }}>Add your first object</button>
-            <button type="button" disabled={busy} onClick={() => void run("object_os.import")}>Import an export…</button>
-          </div>
-        </div>
+          <p>Add your first object, or import an ObjectOS export. Everything stays on this computer; ObjectOS never reads Finance, Vault or any other module's data.</p>
+        </EmptyState>
       )}
 
-      {confirm && <ConfirmBox confirm={confirm} busy={busy} onConfirm={() => void confirmNow()} onCancel={() => setConfirm(null)} />}
+      {confirm && (
+        <ConfirmDialog
+          title={confirm.title}
+          confirmLabel={confirm.confirmLabel ?? "Delete"}
+          busy={busy}
+          accent="tools"
+          onConfirm={() => void confirmNow()}
+          onCancel={() => setConfirm(null)}
+        >
+          {confirm.detail}
+        </ConfirmDialog>
+      )}
 
       {(state.kind === "ready" || state.kind === "empty") && status && (
         <div className="objectos-layout">
@@ -372,32 +377,32 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
                 onSubmit={(e) => { e.preventDefault(); void applyFilter(filter, search); }}
               >
                 <label htmlFor="objectos-search-input">Search names, makes, models, serials and tags</label>
-                <input id="objectos-search-input" type="search" value={search} onChange={(e) => setSearch(e.target.value)} />
-                <button type="submit">Search</button>
+                <TextInput id="objectos-search-input" type="search" value={search} onChange={(e) => setSearch(e.target.value)} />
+                <Button type="submit">Search</Button>
               </form>
               <div className="objectos-filters">
                 <label>
                   Category
-                  <select value={filter.category} onChange={(e) => void applyFilter({ ...filter, category: e.target.value })}>
+                  <Select value={filter.category} onChange={(e) => void applyFilter({ ...filter, category: e.target.value })}>
                     <option value="">All</option>
                     {CATEGORY_LIST.map((c) => <option key={c} value={c}>{CATEGORY_LABELS[c]}</option>)}
-                  </select>
+                  </Select>
                 </label>
                 <label>
                   Status
-                  <select value={filter.status} onChange={(e) => void applyFilter({ ...filter, status: e.target.value })}>
+                  <Select value={filter.status} onChange={(e) => void applyFilter({ ...filter, status: e.target.value })}>
                     <option value="">All</option>
                     {STATUS_LIST.map((s) => <option key={s} value={s}>{STATUS_LABELS[s]}</option>)}
-                  </select>
+                  </Select>
                 </label>
                 <label>
                   Location
-                  <select value={filter.location} onChange={(e) => void applyFilter({ ...filter, location: e.target.value })}>
+                  <Select value={filter.location} onChange={(e) => void applyFilter({ ...filter, location: e.target.value })}>
                     <option value="">All</option>
                     {locations.map((l) => <option key={l} value={l}>{l}</option>)}
-                  </select>
+                  </Select>
                 </label>
-                {filtered && <button type="button" onClick={() => { setSearch(""); void applyFilter({ category: "", status: "", location: "" }, ""); }}>Clear</button>}
+                {filtered && <Button variant="ghost" onClick={() => { setSearch(""); void applyFilter({ category: "", status: "", location: "" }, ""); }}>Clear</Button>}
               </div>
 
               <ul className="objectos-list" aria-label="Objects">
@@ -421,10 +426,10 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
                   {status.remindersEnabled ? "On." : "Off."} Once a day, a quiet notification with counts only: how many things are overdue, due soon, out of warranty soon or low on stock. Needs attention above is always up to date either way.
                 </p>
                 {status.lastReminder && <p className="objectos-meta">Last check <When at={status.lastReminder.startedAt} withTime /></p>}
-                {status.lastError && <p className="objectos-notice--error" role="alert">The last check failed: {status.lastError}</p>}
-                <button type="button" disabled={busy} aria-pressed={status.remindersEnabled} onClick={() => void run(status.remindersEnabled ? "object_os.reminders.disable" : "object_os.reminders.enable")}>
+                {status.lastError && <InlineError>The last check failed: {status.lastError}</InlineError>}
+                <Button disabled={busy} aria-pressed={status.remindersEnabled} onClick={() => void run(status.remindersEnabled ? "object_os.reminders.disable" : "object_os.reminders.enable")}>
                   {status.remindersEnabled ? "Turn off daily reminders" : "Turn on daily reminders"}
-                </button>
+                </Button>
               </section>
             </div>
           )}
@@ -442,45 +447,27 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
                     </p>
                   </div>
                   <div className="button-row">
-                    <button type="button" disabled={busy} onClick={() => setEditing(formFromObject(detail.object))}>Edit</button>
-                    <select className="objectos-status-select" aria-label="Status" value={detail.object.status} disabled={busy} onChange={(e) => void run("object_os.object.set_status", { input: { id: detail.object.id, status: e.target.value } })}>
+                    <Button disabled={busy} onClick={() => setEditing(formFromObject(detail.object))}>Edit</Button>
+                    <Select className="objectos-status-select" aria-label="Status" value={detail.object.status} disabled={busy} onChange={(e) => void run("object_os.object.set_status", { input: { id: detail.object.id, status: e.target.value } })}>
                       {STATUS_LIST.map((s) => <option key={s} value={s}>{STATUS_LABELS[s]}</option>)}
-                    </select>
-                    <button type="button" disabled={busy} onClick={() => void run("object_os.export", { objectIds: [detail.object.id] })}>Export…</button>
-                    <button
-                      type="button"
-                      className="objectos-danger"
+                    </Select>
+                    <Button disabled={busy} onClick={() => void run("object_os.export", { objectIds: [detail.object.id] })}>Export…</Button>
+                    <Button
+                      variant="danger"
                       disabled={busy}
                       onClick={() => ask({
                         actionId: "object_os.object.delete",
                         params: { input: { id: detail.object.id } },
-                        question: deleteObjectQuestion(detail.object.name, detail.components.length)
-                      })}
-                    >
+                        ...deleteObjectConfirm(detail.object.name, detail.components.length)
+                      })}>
                       Delete…
-                    </button>
+                    </Button>
                   </div>
                 </div>
 
-                <div className="objectos-tabs" role="tablist" aria-label="Object sections" onKeyDown={onTabKey}>
-                  {TABS.map((t) => (
-                    <button
-                      key={t}
-                      ref={(el) => { if (el) tabRefs.current.set(t, el); else tabRefs.current.delete(t); }}
-                      type="button"
-                      role="tab"
-                      id={`objectos-tab-${t}`}
-                      aria-selected={tab === t}
-                      aria-controls={`objectos-panel-${t}`}
-                      tabIndex={tab === t ? 0 : -1}
-                      onClick={() => selectTab(t)}
-                    >
-                      {TAB_LABELS[t]}
-                    </button>
-                  ))}
-                </div>
+                <Tabs label="Object sections" idPrefix="objectos" value={tab} onChange={selectTab} tabs={TABS.map((t) => ({ id: t, label: TAB_LABELS[t] }))} />
 
-                <div role="tabpanel" id={`objectos-panel-${tab}`} aria-labelledby={`objectos-tab-${tab}`} className="objectos-panel" tabIndex={0}>
+                <TabPanel idPrefix="objectos" id={tab} className="objectos-panel">
                   {tab === "overview" && <OverviewPanel detail={detail} photo={photo} busy={busy} run={run} onOpen={(id) => showObject(id)} />}
                   {tab === "maintenance" && <MaintenancePanel detail={detail} busy={busy} run={run} ask={ask} />}
                   {tab === "parts" && <PartsPanel detail={detail} busy={busy} run={run} ask={ask} />}
@@ -500,10 +487,10 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
                           </li>
                         ))}
                       </ol>
-                      {moreHistory && <button type="button" disabled={busy} onClick={() => void loadHistory(detail.object.id, history[history.length - 1] ?? null)}>Show older</button>}
+                      {moreHistory && <Button variant="ghost" disabled={busy} onClick={() => void loadHistory(detail.object.id, history[history.length - 1] ?? null)}>Show older</Button>}
                     </>
                   )}
-                </div>
+                </TabPanel>
               </section>
             ) : state.kind === "ready" ? (
               <p className="objectos-hint">Choose an object to see its maintenance, parts, settings, measurements, files, purchase and history.</p>
@@ -515,63 +502,7 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
   );
 }
 
-// --- confirm ------------------------------------------------------------------
-
-function ConfirmBox({ confirm, busy, onConfirm, onCancel }: { confirm: Confirm; busy: boolean; onConfirm(): void; onCancel(): void }) {
-  const cancelRef = useRef<HTMLButtonElement>(null);
-  const confirmRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    // The safe choice has focus: Enter on an unexpected dialog does nothing harmful.
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    cancelRef.current?.focus();
-    // Back to whatever opened it when it closes.
-    return () => opener?.focus();
-  }, [confirm]);
-  function onKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      onCancel();
-      return;
-    }
-    if (e.key !== "Tab") return;
-    // Focus stays inside the dialog: two buttons, wrapping both ways.
-    const order = [confirmRef.current, cancelRef.current].filter((b): b is HTMLButtonElement => b !== null && !b.disabled);
-    if (order.length === 0) return;
-    const at = order.indexOf(document.activeElement as HTMLButtonElement);
-    e.preventDefault();
-    const next = e.shiftKey ? (at <= 0 ? order.length - 1 : at - 1) : (at + 1) % order.length;
-    order[next]?.focus();
-  }
-  return (
-    <div className="objectos-backdrop">
-      <div
-        className="objectos-confirm"
-        role="alertdialog"
-        aria-labelledby="objectos-confirm-text"
-        aria-modal="true"
-        onKeyDown={onKeyDown}
-      >
-        <p id="objectos-confirm-text">{confirm.question}</p>
-        <div className="button-row">
-          <button type="button" ref={confirmRef} className="objectos-danger" disabled={busy} onClick={onConfirm}>Delete</button>
-          <button type="button" ref={cancelRef} onClick={onCancel}>Cancel</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // --- add and edit -----------------------------------------------------------------
-
-function Field(props: { id: string; label: string; children: React.ReactNode; hint?: string }) {
-  return (
-    <div className="objectos-field">
-      <label htmlFor={props.id}>{props.label}</label>
-      {props.children}
-      {props.hint && <p className="objectos-hint" id={`${props.id}-hint`}>{props.hint}</p>}
-    </div>
-  );
-}
 
 function ObjectFormPanel(props: {
   form: ObjectForm;
@@ -587,49 +518,49 @@ function ObjectFormPanel(props: {
   return (
     <form className="objectos-form" aria-labelledby="objectos-form-title" onSubmit={props.onSubmit}>
       <h3 id="objectos-form-title">{form.id ? "Edit object" : "Add an object"}</h3>
-      <Field id="objectos-f-name" label="Name (required)">
-        <input id="objectos-f-name" required maxLength={120} value={form.name} onChange={(e) => set("name", e.target.value)} />
+      <Field htmlFor="objectos-f-name" label="Name (required)">
+        <TextInput id="objectos-f-name" required maxLength={120} value={form.name} onChange={(e) => set("name", e.target.value)} />
       </Field>
       <div className="objectos-grid">
-        <Field id="objectos-f-category" label="Category">
-          <select id="objectos-f-category" value={form.category} onChange={(e) => set("category", e.target.value as ObjectForm["category"])}>
+        <Field htmlFor="objectos-f-category" label="Category">
+          <Select id="objectos-f-category" value={form.category} onChange={(e) => set("category", e.target.value as ObjectForm["category"])}>
             {CATEGORY_LIST.map((c) => <option key={c} value={c}>{CATEGORY_LABELS[c]}</option>)}
-          </select>
+          </Select>
         </Field>
-        <Field id="objectos-f-status" label="Status">
-          <select id="objectos-f-status" value={form.status} onChange={(e) => set("status", e.target.value as ObjectForm["status"])}>
+        <Field htmlFor="objectos-f-status" label="Status">
+          <Select id="objectos-f-status" value={form.status} onChange={(e) => set("status", e.target.value as ObjectForm["status"])}>
             {STATUS_LIST.map((s) => <option key={s} value={s}>{STATUS_LABELS[s]}</option>)}
-          </select>
+          </Select>
         </Field>
-        <Field id="objectos-f-make" label="Make">
-          <input id="objectos-f-make" maxLength={120} value={form.make} onChange={(e) => set("make", e.target.value)} />
+        <Field htmlFor="objectos-f-make" label="Make">
+          <TextInput id="objectos-f-make" maxLength={120} value={form.make} onChange={(e) => set("make", e.target.value)} />
         </Field>
-        <Field id="objectos-f-model" label="Model">
-          <input id="objectos-f-model" maxLength={120} value={form.model} onChange={(e) => set("model", e.target.value)} />
+        <Field htmlFor="objectos-f-model" label="Model">
+          <TextInput id="objectos-f-model" maxLength={120} value={form.model} onChange={(e) => set("model", e.target.value)} />
         </Field>
-        <Field id="objectos-f-serial" label="Serial number">
-          <input id="objectos-f-serial" className="technical" maxLength={80} value={form.serial} onChange={(e) => set("serial", e.target.value)} />
+        <Field htmlFor="objectos-f-serial" label="Serial number">
+          <TextInput id="objectos-f-serial" className="technical" maxLength={80} value={form.serial} onChange={(e) => set("serial", e.target.value)} />
         </Field>
-        <Field id="objectos-f-location" label="Location">
-          <input id="objectos-f-location" list="objectos-locations" maxLength={120} value={form.location} onChange={(e) => set("location", e.target.value)} />
+        <Field htmlFor="objectos-f-location" label="Location">
+          <TextInput id="objectos-f-location" list="objectos-locations" maxLength={120} value={form.location} onChange={(e) => set("location", e.target.value)} />
           <datalist id="objectos-locations">{props.locations.map((l) => <option key={l} value={l} />)}</datalist>
         </Field>
       </div>
-      <Field id="objectos-f-parent" label="Part of">
-        <select id="objectos-f-parent" value={form.parentId} onChange={(e) => set("parentId", e.target.value)}>
+      <Field htmlFor="objectos-f-parent" label="Part of">
+        <Select id="objectos-f-parent" value={form.parentId} onChange={(e) => set("parentId", e.target.value)}>
           <option value="">Nothing (a whole object)</option>
           {props.objects.filter((o) => o.id !== form.id).map((o) => <option key={o.id} value={o.id}>{o.name} ({formatObjectId(o.id)})</option>)}
-        </select>
+        </Select>
       </Field>
-      <Field id="objectos-f-tags" label="Tags" hint="Separate with commas.">
-        <input id="objectos-f-tags" aria-describedby="objectos-f-tags-hint" value={form.tags} onChange={(e) => set("tags", e.target.value)} />
+      <Field htmlFor="objectos-f-tags" label="Tags" hint="Separate with commas.">
+        <TextInput id="objectos-f-tags" aria-describedby="objectos-f-tags-hint" value={form.tags} onChange={(e) => set("tags", e.target.value)} />
       </Field>
-      <Field id="objectos-f-notes" label="Notes">
-        <textarea id="objectos-f-notes" rows={4} value={form.notes} onChange={(e) => set("notes", e.target.value)} />
+      <Field htmlFor="objectos-f-notes" label="Notes">
+        <TextArea id="objectos-f-notes" rows={4} value={form.notes} onChange={(e) => set("notes", e.target.value)} />
       </Field>
       <div className="button-row">
-        <button type="submit" disabled={props.busy || !form.name.trim()}>{form.id ? "Save changes" : "Add object"}</button>
-        <button type="button" onClick={props.onCancel}>Cancel</button>
+        <Button type="submit" variant="primary" disabled={props.busy || !form.name.trim()}>{form.id ? "Save changes" : "Add object"}</Button>
+        <Button variant="ghost" onClick={props.onCancel}>Cancel</Button>
       </div>
     </form>
   );
@@ -647,7 +578,8 @@ interface PanelProps {
 const recordDelete = (kind: string, id: string, what: string): Confirm => ({
   actionId: "object_os.record.delete",
   params: { kind, id },
-  question: `Delete ${what}? This cannot be undone.`
+  title: `Delete ${what}?`,
+  detail: "This cannot be undone."
 });
 
 function OverviewPanel({ detail, photo, busy, run, onOpen }: { detail: ObjectDetail; photo: string | null; busy: boolean; run: Run; onOpen(id: string): void }) {
@@ -714,7 +646,7 @@ function OverviewPanel({ detail, photo, busy, run, onOpen }: { detail: ObjectDet
                   <th scope="row">{f.key}</th>
                   <td>{f.value}</td>
                   <td><When at={f.updatedAt} /></td>
-                  <td><button type="button" disabled={busy} onClick={() => void run("object_os.state.set", { input: { objectId: o.id, key: f.key, value: "" } })} aria-label={`Clear ${f.key}`}>Clear</button></td>
+                  <td><Button variant="ghost" size="sm" disabled={busy} onClick={() => void run("object_os.state.set", { input: { objectId: o.id, key: f.key, value: "" } })} aria-label={`Clear ${f.key}`}>Clear</Button></td>
                 </tr>
               ))}
             </tbody>
@@ -728,14 +660,14 @@ function OverviewPanel({ detail, photo, busy, run, onOpen }: { detail: ObjectDet
             void run("object_os.state.set", { input: { objectId: o.id, key, value } }).then((ok) => { if (ok) { setKey(""); setValue(""); } });
           }}
         >
-          <Field id="objectos-state-key" label="What">
-            <input id="objectos-state-key" required maxLength={60} value={key} onChange={(e) => setKey(e.target.value)} list="objectos-state-keys" />
+          <Field htmlFor="objectos-state-key" label="What">
+            <TextInput id="objectos-state-key" required maxLength={60} value={key} onChange={(e) => setKey(e.target.value)} list="objectos-state-keys" />
             <datalist id="objectos-state-keys">{detail.state.map((f) => <option key={f.key} value={f.key} />)}</datalist>
           </Field>
-          <Field id="objectos-state-value" label="Value">
-            <input id="objectos-state-value" required maxLength={500} value={value} onChange={(e) => setValue(e.target.value)} />
+          <Field htmlFor="objectos-state-value" label="Value">
+            <TextInput id="objectos-state-value" required maxLength={500} value={value} onChange={(e) => setValue(e.target.value)} />
           </Field>
-          <button type="submit" disabled={busy || !key.trim() || !value.trim()}>Set</button>
+          <Button type="submit" disabled={busy || !key.trim() || !value.trim()}>Set</Button>
         </form>
       </section>
     </div>
@@ -785,14 +717,13 @@ function MaintenancePanel({ detail, busy, run, ask }: PanelProps) {
                 <span>{schedule.title} <span className="objectos-meta">{ruleLabel(schedule.rule)}</span></span>
                 <span className={`objectos-due objectos-tone-${dueTone(status)}`}>{dueLabel(status)}</span>
                 <span className="button-row">
-                  <button
-                    type="button"
+                  <Button
+                    size="sm"
                     disabled={busy}
-                    onClick={() => void run("object_os.schedule.save", { input: { id: schedule.id, objectId: o.id, title: schedule.title, rule: schedule.rule, startsAt: schedule.startsAt, startReading: schedule.startReading, notes: schedule.notes, active: !schedule.active } })}
-                  >
+                    onClick={() => void run("object_os.schedule.save", { input: { id: schedule.id, objectId: o.id, title: schedule.title, rule: schedule.rule, startsAt: schedule.startsAt, startReading: schedule.startReading, notes: schedule.notes, active: !schedule.active } })}>
                     {schedule.active ? "Pause" : "Resume"}
-                  </button>
-                  <button type="button" disabled={busy} aria-label={`Delete schedule ${schedule.title}`} onClick={() => ask(recordDelete("schedule", schedule.id, `the schedule "${schedule.title}"`))}>Delete…</button>
+                  </Button>
+                  <Button variant="ghost" size="sm" disabled={busy} aria-label={`Delete schedule ${schedule.title}`} onClick={() => ask(recordDelete("schedule", schedule.id, `the schedule "${schedule.title}"`))}>Delete…</Button>
                 </span>
               </li>
             ))}
@@ -800,32 +731,32 @@ function MaintenancePanel({ detail, busy, run, ask }: PanelProps) {
         )}
         <form className="objectos-form" aria-label="Add a schedule" onSubmit={(e) => void addSchedule(e)}>
           <div className="objectos-grid">
-            <Field id="objectos-s-title" label="Task">
-              <input id="objectos-s-title" required maxLength={200} value={sched.title} onChange={(e) => setSched({ ...sched, title: e.target.value })} />
+            <Field htmlFor="objectos-s-title" label="Task">
+              <TextInput id="objectos-s-title" required maxLength={200} value={sched.title} onChange={(e) => setSched({ ...sched, title: e.target.value })} />
             </Field>
-            <Field id="objectos-s-kind" label="Repeats by">
-              <select id="objectos-s-kind" value={sched.kind} onChange={(e) => setSched({ ...sched, kind: e.target.value as "time" | "usage" })}>
+            <Field htmlFor="objectos-s-kind" label="Repeats by">
+              <Select id="objectos-s-kind" value={sched.kind} onChange={(e) => setSched({ ...sched, kind: e.target.value as "time" | "usage" })}>
                 <option value="time">Time</option>
                 <option value="usage">A counter</option>
-              </select>
+              </Select>
             </Field>
-            <Field id="objectos-s-every" label="Every">
-              <input id="objectos-s-every" className="technical" inputMode="decimal" required value={sched.every} onChange={(e) => setSched({ ...sched, every: e.target.value })} />
+            <Field htmlFor="objectos-s-every" label="Every">
+              <TextInput id="objectos-s-every" className="technical" inputMode="decimal" required value={sched.every} onChange={(e) => setSched({ ...sched, every: e.target.value })} />
             </Field>
             {sched.kind === "time" ? (
-              <Field id="objectos-s-unit" label="Unit">
-                <select id="objectos-s-unit" value={sched.unit} onChange={(e) => setSched({ ...sched, unit: e.target.value })}>
+              <Field htmlFor="objectos-s-unit" label="Unit">
+                <Select id="objectos-s-unit" value={sched.unit} onChange={(e) => setSched({ ...sched, unit: e.target.value })}>
                   {UNIT_LIST.map((u) => <option key={u} value={u}>{u}</option>)}
-                </select>
+                </Select>
               </Field>
             ) : (
-              <Field id="objectos-s-key" label="Counter (a measurement)">
-                <input id="objectos-s-key" required list="objectos-measurement-keys" value={sched.measurementKey} onChange={(e) => setSched({ ...sched, measurementKey: e.target.value })} />
+              <Field htmlFor="objectos-s-key" label="Counter (a measurement)">
+                <TextInput id="objectos-s-key" required list="objectos-measurement-keys" value={sched.measurementKey} onChange={(e) => setSched({ ...sched, measurementKey: e.target.value })} />
                 <datalist id="objectos-measurement-keys">{keys.map((k) => <option key={k} value={k} />)}</datalist>
               </Field>
             )}
           </div>
-          <button type="submit" disabled={busy || !sched.title.trim()}>Add schedule</button>
+          <Button type="submit" variant="primary" disabled={busy || !sched.title.trim()}>Add schedule</Button>
         </form>
       </section>
 
@@ -833,48 +764,48 @@ function MaintenancePanel({ detail, busy, run, ask }: PanelProps) {
         <h4 id="objectos-log-title">Log</h4>
         <form className="objectos-form" aria-label="Log maintenance" onSubmit={(e) => void logIt(e)}>
           <div className="objectos-grid">
-            <Field id="objectos-l-schedule" label="For schedule">
-              <select id="objectos-l-schedule" value={log.scheduleId} onChange={(e) => setLog({ ...log, scheduleId: e.target.value })}>
+            <Field htmlFor="objectos-l-schedule" label="For schedule">
+              <Select id="objectos-l-schedule" value={log.scheduleId} onChange={(e) => setLog({ ...log, scheduleId: e.target.value })}>
                 <option value="">None (one-off)</option>
                 {detail.schedules.map(({ schedule }) => <option key={schedule.id} value={schedule.id}>{schedule.title}</option>)}
-              </select>
+              </Select>
             </Field>
-            <Field id="objectos-l-title" label="What was done">
-              <input id="objectos-l-title" maxLength={200} value={log.title} onChange={(e) => setLog({ ...log, title: e.target.value })} placeholder={titleOf(log.scheduleId || null) ?? ""} />
+            <Field htmlFor="objectos-l-title" label="What was done">
+              <TextInput id="objectos-l-title" maxLength={200} value={log.title} onChange={(e) => setLog({ ...log, title: e.target.value })} placeholder={titleOf(log.scheduleId || null) ?? ""} />
             </Field>
-            <Field id="objectos-l-date" label="Done on">
-              <input id="objectos-l-date" type="date" max={today} value={log.doneOn} onChange={(e) => setLog({ ...log, doneOn: e.target.value })} />
+            <Field htmlFor="objectos-l-date" label="Done on">
+              <TextInput id="objectos-l-date" type="date" max={today} value={log.doneOn} onChange={(e) => setLog({ ...log, doneOn: e.target.value })} />
             </Field>
-            <Field id="objectos-l-by" label="Done by">
-              <input id="objectos-l-by" maxLength={120} value={log.doneBy} onChange={(e) => setLog({ ...log, doneBy: e.target.value })} />
+            <Field htmlFor="objectos-l-by" label="Done by">
+              <TextInput id="objectos-l-by" maxLength={120} value={log.doneBy} onChange={(e) => setLog({ ...log, doneBy: e.target.value })} />
             </Field>
-            <Field id="objectos-l-amount" label="Cost">
-              <input id="objectos-l-amount" className="technical" inputMode="decimal" value={log.amount} onChange={(e) => setLog({ ...log, amount: e.target.value })} />
+            <Field htmlFor="objectos-l-amount" label="Cost">
+              <TextInput id="objectos-l-amount" className="technical" inputMode="decimal" value={log.amount} onChange={(e) => setLog({ ...log, amount: e.target.value })} />
             </Field>
-            <Field id="objectos-l-currency" label="Currency">
-              <input id="objectos-l-currency" className="technical" maxLength={3} value={log.currency} onChange={(e) => setLog({ ...log, currency: e.target.value })} />
+            <Field htmlFor="objectos-l-currency" label="Currency">
+              <TextInput id="objectos-l-currency" className="technical" maxLength={3} value={log.currency} onChange={(e) => setLog({ ...log, currency: e.target.value })} />
             </Field>
-            <Field id="objectos-l-reading" label="Counter reading">
-              <input id="objectos-l-reading" className="technical" inputMode="decimal" value={log.usageReading} onChange={(e) => setLog({ ...log, usageReading: e.target.value })} />
+            <Field htmlFor="objectos-l-reading" label="Counter reading">
+              <TextInput id="objectos-l-reading" className="technical" inputMode="decimal" value={log.usageReading} onChange={(e) => setLog({ ...log, usageReading: e.target.value })} />
             </Field>
             {detail.parts.length > 0 && (
               <>
-                <Field id="objectos-l-part" label="Part used">
-                  <select id="objectos-l-part" value={log.partId} onChange={(e) => setLog({ ...log, partId: e.target.value })}>
+                <Field htmlFor="objectos-l-part" label="Part used">
+                  <Select id="objectos-l-part" value={log.partId} onChange={(e) => setLog({ ...log, partId: e.target.value })}>
                     <option value="">None</option>
                     {detail.parts.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                  </select>
+                  </Select>
                 </Field>
-                <Field id="objectos-l-qty" label="How many">
-                  <input id="objectos-l-qty" className="technical" inputMode="decimal" value={log.partQty} onChange={(e) => setLog({ ...log, partQty: e.target.value })} />
+                <Field htmlFor="objectos-l-qty" label="How many">
+                  <TextInput id="objectos-l-qty" className="technical" inputMode="decimal" value={log.partQty} onChange={(e) => setLog({ ...log, partQty: e.target.value })} />
                 </Field>
               </>
             )}
           </div>
-          <Field id="objectos-l-notes" label="Notes">
-            <textarea id="objectos-l-notes" rows={2} value={log.notes} onChange={(e) => setLog({ ...log, notes: e.target.value })} />
+          <Field htmlFor="objectos-l-notes" label="Notes">
+            <TextArea id="objectos-l-notes" rows={2} value={log.notes} onChange={(e) => setLog({ ...log, notes: e.target.value })} />
           </Field>
-          <button type="submit" disabled={busy || !(log.title.trim() || log.scheduleId)}>Log it</button>
+          <Button type="submit" variant="primary" disabled={busy || !(log.title.trim() || log.scheduleId)}>Log it</Button>
         </form>
         {detail.maintenance.length === 0 ? (
           <p className="objectos-hint">Nothing logged yet.</p>
@@ -890,7 +821,7 @@ function MaintenancePanel({ detail, busy, run, ask }: PanelProps) {
                   </span>
                   {m.notes && <span className="objectos-notes">{m.notes}</span>}
                 </span>
-                <button type="button" disabled={busy} aria-label={`Delete log entry ${m.title}`} onClick={() => ask(recordDelete("maintenance", m.id, `the log entry "${m.title}"`))}>Delete…</button>
+                <Button variant="ghost" size="sm" disabled={busy} aria-label={`Delete log entry ${m.title}`} onClick={() => ask(recordDelete("maintenance", m.id, `the log entry "${m.title}"`))}>Delete…</Button>
               </li>
             ))}
           </ul>
@@ -939,18 +870,18 @@ function PartsPanel({ detail, busy, run, ask }: PanelProps) {
                     void run("object_os.part.adjust_stock", { input: { partId: p.id, delta: a.delta, reason: a.reason } }).then((ok) => { if (ok) setAdjust({ ...adjust, [p.id]: { delta: "", reason: a.reason } }); });
                   }}
                 >
-                  <Field id={`objectos-p-delta-${p.id}`} label="Change by">
-                    <input id={`objectos-p-delta-${p.id}`} className="technical" inputMode="decimal" value={a.delta} onChange={(e) => setAdjust({ ...adjust, [p.id]: { ...a, delta: e.target.value } })} />
+                  <Field htmlFor={`objectos-p-delta-${p.id}`} label="Change by">
+                    <TextInput id={`objectos-p-delta-${p.id}`} className="technical" inputMode="decimal" value={a.delta} onChange={(e) => setAdjust({ ...adjust, [p.id]: { ...a, delta: e.target.value } })} />
                   </Field>
-                  <Field id={`objectos-p-reason-${p.id}`} label="Because">
-                    <select id={`objectos-p-reason-${p.id}`} value={a.reason} onChange={(e) => setAdjust({ ...adjust, [p.id]: { ...a, reason: e.target.value } })}>
+                  <Field htmlFor={`objectos-p-reason-${p.id}`} label="Because">
+                    <Select id={`objectos-p-reason-${p.id}`} value={a.reason} onChange={(e) => setAdjust({ ...adjust, [p.id]: { ...a, reason: e.target.value } })}>
                       <option value="restocked">Restocked</option>
                       <option value="used">Used</option>
                       <option value="corrected">Corrected a count</option>
-                    </select>
+                    </Select>
                   </Field>
-                  <button type="submit" disabled={busy || !a.delta.trim()}>Update stock</button>
-                  <button type="button" disabled={busy} aria-label={`Delete part ${p.name}`} onClick={() => ask(recordDelete("part", p.id, `the part "${p.name}" (from every object it fits)`))}>Delete…</button>
+                  <Button type="submit" size="sm" disabled={busy || !a.delta.trim()}>Update stock</Button>
+                  <Button variant="ghost" size="sm" disabled={busy} aria-label={`Delete part ${p.name}`} onClick={() => ask(recordDelete("part", p.id, `the part "${p.name}" (from every object it fits)`))}>Delete…</Button>
                 </form>
               </li>
             );
@@ -960,26 +891,26 @@ function PartsPanel({ detail, busy, run, ask }: PanelProps) {
       <form className="objectos-form" aria-label="Add a part" onSubmit={(e) => void addPart(e)}>
         <h4>Add a part that fits this object</h4>
         <div className="objectos-grid">
-          <Field id="objectos-np-name" label="Name">
-            <input id="objectos-np-name" required maxLength={120} value={part.name} onChange={(e) => setPart({ ...part, name: e.target.value })} />
+          <Field htmlFor="objectos-np-name" label="Name">
+            <TextInput id="objectos-np-name" required maxLength={120} value={part.name} onChange={(e) => setPart({ ...part, name: e.target.value })} />
           </Field>
-          <Field id="objectos-np-number" label="Part number">
-            <input id="objectos-np-number" className="technical" maxLength={120} value={part.partNumber} onChange={(e) => setPart({ ...part, partNumber: e.target.value })} />
+          <Field htmlFor="objectos-np-number" label="Part number">
+            <TextInput id="objectos-np-number" className="technical" maxLength={120} value={part.partNumber} onChange={(e) => setPart({ ...part, partNumber: e.target.value })} />
           </Field>
-          <Field id="objectos-np-supplier" label="Supplier">
-            <input id="objectos-np-supplier" maxLength={120} value={part.supplier} onChange={(e) => setPart({ ...part, supplier: e.target.value })} />
+          <Field htmlFor="objectos-np-supplier" label="Supplier">
+            <TextInput id="objectos-np-supplier" maxLength={120} value={part.supplier} onChange={(e) => setPart({ ...part, supplier: e.target.value })} />
           </Field>
-          <Field id="objectos-np-unit" label="Unit">
-            <input id="objectos-np-unit" maxLength={20} value={part.unit} onChange={(e) => setPart({ ...part, unit: e.target.value })} />
+          <Field htmlFor="objectos-np-unit" label="Unit">
+            <TextInput id="objectos-np-unit" maxLength={20} value={part.unit} onChange={(e) => setPart({ ...part, unit: e.target.value })} />
           </Field>
-          <Field id="objectos-np-qty" label="In stock">
-            <input id="objectos-np-qty" className="technical" inputMode="decimal" value={part.quantity} onChange={(e) => setPart({ ...part, quantity: e.target.value })} />
+          <Field htmlFor="objectos-np-qty" label="In stock">
+            <TextInput id="objectos-np-qty" className="technical" inputMode="decimal" value={part.quantity} onChange={(e) => setPart({ ...part, quantity: e.target.value })} />
           </Field>
-          <Field id="objectos-np-low" label="Restock at">
-            <input id="objectos-np-low" className="technical" inputMode="decimal" value={part.lowStockAt} onChange={(e) => setPart({ ...part, lowStockAt: e.target.value })} />
+          <Field htmlFor="objectos-np-low" label="Restock at">
+            <TextInput id="objectos-np-low" className="technical" inputMode="decimal" value={part.lowStockAt} onChange={(e) => setPart({ ...part, lowStockAt: e.target.value })} />
           </Field>
         </div>
-        <button type="submit" disabled={busy || !part.name.trim()}>Add part</button>
+        <Button type="submit" variant="primary" disabled={busy || !part.name.trim()}>Add part</Button>
       </form>
     </div>
   );
@@ -1015,15 +946,14 @@ function ModificationsPanel({ detail, busy, run, ask }: PanelProps) {
               )}
               <div className="button-row">
                 {m.reversible && !m.revertedAt && (
-                  <button
-                    type="button"
+                  <Button
+                    size="sm"
                     disabled={busy}
-                    onClick={() => void run("object_os.modification.save", { input: { id: m.id, objectId: o.id, title: m.title, doneAt: m.doneAt, reason: m.reason, before: m.before, after: m.after, reversible: true, revertedAt: new Date().toISOString() } })}
-                  >
+                    onClick={() => void run("object_os.modification.save", { input: { id: m.id, objectId: o.id, title: m.title, doneAt: m.doneAt, reason: m.reason, before: m.before, after: m.after, reversible: true, revertedAt: new Date().toISOString() } })}>
                     Mark reverted
-                  </button>
+                  </Button>
                 )}
-                <button type="button" disabled={busy} aria-label={`Delete modification ${m.title}`} onClick={() => ask(recordDelete("modification", m.id, `the modification "${m.title}"`))}>Delete…</button>
+                <Button variant="ghost" size="sm" disabled={busy} aria-label={`Delete modification ${m.title}`} onClick={() => ask(recordDelete("modification", m.id, `the modification "${m.title}"`))}>Delete…</Button>
               </div>
             </li>
           ))}
@@ -1032,28 +962,28 @@ function ModificationsPanel({ detail, busy, run, ask }: PanelProps) {
       <form className="objectos-form" aria-label="Record a modification" onSubmit={(e) => void add(e)}>
         <h4>Record a modification</h4>
         <div className="objectos-grid">
-          <Field id="objectos-m-title" label="What changed">
-            <input id="objectos-m-title" required maxLength={200} value={mod.title} onChange={(e) => setMod({ ...mod, title: e.target.value })} />
+          <Field htmlFor="objectos-m-title" label="What changed">
+            <TextInput id="objectos-m-title" required maxLength={200} value={mod.title} onChange={(e) => setMod({ ...mod, title: e.target.value })} />
           </Field>
-          <Field id="objectos-m-date" label="Done on">
-            <input id="objectos-m-date" type="date" max={today} value={mod.doneOn} onChange={(e) => setMod({ ...mod, doneOn: e.target.value })} />
+          <Field htmlFor="objectos-m-date" label="Done on">
+            <TextInput id="objectos-m-date" type="date" max={today} value={mod.doneOn} onChange={(e) => setMod({ ...mod, doneOn: e.target.value })} />
           </Field>
         </div>
-        <Field id="objectos-m-reason" label="Why">
-          <textarea id="objectos-m-reason" rows={2} value={mod.reason} onChange={(e) => setMod({ ...mod, reason: e.target.value })} />
+        <Field htmlFor="objectos-m-reason" label="Why">
+          <TextArea id="objectos-m-reason" rows={2} value={mod.reason} onChange={(e) => setMod({ ...mod, reason: e.target.value })} />
         </Field>
         <div className="objectos-grid">
-          <Field id="objectos-m-before" label="Before">
-            <input id="objectos-m-before" value={mod.before} onChange={(e) => setMod({ ...mod, before: e.target.value })} />
+          <Field htmlFor="objectos-m-before" label="Before">
+            <TextInput id="objectos-m-before" value={mod.before} onChange={(e) => setMod({ ...mod, before: e.target.value })} />
           </Field>
-          <Field id="objectos-m-after" label="After">
-            <input id="objectos-m-after" value={mod.after} onChange={(e) => setMod({ ...mod, after: e.target.value })} />
+          <Field htmlFor="objectos-m-after" label="After">
+            <TextInput id="objectos-m-after" value={mod.after} onChange={(e) => setMod({ ...mod, after: e.target.value })} />
           </Field>
         </div>
         <label className="objectos-check">
           <input type="checkbox" checked={mod.reversible} onChange={(e) => setMod({ ...mod, reversible: e.target.checked })} /> Can be undone
         </label>
-        <button type="submit" disabled={busy || !mod.title.trim()}>Record</button>
+        <Button type="submit" variant="primary" disabled={busy || !mod.title.trim()}>Record</Button>
       </form>
     </div>
   );
@@ -1103,9 +1033,9 @@ function SettingsPanel({ detail, busy, run, ask, bridge, initialDiff }: PanelPro
                     <span className="technical">v{v.version}</span> · <When at={v.createdAt} /> · {Object.keys(v.values).length} values{v.note ? ` · ${v.note}` : ""}
                   </span>
                   <span className="button-row">
-                    <button type="button" aria-expanded={shown === v.id} onClick={() => setShown(shown === v.id ? null : v.id)}>{shown === v.id ? "Hide" : "Show"}</button>
-                    <button type="button" onClick={() => startFrom(v)}>Start from this</button>
-                    <button type="button" disabled={busy} aria-label={`Delete version ${v.version} of ${g.name}`} onClick={() => ask(recordDelete("settings", v.id, `version ${v.version} of "${g.name}"`))}>Delete…</button>
+                    <Button size="sm" aria-expanded={shown === v.id} onClick={() => setShown(shown === v.id ? null : v.id)}>{shown === v.id ? "Hide" : "Show"}</Button>
+                    <Button size="sm" onClick={() => startFrom(v)}>Start from this</Button>
+                    <Button variant="ghost" size="sm" disabled={busy} aria-label={`Delete version ${v.version} of ${g.name}`} onClick={() => ask(recordDelete("settings", v.id, `version ${v.version} of "${g.name}"`))}>Delete…</Button>
                   </span>
                   {shown === v.id && (
                     <dl className="objectos-facts objectos-values">
@@ -1119,21 +1049,21 @@ function SettingsPanel({ detail, busy, run, ask, bridge, initialDiff }: PanelPro
               <div className="objectos-inline-form" role="group" aria-label={`Compare versions of ${g.name}`}>
                 <label>
                   From
-                  <select value={comparing ? compare.from : ""} onChange={(e) => void diff(e.target.value, comparing ? compare.to : (g.versions[0]?.id ?? ""))}>
+                  <Select value={comparing ? compare.from : ""} onChange={(e) => void diff(e.target.value, comparing ? compare.to : (g.versions[0]?.id ?? ""))}>
                     <option value="">Choose</option>
                     {g.versions.map((v) => <option key={v.id} value={v.id}>v{v.version}</option>)}
-                  </select>
+                  </Select>
                 </label>
                 <label>
                   To
-                  <select value={comparing ? compare.to : ""} onChange={(e) => void diff(comparing ? compare.from : (g.versions[g.versions.length - 1]?.id ?? ""), e.target.value)}>
+                  <Select value={comparing ? compare.to : ""} onChange={(e) => void diff(comparing ? compare.from : (g.versions[g.versions.length - 1]?.id ?? ""), e.target.value)}>
                     <option value="">Choose</option>
                     {g.versions.map((v) => <option key={v.id} value={v.id}>v{v.version}</option>)}
-                  </select>
+                  </Select>
                 </label>
               </div>
             )}
-            {comparing && compare.error && <p className="objectos-notice--error" role="alert">{compare.error}</p>}
+            {comparing && compare.error && <InlineError>{compare.error}</InlineError>}
             {comparing && compare.diff && (
               <div className="objectos-diff" aria-label="Differences">
                 {compare.diff.added.length + compare.diff.removed.length + compare.diff.changed.length === 0 && <p className="objectos-hint">No differences.</p>}
@@ -1150,18 +1080,18 @@ function SettingsPanel({ detail, busy, run, ask, bridge, initialDiff }: PanelPro
       })}
       <form className="objectos-form" aria-label="Save settings" onSubmit={(e) => void save(e)}>
         <h4>Save settings</h4>
-        <Field id="objectos-set-name" label="Profile name" hint="Saving under an existing name adds a new version.">
-          <input id="objectos-set-name" aria-describedby="objectos-set-name-hint" required maxLength={120} list="objectos-settings-names" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
+        <Field htmlFor="objectos-set-name" label="Profile name" hint="Saving under an existing name adds a new version.">
+          <TextInput id="objectos-set-name" aria-describedby="objectos-set-name-hint" required maxLength={120} list="objectos-settings-names" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
           <datalist id="objectos-settings-names">{groups.map((g) => <option key={g.name} value={g.name} />)}</datalist>
         </Field>
-        <Field id="objectos-set-values" label="Values, one per line as key = value">
-          <textarea id="objectos-set-values" className="technical" rows={6} value={draft.text} aria-invalid={parsed.problems.length > 0} aria-describedby={parsed.problems.length ? "objectos-set-problems" : undefined} onChange={(e) => setDraft({ ...draft, text: e.target.value })} />
-          {parsed.problems.length > 0 && <p id="objectos-set-problems" className="objectos-notice--error">Line {parsed.problems.join(", ")} has no "key = value".</p>}
+        <Field htmlFor="objectos-set-values" label="Values, one per line as key = value">
+          <TextArea id="objectos-set-values" className="technical" rows={6} value={draft.text} aria-invalid={parsed.problems.length > 0} aria-describedby={parsed.problems.length ? "objectos-set-problems" : undefined} onChange={(e) => setDraft({ ...draft, text: e.target.value })} />
+          {parsed.problems.length > 0 && <p id="objectos-set-problems" className="kit-inline-error">Line {parsed.problems.join(", ")} has no "key = value".</p>}
         </Field>
-        <Field id="objectos-set-note" label="Note">
-          <input id="objectos-set-note" maxLength={200} value={draft.note} onChange={(e) => setDraft({ ...draft, note: e.target.value })} />
+        <Field htmlFor="objectos-set-note" label="Note">
+          <TextInput id="objectos-set-note" maxLength={200} value={draft.note} onChange={(e) => setDraft({ ...draft, note: e.target.value })} />
         </Field>
-        <button type="submit" disabled={busy || !draft.name.trim() || parsed.problems.length > 0 || Object.keys(parsed.values).length === 0}>Save version</button>
+        <Button type="submit" variant="primary" disabled={busy || !draft.name.trim() || parsed.problems.length > 0 || Object.keys(parsed.values).length === 0}>Save version</Button>
       </form>
     </div>
   );
@@ -1194,7 +1124,7 @@ function MeasurementsPanel({ detail, busy, run, ask }: PanelProps) {
                   <td><When at={r.measuredAt} /></td>
                   <td className="technical">{r.value} {r.unit}</td>
                   <td>{r.note}</td>
-                  <td><button type="button" disabled={busy} aria-label={`Delete the ${g.key} reading of ${shortDate(r.measuredAt)}`} onClick={() => ask(recordDelete("measurement", r.id, `this ${g.key} reading`))}>Delete…</button></td>
+                  <td><Button variant="ghost" size="sm" disabled={busy} aria-label={`Delete the ${g.key} reading of ${shortDate(r.measuredAt)}`} onClick={() => ask(recordDelete("measurement", r.id, `this ${g.key} reading`))}>Delete…</Button></td>
                 </tr>
               ))}
             </tbody>
@@ -1205,24 +1135,24 @@ function MeasurementsPanel({ detail, busy, run, ask }: PanelProps) {
       <form className="objectos-form" aria-label="Record a measurement" onSubmit={(e) => void add(e)}>
         <h4>Record a measurement</h4>
         <div className="objectos-grid">
-          <Field id="objectos-ms-key" label="What">
-            <input id="objectos-ms-key" required maxLength={60} list="objectos-ms-keys" value={m.key} onChange={(e) => setM({ ...m, key: e.target.value })} />
+          <Field htmlFor="objectos-ms-key" label="What">
+            <TextInput id="objectos-ms-key" required maxLength={60} list="objectos-ms-keys" value={m.key} onChange={(e) => setM({ ...m, key: e.target.value })} />
             <datalist id="objectos-ms-keys">{groups.map((g) => <option key={g.key} value={g.key} />)}</datalist>
           </Field>
-          <Field id="objectos-ms-value" label="Value">
-            <input id="objectos-ms-value" className="technical" required inputMode="decimal" value={m.value} onChange={(e) => setM({ ...m, value: e.target.value })} />
+          <Field htmlFor="objectos-ms-value" label="Value">
+            <TextInput id="objectos-ms-value" className="technical" required inputMode="decimal" value={m.value} onChange={(e) => setM({ ...m, value: e.target.value })} />
           </Field>
-          <Field id="objectos-ms-unit" label="Unit" hint={known ? `Recorded in ${known.unit || "no unit"}.` : undefined}>
-            <input id="objectos-ms-unit" maxLength={20} value={known ? known.unit : m.unit} disabled={Boolean(known)} aria-describedby={known ? "objectos-ms-unit-hint" : undefined} onChange={(e) => setM({ ...m, unit: e.target.value })} />
+          <Field htmlFor="objectos-ms-unit" label="Unit" hint={known ? `Recorded in ${known.unit || "no unit"}.` : undefined}>
+            <TextInput id="objectos-ms-unit" maxLength={20} value={known ? known.unit : m.unit} disabled={Boolean(known)} aria-describedby={known ? "objectos-ms-unit-hint" : undefined} onChange={(e) => setM({ ...m, unit: e.target.value })} />
           </Field>
-          <Field id="objectos-ms-date" label="Measured on">
-            <input id="objectos-ms-date" type="date" max={today} value={m.measuredOn} onChange={(e) => setM({ ...m, measuredOn: e.target.value })} />
+          <Field htmlFor="objectos-ms-date" label="Measured on">
+            <TextInput id="objectos-ms-date" type="date" max={today} value={m.measuredOn} onChange={(e) => setM({ ...m, measuredOn: e.target.value })} />
           </Field>
         </div>
-        <Field id="objectos-ms-note" label="Note">
-          <input id="objectos-ms-note" maxLength={200} value={m.note} onChange={(e) => setM({ ...m, note: e.target.value })} />
+        <Field htmlFor="objectos-ms-note" label="Note">
+          <TextInput id="objectos-ms-note" maxLength={200} value={m.note} onChange={(e) => setM({ ...m, note: e.target.value })} />
         </Field>
-        <button type="submit" disabled={busy || !m.key.trim() || !m.value.trim()}>Record</button>
+        <Button type="submit" variant="primary" disabled={busy || !m.key.trim() || !m.value.trim()}>Record</Button>
       </form>
     </div>
   );
@@ -1236,11 +1166,11 @@ function FilesPanel({ detail, busy, run, ask }: PanelProps) {
       <div className="objectos-inline-form" role="group" aria-label="Attach a file">
         <label>
           Attach as
-          <select value={role} onChange={(e) => setRole(e.target.value)}>
+          <Select value={role} onChange={(e) => setRole(e.target.value)}>
             {ROLE_LIST.map((r) => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
-          </select>
+          </Select>
         </label>
-        <button type="button" disabled={busy} onClick={() => void run("object_os.file.attach", { objectId: o.id, role })}>Attach a file…</button>
+        <Button disabled={busy} onClick={() => void run("object_os.file.attach", { objectId: o.id, role })}>Attach a file…</Button>
       </div>
       <p className="objectos-hint">Files are copied into DexNest's data folder for this object (up to 200 MB each) and never run. Files that could run a program are shown in their folder instead of opened.</p>
       {detail.files.length === 0 ? (
@@ -1257,8 +1187,8 @@ function FilesPanel({ detail, busy, run, ask }: PanelProps) {
                 <td><When at={f.addedAt} /></td>
                 <td>
                   <span className="button-row">
-                    <button type="button" disabled={busy} aria-label={`Open ${f.name}`} onClick={() => void run("object_os.file.open", { fileId: f.id })}>Open</button>
-                    <button type="button" disabled={busy} aria-label={`Remove ${f.name}`} onClick={() => ask({ actionId: "object_os.file.remove", params: { fileId: f.id }, question: `Remove ${f.name}? The copy in DexNest is deleted; the original, wherever it came from, is not touched.` })}>Remove…</button>
+                    <Button size="sm" disabled={busy} aria-label={`Open ${f.name}`} onClick={() => void run("object_os.file.open", { fileId: f.id })}>Open</Button>
+                    <Button variant="ghost" size="sm" disabled={busy} aria-label={`Remove ${f.name}`} onClick={() => ask({ actionId: "object_os.file.remove", params: { fileId: f.id }, title: `Remove ${f.name}?`, detail: "The copy in DexNest is deleted; the original, wherever it came from, is not touched.", confirmLabel: "Remove" })}>Remove…</Button>
                   </span>
                 </td>
               </tr>
@@ -1317,23 +1247,23 @@ function PurchasePanel({ detail, busy, run }: { detail: ObjectDetail; busy: bool
       )}
       <form className="objectos-form" aria-label="Purchase and warranty" onSubmit={(e) => void save(e)}>
         <div className="objectos-grid">
-          <Field id="objectos-pu-date" label="Bought on">
-            <input id="objectos-pu-date" type="date" value={form.purchasedOn} onChange={(e) => setForm({ ...form, purchasedOn: e.target.value })} />
+          <Field htmlFor="objectos-pu-date" label="Bought on">
+            <TextInput id="objectos-pu-date" type="date" value={form.purchasedOn} onChange={(e) => setForm({ ...form, purchasedOn: e.target.value })} />
           </Field>
-          <Field id="objectos-pu-amount" label="Price">
-            <input id="objectos-pu-amount" className="technical" inputMode="decimal" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
+          <Field htmlFor="objectos-pu-amount" label="Price">
+            <TextInput id="objectos-pu-amount" className="technical" inputMode="decimal" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} />
           </Field>
-          <Field id="objectos-pu-currency" label="Currency">
-            <input id="objectos-pu-currency" className="technical" maxLength={3} value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })} />
+          <Field htmlFor="objectos-pu-currency" label="Currency">
+            <TextInput id="objectos-pu-currency" className="technical" maxLength={3} value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })} />
           </Field>
-          <Field id="objectos-pu-shop" label="Shop">
-            <input id="objectos-pu-shop" maxLength={120} value={form.shop} onChange={(e) => setForm({ ...form, shop: e.target.value })} />
+          <Field htmlFor="objectos-pu-shop" label="Shop">
+            <TextInput id="objectos-pu-shop" maxLength={120} value={form.shop} onChange={(e) => setForm({ ...form, shop: e.target.value })} />
           </Field>
-          <Field id="objectos-pu-warranty" label="Warranty until">
-            <input id="objectos-pu-warranty" type="date" value={form.warrantyUntil} onChange={(e) => setForm({ ...form, warrantyUntil: e.target.value })} />
+          <Field htmlFor="objectos-pu-warranty" label="Warranty until">
+            <TextInput id="objectos-pu-warranty" type="date" value={form.warrantyUntil} onChange={(e) => setForm({ ...form, warrantyUntil: e.target.value })} />
           </Field>
         </div>
-        <button type="submit" disabled={busy}>{p ? "Save changes" : "Save purchase"}</button>
+        <Button type="submit" variant="primary" disabled={busy}>{p ? "Save changes" : "Save purchase"}</Button>
       </form>
     </div>
   );
