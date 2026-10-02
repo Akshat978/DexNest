@@ -57,6 +57,15 @@ export const SIDEBAR_VIEWS: SidebarView[] = [
 export const SIDEBAR_HIDDEN_VIEWS: ViewId[] = ["audit"];
 
 // Icon + accent for each module, shared across the shell and module views.
+/**
+ * A module accent at a given opacity. Works for hex accents and for token
+ * accents (`var(--accent-tools)`); appending hex alpha digits only works for
+ * hex and turns a token into invalid CSS.
+ */
+export function accentTint(accent: string, percent: number): string {
+  return `color-mix(in srgb, ${accent} ${percent}%, transparent)`;
+}
+
 export const MODULE_META: Record<string, { icon: LucideIcon; accent: string }> = {
   command: { icon: Command, accent: "#22D3EE" },
   dev: { icon: Code2, accent: "#3B82F6" },

@@ -120,7 +120,11 @@ select {
   font: inherit;
 }
 
-input,
+/* Text-like controls fill their column. Checkboxes and radios keep their own
+   size (a full-width checkbox pushes its label to the far edge); :where()
+   keeps this rule's specificity at a plain element selector, so classes still
+   win. */
+input:where(:not([type="checkbox"], [type="radio"])),
 textarea,
 select {
   width: 100%;
@@ -128,7 +132,7 @@ select {
   padding: var(--space-2) var(--space-3);
   color: var(--text);
   background: var(--surface-2);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
 }
 
@@ -140,7 +144,7 @@ textarea {
 input:focus-visible,
 textarea:focus-visible,
 select:focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: 2px solid var(--focus-outline);
   outline-offset: 2px;
 }
 
@@ -168,7 +172,7 @@ select:disabled {
 }
 
 button:focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: 2px solid var(--focus-outline);
   outline-offset: 2px;
 }
 
@@ -461,7 +465,7 @@ button:focus-visible {
 
 .calendar-month-cell:focus-visible,
 .calendar-week-slot:focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: 2px solid var(--focus-outline);
   outline-offset: 2px;
 }
 
@@ -1175,7 +1179,7 @@ kbd {
 }
 
 .collapsible-panel summary:focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: 2px solid var(--focus-outline);
   outline-offset: -2px;
 }
 
@@ -1314,7 +1318,7 @@ kbd {
 }
 
 .library-item summary:focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: 2px solid var(--focus-outline);
   outline-offset: 2px;
 }
 
@@ -2013,7 +2017,7 @@ kbd {
 }
 
 .deck-routine-row summary:focus-visible {
-  outline: 2px solid var(--focus-ring);
+  outline: 2px solid var(--focus-outline);
   outline-offset: 2px;
 }
 
@@ -3340,4 +3344,45 @@ kbd {
   bottom: 0;
   width: 2px;
   background: var(--warning);
+}
+
+/* A view that stopped working (components/ViewErrorBoundary.tsx). Tokens only. */
+.view-error {
+  display: grid;
+  gap: var(--space-3);
+  max-width: 40rem;
+  margin: var(--space-6) auto;
+  padding: var(--space-5);
+  background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--error) 45%, var(--border));
+  border-radius: var(--radius-lg);
+  font-family: var(--font-ui);
+}
+
+.view-error__title {
+  margin: 0;
+  font-size: 1.125rem;
+  color: var(--text);
+}
+
+.view-error__text {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.view-error__detail {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  color: var(--error);
+  background: var(--surface-2);
+  border-radius: var(--radius-md);
+  font-family: var(--font-tech);
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+
+.view-error__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
 }
