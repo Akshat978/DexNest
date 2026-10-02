@@ -145,6 +145,7 @@ import {
   detailShortcut,
   lifecycleActions,
   operationLabel,
+  projectTypeLabel,
   operationLines,
   runCommands
 } from "../src/renderer/views/projects/projectsModel.ts";
@@ -247,4 +248,11 @@ test("operationLabel: kinds and verbs in plain words", () => {
   assert.equal(operationLabel("delete_remote_branch"), "Delete remote branch");
   assert.equal(operationLabel("push_set_upstream"), "Push set upstream");
   assert.equal(operationLabel(""), "Operation");
+});
+
+test("projectTypeLabel: the old Dev list's type names", () => {
+  assert.equal(projectTypeLabel("local_app"), "Local app");
+  assert.equal(projectTypeLabel("external_server"), "External server");
+  assert.equal(projectTypeLabel(null), null);
+  assert.equal(projectTypeLabel("nonsense"), null);
 });

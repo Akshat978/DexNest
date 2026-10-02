@@ -256,6 +256,10 @@
   justify-content: start;
   align-items: center;
 }
+.projects-card__tags .projects-card__type {
+  border-color: color-mix(in srgb, var(--kit-accent) 35%, var(--border));
+  color: var(--kit-accent);
+}
 .projects-card--list .projects-card__commit,
 .projects-card--list .projects-card__tags {
   display: none;

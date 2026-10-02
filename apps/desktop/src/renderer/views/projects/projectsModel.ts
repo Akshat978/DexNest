@@ -247,6 +247,12 @@ export const TYPE_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
   ...PROJECT_TYPES.map((t) => ({ value: t, label: { local_app: "Local app", live_website: "Live website", mobile_app: "Mobile app", external_server: "External server" }[t] }))
 ];
 
+/** "local_app" -> "Local app"; null when the project has no type. */
+export function projectTypeLabel(type: string | null | undefined): string | null {
+  if (!type) return null;
+  return TYPE_OPTIONS.find((t) => t.value === type)?.label ?? null;
+}
+
 const lines = (items: readonly string[]) => items.join("\n");
 const splitLines = (text: string) => text.split(/[\n,]/).map((s) => s.trim()).filter(Boolean);
 

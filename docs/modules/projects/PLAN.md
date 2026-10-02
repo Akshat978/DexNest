@@ -959,6 +959,31 @@ line, and what changed:
   width across sections and a short section leaves space on the right
   (deliberate); the detail header's title sits below its back button.
 
+### Refinements made in Phase 10 (hardening and parity)
+
+- **Parity**: every F1-F49 item is listed with its evidence in
+  `PARITY.md`. Most of `main.ts` is unchanged and reads projects through
+  `legacyProjects()`; a new test proves that a project imported from
+  `projects.json` and then edited in the new view still has every old field,
+  its id and its command ids, so those unchanged consumers see what they
+  saw before.
+- **Two gaps found and fixed in the new view**: the project type (F37) was
+  not shown anywhere; it is now on cards and in the detail header. Git state
+  was not re-read after a Run or lifecycle action (F49); it is now, as the
+  old view did.
+- **Deliberate changes, documented in the parity table**: delete archives
+  (F4), a corrupt `projects.json` is left in place rather than renamed (F6),
+  `open_vscode` / `open_terminal` use Projects' launcher (F9/F10), and
+  `git_push` uses git-ops (F14).
+- **`DevView` deleted** from `renderer/main.tsx` (685 lines), along with the
+  helpers and icon imports that only it used. The renderer still builds.
+- **New hardening tests**: 120 projects read with at most four at once; a
+  working tree of 1,800 changes (lists capped at 500, counts exact); two
+  operations at once (same project busy, another project unaffected); a
+  full commit/push/undo in a folder with spaces and unicode; "fetch all"
+  with one remote unreachable. The other scenarios were already covered
+  (table in `PARITY.md`).
+
 ## 19. Phases for this module
 
 Each phase ends with the master gate (typecheck, tests, new tests,

@@ -14,7 +14,7 @@ import { Badge, Button, Dialog, TabPanel, Tabs, Technical } from "../../componen
 import { PinButton } from "../../components/pins";
 import { BranchesTab, ChangesTab, HistoryTab, LinksTab, OverviewTab, RunTab, SettingsTab, type RunResultView } from "./DetailTabs";
 import type { ProjectsBridge } from "./projectsBridge";
-import { availability, detailShortcut, DETAIL_TABS, inputFromForm, operationLines, type DetailTab, type LifecycleAction, type OperationRequestLike, type RunCommand } from "./projectsModel";
+import { availability, detailShortcut, DETAIL_TABS, inputFromForm, operationLines, projectTypeLabel, type DetailTab, type LifecycleAction, type OperationRequestLike, type RunCommand } from "./projectsModel";
 
 export interface RunActionResult {
   ok: boolean;
@@ -129,6 +129,10 @@ export function ProjectDetail(props: ProjectDetailProps) {
       const result = await props.runAction(actionId, params);
       props.onToast(result.ok ? "success" : "error", result.message ?? result.error ?? (result.ok ? "Done." : "That didn't work."));
     } finally {
+      // A command or lifecycle action may have changed the repository (a build
+      // that writes files, the old git_push): read git state again, as the
+      // old Dev view did after every action.
+      void read();
       setRunning((r) => {
         const next = new Set(r);
         next.delete(actionId);
@@ -154,6 +158,7 @@ export function ProjectDetail(props: ProjectDetailProps) {
   };
 
   const badge = projectBadge(state);
+  const typeLabel = projectTypeLabel(project.projectType);
   const gh = githubLinks(project.git.remoteUrl);
   const repo = state?.isRepo ? state : null;
   const tabs = DETAIL_TABS.map((t) => ({
@@ -175,6 +180,7 @@ export function ProjectDetail(props: ProjectDetailProps) {
         <div className="projects-detail__identity">
           <h1 className="projects-detail__name">{project.name}</h1>
           <Badge tone={badge.tone}>{badge.text}</Badge>
+          {typeLabel && <Badge tone="neutral">{typeLabel}</Badge>}
           {repo && <Technical className="projects-detail__branch">{repo.head.detached ? `detached ${(repo.head.sha ?? "").slice(0, 7)}` : repo.head.branch}</Technical>}
           <PinButton input={{ type: "project", module: "dev", entityId: project.id, title: project.name, subtitle: "Project", actionId: `dev.project.${project.id}.open_folder` }} />
         </div>

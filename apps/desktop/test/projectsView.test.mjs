@@ -309,3 +309,23 @@ test("dialogs cover the whole window: rendered into document.body, inline only w
   assert.match(kit, /typeof document === "undefined" \? content : createPortal\(content, document\.body\)/);
   assert.match(rule(".kit-backdrop"), /position: fixed;[\s\S]*inset: 0;/);
 });
+
+// --- Phase 10: scale and parity --------------------------------------------------
+
+test("250 projects: every card renders, one card name is in the tab order, the CSS keeps off-screen cards cheap", () => {
+  const entries = Array.from({ length: 250 }, (_, i) => ({ project: project(`p${String(i).padStart(3, "0")}`), state: repo() }));
+  const started = performance.now();
+  const html = home(entries);
+  const took = performance.now() - started;
+  assert.equal((html.match(/class="projects-card__name"/g) ?? []).length, 250);
+  assert.equal((html.match(/class="projects-card__name" tabindex="0"/g) ?? []).length, 1);
+  assert.ok(took < 3000, `rendered in ${Math.round(took)} ms`);
+  const css = readFileSync(join(desktop, "src/renderer/views/projects/Projects.css"), "utf8");
+  assert.match(css, /\.projects-grid > li,\s*\.projects-list > li \{\s*content-visibility: auto;/);
+});
+
+test("F37: a card shows the project type next to its tags", () => {
+  const html = home([{ project: project("site", { projectType: "live_website", tags: ["web"] }), state: repo() }]);
+  assert.match(html, /<ul class="projects-card__tags" aria-label="Type and tags"><li class="projects-card__type">Live website<\/li><li>web<\/li><\/ul>/);
+  assert.doesNotMatch(home([{ project: project("plain"), state: repo() }]), /projects-card__tags/);
+});

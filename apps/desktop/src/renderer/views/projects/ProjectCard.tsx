@@ -6,7 +6,7 @@ import { Code2, Download, RefreshCw, SquareTerminal, Star, Upload } from "lucide
 
 import { Badge, Button, Card, Technical } from "../../components/kit";
 import { fetchedAgoText } from "@dexnest/projects/domain";
-import { badgeFor, branchLine, quickActions, relativeTime, type QuickActionId, type ViewEntry } from "./projectsModel";
+import { badgeFor, branchLine, projectTypeLabel, quickActions, relativeTime, type QuickActionId, type ViewEntry } from "./projectsModel";
 
 const QUICK_ICONS: Record<QuickActionId, React.ReactNode> = {
   vscode: <Code2 />,
@@ -37,6 +37,7 @@ export function ProjectCard({ entry, layout, now, tabbable, nameRef, onOpen, onQ
   const last = state?.isRepo ? state.lastCommit : null;
   const fetched = state?.isRepo && state.remotes.length > 0 ? fetchedAgoText(state.lastFetchAt, now) : null;
   const headingId = `project-${project.id}-name`;
+  const typeLabel = projectTypeLabel(project.projectType);
   return (
     <Card accent={project.accent} interactive className={`projects-card projects-card--${layout}`} aria-labelledby={headingId}>
       <div className="projects-card__head">
@@ -74,8 +75,9 @@ export function ProjectCard({ entry, layout, now, tabbable, nameRef, onOpen, onQ
           </p>
         )}
         {layout === "grid" && <Technical className="projects-card__path" title={project.path}>{project.path}</Technical>}
-        {project.tags.length > 0 && (
-          <ul className="projects-card__tags" aria-label="Tags">
+        {(typeLabel || project.tags.length > 0) && (
+          <ul className="projects-card__tags" aria-label="Type and tags">
+            {typeLabel && <li className="projects-card__type">{typeLabel}</li>}
             {project.tags.map((tag) => (
               <li key={tag}>{tag}</li>
             ))}

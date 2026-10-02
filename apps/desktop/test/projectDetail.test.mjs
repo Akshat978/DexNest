@@ -190,3 +190,36 @@ test("settings: the same form, pre-filled; archive for a live project, restore/r
   assert.match(archived, /never the folder/);
   assert.match(archived, /role="alert"><li>boom<\/li>/);
 });
+
+// --- Phase 10: Dev dashboard parity (F37, F49) ----------------------------------
+
+const detailProps = (p) => ({
+  bridge: bridgeMod.fallbackProjectsBridge,
+  project: p,
+  groups: [],
+  now: NOW,
+  staleDays: 30,
+  version: 0,
+  dialogOpen: false,
+  commandResults: {},
+  runAction: async () => ({ ok: true }),
+  clearCommandResult: async () => undefined,
+  onBack: noop,
+  onAsk: noop,
+  onToast: noop,
+  onChanged: noop,
+  onGroups: noop
+});
+
+test("F37: the project type the old Dev list showed is in the detail header", () => {
+  assert.match(render(detail.ProjectDetail, detailProps(project("shop", { projectType: "live_website" }))), /<span class="kit-badge kit-badge--neutral">(?:(?!<\/span>).)*<\/span>Live website<\/span>/s);
+  assert.doesNotMatch(render(detail.ProjectDetail, detailProps(project("shop"))), /Local app|Live website|Mobile app|External server/);
+});
+
+test("F49: git state is read again after every Run or lifecycle action, as the old Dev view did", async () => {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(join(desktop, "src/renderer/views/projects/ProjectDetail.tsx"), "utf8");
+  const run = source.slice(source.indexOf("const run = async"), source.indexOf("const onRun ="));
+  assert.match(run, /await props\.runAction\(actionId, params\)/);
+  assert.match(run, /finally \{[\s\S]*void read\(\);/);
+});
