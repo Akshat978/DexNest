@@ -169,6 +169,14 @@ contextBridge.exposeInMainWorld("dexNest", {
   realityRpgHistory: (query?: { beforeSeq?: number; limit?: number }) => ipcRenderer.invoke("dexnest:reality-rpg-history", query),
   realityRpgSettings: () => ipcRenderer.invoke("dexnest:reality-rpg-settings"),
   realityRpgUpdateSettings: (settings: unknown) => ipcRenderer.invoke("dexnest:reality-rpg-update-settings", settings),
+  // GhostOS: reads and settings. Saving, forgetting, sources, sync, export and
+  // import are ghost_os.* actions, run through runAction.
+  ghostOsStatus: () => ipcRenderer.invoke("dexnest:ghost-os-status"),
+  ghostOsTimeline: (query?: unknown) => ipcRenderer.invoke("dexnest:ghost-os-timeline", query),
+  ghostOsSearch: (query: { text: string; types?: string[] }) => ipcRenderer.invoke("dexnest:ghost-os-search", query),
+  ghostOsEntity: (id: string) => ipcRenderer.invoke("dexnest:ghost-os-entity", id),
+  ghostOsSettings: () => ipcRenderer.invoke("dexnest:ghost-os-settings"),
+  ghostOsUpdateSettings: (settings: unknown) => ipcRenderer.invoke("dexnest:ghost-os-update-settings", settings),
   autopilotReadiness: (project: string) => ipcRenderer.invoke("dexnest:autopilot-readiness", project),
   autopilotRerunForm: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-rerun-form", runId),
   autopilotRunChanges: (runId: string) => ipcRenderer.invoke("dexnest:autopilot-run-changes", runId),

@@ -26,6 +26,9 @@ importers:
       '@dexnest/foundation':
         specifier: workspace:*
         version: link:../../packages/foundation
+      '@dexnest/ghost-os':
+        specifier: workspace:*
+        version: link:../../packages/ghost-os
       '@dexnest/local-db':
         specifier: workspace:*
         version: link:../../packages/local-db
@@ -239,6 +242,22 @@ importers:
       '@types/node':
         specifier: ^22.13.14
         version: 22.20.0
+
+  packages/ghost-os:
+    dependencies:
+      '@dexnest/foundation':
+        specifier: workspace:*
+        version: link:../foundation
+    devDependencies:
+      '@dexnest/action-registry':
+        specifier: workspace:*
+        version: link:../action-registry
+      '@types/node':
+        specifier: ^22.13.14
+        version: 22.20.0
+      vitest:
+        specifier: ^5.0.1
+        version: 5.0.1(@types/node@22.20.0)(vite@6.4.3(@types/node@22.20.0)(jiti@2.7.0))
 
   packages/local-db:
     dependencies:

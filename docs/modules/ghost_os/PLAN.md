@@ -1,0 +1,505 @@
+# GhostOS core - plan
+
+Module id `ghost_os` · table prefix `ghost_` · event namespace `ghost.` ·
+event stream `ghost` · view id `ghost` · package `@dexnest/ghost-os` ·
+branch `cloud/ghost-os`.
+
+Status: **Done, including follow-up Phases 9-11.** See `HANDOFF.md`. Read with `AGENTS.md` and
+`docs/DEXNEST_FOUNDATION_ARCHITECTURE.md`. Shaped after Developer
+Intelligence's runtime/host split, and after the two modules built before it
+on other branches (Skill Constellation, Reality RPG).
+
+---
+
+## 1. What it is
+
+A local model of the owner: the people, projects, skills, knowledge,
+memories, events, habits, decisions, files, conversations and places in
+their life, how they connect, and how that changes over time. It is the
+shared "who I am and what I've done" layer other modules can build on.
+
+Every fact carries **where it came from** and **how sure it is**. A fact with
+no source does not exist. Manual entries are marked as the owner's.
+
+Two later views (MindAtlas: an analytical graph; Memory Palace: a spatial
+view) will read the same data. They are **not** built now; the data model
+below is shaped so they need no schema change (section 6).
+
+## 2. Scope (this build)
+
+- Entities of eleven types, relations (typed, directed, with strength and a
+  validity range), observations (dated facts with source, evidence and
+  confidence), and a provenance graph that makes "forget" cascade.
+- Manual entry for every type, with type-specific details for memory,
+  decision, habit, file and conversation.
+- One source adapter, **Developer Intelligence** (repositories → projects,
+  technologies → skills, commits as evidence), behind an adapter interface
+  that Skill Constellation, Standup and Reality RPG can implement later.
+- Simple, evidence-backed habit detection from observations (section 9).
+- Timeline queries, local full-text search, JSON export and import.
+- Registered actions, `ghost.*` events (ids and types only), a host file,
+  IPC, preload bridge, and a simple view: timeline, entity detail, forms,
+  adapter settings.
+
+## 3. Out of scope
+
+- MindAtlas and Memory Palace views.
+- Inference beyond the simple habits in section 9: no guessing people,
+  topics, sentiment, summaries or links from text.
+- Reading any source not listed in section 5 - including chat histories,
+  AI tool logs, auth files, browser data, and every other DexNest module.
+- Copying file contents: a File entity stores a path and a label, never
+  bytes, and GhostOS never opens the file.
+- Embeddings, LLMs, network, sync, telemetry.
+- People derived from commit authors (DI's events on `main` carry no
+  author; Q2).
+
+## 4. Where the code lives
+
+One package, layered by folder, with static tests enforcing the layers
+(as in the two previous modules):
+
+| Path | Contents | I/O |
+|---|---|---|
+| `packages/ghost-os/src/domain/` | Types, validation of every input, provenance and cascade planning, confidence rules, habit detection, timeline and search-query building, export format (schema + validation), settings, events. | none |
+| `packages/ghost-os/src/store/` | Migrations; persistence; FTS index; cascade delete; tombstones; export/import in one transaction. | DB |
+| `packages/ghost-os/src/adapters/` | The adapter interface and the Developer Intelligence adapter. | through injected, narrowed readers |
+| `packages/ghost-os/src/engine/` | Adapter sync (idempotent, per occurrence), apply/withdraw a contribution, habit detection runs. | DB |
+| `packages/ghost-os/src/module/` | Runtime: settings, jobs, entry points for every action, events, manifest. | via ports |
+| `apps/desktop/src/main/ghostOsHost.ts` | Wiring, data boundary, IPC (trusted frame), export/import file dialogs. | Electron |
+| `apps/desktop/src/renderer/views/GhostOsView.tsx` (+ css, model) | The view. | renderer |
+| `packages/action-registry`, `packages/shared-types` | Action definitions and module id (separate commit, as last time). | - |
+
+Dependencies: `@dexnest/foundation`, and `@dexnest/dev-intelligence-contracts`
+for **types only** (the DI adapter gets DI's stores injected by the host, as
+Skill Constellation did). No dependency on any other module package.
+
+## 5. What GhostOS may read - and nothing else
+
+This list is enforced in code and by tests (section 11).
+
+| Source | Exactly what | How |
+|---|---|---|
+| The owner | Whatever they type into GhostOS forms, or paste as a conversation | View → registered actions |
+| An import file the owner picks | One GhostOS export JSON | Host file dialog → size-capped read → schema validation |
+| Developer Intelligence (adapter, off by default) | `repositories.listRepositories()`; `technologies.listByRepository()`; `event_log` rows of type **`dev.commit.observed`** only (stream `dev`, module `developer_intelligence`), envelope + `sha` and `authorDate` from the payload | DI's store interfaces and a wrapper around `EventLog.query` that refuses any other stream, module or type |
+| Its own `ghost_*` tables | Everything | `SqlDatabase` |
+
+**Never read:** vault, finance, journal, clipboard, captures, receipts, drop,
+search index, OCR output, voice/speech, calendar, timetable, heatmap, audit
+history, Autopilot runs, any other module's tables or files, chat histories,
+AI tool logs (`.claude`, `.codex`, …), auth files, browser profiles. GhostOS
+opens no file on disk except the import file the owner picks, and writes no
+file except the export file the owner picks.
+
+A File entity is a **reference**: path + label, validated against the data
+boundary (section 10), never opened.
+
+## 6. Data model
+
+### Entity types
+
+`person`, `project`, `skill`, `knowledge`, `memory`, `event`, `habit`,
+`decision`, `file`, `conversation`, `place`.
+
+Every entity: stable `id`, `type`, `title`, `notes`, `tags`, `created_at`,
+`updated_at`, plus **provenance** (`origin`: `manual` | `adapter` |
+`derived`, the adapter id and the source's own reference) and an optional
+**time span** (`occurred_at`, or `started_at`/`ended_at`) so the timeline and
+"what was I doing in March" are plain range queries.
+
+Type-specific details (validated JSON per type):
+
+| Type | Details |
+|---|---|
+| memory | `text`, `occurredAt`; people and places are **relations** (`memory -involves-> person`, `memory -at-> place`) |
+| decision | `decidedAt`, `choice`, `alternatives[]`, `rationale`, later `outcome`, `outcomeAt`, `reviewAt` |
+| habit | `cadence` (daily/weekly/…), `declared` or `detected`, detector id and parameters |
+| file | `path`, `label` (never contents) |
+| conversation | `text` as pasted, `participants[]` (names; optional relations to persons), `importedAt`, `sourceLabel` ("pasted") |
+| event | `occurredAt`, optional `endedAt` |
+| others | none beyond the common fields |
+
+### Relations
+
+Typed and directed: `from -type-> to`, e.g. `person -worked_on-> project`,
+`project -uses-> skill`, `decision -about-> project`, `memory -involves->
+person`. A small built-in vocabulary (`worked_on`, `uses`, `about`,
+`involves`, `at`, `part_of`, `related_to`, `learned_from`, `led_to`) plus
+free-form types matching `[a-z][a-z0-9_]{0,39}` (Q6). Each has `strength`
+(0-1), `valid_from`, `valid_to` (null = still true), provenance, and times.
+
+### Observations
+
+Dated facts about one entity: `statement` (short, structured - e.g.
+`used TypeScript in app`), `observed_at`, `source` (`manual` or
+`adapter:developer_intelligence`), `evidence` (a list of references, e.g.
+`{ kind: "commit", repositoryId, sha }`, `{ kind: "technology", factId,
+path }`, `{ kind: "manual" }`), `confidence` (0-1), provenance.
+
+### Provenance and derivation
+
+`ghost_derivations (child_kind, child_id, parent_kind, parent_id)`: every
+derived row (a detected habit, a relation or observation an adapter derived
+from others) lists what it came from. **Forget** deletes the target, then
+everything whose derivation reaches it, transitively, plus relations and
+observations attached to a deleted entity. Planned in the domain (pure),
+executed in one transaction.
+
+**Tombstones:** forgetting something an adapter contributed records
+`(adapter_id, source_ref)` in `ghost_tombstones`, so the next sync does not
+bring it back (Q4).
+
+### Tables (all via `runModuleMigrations`, prefix `ghost_`)
+
+| Table | Key | Purpose |
+|---|---|---|
+| `ghost_entities` | `id`; `UNIQUE (adapter_id, source_ref)` for adapter rows | Common fields, `details_json`, provenance, time span |
+| `ghost_tags` | `(entity_id, tag)` | Tags, for filtering |
+| `ghost_relations` | `id`; `UNIQUE (adapter_id, source_ref)` | Relations with strength and validity |
+| `ghost_observations` | `id`; `UNIQUE (adapter_id, source_ref)` | Observations with evidence JSON and confidence |
+| `ghost_derivations` | `(child_kind, child_id, parent_kind, parent_id)` | Provenance graph for cascades |
+| `ghost_tombstones` | `(adapter_id, source_ref)` | Forgotten adapter facts stay forgotten |
+| `ghost_adapters` | `id` | Enabled flag, cursor, last sync, counts |
+| `ghost_runs` | `id`; `UNIQUE (occurrence_id)` | One sync or detection run per occurrence |
+| `ghost_search` | FTS5 (external content over entities: title, notes, tags) | Search (section 8) |
+
+Indexes for the timeline: entities by `(type, occurred_at)`, `created_at`;
+observations by `(entity_id, observed_at)` and `observed_at`; relations by
+`from_id`, `to_id`.
+
+**For MindAtlas later:** typed, weighted, time-bounded relations plus
+observation counts per entity are exactly a weighted temporal graph. **For
+Memory Palace later:** entities and relations suffice; any layout it needs
+becomes its own table (`ghost_palace_*`) without touching these.
+
+## 7. Confidence and evidence rules
+
+- Manual entries: `origin = manual`, confidence 1.0, evidence `[{ kind:
+  "manual" }]` ("entered by me").
+- Adapter facts: confidence set by the adapter's documented rules, e.g. DI:
+  project from a repository record 1.0; `project -uses-> skill` from a
+  technology fact 0.9 (a manifest) or 0.7 (file extension only); "used X in
+  repo Y on day Z" from commits that day 0.6 (a commit in a repo that uses X,
+  not proof the commit touched X).
+- Detected habits: confidence = the share of qualifying days (section 9),
+  never above 0.95.
+- Validation refuses an adapter or derived fact with no evidence, and a
+  confidence outside 0-1.
+
+## 8. Search and timeline
+
+- **Search:** SQLite FTS5. Verified in this container on both drivers:
+  node:sqlite (SQLite 3.51.2) and better-sqlite3 11.10.0 (SQLite 3.49.2)
+  both create and query an FTS5 table with `unicode61 remove_diacritics`. The
+  Electron-rebuilt better-sqlite3 on Windows is a *needs Windows check*. To
+  make that safe: the FTS table lives in its **own migration ledger**
+  (`runModuleMigrations(db, "ghost_os_search", …)`), so if FTS5 were
+  missing, the core migrations still apply and search falls back to `LIKE`
+  over titles, notes and tags. User input is turned into a quoted FTS query
+  (no FTS syntax injection).
+- **Timeline:** one query over entities (by `occurred_at`, else
+  `created_at`) and observations (by `observed_at`) in a date range,
+  filterable by type and by origin, paged.
+
+## 9. Habits (the only inference)
+
+- **Declared:** the owner creates a habit entity.
+- **Detected** (after an adapter sync, from observations only), two
+  detectors to start:
+  - *time of day*: "commits most evenings" - over the last 30 days, on at
+    least 8 days with commits, ≥ 60% of those days had a commit in the same
+    local part of day (morning/afternoon/evening/night).
+  - *weekly rhythm*: "commits on N days a week" - over the last 8 ISO weeks,
+    the median number of days with commits, when ≥ 3 and stable.
+- A detected habit's evidence is the observations it counted
+  (`ghost_derivations`), so forgetting those observations - or turning the
+  adapter off - removes the habit. Re-detection updates the same habit
+  (stable id per detector + subject).
+
+## 10. Privacy rules in practice
+
+- Section 5 is enforced: the DI adapter receives only a DI reader and an
+  event reader that throws on anything but `dev.commit.observed` in the
+  `dev` stream from `developer_intelligence`.
+- **File references** are checked with `createDataBoundary` (the live data
+  root and every other DexNest data root, junctions resolved) and refused
+  inside them. GhostOS never opens the file. Q5 proposes also refusing
+  well-known secret locations.
+- **Conversations** exist only when the owner pastes one. Nothing is read
+  from any chat or AI tool store.
+- **Event log** entries carry ids, types and counts only - never titles,
+  notes, text, paths or tags. Audit lines say what kind of thing happened
+  ("GhostOS entity saved"), never the owner's text.
+- **Forget** cascades (section 6). Turning an adapter off withdraws
+  everything it contributed and everything derived from it.
+- **Export** writes one JSON file the owner chooses the location of;
+  **import** reads one file the owner picks, size-capped, validated; file
+  references in it are re-checked against the boundary.
+
+## 11. Events
+
+Stream `ghost`, module `ghost_os`, payloads ids / types / counts only:
+
+| Type | Subject | When |
+|---|---|---|
+| `ghost.entity.saved` | entity id | Created or updated (payload: type, origin, created/updated) |
+| `ghost.relation.saved` | relation id | Created or updated (payload: relation type) |
+| `ghost.observation.recorded` | observation id | Manual observations only; adapter observations are counted in the sync event |
+| `ghost.forgotten` | the forgotten row's id | Payload: kind and counts of what the cascade removed |
+| `ghost.adapter.synced` | adapter id | Idempotency key `ghost_os:sync:<occurrenceId>`; counts added/updated/withdrawn |
+| `ghost.adapter.withdrawn` | adapter id | Adapter turned off; counts removed |
+| `ghost.habit.detected` | habit id | Idempotency key per habit and detection period |
+| `ghost.export.created` / `ghost.import.completed` | - | Counts only |
+
+## 12. Actions
+
+`moduleId: "ghost_os"`, all `safe` except the two that remove data in bulk
+(`ghost_os.forget` of an entity with many dependents and
+`ghost_os.adapter.disable` withdraw data - proposed `caution`, Q7); none
+phone- or Deck-exposed; editing actions `module_ui` only.
+
+`ghost_os.open` (-> `desktop.view.ghost`), `ghost_os.entity.save`,
+`ghost_os.relation.save`, `ghost_os.observation.add`,
+`ghost_os.decision.record_outcome`, `ghost_os.forget` (entity, relation or
+observation), `ghost_os.adapter.enable`, `ghost_os.adapter.disable`,
+`ghost_os.adapter.sync`, `ghost_os.export`, `ghost_os.import`.
+
+## 13. Scheduling
+
+One job, `sync`, via `createHostScheduler`: scheduled only while at least one
+adapter is enabled (no timer otherwise), `heavy: true` (it walks DI's
+records and commit history), interval 60 minutes, `runAtStartup: false`
+(DI's own startup scan comes first). Each run: each enabled adapter syncs
+from its cursor (idempotent per occurrence and per source record), then the
+habit detectors run. Manual "Sync now" joins or queues behind a scheduled
+run. Manual entry, search, timeline and export need no job.
+
+## 14. Risks
+
+| Risk | Mitigation |
+|---|---|
+| Something private is read | Section 5 allowlist; narrowed readers that throw; static test on imports; bait tests with vault/finance/journal/clipboard rows and files |
+| Owner text leaks into event log or audit | Payloads and summaries built from ids/types/counts only; a test fills every text field with a marker and scans `event_log` |
+| Forget leaves something behind | Cascade planned in the domain over the derivation graph; test forgets every kind and checks no row, FTS entry or event text references it |
+| A re-sync resurrects forgotten facts | Tombstones (Q4) |
+| DI commits include other people's (no author on `main`) | Evidence says "commit observed in repo", confidence 0.6, statements never say "I wrote"; Q2 |
+| FTS5 missing on the Windows build | Separate migration ledger + `LIKE` fallback |
+| Import of a hostile or huge file | Size cap, JSON schema validation, id/type checks, boundary re-check on file paths, one transaction (all or nothing) |
+| Large DI history (tens of thousands of commits) | Commits become per-repo-per-day observations, not one row per commit (Q3); paged reads by seq; heavy job |
+| Timeline across time zones / DST | Local day via `Intl`, as in the previous modules |
+| Relations that change | `valid_from`/`valid_to`, never overwritten silently: a changed fact closes the old range and opens a new one |
+
+## 15. Decisions (owner: "go with your defaults")
+
+1. **Import** merges: a row whose id already exists is skipped and reported.
+   No "replace everything".
+2. **Commit authors:** no DI change. Commits are "observed in a repository",
+   confidence 0.6, and statements never say "I wrote".
+3. **Commit granularity:** one observation per repository per local day,
+   with the commits as evidence.
+4. **Tombstones** survive turning an adapter off and on again.
+5. **File references** refuse DexNest's data roots only (the brief).
+6. **Relation types:** the built-in vocabulary plus free-form
+   `[a-z][a-z0-9_]{0,39}`.
+7. **Danger levels:** `ghost_os.forget` and `ghost_os.adapter.disable` are
+   `caution` (they delete data); everything else `safe`.
+8. **Skills from DI:** categories `language`, `runtime`, `toolchain`,
+   `tooling`, `packageManager`. Not `library`, `project` or `baseImage`.
+9. **Export location:** always a save dialog.
+10. **Accent:** reuse `--accent-search`. No new tokens.
+
+### Refinements made in Phase 1
+
+- Provenance is uniform: entities, relations and observations all carry
+  `origin`, `sourceId` (`adapter:<id>` or `detector:<id>`, null when
+  manual), `sourceRef`, `evidence[]` and `confidence`. Tombstones are keyed by
+  `(sourceId, sourceRef)`.
+- Only habits are derived. A derived row is never more than 0.95 sure and,
+  in an import, must come with its derivations.
+- Forget tombstones every non-manual row the cascade removes, including a
+  detected habit: a forgotten habit stays forgotten. Withdrawing an adapter
+  tombstones nothing.
+- Withdrawing an adapter also removes the owner's relations and observations
+  that point at an entity the adapter contributed (a relation cannot outlive
+  its endpoint). The withdraw event reports the counts.
+- In an import, derivations must stay inside the file; relations and
+  observations may point at existing entities, which the store checks.
+- The habit title is text GhostOS writes ("Commits mostly in the evening"),
+  never the owner's.
+
+### Refinements made in Phase 2
+
+- One more table, `ghost_state` (key/value), holds the sync interval. On/off
+  for each adapter lives in `ghost_adapters`, so it changes in the same
+  transaction as the data it adds or withdraws.
+- The search index is a plain FTS5 table keyed by an explicit
+  `ghost_entities.fts_rowid` (not SQLite's implicit rowid, which VACUUM may
+  renumber), kept in step by triggers created in the `ghost_os_search`
+  migration. Without FTS5 there are no triggers and no index, and search
+  uses LIKE; when FTS5 appears later the migration backfills the index.
+- Foreign keys without ON DELETE CASCADE: only the planned cascade removes
+  rows.
+- Import runs in rounds, so a derived row lands once what it depends on has
+  landed; rows whose dependencies were skipped as forgotten stay out and are
+  counted.
+
+### Refinements made in Phase 3
+
+- GhostOS takes **no dependency on DI's packages**, not even types: the
+  adapter declares structural types listing exactly the fields it reads
+  (`DiRepository`, `DiTechnology`), and the host passes DI's stores in.
+  The list of fields is the privacy contract, in code.
+- No separate "used X in repo Y on day Z" observations. Commits become one
+  observation per repository per local day on the project; skills connect
+  through `project -uses-> skill`. Fewer rows, same evidence.
+- A sync reconciles: an entity or relation the source no longer supports
+  (a repository removed from DI, or now inside DexNest's data; a technology
+  gone) is removed with what depended on it, without a tombstone.
+  Observations are never removed by omission, only with their entity.
+- A project GhostOS did not hold yet gets its whole commit history, not
+  only commits after the cursor. If the log's seqs go backwards, the
+  adapter starts over; merging by sha makes that harmless.
+- A repository inside DexNest's data is not read past its record: its
+  technologies are not requested and its commits are dropped.
+- Habit identity is detector + subject ("commits"); a habit that stops
+  holding is removed (no tombstone), a forgotten one is tombstoned.
+- Turned off while reading: the sync writes nothing and is recorded as
+  skipped.
+
+### Refinements made in Phase 4
+
+- Settings live in GhostOS's own tables (`ghost_state`, `ghost_adapters`),
+  so the runtime takes no `ModuleSettings` port: an adapter's on/off state
+  must change in the same transaction as the data it adds or withdraws.
+- `ghost.adapter.synced` is written only when a sync changed something;
+  a quiet hourly sync leaves no event (the run is still in `ghost_runs`).
+  `ghost.habit.detected` is written once per habit per detection period.
+- Turning a source on writes an audit line, no `ghost.*` event: nothing in
+  GhostOS changed yet.
+- The audit callback receives the action id, a fixed summary from
+  `AUDIT_SUMMARIES` and ids/counts only; the host cannot be handed the
+  owner's text by GhostOS.
+- Editing is for the owner's own rows: a row a source contributed can be
+  forgotten, not edited. An entry keeps its type; a pasted conversation
+  keeps when it was pasted.
+
+### Refinements made in Phase 5
+
+- The host hands GhostOS DI's stores **narrowed to the fields it reads**:
+  repository roots reduce to their paths; every other field DI keeps (remote
+  URLs, versions, fingerprints, domains) is dropped before GhostOS sees it.
+  Technologies are asked for with `status: 'observed'` only.
+- Export and import are refused inside DexNest's data (by path and through
+  links: `createDataBoundary` with `realpathSync.native`). The import is
+  size-checked before it is read (64 MB). The export file is written inside
+  the transaction that records `ghost.export.created`: a failed write leaves
+  no event.
+- Action messages are fixed text with counts, because main.ts journals them;
+  validation errors name fields, never values (the export-version error no
+  longer echoes the file's value).
+- Without Developer Intelligence running, GhostOS still starts (manual
+  entry, search, export) and has no source to turn on.
+
+### Refinements made in Phase 6
+
+- The view has three tabs: **Timeline** (type filter, search, and the
+  selected entry's detail beside it), **Add** (one form whose fields follow
+  the type; also used to edit your own entries) and **Sources** (Developer
+  Intelligence on/off with what it reads and never reads, sync, export,
+  import).
+- Every fact in the detail - the entry, each connection, each observation
+  - shows its source and confidence, and non-manual facts list their
+  evidence (the first 20, then a count).
+- Forget asks first, in the view, saying it cannot be undone and that a
+  source cannot bring it back (the registry marks it caution).
+- A new connection's target is chosen from entries on the loaded timeline;
+  a full entry picker is a known gap for Phase 8.
+- The renderer imports only types from `@dexnest/ghost-os`; its lists
+  (types, relation vocabulary) are mirrored and a test keeps them equal, so
+  no store or engine code is bundled into the renderer.
+
+### Refinements made in Phase 7
+
+- **Cascade safety net:** the walk already dedupes, so a cycle ends it; if
+  that ever broke, a synchronous loop would freeze DexNest's main process.
+  `planCascade` now stops after 1,000,000 steps with `CascadeLimitError`
+  and removes nothing (a real graph needs a few thousand).
+- **Habit detection reads only the last 70 days** of observations
+  (`HABIT_LOOKBACK_DAYS`; a test keeps it wider than every detector's
+  window). A quiet sync over 50,000 commits went from about 1.4 s to about
+  0.3 s on Linux.
+- **Imported tombstones for facts still held here are not applied**
+  (reported as `tombstonesSkipped`): import merges and never removes, and a
+  tombstone on a live row would freeze it (never updated, never withdrawn).
+- An interrupted occurrence stays spent after a restart; the next slot runs.
+
+### Follow-up Phase 9 - relations end instead of disappearing
+
+- When a source stops supporting a relation between entries that both
+  remain, the sync **ends** it: `validTo` = the sync time. It moves to an
+  ended identity (source reference `<ref>~ended~<time>`, id derived from
+  that) so the live identity is free: if the source supports it again, that
+  is a **new** relation with `validFrom` = when the old one ended, and the
+  old one stays ended. No tombstone either way.
+- A relation whose entry the source no longer supports still goes with the
+  entry (history needs both ends).
+- Forget and turning the source off remove ended relations like any other.
+- The timeline shows an ended relation at its `validTo` (kind `relation`,
+  "cli stopped: uses TypeScript"); `relations: false` leaves them out. The
+  detail shows "from … until …". Sync events and messages count `ended`.
+- Relations the owner entered are never ended by a sync.
+
+### Follow-up Phase 10 - retention
+
+- After each **scheduled** sync, inside the `sync` job (no timer of its
+  own): keep the newest 500 `ghost_runs` (a run still `running` is never
+  removed), and prune `ghost`-stream events from `ghost_os` older than 180
+  days with the event log's stream-scoped `prune` (stream **and** module in
+  the filter). Constants in `domain/retention.ts`.
+- Never pruned: any other stream (GhostOS's own `audit` lines included), any
+  other module's events on the ghost stream, and the owner's entities,
+  relations and observations - only forget removes those.
+- A retention failure is recorded as `lastError` and never fails the sync.
+- A manual "Sync now" does not run retention; with every source off there
+  is no job, so nothing is pruned (GhostOS then writes events only for your
+  own actions).
+
+### Follow-up Phase 11 - connection picker
+
+- The connection form's target is chosen by searching every entry (the
+  same search as the timeline), not only the loaded timeline page.
+- A WAI-ARIA combobox: the input owns a listbox, arrow keys wrap, Home/End
+  jump, Enter chooses only a highlighted option, Escape closes; the entry
+  itself is never offered; at most 20 options shown. A live region says
+  "Type to search your entries", "Searching…", "Nothing matches …", or how
+  many were found. Searches wait 200 ms after typing; a stale answer is
+  dropped.
+- The chosen entry is shown with a "Change" button; Connect is disabled
+  until one is chosen.
+
+## 16. Phases for this module
+
+Each phase ends at the gate: `pnpm typecheck`; every package's tests with no
+new failures against the Linux baseline (section 17); new tests; a mutation
+check; commit and push to `cloud/ghost-os`; report.
+
+| Phase | Deliverable | Key tests | Planned mutation check |
+|---|---|---|---|
+| 1 Contracts | `domain/`: types; validation of entities (per type), relations, observations (no evidence → refused for non-manual; confidence bounds); cascade planning over the derivation graph; habit detectors; timeline/search query building (FTS quoting); export schema; settings; events | Cascade reaches every derived row; evidence required; habits need their thresholds; FTS input can't inject syntax; static test: domain imports only domain | Let a derived fact through without evidence |
+| 2 Store | Migrations (core + separate search ledger), CRUD, FTS sync, cascade delete in one transaction, tombstones, export/import (all or nothing), manifest | Close/reopen; forget cascades incl. FTS; import rolls back on a bad row; LIKE fallback path; `validateManifest` = [] | Delete without the derivation cascade |
+| 3 Engine | Adapter interface; DI adapter; sync apply/withdraw; habit detection | **Bait test** (vault/finance/journal/clipboard rows and files; commit payload text) - nothing recorded; reader refuses other types; turning off withdraws everything incl. habits; re-sync after forget doesn't resurrect | Let the event reader accept any type |
+| 4 Actions + events | Registry entries (separate commit), runtime entry points, `ghost.*` events with idempotency keys, owner text never in events/audit | Sync slot fired twice → one result; every action writes the log; a marker in every text field never appears in `event_log` | Put the title into an event payload |
+| 5 Host | `ghostOsHost.ts`: boundary for file refs, IPC trusted-frame, export/import dialogs, preload, `main.ts` wiring | Untrusted frames refused; file inside the data root (and via junction, where testable) refused; import size cap; no timer until an adapter is on | Remove the file-reference boundary check |
+| 6 View | Timeline, entity detail (relations, observations, evidence, source), forms (entity, relation, decision, memory, file, conversation), adapter settings; empty/loading/error; keyboard | Rendered states (Vite SSR + `react-dom/server`); model tests; no hex/rgb | Show evidence without its source |
+| 7 Hardening | Restart mid-sync, disk faults at every write, 50k commits, duplicate triggers, cyclic derivations, huge/hostile import, forget races with sync | As listed | Break cascade on cycles |
+| 8 Handoff | `HANDOFF.md` | - | - |
+
+## 17. Baseline (Linux)
+
+Branch `cloud/ghost-os` is `origin/main` plus the cherry-picked foundation
+test-guard fix (`e6577c2` → `2a125c7`), the same starting point as
+`cloud/reality-rpg`. Known Linux-only failures, not this module's: 2 in
+`@dexnest/dev-intelligence`, 17 in `@dexnest/autopilot-runtime`. Counts are
+in the Phase 0 report; the list by name goes in `LINUX_BASELINE.md` in
+Phase 1.
