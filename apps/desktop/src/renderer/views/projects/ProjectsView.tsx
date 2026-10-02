@@ -11,7 +11,7 @@ import { Download, FolderGit2, FolderPlus, LayoutGrid, List, Plus, RefreshCw, Se
 
 import type { ProjectGroup, ProjectSummary, ProjectsSettings, RepoState } from "@dexnest/projects";
 import type { ExecuteResult } from "@dexnest/projects/domain";
-import { Button, EmptyState, ErrorState, LoadingState, PageHeader, SectionTitle, Segmented, Toasts, useToasts } from "../../components/kit";
+import { Button, EmptyState, ErrorState, LoadingState, PageHeader, SectionTitle, Segmented, Toasts, useToasts } from "../../components/ui/kit";
 import { AddProjectWizard } from "./AddProjectWizard";
 import { OperationDialog } from "./OperationDialog";
 import { ProjectDetail, type RunActionResult } from "./ProjectDetail";

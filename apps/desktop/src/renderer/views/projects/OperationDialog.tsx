@@ -8,7 +8,7 @@
 import React, { useEffect, useRef, useState } from "react";
 
 import type { ExecuteResult, OperationPlan, Refusal } from "@dexnest/projects/domain";
-import { Badge, Button, Dialog } from "../../components/kit";
+import { Badge, Button, Dialog } from "../../components/ui/kit";
 import type { ProjectsBridge } from "./projectsBridge";
 import { operationLabel } from "./projectsModel";
 

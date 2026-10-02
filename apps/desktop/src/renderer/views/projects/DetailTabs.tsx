@@ -7,7 +7,7 @@ import { Activity, Box, Code2, Cpu, ExternalLink, FileText, FolderOpen, GitBranc
 
 import type { HistoryEntry, LeftOff, ProjectGroup } from "@dexnest/projects";
 import { githubLinks, isDirty, projectBadge, type Project, type RepoState } from "@dexnest/projects/domain";
-import { Badge, Button, Card, SectionTitle, Technical } from "../../components/kit";
+import { Badge, Button, Card, SectionTitle, Technical } from "../../components/ui/kit";
 import { ProjectFormFields } from "./ProjectForm";
 import {
   availability,

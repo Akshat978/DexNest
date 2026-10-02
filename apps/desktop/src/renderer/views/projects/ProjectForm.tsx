@@ -3,7 +3,7 @@
 import React from "react";
 
 import type { ProjectGroup } from "@dexnest/projects";
-import { Button } from "../../components/kit";
+import { Button } from "../../components/ui/kit";
 import { ACCENT_OPTIONS, TYPE_OPTIONS, type CommandRow, type ProjectForm as Form } from "./projectsModel";
 
 const SLOT_LABELS = { start: "Start (dev)", build: "Build", test: "Test", typecheck: "Typecheck", custom: "Custom" } as const;

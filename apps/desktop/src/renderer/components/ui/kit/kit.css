@@ -1,5 +1,11 @@
 /* DexNest kit - design tokens only. Tints are color-mix() of a token, so
-   token accents (var(--accent-...)) work everywhere. */
+   token accents (var(--accent-...)) work everywhere.
+
+   --kit-accent is set once here and inherited: a view sets it on its root
+   (accentStyle) and every kit component inside follows. */
+:root {
+  --kit-accent: var(--accent-dev);
+}
 
 .kit-visually-hidden {
   position: absolute;
@@ -12,7 +18,6 @@
 
 /* --- Page header ------------------------------------------------------- */
 .kit-header {
-  --kit-accent: var(--accent-dev);
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
@@ -63,7 +68,6 @@
 
 /* --- Card ---------------------------------------------------------------- */
 .kit-card {
-  --kit-accent: var(--accent-dev);
   position: relative;
   padding: var(--space-4);
   border-radius: var(--radius-lg);
@@ -112,7 +116,6 @@
 
 /* --- Buttons ----------------------------------------------------------------- */
 .kit-button {
-  --kit-accent: var(--accent-dev);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -214,7 +217,7 @@
 .kit-badge--warning { --kit-tone: var(--warning); }
 .kit-badge--error { --kit-tone: var(--error); }
 .kit-badge--info { --kit-tone: var(--info); }
-.kit-badge--accent { --kit-tone: var(--accent-dev); }
+.kit-badge--accent { --kit-tone: var(--kit-accent); }
 
 .kit-tech {
   font-family: var(--font-tech);
@@ -241,8 +244,8 @@
   width: 3.5rem;
   height: 3.5rem;
   border-radius: var(--radius-lg);
-  color: var(--accent-dev);
-  background: color-mix(in srgb, var(--accent-dev) 10%, transparent);
+  color: var(--kit-accent);
+  background: color-mix(in srgb, var(--kit-accent) 10%, transparent);
 }
 .kit-empty__title {
   margin: 0;
@@ -260,7 +263,52 @@
   justify-content: center;
   gap: var(--space-2);
 }
+.kit-empty-note {
+  margin: 0;
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px dashed var(--border);
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
 .kit-loading {
+  display: grid;
+  gap: var(--space-3);
+}
+.kit-loading__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-5) 0;
+}
+.kit-loading__tile {
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--kit-accent) 12%, transparent);
+}
+.kit-loading__bars {
+  display: grid;
+  gap: var(--space-2);
+}
+.kit-loading__bar {
+  display: block;
+  width: 14rem;
+  height: 0.75rem;
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+.kit-loading__bar--lg {
+  width: 9rem;
+  height: 1.25rem;
+}
+.kit-loading__label {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+.kit-loading__grid {
   display: grid;
   gap: var(--space-3);
   grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
@@ -277,22 +325,129 @@
   to { background-position: -100% 0; }
 }
 .kit-error {
-  display: grid;
-  justify-items: start;
-  gap: var(--space-2);
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
   padding: var(--space-4);
   border-radius: var(--radius-lg);
-  border: 1px solid color-mix(in srgb, var(--error) 40%, transparent);
-  background: color-mix(in srgb, var(--error) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--error) 35%, transparent);
+  background: color-mix(in srgb, var(--error) 6%, var(--surface));
+}
+.kit-error__icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--error);
+}
+.kit-error__icon svg {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+.kit-error__body {
+  display: grid;
+  gap: var(--space-1);
+  flex: 1;
+  min-width: 0;
 }
 .kit-error__title {
   margin: 0;
-  font-size: 1rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
   color: var(--text);
 }
 .kit-error__message {
   margin: 0;
   color: var(--text-muted);
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+.kit-error__detail {
+  margin: 0;
+  color: var(--text-disabled);
+  font-family: var(--font-tech);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+}
+.kit-error__actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.kit-inline-error {
+  margin: 0;
+  color: var(--error);
+  font-size: 0.8125rem;
+  overflow-wrap: anywhere;
+}
+.kit-notice {
+  margin: 0;
+  font-size: 0.8125rem;
+}
+.kit-notice--success { color: var(--success); }
+.kit-notice--info { color: var(--text-muted); }
+
+/* --- Form controls --------------------------------------------------------------- */
+.kit-field {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.kit-field__label {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+.kit-field__hint {
+  color: var(--text-disabled);
+  font-size: 0.75rem;
+}
+.kit-input {
+  width: 100%;
+  min-height: 2.25rem;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 0.875rem;
+  color-scheme: dark;
+}
+.kit-input:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+.kit-input:focus-visible {
+  border-color: color-mix(in srgb, var(--kit-accent) 60%, var(--border));
+  outline: 2px solid var(--focus-outline);
+  outline-offset: 2px;
+}
+.kit-input::placeholder {
+  color: var(--text-disabled);
+}
+/* A token-drawn chevron in place of the native select arrow. */
+.kit-select {
+  appearance: none;
+  padding-right: 2rem;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--text-muted) 50%),
+    linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
+  background-position: calc(100% - 1rem) 50%, calc(100% - 0.6875rem) 50%;
+  background-size: 0.3125rem 0.3125rem;
+  background-repeat: no-repeat;
+}
+.kit-select option {
+  background: var(--surface);
+  color: var(--text);
+}
+.kit-input[type="date"]::-webkit-calendar-picker-indicator {
+  opacity: 0.6;
+  cursor: pointer;
+}
+.kit-textarea {
+  min-height: 5rem;
+  padding: var(--space-2) var(--space-3);
+  line-height: 1.5;
+  resize: vertical;
 }
 
 /* --- Segmented control -------------------------------------------------------- */
@@ -321,7 +476,7 @@
   height: 0.875rem;
 }
 .kit-segmented__option--on {
-  background: color-mix(in srgb, var(--accent-dev) 16%, var(--surface-2));
+  background: color-mix(in srgb, var(--kit-accent) 16%, var(--surface-2));
   color: var(--text);
 }
 
@@ -355,7 +510,7 @@
 }
 .kit-tab--on {
   color: var(--text);
-  border-bottom-color: var(--accent-dev);
+  border-bottom-color: var(--kit-accent);
 }
 .kit-tab:focus-visible,
 .kit-tabpanel:focus-visible {
@@ -465,5 +620,19 @@
   .kit-skeleton {
     animation: none;
     transition: none;
+  }
+}
+
+/* A badge whose dot pulses: something is running right now. */
+.kit-badge--pulse .kit-badge__dot {
+  animation: kit-pulse 1.6s ease-in-out infinite;
+}
+@keyframes kit-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--kit-tone) 60%, transparent); }
+  50% { box-shadow: 0 0 0 0.25rem color-mix(in srgb, var(--kit-tone) 0%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .kit-badge--pulse .kit-badge__dot {
+    animation: none;
   }
 }

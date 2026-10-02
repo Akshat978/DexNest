@@ -10,7 +10,7 @@ import { ArrowLeft, Code2, Download, ExternalLink, FolderOpen, RefreshCw, Square
 
 import type { DiffStat, HistoryEntry, LeftOff, OperationRecord, ProjectGroup } from "@dexnest/projects";
 import { fetchedAgoText, githubLinks, projectBadge, type Project, type RepoState } from "@dexnest/projects/domain";
-import { Badge, Button, Dialog, TabPanel, Tabs, Technical } from "../../components/kit";
+import { Badge, Button, Dialog, TabPanel, Tabs, Technical } from "../../components/ui/kit";
 import { PinButton } from "../../components/pins";
 import { BranchesTab, ChangesTab, HistoryTab, LinksTab, OverviewTab, RunTab, SettingsTab, type RunResultView } from "./DetailTabs";
 import type { ProjectsBridge } from "./projectsBridge";

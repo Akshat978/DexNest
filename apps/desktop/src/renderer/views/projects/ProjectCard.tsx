@@ -4,7 +4,7 @@
 import React from "react";
 import { Code2, Download, RefreshCw, SquareTerminal, Star, Upload } from "lucide-react";
 
-import { Badge, Button, Card, Technical } from "../../components/kit";
+import { Badge, Button, Card, Technical } from "../../components/ui/kit";
 import { fetchedAgoText } from "@dexnest/projects/domain";
 import { badgeFor, branchLine, projectTypeLabel, quickActions, relativeTime, type QuickActionId, type ViewEntry } from "./projectsModel";
 

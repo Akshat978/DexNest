@@ -1,21 +1,26 @@
 import React from "react";
 import { cn } from "../../lib/utils";
+import "./kit/kit.css";
 
-// Ported 1:1 from reference-ui/frontend/src/components/common/StatusChip.js (typed).
+// The older views' status chip, drawn as the shared kit badge (integration QA
+// C8): one badge shape and one set of tone colours across the app, from design
+// tokens only. The tone names and props stay as they were, so callers don't
+// change.
 
 type Tone = "ready" | "running" | "paused" | "locked" | "unlocked" | "error" | "offline" | "warn" | "ok" | "info";
+type KitTone = "success" | "warning" | "error" | "info" | "neutral";
 
-const TONES: Record<Tone, { c: string; label: string }> = {
-  ready: { c: "#22C55E", label: "Ready" },
-  running: { c: "#22D3EE", label: "Running" },
-  paused: { c: "#F59E0B", label: "Paused" },
-  locked: { c: "#EF4444", label: "Locked" },
-  unlocked: { c: "#10B981", label: "Unlocked" },
-  error: { c: "#EF4444", label: "Error" },
-  offline: { c: "#525252", label: "Offline" },
-  warn: { c: "#F59E0B", label: "Warning" },
-  ok: { c: "#22C55E", label: "OK" },
-  info: { c: "#6366F1", label: "Info" }
+const TONES: Record<Tone, { kit: KitTone; label: string }> = {
+  ready: { kit: "success", label: "Ready" },
+  running: { kit: "info", label: "Running" },
+  paused: { kit: "warning", label: "Paused" },
+  locked: { kit: "error", label: "Locked" },
+  unlocked: { kit: "success", label: "Unlocked" },
+  error: { kit: "error", label: "Error" },
+  offline: { kit: "neutral", label: "Offline" },
+  warn: { kit: "warning", label: "Warning" },
+  ok: { kit: "success", label: "OK" },
+  info: { kit: "info", label: "Info" }
 };
 
 export function StatusChip({
@@ -35,22 +40,8 @@ export function StatusChip({
 }) {
   const t = TONES[tone] || TONES.info;
   return (
-    <span
-      data-testid={`status-chip-${tone}`}
-      className={cn(
-        "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium leading-none",
-        className
-      )}
-      style={{ borderColor: `${t.c}33`, background: `${t.c}12`, color: t.c, ...style }}
-    >
-      {dot && (
-        <span className="relative flex h-1.5 w-1.5">
-          {pulse && (
-            <span className="absolute inline-flex h-full w-full animate-ping rounded-full opacity-60" style={{ background: t.c }} />
-          )}
-          <span className="relative inline-flex h-1.5 w-1.5 rounded-full" style={{ background: t.c }} />
-        </span>
-      )}
+    <span data-testid={`status-chip-${tone}`} className={cn("kit-badge", `kit-badge--${t.kit}`, pulse && "kit-badge--pulse", className)} style={style}>
+      {dot && <span className="kit-badge__dot" aria-hidden="true" />}
       {children || t.label}
     </span>
   );

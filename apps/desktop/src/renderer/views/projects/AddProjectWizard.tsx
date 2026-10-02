@@ -5,7 +5,7 @@ import React, { useEffect, useState } from "react";
 import { FolderOpen, GitBranch, Sparkles } from "lucide-react";
 
 import type { InspectResult, ProjectGroup, Suggestion } from "@dexnest/projects";
-import { Badge, Button, Dialog, Technical } from "../../components/kit";
+import { Badge, Button, Dialog, Technical } from "../../components/ui/kit";
 import { ProjectFormFields } from "./ProjectForm";
 import type { ProjectsBridge } from "./projectsBridge";
 import { formFromInput, formProblems, inputFromForm, type ProjectForm } from "./projectsModel";

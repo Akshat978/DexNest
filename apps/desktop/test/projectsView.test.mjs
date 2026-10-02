@@ -256,7 +256,7 @@ test("operation dialog: before the preview arrives (or when it is refused) the t
 
 const sourceFiles = [
   ...readdirSync(join(desktop, "src/renderer/views/projects")).map((f) => join(desktop, "src/renderer/views/projects", f)),
-  ...readdirSync(join(desktop, "src/renderer/components/kit")).map((f) => join(desktop, "src/renderer/components/kit", f))
+  ...readdirSync(join(desktop, "src/renderer/components/ui/kit")).map((f) => join(desktop, "src/renderer/components/ui/kit", f))
 ];
 
 test("design tokens only: no hex or rgb colours, fonts only from tokens", () => {
@@ -279,7 +279,7 @@ test("the renderer takes only pure code from @dexnest/projects: values from /dom
 
 // --- Phase 9: consistency with the existing views ---------------------------------
 
-const kitCss = readFileSync(join(desktop, "src/renderer/components/kit/kit.css"), "utf8");
+const kitCss = readFileSync(join(desktop, "src/renderer/components/ui/kit/kit.css"), "utf8");
 const rule = (selector) => {
   const m = kitCss.match(new RegExp(`(^|\\n)${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\{([^}]*)\\}`));
   assert.ok(m, `missing ${selector}`);
@@ -305,7 +305,7 @@ test("primary buttons are soft accent buttons like the rest of the app, never a 
 });
 
 test("dialogs cover the whole window: rendered into document.body, inline only without a DOM", () => {
-  const kit = readFileSync(join(desktop, "src/renderer/components/kit/index.tsx"), "utf8");
+  const kit = readFileSync(join(desktop, "src/renderer/components/ui/kit/index.tsx"), "utf8");
   assert.match(kit, /typeof document === "undefined" \? content : createPortal\(content, document\.body\)/);
   assert.match(rule(".kit-backdrop"), /position: fixed;[\s\S]*inset: 0;/);
 });
