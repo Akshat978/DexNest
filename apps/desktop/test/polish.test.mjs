@@ -40,3 +40,8 @@ test("P6: Audit's columns fit the content area at 1280, and action ids break onl
   assert.match(view, /<div className="event-list audit-list">/);
   assert.match(view, /idParts\(event\.actionId\)\.map\(\(part, i\) => \(\s*<React\.Fragment key=\{i\}>\s*\{i > 0 && <wbr \/>\}/);
 });
+
+test("P8: Utilities' date fields keep a modest width at 1920 instead of stretching", () => {
+  assert.match(rule(css("styles.css"), ".utilities-date-controls"), /grid-template-columns: repeat\(auto-fill, minmax\(12rem, 16rem\)\);/);
+  assert.match(css("main.tsx"), /<div className="registry-controls utilities-date-controls">\s*<label>Mode<select value=\{dateMode\}/);
+});

@@ -1488,6 +1488,12 @@ kbd {
   color: var(--text-muted);
 }
 
+/* Utilities' date calculator: each field its own modest width, so a date
+   input does not stretch across a 1920 window. */
+.utilities-date-controls {
+  grid-template-columns: repeat(auto-fill, minmax(12rem, 16rem));
+}
+
 .search-heading {
   align-items: end;
 }

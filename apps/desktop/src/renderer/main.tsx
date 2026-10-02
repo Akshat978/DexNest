@@ -10688,7 +10688,7 @@ function UtilitiesView({
         <GlassCard accent={ACCENT} hover={false}>
           <SectionTitle action={utilitiesState.recentResults.some((item) => item.type === "date") ? <button type="button" className="text-[11px]" style={{ color: "var(--text-muted)" }} onClick={() => void runUtility("utilities.clear_history", { scope: "date" })}>Clear date history</button> : <CalendarClock className="h-3.5 w-3.5" style={{ color: ACCENT }} />}>Date Calculator</SectionTitle>
           <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
-            <div className="registry-controls">
+            <div className="registry-controls utilities-date-controls">
               <label>Mode<select value={dateMode} onChange={(event) => setDateMode(event.target.value as typeof dateMode)}><option value="countdown">Countdown</option><option value="between">Days between</option><option value="add">Add days</option><option value="subtract">Subtract days</option></select></label>
               <label>{dateMode === "between" ? "Start date" : "Base date"}<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} /></label>
               {(dateMode === "between" || dateMode === "countdown") && <label>{dateMode === "countdown" ? "Target date" : "End date"}<input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} /></label>}
