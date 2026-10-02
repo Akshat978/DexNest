@@ -5,7 +5,8 @@ import { GlassCard, SectionTitle } from "../components/ui/GlassCard";
 import { StatusChip } from "../components/ui/StatusChip";
 import { ActionButton } from "../components/ui/ActionButton";
 import { ProgressRing } from "../components/ui/ProgressRing";
-import { InlineLoadingState, LoadingStatusCard } from "../components/ui/ModuleLoading";
+import { InlineLoadingState } from "../components/ui/ModuleLoading";
+import { EmptyNote } from "../components/ui/kit";
 import { getPerfStats, subscribePerf } from "../lib/perf";
 import type { AppHealthState, HealthStatus } from "../main";
 
@@ -49,7 +50,7 @@ export function AppHealthView({
       </div>
 
       {!hasRun && !running && (
-        <LoadingStatusCard accent={ACCENT_HEALTH} title="No health check has run yet" message="Checks are on-demand only — run them to see local-data safety, Git safety, registry, Secure Vault and integration status." />
+        <EmptyNote>No health check has run yet. Checks are on-demand only — run them to see local-data safety, Git safety, registry, Secure Vault and integration status.</EmptyNote>
       )}
 
       <GlassCard hover={false}>

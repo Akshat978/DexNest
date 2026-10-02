@@ -30,7 +30,8 @@ import { ProgressRing } from "./components/ui/ProgressRing";
 import { ActionButton } from "./components/ui/ActionButton";
 import { AssistantOrb } from "./components/ui/AssistantOrb";
 import { VoiceWaveform } from "./components/ui/VoiceWaveform";
-import { ModuleLoadingOverlay, InlineLoadingState, LoadingStatusCard } from "./components/ui/ModuleLoading";
+import { InlineLoadingState } from "./components/ui/ModuleLoading";
+import { ErrorState, LoadingState } from "./components/ui/kit";
 import { previewForUi, formatBytes, formatDate, formatDuration } from "./lib/format";
 import { accentTint, MODULE_META, SIDEBAR_VIEWS, SIDEBAR_HIDDEN_VIEWS, type ViewId } from "./lib/moduleMeta";
 import { getPerfStats, subscribePerf, recordModuleSwitch, recordModuleDataLoaded } from "./lib/perf";
@@ -6136,7 +6137,8 @@ function DexNestApp() {
           <div className="relative mx-auto max-w-[1600px]">
           {shellLoadOverlay(activeView, shellLoad) === "error" && (
             <div className="module-loading-layer">
-              <LoadingStatusCard
+              <ErrorState
+                title="Could not load this module"
                 message={`Could not load local data for ${views.find((item) => item.id === activeView)?.label ?? "this view"}.`}
                 onRetry={() => void refreshShellData()}
               />
@@ -6148,12 +6150,11 @@ function DexNestApp() {
             if (!isHeavy || heavyStatus === "ready") { return null; }
             const accent = MODULE_META[activeView]?.accent ?? "#22D3EE";
             const label = views.find((item) => item.id === activeView)?.label ?? "module";
-            const gridViews = new Set<ViewId>(["vault", "finder", "finance", "capture", "journal"]);
             return (
-              <div className="module-loading-layer">
+              <div className="module-loading-layer" style={{ "--kit-accent": accent } as React.CSSProperties}>
                 {heavyStatus === "error"
-                  ? <LoadingStatusCard accent={accent} message={`Could not load local data for ${label}.`} onRetry={() => void loadViewData(activeView)} />
-                  : <ModuleLoadingOverlay accent={accent} label={`Loading ${label}…`} subtext="Reading local data" variant={gridViews.has(activeView) ? "skeleton" : "spinner"} />}
+                  ? <ErrorState title="Could not load this module" message={`Could not load local data for ${label}.`} onRetry={() => void loadViewData(activeView)} />
+                  : <LoadingState label={`Loading ${label}`} header rows={6} delayMs={150} />}
               </div>
             );
           })()}

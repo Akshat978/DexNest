@@ -1,4 +1,5 @@
 import React from "react";
+import { Button, ErrorState } from "./ui/kit";
 
 // One failing view must never take the window down with it. Without this, an
 // error thrown while a view renders unmounts the whole app: no sidebar, no way
@@ -37,15 +38,13 @@ export class ViewErrorBoundary extends React.Component<ViewErrorBoundaryProps, V
     const { error } = this.state;
     if (!error) return this.props.children;
     return (
-      <section className="view-error" role="alert" aria-labelledby="view-error-title">
-        <h2 id="view-error-title" className="view-error__title">{this.props.viewLabel} stopped working</h2>
-        <p className="view-error__text">The rest of DexNest is fine. Try the view again, or go somewhere else and come back.</p>
-        <p className="view-error__detail technical">{error.message || error.name}</p>
-        <div className="view-error__actions">
-          <button type="button" onClick={this.retry}>Try again</button>
-          {this.props.onLeave && <button type="button" onClick={this.props.onLeave}>Go to Command</button>}
-        </div>
-      </section>
+      <ErrorState
+        title={`${this.props.viewLabel} stopped working`}
+        message="The rest of DexNest is fine. Try the view again, or go somewhere else and come back."
+        detail={error.message || error.name}
+        onRetry={this.retry}
+        actions={this.props.onLeave && <Button variant="ghost" size="sm" onClick={this.props.onLeave}>Go to Command</Button>}
+      />
     );
   }
 }

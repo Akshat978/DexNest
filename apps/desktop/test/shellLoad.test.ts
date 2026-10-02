@@ -24,7 +24,7 @@ test("the ten shell-data views show the error card when the shared load failed, 
 test("refreshShellData records ready after the shared state and error when it fails; the card retries it", () => {
   assert.match(main, /setVoiceWorkflowSettings\(nextVoiceWorkflowSettings\);\n\s*setShellLoad\("ready"\);/);
   assert.match(main, /catch \{[\s\S]{0,400}?setShellLoad\("error"\);\n\s*\} finally \{/);
-  assert.match(main, /shellLoadOverlay\(activeView, shellLoad\) === "error" && \([\s\S]{0,300}?<LoadingStatusCard[\s\S]{0,200}?onRetry=\{\(\) => void refreshShellData\(\)\}/);
+  assert.match(main, /shellLoadOverlay\(activeView, shellLoad\) === "error" && \([\s\S]{0,300}?<ErrorState[\s\S]{0,300}?onRetry=\{\(\) => void refreshShellData\(\)\}/);
 });
 
 test("boot: a failing warm-up step still reveals the app", () => {

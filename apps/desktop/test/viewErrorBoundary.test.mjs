@@ -52,7 +52,7 @@ test("an error becomes state, and that state renders an alert with the view's na
   const b = new Boundary({ viewLabel: "Autopilot", onLeave: () => { left += 1; }, children: null });
   b.state = state;
   const html = renderToStaticMarkup(b.render());
-  assert.match(html, /<section class="view-error" role="alert" aria-labelledby="view-error-title">/);
+  assert.match(html, /<section class="kit-error" role="alert" aria-labelledby="([^"]+)">[\s\S]*<h2 id="\1" class="kit-error__title">/);
   assert.match(html, /Autopilot stopped working/);
   assert.match(html, /The rest of DexNest is fine/);
   assert.match(html, /autopilotQueue is not a function/);
