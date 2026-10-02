@@ -10,7 +10,7 @@ import type {
   TimelineItem
 } from "@dexnest/object-os";
 import { Package } from "lucide-react";
-import { accentStyle, Badge, Button, ConfirmDialog, EmptyState, ErrorState, Field, InlineError, LoadingState, Notice, PageHeader, Select, TabPanel, Tabs, TextArea, TextInput } from "../components/ui/kit";
+import { accentStyle, Badge, Button, ConfirmDialog, EmptyNote, EmptyState, ErrorState, Field, InlineError, LoadingState, Notice, PageHeader, Select, TabPanel, Tabs, TextArea, TextInput } from "../components/ui/kit";
 import {
   deleteObjectConfirm,
   actionMessage,
@@ -467,7 +467,7 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
                   </div>
                 </div>
 
-                <Tabs label="Object sections" idPrefix="objectos" value={tab} onChange={selectTab} tabs={TABS.map((t) => ({ id: t, label: TAB_LABELS[t] }))} />
+                <Tabs wrap label="Object sections" idPrefix="objectos" value={tab} onChange={selectTab} tabs={TABS.map((t) => ({ id: t, label: TAB_LABELS[t] }))} />
 
                 <TabPanel idPrefix="objectos" id={tab} className="objectos-panel">
                   {tab === "overview" && <OverviewPanel detail={detail} photo={photo} busy={busy} run={run} onOpen={(id) => showObject(id)} />}
@@ -495,7 +495,7 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
                 </TabPanel>
               </section>
             ) : state.kind === "ready" ? (
-              <p className="objectos-hint">Choose an object to see its maintenance, parts, settings, measurements, files, purchase and history.</p>
+              <EmptyNote>Choose an object to see its maintenance, parts, settings, measurements, files, purchase and history.</EmptyNote>
             ) : null}
           </div>
         </div>
@@ -1031,9 +1031,9 @@ function SettingsPanel({ detail, busy, run, ask, bridge, initialDiff }: PanelPro
             <ul className="objectos-list">
               {g.versions.map((v) => (
                 <li key={v.id} className="objectos-row">
-                  <span>
+                  <p className="objectos-version">
                     <span className="technical">v{v.version}</span> · <When at={v.createdAt} /> · {Object.keys(v.values).length} values{v.note ? ` · ${v.note}` : ""}
-                  </span>
+                  </p>
                   <span className="button-row">
                     <Button size="sm" aria-expanded={shown === v.id} onClick={() => setShown(shown === v.id ? null : v.id)}>{shown === v.id ? "Hide" : "Show"}</Button>
                     <Button size="sm" onClick={() => startFrom(v)}>Start from this</Button>

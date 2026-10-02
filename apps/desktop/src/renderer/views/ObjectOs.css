@@ -140,6 +140,13 @@ button.objectos-item:hover {
   gap: var(--space-1);
 }
 
+/* A settings version: one line of text that wraps as a sentence. */
+.objectos-version {
+  margin: 0;
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+
 /* A due-state badge keeps the kit's inline layout, not the row's grid. */
 .objectos-row > .kit-badge {
   display: inline-flex;

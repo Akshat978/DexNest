@@ -219,6 +219,8 @@ test("settings: versions grouped, compare shows the differences", () => {
   const html = render({ initial: { ...ready, detail, tab: "settings", diff } });
   assert.match(html, /aria-label="Settings: Slicer"/);
   assert.match(html, /<span class="technical">v2<\/span>/);
+  // P2: a version is one line of text, not one grid row per piece.
+  assert.match(html, /<li class="objectos-row"><p class="objectos-version"><span class="technical">v2<\/span> · <time/);
   assert.match(html, /role="group" aria-label="Compare versions of Slicer"/);
   assert.match(html, /~ layer_height: 0.2 → 0.15/);
   assert.match(html, /\+ ironing = on/);
@@ -342,6 +344,13 @@ test("design tokens only: no literal colours; fonts from tokens; the tools accen
   for (const [, family] of css.matchAll(/font-family:\s*([^;]+);/g)) assert.match(family.trim(), /^var\(--font-(ui|tech)\)$/, family);
   assert.match(css, /var\(--accent-tools\)/);
   assert.doesNotMatch(css, /animation|transition/, "nothing animates");
+});
+
+test("P1, P4: nine tabs wrap instead of scrolling sideways; with nothing chosen the detail column says what to do in a framed note", () => {
+  const html = render({ initial: { ...ready, detail } });
+  assert.match(html, /<div class="kit-tabs kit-tabs--wrap" role="tablist" aria-label="Object sections">/);
+  const none = render({ initial: { ...ready } });
+  assert.match(none, /<p class="kit-empty-note">Choose an object to see its maintenance/);
 });
 
 test("table buttons keep their label on one line", () => {
