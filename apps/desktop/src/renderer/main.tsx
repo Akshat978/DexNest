@@ -4518,7 +4518,7 @@ function DexNestApp() {
     pythonPath: null,
     detectedPythonPath: null,
     ocrEngine: "paddleocr",
-    ocrDevice: "gpu",
+    ocrDevice: "cpu",
     ocrLanguage: "eng",
     tempFolderPath: "",
     outputsPath: ""
@@ -15134,7 +15134,7 @@ function SettingsView({
   const [toolTesseractPath, setToolTesseractPath] = useState(toolsState.tesseractPath ?? "");
   const [toolPythonPath, setToolPythonPath] = useState(toolsState.pythonPath ?? "");
   const [toolOcrEngine, setToolOcrEngine] = useState(toolsState.ocrEngine ?? "paddleocr");
-  const [toolOcrDevice, setToolOcrDevice] = useState(toolsState.ocrDevice ?? "gpu");
+  const [toolOcrDevice, setToolOcrDevice] = useState(toolsState.ocrDevice ?? "cpu");
   const [toolOcrLanguage, setToolOcrLanguage] = useState(toolsState.ocrLanguage ?? "eng");
   const [toolsSettingsStatus, setToolsSettingsStatus] = useState("");
   useEffect(() => {
@@ -15143,7 +15143,7 @@ function SettingsView({
     setToolTesseractPath(toolsState.tesseractPath ?? "");
     setToolPythonPath(toolsState.pythonPath ?? "");
     setToolOcrEngine(toolsState.ocrEngine ?? "paddleocr");
-    setToolOcrDevice(toolsState.ocrDevice ?? "gpu");
+    setToolOcrDevice(toolsState.ocrDevice ?? "cpu");
     setToolOcrLanguage(toolsState.ocrLanguage ?? "eng");
   }, [toolsState.ffmpegPath, toolsState.libreOfficePath, toolsState.tesseractPath, toolsState.pythonPath, toolsState.ocrEngine, toolsState.ocrDevice, toolsState.ocrLanguage]);
   async function saveToolsDependencySettings(): Promise<void> {

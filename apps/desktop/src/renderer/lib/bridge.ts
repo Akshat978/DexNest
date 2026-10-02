@@ -620,7 +620,7 @@ export const fallbackBridge: DexNestBridge = {
     pythonPath: null,
     detectedPythonPath: null,
     ocrEngine: "paddleocr",
-    ocrDevice: "gpu",
+    ocrDevice: "cpu",
     ocrLanguage: "eng",
     tempFolderPath: "./local-data/files/tools/temp",
     outputsPath: "./local-data/settings/tools-outputs.json"

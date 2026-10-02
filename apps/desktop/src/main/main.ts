@@ -27,6 +27,7 @@ import { createSkillConstellationHost, type SkillConstellationHost } from "./ski
 import { createRealityRpgHost, runRealityRpgAction, type RealityRpgHost } from "./realityRpgHost.js";
 import { createGhostOsHost, runGhostOsAction, type GhostOsHost } from "./ghostOsHost.js";
 import { createObjectOsHost, objectJournalLine, runObjectOsAction, type ObjectOsHost } from "./objectOsHost.js";
+import { DEFAULT_OCR_DEVICE, resolveOcrDevice } from "./ocrDevice.js";
 import { createProjectsHost, type ProjectsHost } from "./projectsHost.js";
 import { createHostScheduler } from "@dexnest/foundation";
 import { createCompanionApi, hashToken, openPairing } from "./companionApi.js";
@@ -11181,7 +11182,7 @@ function defaultToolsSettings(): ToolsSettings {
     tesseractPath: null,
     pythonPath: null,
     ocrEngine: "paddleocr",
-    ocrDevice: "gpu",
+    ocrDevice: DEFAULT_OCR_DEVICE,
     ocrLanguage: "eng"
   };
 }
@@ -12476,7 +12477,7 @@ function toolsState() {
     pythonPath: settings.pythonPath ?? null,
     detectedPythonPath: detectPythonPath(),
     ocrEngine: settings.ocrEngine ?? "paddleocr",
-    ocrDevice: settings.ocrDevice ?? "gpu",
+    ocrDevice: resolveOcrDevice(undefined, settings.ocrDevice),
     ocrLanguage: settings.ocrLanguage ?? "eng",
     tempFolderPath: toolsTempRoot,
     outputsPath: toolsOutputsPath
@@ -15472,7 +15473,7 @@ function runVaultAction(action: DexNestActionDefinition, source: DexNestActionTr
         autoOcrOnImport: Boolean(params.autoOcrOnImport),
         pythonPath: typeof params.pythonPath === "string" && params.pythonPath.trim() ? params.pythonPath.trim() : null
       });
-      saveToolsSettings({ ...loadToolsSettings(), pythonPath: next.pythonPath ?? loadToolsSettings().pythonPath ?? null, ocrEngine: "paddleocr", ocrDevice: "gpu" });
+      saveToolsSettings({ ...loadToolsSettings(), pythonPath: next.pythonPath ?? loadToolsSettings().pythonPath ?? null, ocrEngine: "paddleocr" });
       logVaultEvent(action.id, "success", source, "Updated Vault OCR settings.", { autoOcrOnImport: next.autoOcrOnImport, engine: "paddleocr", device: "gpu", hasPythonPath: Boolean(next.pythonPath) }, startedAt);
       return { ok: true, actionId: action.id, vaultState: vaultState() };
     }
@@ -15832,7 +15833,7 @@ function safeOcrEngine(value: unknown): "tesseract" | "paddleocr" | "easyocr_pla
 }
 
 function safeOcrDevice(value: unknown): "gpu" | "cpu" {
-  return value === "cpu" || value === "gpu" ? value : loadToolsSettings().ocrDevice ?? "gpu";
+  return resolveOcrDevice(value, loadToolsSettings().ocrDevice);
 }
 
 function assertOcrImagePath(filePath: string): void {

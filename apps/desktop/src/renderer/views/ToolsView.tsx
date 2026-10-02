@@ -36,7 +36,7 @@ export function ToolsView({
   const [resizeHeight, setResizeHeight] = useState("");
   const [activeTab, setActiveTab] = useState<"pdf" | "images" | "ocr" | "media" | "office" | "outputs" | "settings">("pdf");
   const [ocrEngine, setOcrEngine] = useState<"tesseract" | "paddleocr" | "easyocr_placeholder">(toolsState.ocrEngine ?? "paddleocr");
-  const [ocrDevice, setOcrDevice] = useState<"gpu" | "cpu">(toolsState.ocrDevice ?? "gpu");
+  const [ocrDevice, setOcrDevice] = useState<"gpu" | "cpu">(toolsState.ocrDevice ?? "cpu");
   const [ocrLanguage, setOcrLanguage] = useState(toolsState.ocrLanguage ?? "eng");
   const [ocrPreview, setOcrPreview] = useState("");
   const [ocrMetadata, setOcrMetadata] = useState<{ engine: string; averageConfidence: number | null } | null>(null);
@@ -55,7 +55,7 @@ export function ToolsView({
 
   useEffect(() => {
     setOcrEngine(toolsState.ocrEngine ?? "paddleocr");
-    setOcrDevice(toolsState.ocrDevice ?? "gpu");
+    setOcrDevice(toolsState.ocrDevice ?? "cpu");
     setOcrLanguage(toolsState.ocrLanguage ?? "eng");
   }, [toolsState.ocrEngine, toolsState.ocrDevice, toolsState.ocrLanguage]);
 
