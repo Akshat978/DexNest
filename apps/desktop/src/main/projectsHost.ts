@@ -33,6 +33,7 @@ import { collectFacts, scoreRepository } from "@dexnest/standup";
 import type { DevIntelligenceModule } from "@dexnest/dev-intelligence";
 
 import { isTrustedMainFrame } from "./trustedFrame.js";
+import { evidenceLine } from "./leftOffEvidence.js";
 
 export interface ProjectsHostOptions {
   database: SqlDatabase;
@@ -116,7 +117,7 @@ export function createProjectsHost(options: ProjectsHostOptions): ProjectsHost {
       const ranked = scoreRepository(repo, from, to);
       return {
         reason: ranked.reason,
-        evidence: ranked.evidence.slice(0, 6).map((ref) => `${ref.kind.replace(/_/g, " ")}${ref.observedAt ? ` · ${ref.observedAt.slice(0, 10)}` : ""}`),
+        evidence: ranked.evidence.slice(0, 6).map((ref) => evidenceLine(ref, repo.events)),
         latestActivityAt: ranked.signals.latestActivityAt ?? null
       };
     }
