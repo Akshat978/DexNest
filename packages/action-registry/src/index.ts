@@ -579,11 +579,12 @@ export const seededActions = [
     status: "available"
   },
   {
+    // The id stays: pins, routines, voice and Stream Deck buttons point at it.
     id: "dev.open_dashboard",
-    title: "Open Dev Dashboard",
+    title: "Open Projects",
     moduleId: "dev",
     module: "dev",
-    description: "Open the DexNest Dev dashboard placeholder.",
+    description: "Open Projects: your code projects, their branches and how far they are from GitHub.",
     category: "navigation",
     dangerLevel: "safe",
     requiresConfirmation: false,

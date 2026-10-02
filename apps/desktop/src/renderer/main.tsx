@@ -4304,7 +4304,7 @@ function assistantSuccessText(route: VoiceRouteResult, resultCount: number): str
     case "drop_send_clipboard":
       return "Sent your clipboard to DexNest Drop.";
     case "dev_run_command":
-      return "Dev command finished. Check the Dev dashboard for output.";
+      return "Dev command finished. Check Projects for its output.";
     case "journal_open_today":
       return "Opened today's Journal.";
     case "open_module":
