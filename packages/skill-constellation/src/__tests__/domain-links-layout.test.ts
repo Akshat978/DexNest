@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { computeLinks, MAX_EVIDENCE_LINKS_PER_SKILL } from '../domain/links.ts';
-import { layoutConstellation, VIEW_SIZE } from '../domain/layout.ts';
+import { layoutConstellation, MIN_SEPARATION, VIEW_SIZE } from '../domain/layout.ts';
 import { RELATED_PAIRS } from '../domain/data/related-pairs.ts';
 import { CATALOGUE_NAMES, CATALOGUE_SKILLS } from '../domain/data/catalogue.ts';
 import { SKILL_CATEGORIES } from '../domain/types.ts';
@@ -112,6 +112,40 @@ describe('layout', () => {
     ];
     const d = (p: { x: number; y: number }) => Math.hypot(p.x - VIEW_SIZE / 2, p.y - VIEW_SIZE / 2);
     expect(d(strong)).toBeLessThan(d(weak));
+  });
+
+  it('never draws two stars on top of each other, even in one crowded sector', () => {
+    // Integration QA F5: on real data "Docker" landed on "Vite" and "Next.js" on "React".
+    // 18 in one sector (about 100 skills over the six) still fit; beyond that the
+    // stepping gives up after MAX_STEPS rather than loop.
+    const crowded = Array.from({ length: 18 }, (_, i) => ({ id: `tool-${i}`, category: 'tooling' as const, score: 0.5 }));
+    const points = layoutConstellation(crowded);
+    for (let i = 0; i < points.length; i += 1) {
+      for (let j = i + 1; j < points.length; j += 1) {
+        const d = Math.hypot(points[i]!.x - points[j]!.x, points[i]!.y - points[j]!.y);
+        expect(d, `${points[i]!.skillId} / ${points[j]!.skillId}`).toBeGreaterThanOrEqual(MIN_SEPARATION);
+      }
+    }
+    for (const p of points) {
+      expect(p.x).toBeGreaterThanOrEqual(0);
+      expect(p.x).toBeLessThanOrEqual(VIEW_SIZE);
+      expect(p.y).toBeGreaterThanOrEqual(0);
+      expect(p.y).toBeLessThanOrEqual(VIEW_SIZE);
+    }
+    expect(layoutConstellation([...crowded].reverse())).toEqual(points);
+  });
+
+  it('only a star that would land on another one moves', () => {
+    const alone = layoutConstellation([{ id: 'zz-solo', category: 'language', score: 0.3 }])[0]!;
+    const twin = layoutConstellation([
+      { id: 'aa-first', category: 'language', score: 0.3 },
+      { id: 'zz-solo', category: 'language', score: 0.3 },
+    ]);
+    const first = twin.find((p) => p.skillId === 'aa-first')!;
+    const solo = twin.find((p) => p.skillId === 'zz-solo')!;
+    // Either it was already clear (unchanged) or it stepped clear.
+    if (Math.hypot(first.x - alone.x, first.y - alone.y) >= MIN_SEPARATION) expect(solo).toEqual(alone);
+    expect(Math.hypot(first.x - solo.x, first.y - solo.y)).toBeGreaterThanOrEqual(MIN_SEPARATION);
   });
 
   it('survives a non-finite score', () => {
