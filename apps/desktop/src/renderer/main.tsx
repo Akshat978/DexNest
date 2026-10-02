@@ -60,6 +60,7 @@ import { GhostOsView, type GhostOsBridge } from "./views/GhostOsView";
 import { ObjectOsView, type ObjectOsBridge } from "./views/ObjectOsView";
 import { ProjectsView } from "./views/projects/ProjectsView";
 import { uniqueById } from "./lib/uniqueById";
+import { shellLoadOverlay, type ShellLoad } from "./lib/shellLoad";
 import { ViewErrorBoundary } from "./components/ViewErrorBoundary";
 import { BackupView } from "./views/BackupView";
 import { ExternalDevicesView } from "./views/ExternalDevicesView";
@@ -4438,6 +4439,8 @@ function DexNestApp() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [busyCount, setBusyCount] = useState(0);
   const [initialLoadDone, setInitialLoadDone] = useState(false);
+  // The shared shell state behind the light views (lib/shellLoad.ts).
+  const [shellLoad, setShellLoad] = useState<ShellLoad>("loading");
   const [bootReady, setBootReady] = useState(false);
   const [bootStatus, setBootStatus] = useState("Loading DexNest…");
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
@@ -5560,7 +5563,15 @@ function DexNestApp() {
       setInitialLoadDone(true);
       setBootReady(true);
     }, 9000);
-    void runBootWarmup().finally(() => window.clearTimeout(cap));
+    void runBootWarmup()
+      .catch(() => undefined)
+      .finally(() => {
+        window.clearTimeout(cap);
+        // A failed warm-up step (a read that rejects) must still reveal the
+        // app; it used to clear the cap and leave the splash up for good.
+        setInitialLoadDone(true);
+        setBootReady(true);
+      });
   }, []);
 
   useEffect(() => {
@@ -5687,6 +5698,7 @@ function DexNestApp() {
       setAmbientVoiceState(nextAmbientVoiceState);
       setSpeechState(nextSpeechState);
       setVoiceWorkflowSettings(nextVoiceWorkflowSettings);
+      setShellLoad("ready");
 
       // Heavy, view-specific states (large arrays / disk reads / aggregation):
       // fetch only when their view is active so a normal action never reloads
@@ -5704,7 +5716,9 @@ function DexNestApp() {
       })());
     } catch {
       /* a timed-out or failed refresh is non-fatal; the guard is cleared below and
-         the next user action triggers a fresh refresh */
+         the next user action triggers a fresh refresh. The light views say so
+         (shellLoad) instead of showing defaults as if they were data. */
+      setShellLoad("error");
     } finally {
       refreshInFlightRef.current = false;
       if (refreshPendingRef.current) {
@@ -6120,6 +6134,14 @@ function DexNestApp() {
 
         <main className="flex-1 overflow-y-auto px-6 py-6">
           <div className="relative mx-auto max-w-[1600px]">
+          {shellLoadOverlay(activeView, shellLoad) === "error" && (
+            <div className="module-loading-layer">
+              <LoadingStatusCard
+                message={`Could not load local data for ${views.find((item) => item.id === activeView)?.label ?? "this view"}.`}
+                onRetry={() => void refreshShellData()}
+              />
+            </div>
+          )}
           {(() => {
             const heavyStatus = viewLoad[activeView];
             const isHeavy = Boolean(heavyViewLoaders[activeView]);
