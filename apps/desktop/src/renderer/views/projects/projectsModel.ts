@@ -171,14 +171,25 @@ export function relativeTime(iso: string | null | undefined, now: string): strin
   return months < 12 ? `${months} mo ago` : `${Math.round(months / 12)} y ago`;
 }
 
-/** The most recent fetch across all projects, for the header. */
+/**
+ * The header line. The fetch part is the most recent fetch of any project, so
+ * it says "latest fetch", and it counts the repositories with a remote that
+ * were never fetched: a card saying "never fetched" under a header saying
+ * "fetched 2 minutes ago" read as a contradiction.
+ */
 export function headerSummary(entries: readonly ViewEntry[], now: string, staleDays: number): string {
   const live = entries.filter((e) => e.project.archivedAt === null);
   const attention = live.filter((e) => attentionReasons(e, now, staleDays).length > 0).length;
   const fetches = live.map((e) => (e.state?.isRepo ? e.state.lastFetchAt : null)).filter((f): f is string => Boolean(f)).sort();
+  const neverFetched = live.filter((e) => e.state?.isRepo && e.state.remotes.length > 0 && !e.state.lastFetchAt).length;
   const parts = [`${live.length} project${live.length === 1 ? "" : "s"}`];
   if (attention > 0) parts.push(`${attention} need${attention === 1 ? "s" : ""} attention`);
-  if (live.length > 0) parts.push(fetches.length > 0 ? fetchedAgoText(fetches[fetches.length - 1], now) : "never fetched");
+  if (live.length > 0 && fetches.length > 0) {
+    parts.push(fetchedAgoText(fetches[fetches.length - 1], now).replace(/^fetched /, "latest fetch "));
+    if (neverFetched > 0) parts.push(`${neverFetched} never fetched`);
+  } else if (live.length > 0) {
+    parts.push("never fetched");
+  }
   return parts.join(" · ");
 }
 

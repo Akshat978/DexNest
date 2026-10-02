@@ -78,7 +78,12 @@ test("header and card lines", () => {
     { project: project("b"), state: repo({ lastFetchAt: "2026-10-01T11:58:00.000Z" }) },
     { project: project("c", { archivedAt: NOW }), state: null }
   ];
-  assert.equal(headerSummary(entries, NOW, 30), "2 projects · 1 needs attention · fetched 2 minutes ago");
+  assert.equal(headerSummary(entries, NOW, 30), "2 projects · 1 needs attention · latest fetch 2 minutes ago");
+  // P9: repositories with a remote that were never fetched are counted, so the
+  // header never reads as contradicting a card's "never fetched".
+  const mixed: ViewEntry[] = [...entries, { project: project("d"), state: repo({ lastFetchAt: null }) }];
+  assert.equal(headerSummary(mixed, NOW, 30), "3 projects · 1 needs attention · latest fetch 2 minutes ago · 1 never fetched");
+  assert.equal(headerSummary([{ project: project("e"), state: repo({ lastFetchAt: null }) }], NOW, 30), "1 project · never fetched");
   const busy = repo({
     workingTree: tree({ unstaged: [{ path: "a", status: "modified" }], untracked: ["b"] }),
     stashes: [stash(0)],

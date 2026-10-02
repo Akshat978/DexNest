@@ -105,7 +105,7 @@ test("home: needs attention first, then favourites, then the rest; badges and fe
   assert.match(html, /2 to push/);
   assert.match(html, /all pushed/);
   assert.match(html, /fetched 4 minutes ago/);
-  assert.match(html, /3 projects · 1 needs attention · fetched 4 minutes ago/);
+  assert.match(html, /3 projects · 1 needs attention · latest fetch 4 minutes ago/);
 });
 
 test("a button that can't run says why, stays focusable, and isn't a plain disabled button", () => {
