@@ -298,3 +298,17 @@ test("every ghost_os action but open has a handler, and messages never carry the
   }
   assert.equal(s.audit.some((line) => line.includes(MARK)), false);
 });
+
+test("messages: correct plurals, no zero counts (Integration QA F15)", async () => {
+  const { plural, sourceOffMessage, forgottenMessage } = await import("../src/main/ghostOsHost.ts");
+  assert.equal(plural(1, "entry"), "1 entry");
+  assert.equal(plural(0, "entry"), "0 entries");
+  assert.equal(plural(2, "entry"), "2 entries");
+  assert.equal(plural(2, "connection"), "2 connections");
+  assert.equal(plural(2, "day"), "2 days", "a vowel before y keeps -s");
+  assert.equal(sourceOffMessage({ entity: 0, relation: 0, observation: 0 }), "Source turned off. It had added nothing.");
+  assert.equal(sourceOffMessage({ entity: 3, relation: 0, observation: 5 }), "Source turned off. Removed 3 entries and 5 observations.");
+  assert.equal(sourceOffMessage({ entity: 1, relation: 2, observation: 1 }), "Source turned off. Removed 1 entry, 2 connections and 1 observation.");
+  assert.equal(forgottenMessage(0), "Forgotten.");
+  assert.equal(forgottenMessage(3), "Forgotten, with 3 dependent records.");
+});

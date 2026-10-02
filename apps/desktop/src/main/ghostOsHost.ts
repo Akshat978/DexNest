@@ -207,7 +207,21 @@ export interface GhostActionResult {
   [key: string]: unknown;
 }
 
-const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+/** "1 entry", "2 entries", "3 connections". */
+export const plural = (n: number, word: string) => `${n} ${n === 1 ? word : /[^aeiou]y$/.test(word) ? `${word.slice(0, -1)}ies` : `${word}s`}`;
+
+/** After turning a source off: what it removed, without zero counts. */
+export function sourceOffMessage(removed: { entity: number; relation: number; observation: number }): string {
+  const parts = [removed.entity && plural(removed.entity, "entry"), removed.relation && plural(removed.relation, "connection"), removed.observation && plural(removed.observation, "observation")].filter((p): p is string => Boolean(p));
+  if (parts.length === 0) return "Source turned off. It had added nothing.";
+  const list = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+  return `Source turned off. Removed ${list}.`;
+}
+
+/** After forgetting: "Forgotten." or "Forgotten, with 3 dependent records." */
+export function forgottenMessage(dependents: number): string {
+  return dependents > 0 ? `Forgotten, with ${plural(dependents, "dependent record")}.` : "Forgotten.";
+}
 
 /**
  * Runs one of the module's registered actions with the params the renderer
@@ -233,7 +247,7 @@ export async function runGhostOsAction(host: GhostOsHost, actionId: string, para
       if (!result.ok) return { ok: false, error: result.errors.join("; ") };
       const { removed } = result.value;
       const total = removed.entity + removed.relation + removed.observation;
-      return { ok: true, message: `Forgotten, with ${plural(total - 1, "dependent record")}.`, value: result.value };
+      return { ok: true, message: forgottenMessage(total - 1), value: result.value };
     }
     case "ghost_os.adapter.enable":
       return parsed(module.enableAdapter(params.adapterId), "Source turned on. GhostOS reads it on its next sync.");
@@ -241,7 +255,7 @@ export async function runGhostOsAction(host: GhostOsHost, actionId: string, para
       const result = module.disableAdapter(params.adapterId);
       if (!result.ok) return { ok: false, error: result.errors.join("; ") };
       const { removed } = result.value;
-      return { ok: true, message: `Source turned off. Removed ${plural(removed.entity, "entry")}, ${plural(removed.relation, "connection")} and ${plural(removed.observation, "observation")}.`, value: result.value };
+      return { ok: true, message: sourceOffMessage(removed), value: result.value };
     }
     case "ghost_os.adapter.sync": {
       const outcomes = await module.syncNow();
