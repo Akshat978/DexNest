@@ -27,6 +27,7 @@ import { createSkillConstellationHost, type SkillConstellationHost } from "./ski
 import { createRealityRpgHost, runRealityRpgAction, type RealityRpgHost } from "./realityRpgHost.js";
 import { createGhostOsHost, runGhostOsAction, type GhostOsHost } from "./ghostOsHost.js";
 import { createObjectOsHost, objectJournalLine, runObjectOsAction, type ObjectOsHost } from "./objectOsHost.js";
+import { activeProfileAfterDemoSeed } from "./demoFinance.js";
 import { DEFAULT_OCR_DEVICE, resolveOcrDevice } from "./ocrDevice.js";
 import { createProjectsHost, type ProjectsHost } from "./projectsHost.js";
 import { createHostScheduler } from "@dexnest/foundation";
@@ -6172,7 +6173,15 @@ function seedDemoData(optionsInput: Partial<DemoSeedOptions>, source: DexNestAct
         markDemo({ id: personalId, name: "Personal Finance", status: "active" as const, createdAt: nowIso, updatedAt: nowIso, isDefault: false }),
         markDemo({ id: businessId, name: "Business Finance", status: "active" as const, createdAt: nowIso, updatedAt: nowIso, isDefault: false })
       ];
-      const activeProfileId = keptProfiles.find((profile) => profile.id === profilesFile.activeProfileId) ? profilesFile.activeProfileId : personalId;
+      const profilesWithUserData = new Set(
+        [...loadFinanceTransactions(), ...loadFinanceRecurring()].filter((item) => !isDemoRecord(item)).map((item) => item.profileId)
+      );
+      const activeProfileId = activeProfileAfterDemoSeed({
+        currentActiveId: profilesFile.activeProfileId,
+        keptProfileIds: keptProfiles.map((profile) => profile.id),
+        demoProfileId: personalId,
+        profilesWithUserData
+      });
       saveFinanceProfilesFile({ profiles: [...demoProfiles, ...keptProfiles], activeProfileId });
       manifest.modules["finance.profiles"] = { records: demoProfiles.length, recordIds: demoProfiles.map((profile) => profile.id) };
 
