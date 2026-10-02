@@ -23,7 +23,8 @@ export type DexNestModuleId =
   | "voice"
   | "assistant"
   | "autopilot"
-  | "skill_constellation";
+  | "skill_constellation"
+  | "reality_rpg";
 
 export type DexNestActionStatus = "available" | "placeholder";
 export type DexNestActionDangerLevel = "safe" | "caution" | "danger" | "critical";

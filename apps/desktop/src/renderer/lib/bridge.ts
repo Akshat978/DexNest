@@ -365,6 +365,10 @@ const fallbackSkillSettings = {
   myEmails: [] as string[]
 };
 
+// Outside Electron (the Vite preview) there is no main process, so Reality RPG
+// shows its "off" state with the starter set empty.
+const fallbackRpgSettings = { schemaVersion: 1 as const, enabled: false, intervalMinutes: 15 };
+
 export const fallbackBridge: DexNestBridge = {
   skillConstellationSnapshot: async () => ({
     enabled: false,
@@ -379,6 +383,21 @@ export const fallbackBridge: DexNestBridge = {
   skillConstellationHistory: async () => [],
   skillConstellationSettings: async () => ({ ...fallbackSkillSettings }),
   skillConstellationUpdateSettings: async (settings) => settings,
+  realityRpgStatus: async () => ({ enabled: false, processing: false, lastRun: null, lastError: null }),
+  realityRpgSnapshot: async () => ({
+    enabled: false,
+    sheet: { totalXp: 0, level: 1, xpIntoLevel: 0, xpToNextLevel: 100, stats: [] },
+    rules: [],
+    achievements: [],
+    quests: [],
+    recentAwards: [],
+    lastRun: null,
+    invalid: { rules: [], achievements: [], quests: [] },
+    starter: { rules: [], achievements: [] }
+  }),
+  realityRpgHistory: async () => [],
+  realityRpgSettings: async () => ({ ...fallbackRpgSettings }),
+  realityRpgUpdateSettings: async (settings) => settings,
   getAppInfo: async () => ({
     appName: "DexNest",
     dataRoot: "./local-data",

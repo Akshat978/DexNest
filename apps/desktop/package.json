@@ -88,6 +88,7 @@
     "@dexnest/module-command": "workspace:*",
     "@dexnest/module-deck": "workspace:*",
     "@dexnest/module-dev": "workspace:*",
+    "@dexnest/reality-rpg": "workspace:*",
     "@dexnest/shared-types": "workspace:*",
     "@dexnest/skill-constellation": "workspace:*",
     "@dexnest/today": "workspace:*",
