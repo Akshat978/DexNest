@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 contextBridge.exposeInMainWorld("dexNest", {
   appName: "DexNest",
@@ -189,6 +189,14 @@ contextBridge.exposeInMainWorld("dexNest", {
   projectsPullAll: () => ipcRenderer.invoke("dexnest:projects-pull-all"),
   projectsOpen: (projectId: string, target: "vscode" | "terminal" | "folder" | "github", options?: { path?: string; branch?: string; base?: string }) =>
     ipcRenderer.invoke("dexnest:projects-open", projectId, target, options),
+  // A folder dropped on the window: its real path (Electron no longer puts it on File).
+  projectsPathForFile: (file: File) => {
+    try {
+      return webUtils.getPathForFile(file) || null;
+    } catch {
+      return null;
+    }
+  },
   onProjectsOutput: (callback: (payload: { projectId: string; line: string }) => void) => {
     const listener = (_event: unknown, payload: { projectId: string; line: string }) => callback(payload);
     ipcRenderer.on("dexnest:projects-output", listener);

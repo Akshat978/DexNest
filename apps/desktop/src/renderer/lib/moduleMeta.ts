@@ -42,7 +42,7 @@ export const SIDEBAR_VIEWS: SidebarView[] = [
   { id: "finder", label: "Finder", accentClass: "accent-finder", actionId: "finder.open" },
   { id: "capture", label: "Capture", accentClass: "accent-capture", actionId: "capture.open" },
   { id: "finance", label: "Finance", accentClass: "accent-finance", actionId: "finance.open" },
-  { id: "dev", label: "Dev", accentClass: "accent-dev", actionId: "dev.open_dashboard" },
+  { id: "dev", label: "Projects", accentClass: "accent-dev", actionId: "dev.open_dashboard" },
   { id: "autopilot", label: "Autopilot", accentClass: "accent-dev", actionId: "autopilot.open" },
   { id: "deck", label: "Deck", accentClass: "accent-deck", actionId: "deck.test_endpoint" },
   { id: "heatmap", label: "Heatmap", accentClass: "accent-heatmap", actionId: "heatmap.open" },

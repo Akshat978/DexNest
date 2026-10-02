@@ -55,6 +55,7 @@ export function projectBadge(state: RepoState | null): Badge {
   if (counts && counts.ahead > 0) return { kind: "to_push", text: `${counts.ahead} to push`, tone: "warning", attention: true };
   const dirty = tree.counts.staged + tree.counts.unstaged + tree.counts.untracked;
   if (dirty > 0) return { kind: "uncommitted", text: "uncommitted changes", tone: "info", attention: false };
+  if (state.remotes.length === 0) return { kind: "no_upstream", text: "local only", tone: "neutral", attention: false };
   if (!state.head.unborn && branch && (!branch.upstream || branch.upstream.gone)) {
     return { kind: "no_upstream", text: branch.upstream?.gone ? "upstream gone" : "not pushed yet", tone: "info", attention: false };
   }

@@ -17,6 +17,8 @@ export default defineConfig({
     alias: {
       "@dexnest/action-registry": resolve(repoRoot, "packages/action-registry/src/index.ts"),
       "@dexnest/shared-types": resolve(repoRoot, "packages/shared-types/src/index.ts"),
+      // The pure half of Projects only: the renderer never bundles its Node side.
+      "@dexnest/projects/domain": resolve(repoRoot, "packages/projects/src/domain/index.ts"),
       "@dexnest/shared-ui/tokens.css": resolve(repoRoot, "packages/shared-ui/src/tokens.css"),
       "@dexnest/shared-ui/fonts.css": resolve(repoRoot, "packages/shared-ui/src/fonts.css"),
       "@dexnest/module-command": resolve(repoRoot, "modules/command/src/index.tsx"),

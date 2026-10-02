@@ -17,6 +17,7 @@ test("one badge per project, by priority", () => {
   assert.equal(projectBadge(repo({ workingTree: tree({ untracked: ["x"] }) })).text, "uncommitted changes");
   assert.equal(projectBadge(repo()).text, "all pushed");
   assert.equal(projectBadge(repo({ branches: [branch("main", { isCurrent: true, upstream: null })] })).text, "not pushed yet");
+  assert.equal(projectBadge(repo({ remotes: [], branches: [branch("main", { isCurrent: true, upstream: null })] })).text, "local only", "no remote at all");
   assert.equal(projectBadge(repo({ head: { branch: null, sha: sha("d"), detached: true, unborn: false } })).text, "detached HEAD");
 });
 

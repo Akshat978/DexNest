@@ -55,6 +55,7 @@ import type { PinInput, PinsContextValue } from "./components/pins";
 import { ClipboardView } from "./views/ClipboardView";
 import { AuditView } from "./views/AuditView";
 import { AutopilotView } from "./views/AutopilotView";
+import { ProjectsView } from "./views/projects/ProjectsView";
 import { ViewErrorBoundary } from "./components/ViewErrorBoundary";
 import { BackupView } from "./views/BackupView";
 import { ExternalDevicesView } from "./views/ExternalDevicesView";
@@ -6228,11 +6229,18 @@ function DexNestApp() {
             />
           )}
           {activeView === "dev" && (
-            <DevView
-              projects={projects}
-              commandResults={commandResults}
-              onAction={runAction}
-              onProjectsChanged={refreshProjectsAndActions}
+            // Projects home; one project opens the classic Dev view (commands,
+            // lifecycle, output) until the Projects detail view replaces it.
+            <ProjectsView
+              renderClassic={(projectId) => (
+                <DevView
+                  projects={projects}
+                  commandResults={commandResults}
+                  onAction={runAction}
+                  onProjectsChanged={refreshProjectsAndActions}
+                  initialProjectId={projectId}
+                />
+              )}
             />
           )}
           {activeView === "deck" && (
@@ -9079,7 +9087,8 @@ function DevView({
   projects,
   commandResults,
   onAction,
-  onProjectsChanged
+  onProjectsChanged,
+  initialProjectId
 }: {
   projects: DexNestProject[];
   commandResults: Record<string, ProjectCommandResult>;
@@ -9096,6 +9105,7 @@ function DevView({
     durationMs?: number | null;
   }>;
   onProjectsChanged: () => Promise<void>;
+  initialProjectId?: string;
 }) {
   const [form, setForm] = useState<ProjectFormState>(emptyProjectForm);
   const [showProjectModal, setShowProjectModal] = useState(false);
@@ -9116,7 +9126,7 @@ function DevView({
   const [commandRunResults, setCommandRunResults] = useState<Record<string, ProjectCommandResult>>(commandResults);
   const [expandedLogIds, setExpandedLogIds] = useState<Record<string, boolean>>({});
   const [saveStatus, setSaveStatus] = useState<{ tone: "success" | "error"; message: string } | null>(null);
-  const [selectedDevId, setSelectedDevId] = useState<string | null>(null);
+  const [selectedDevId, setSelectedDevId] = useState<string | null>(initialProjectId ?? null);
 
   useEffect(() => {
     setCommandRunResults((current) => ({ ...commandResults, ...current }));

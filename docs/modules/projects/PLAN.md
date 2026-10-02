@@ -5,7 +5,7 @@ event stream `projects` · view id `dev` (kept, see 16) · packages
 `@dexnest/projects` and `@dexnest/git-ops` · host
 `apps/desktop/src/main/projectsHost.ts` · branch `cloud/projects`.
 
-Status: **Phase 6 (host and actions) done.** Owner accepted every default in 18. Read with `AGENTS.md`,
+Status: **Phase 7 (UI part 1: home, wizard) done.** Owner accepted every default in 18. Read with `AGENTS.md`,
 `docs/DEXNEST_FOUNDATION_ARCHITECTURE.md` and `docs/ui-audit/REPORT.md` (on
 `cloud/ui-audit`). Shaped after Developer Intelligence's runtime/host split
 and the modules built before it (ObjectOS, GhostOS, Reality RPG, Skill
@@ -850,6 +850,47 @@ All ten defaults in section 18 are accepted as written.
   startup); one `projects.fetch.scheduled` event per slot via an
   idempotency key on the occurrence id, and an in-flight guard.
 - **"Push current project"** = the project with the latest `lastOpenedAt`.
+
+### Refinements made in Phase 7
+
+- **`cloud/ui-fixes` merged in** (decision 9): bundled Inter/JetBrains Mono,
+  `accentTint`, the view error boundary, `--focus-outline`,
+  `--border-strong`.
+- **The kit lives in `apps/desktop/src/renderer/components/kit/`**, not
+  `packages/shared-ui` (decision 5): it needs React, which shared-ui doesn't
+  carry; it moves unchanged once it does. Token-only `PageHeader`, `Card`,
+  `SectionTitle`, `Button` (with `disabledReason`: stays focusable via
+  `aria-disabled`, shows the reason as its tooltip, ignores clicks),
+  `Badge`, `Technical`, `EmptyState`, `LoadingState`, `ErrorState`,
+  `Segmented`, `Dialog` (focus trap, Escape, focus returned), `Toasts`.
+- **Renderer imports**: values only from the new pure entry
+  `@dexnest/projects/domain` (alias + package export), types from the root;
+  a test enforces it and the renderer bundle was checked to contain no Node
+  code.
+- **Home** as planned (15.2): sections, filters (search over name, path,
+  branch, tags, remote; group incl. "no group"; tag; status incl.
+  favourites; sort), grid/list (remembered in settings), roving tabindex with
+  arrow keys/Home/End, `/` for search, refresh on focus (2 s debounce), a
+  `content-visibility` hint for 100+ cards. Quick buttons take their
+  disabled reason straight from the planners. On cards they are icon-only
+  with an accessible name and tooltip (five labelled buttons wrapped onto
+  two rows in a 19rem card - seen in a screenshot); list rows keep labels.
+- **Fetch from a card opens the operation dialog too** - nothing runs
+  without its preview.
+- **Operation dialog** (built now because the card buttons need it):
+  preview in plain words with safety / network / undo chips, a typed
+  confirmation for strong operations, a "stale" re-preview, live git output
+  in a collapsible panel, the result, Undo, and the refusal's offers
+  (push and set upstream, stash and switch, pull, fetch, open a terminal).
+- **Wizard**: choose (dialog / paste / drop anywhere on the window via
+  `webUtils.getPathForFile`), suggestions with "Add selected", clone; the
+  review form (`ProjectForm.tsx`, reused by Settings in Phase 8) edits every
+  field the old form could plus type, folders, links, accent, group, tags.
+- **Opening a project** shows the classic Dev view for that project (behind
+  a "Projects" back button) until Phase 8's detail view replaces it.
+  Sidebar label "Dev" -> "Projects" (decision 1).
+- **Badge**: a repository with no remote at all now says "local only", not
+  "not pushed yet" (seen in a screenshot).
 
 ## 19. Phases for this module
 

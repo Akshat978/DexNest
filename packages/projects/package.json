@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Projects: every code project, its branches and how far they are from this PC. Read-only git; changes go through @dexnest/git-ops.",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./domain": "./src/domain/index.ts"
   },
   "scripts": {
     "test": "node --test --experimental-strip-types --experimental-sqlite --no-warnings test/*.test.ts",
