@@ -24,6 +24,7 @@
       "@dexnest/dev-intelligence-store": ["packages/dev-intelligence-store/src/index.ts"],
       "@dexnest/dev-intelligence-store/testing": ["packages/dev-intelligence-store/src/testing.ts"],
       "@dexnest/standup": ["packages/standup/src/index.ts"],
+      "@dexnest/skill-constellation": ["packages/skill-constellation/src/index.ts"],
       "@dexnest/foundation/testing": ["packages/foundation/src/testing.ts"],
       "@dexnest/local-db": ["packages/local-db/src/index.ts"],
       "@dexnest/shared-types": ["packages/shared-types/src/index.ts"],

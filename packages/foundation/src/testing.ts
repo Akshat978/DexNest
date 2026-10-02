@@ -22,7 +22,10 @@ export function assertSafeTestPath(candidate: string): string {
       throw new Error(`Refusing to use the real DexNest data root in a test: ${target}`);
     }
   }
-  if (/\/local-data(\/|$)/.test(comparablePath(target))) {
+  // The written form is checked too: on POSIX a Windows spelling such as
+  // "d:\desknest\LOCAL-DATA" resolves under the cwd with its backslashes and
+  // case intact, so only the raw string still shows it names a data root.
+  if (/\/local-data(\/|$)/.test(comparablePath(target)) || /(^|[\\/])local-data([\\/]|$)/i.test(candidate)) {
     throw new Error(`Refusing to use a path that looks like a DexNest data root: ${target}`);
   }
   return target;

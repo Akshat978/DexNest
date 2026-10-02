@@ -64,6 +64,12 @@ export interface CommitObservedPayload {
   subject: string;
   authorDate: string;
   branch?: string;
+  /**
+   * The commit's author email, as Git recorded it. Absent on events recorded
+   * before it was added; consumers must treat a missing value as "unknown",
+   * not as "someone else".
+   */
+  authorEmail?: string;
 }
 
 export interface BranchChangedPayload {

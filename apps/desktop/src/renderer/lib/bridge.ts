@@ -354,7 +354,31 @@ export const defaultNewsState: NewsState = {
   autoRefreshActive: false
 };
 
+// Outside Electron (the Vite preview) there is no main process, so Skill
+// Constellation shows its "off" state and has nothing to build.
+const fallbackSkillSettings = {
+  schemaVersion: 1 as const,
+  enabled: false,
+  rebuildIntervalMinutes: 60,
+  includeUnmappedLibraries: false,
+  hiddenSkills: [] as string[],
+  myEmails: [] as string[]
+};
+
 export const fallbackBridge: DexNestBridge = {
+  skillConstellationSnapshot: async () => ({
+    enabled: false,
+    skills: [],
+    links: [],
+    layout: [],
+    lastBuild: null,
+    staleness: { hasBuild: false, devChanged: false, settingsChanged: false, stale: true, devCursorSeq: 0, latestDevSeq: 0 },
+    countsAllCommits: true
+  }),
+  skillConstellationEvidence: async () => [],
+  skillConstellationHistory: async () => [],
+  skillConstellationSettings: async () => ({ ...fallbackSkillSettings }),
+  skillConstellationUpdateSettings: async (settings) => settings,
   getAppInfo: async () => ({
     appName: "DexNest",
     dataRoot: "./local-data",
