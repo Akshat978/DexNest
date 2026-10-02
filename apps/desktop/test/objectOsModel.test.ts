@@ -29,6 +29,7 @@ import {
   CATEGORY_LIST,
   dateToStamp,
   decimalsOf,
+  deleteObjectQuestion,
   dueLabel,
   EMPTY_OBJECT_FORM,
   fileSize,
@@ -115,10 +116,11 @@ test("due labels, for time and usage schedules", () => {
   assert.equal(dueLabel(time("overdue", 0)), "Due today");
   assert.equal(dueLabel(time("due_soon", 10)), "Due in 10 days");
   assert.equal(dueLabel(time("ok", 40)), "OK, next 2026-07-10");
-  const usage = (state: "ok" | "due_soon" | "overdue", left: number): DueStatus => ({ state, kind: "usage", dueAtReading: 400, latestReading: 400 - left, left, lastDoneAt: null });
-  assert.equal(dueLabel(usage("overdue", -12.5)), "Overdue by 12.5");
-  assert.equal(dueLabel(usage("due_soon", 8)), "Due in 8");
-  assert.equal(dueLabel(usage("ok", 150)), "OK, next at 400");
+  const usage = (state: "ok" | "due_soon" | "overdue", left: number): DueStatus => ({ state, kind: "usage", measurementKey: "print hours", dueAtReading: 400, latestReading: 400 - left, left, lastDoneAt: null });
+  // With the reading's unit (Integration QA F11: it used to say "Overdue by 12.5").
+  assert.equal(dueLabel(usage("overdue", -12.5)), "Overdue by 12.5 print hours");
+  assert.equal(dueLabel(usage("due_soon", 8)), "Due in 8 print hours");
+  assert.equal(dueLabel(usage("ok", 150)), "OK, next at 400 print hours");
   assert.equal(dueLabel({ state: "no_reading", measurementKey: "print hours" }), "Waiting for a print hours reading");
   assert.equal(dueLabel({ state: "inactive" }), "Paused");
 });
@@ -192,4 +194,22 @@ test("file sizes read as people read them", () => {
   assert.equal(fileSize(512), "512 B");
   assert.equal(fileSize(2048), "2.0 KB");
   assert.equal(fileSize(5 * 1024 * 1024), "5.0 MB");
+});
+
+test("deleting: components are mentioned only when there are some (Integration QA F10)", () => {
+  assert.equal(deleteObjectQuestion("Kitchen scale", 0), "Delete Kitchen scale with all its records and attached files? This cannot be undone.");
+  assert.equal(deleteObjectQuestion("Printer", 1), "Delete Printer with all its records and attached files? Its 1 component will be kept. This cannot be undone.");
+  assert.equal(deleteObjectQuestion("Car", 3), "Delete Car with all its records and attached files? Its 3 components will be kept. This cannot be undone.");
+});
+
+test("the last action's notice clears when the user opens another object or tab (Integration QA F9)", async () => {
+  const { readFileSync } = await import("node:fs");
+  const view = readFileSync(new URL("../src/renderer/views/ObjectOsView.tsx", import.meta.url), "utf8");
+  assert.match(view, /function showObject\(id: string\) \{\s*setNotice\(null\);\s*void openObject\(id\);/);
+  assert.match(view, /function selectTab\(next: Tab\) \{\s*setNotice\(null\);/);
+  // Every place the user opens an object goes through showObject; only the
+  // reopen after an action (which should keep its notice) calls openObject.
+  assert.equal((view.match(/onClick=\{\(\) => showObject\(/g) ?? []).length, 2);
+  assert.match(view, /onOpen=\{\(id\) => showObject\(id\)\}/);
+  assert.doesNotMatch(view, /onClick=\{\(\) => void openObject\(/);
 });

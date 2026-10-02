@@ -78,7 +78,7 @@ const detail = {
   parent: null,
   components: [hotend],
   state: [{ objectId: printer.id, key: "firmware", value: "6.1.2", updatedAt: T }],
-  schedules: [{ schedule, status: { state: "overdue", kind: "usage", dueAtReading: 400, latestReading: 412, left: -12, lastDoneAt: T } }],
+  schedules: [{ schedule, status: { state: "overdue", kind: "usage", measurementKey: "print hours", dueAtReading: 400, latestReading: 412, left: -12, lastDoneAt: T } }],
   maintenance: [{ id: "mnt_log000001", objectId: printer.id, scheduleId: schedule.id, title: "Replaced nozzle", doneAt: T, doneBy: "me", cost: { amount: 1250, currency: "EUR" }, notes: "", usageReading: 200, parts: [{ partId: "prt_nozzle001", quantity: 1 }], createdAt: T }],
   modifications: [{ id: "mod_enclos001", objectId: printer.id, title: "Added enclosure", doneAt: T, reason: "ABS", before: "open", after: "closed", reversible: true, revertedAt: null, createdAt: T, updatedAt: T }],
   settings: snapshots,
@@ -187,7 +187,7 @@ test("overview: photo with alt text, facts with the serial in technical type, co
 test("maintenance: due state in words, pause, delete asks first, and a labelled log form", () => {
   const html = render({ initial: { ...ready, detail, tab: "maintenance" } });
   assert.match(html, /Replace nozzle <span class="objectos-meta">every 200 print hours<\/span>/);
-  assert.match(html, /class="objectos-due objectos-tone-bad">Overdue by 12</);
+  assert.match(html, /class="objectos-due objectos-tone-bad">Overdue by 12 print hours</);
   assert.match(html, />Pause</);
   assert.match(html, /aria-label="Delete schedule Replace nozzle">Delete…</);
   for (const id of ["objectos-s-title", "objectos-s-kind", "objectos-s-every", "objectos-l-schedule", "objectos-l-title", "objectos-l-date", "objectos-l-by", "objectos-l-amount", "objectos-l-currency", "objectos-l-reading", "objectos-l-part", "objectos-l-qty", "objectos-l-notes"]) {

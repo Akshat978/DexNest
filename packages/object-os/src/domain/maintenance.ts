@@ -24,7 +24,7 @@ export type DueStatus =
   | { state: 'inactive' }
   | { state: 'no_reading'; measurementKey: string }
   | { state: 'ok' | 'due_soon' | 'overdue'; kind: 'time'; dueAt: string; daysLeft: number; lastDoneAt: string | null }
-  | { state: 'ok' | 'due_soon' | 'overdue'; kind: 'usage'; dueAtReading: number; latestReading: number; left: number; lastDoneAt: string | null };
+  | { state: 'ok' | 'due_soon' | 'overdue'; kind: 'usage'; measurementKey: string; dueAtReading: number; latestReading: number; left: number; lastDoneAt: string | null };
 
 /** The newest completion of this schedule, or null. */
 export function lastCompletion(scheduleId: string, log: readonly MaintenanceEntry[]): MaintenanceEntry | null {
@@ -86,5 +86,5 @@ export function dueStatus(schedule: Schedule, log: readonly MaintenanceEntry[], 
   const dueAtReading = base + every;
   const left = dueAtReading - latest.value;
   const state = left <= 0 ? 'overdue' : left <= every * USAGE_DUE_SOON_SHARE ? 'due_soon' : 'ok';
-  return { state, kind: 'usage', dueAtReading, latestReading: latest.value, left, lastDoneAt };
+  return { state, kind: 'usage', measurementKey, dueAtReading, latestReading: latest.value, left, lastDoneAt };
 }

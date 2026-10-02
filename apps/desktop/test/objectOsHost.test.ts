@@ -657,3 +657,11 @@ test("messages and journal lines never carry the owner's text, even when a refus
   const logged = JSON.stringify(s.handle.db.prepare("SELECT * FROM event_log").all());
   assert.equal(logged.includes(MARK), false);
 });
+
+test("the delete message counts files and kept components only when there are some (Integration QA F10)", async () => {
+  const { deletedMessage } = await import("../src/main/objectOsHost.ts");
+  assert.equal(deletedMessage(0, 0), "Object deleted.");
+  assert.equal(deletedMessage(2, 0), "Object deleted with 2 files.");
+  assert.equal(deletedMessage(0, 1), "Object deleted; 1 component kept.");
+  assert.equal(deletedMessage(1, 3), "Object deleted with 1 file; 3 components kept.");
+});

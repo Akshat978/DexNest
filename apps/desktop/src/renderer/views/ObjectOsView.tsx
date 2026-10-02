@@ -11,6 +11,7 @@ import type {
 } from "@dexnest/object-os";
 import { PageHeader } from "../components/shared";
 import {
+  deleteObjectQuestion,
   actionMessage,
   attentionLabel,
   attentionSummaryText,
@@ -264,7 +265,14 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
     }
   }
 
+  /** The user opens another object: the last action's notice belongs to the old screen. */
+  function showObject(id: string) {
+    setNotice(null);
+    void openObject(id);
+  }
+
   function selectTab(next: Tab) {
+    setNotice(null);
     setTab(next);
     if (next === "history" && detail) void loadHistory(detail.object.id, null).catch((e: unknown) => setNotice({ ok: false, text: errorText(e) }));
   }
@@ -334,7 +342,7 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
                         return (
                           <li key={i}>
                             {line.objectId ? (
-                              <button type="button" className={`objectos-item objectos-tone-${line.tone}`} onClick={() => void openObject(line.objectId as string)}>
+                              <button type="button" className={`objectos-item objectos-tone-${line.tone}`} onClick={() => showObject(line.objectId as string)}>
                                 <span>{line.title}</span>
                                 <span className="objectos-meta">{line.detail}</span>
                               </button>
@@ -396,7 +404,7 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
                 {objects.length === 0 && <li className="objectos-hint">{filtered ? "No object matches." : "No objects yet."}</li>}
                 {objects.map((o) => (
                   <li key={o.id}>
-                    <button type="button" className="objectos-item" aria-current={detail?.object.id === o.id ? "true" : undefined} onClick={() => void openObject(o.id)}>
+                    <button type="button" className="objectos-item" aria-current={detail?.object.id === o.id ? "true" : undefined} onClick={() => showObject(o.id)}>
                       <span>{o.name}</span>
                       <span className="objectos-meta">
                         <Id id={o.id} /> · {CATEGORY_LABELS[o.category]} · {STATUS_LABELS[o.status]}{o.location ? ` · ${o.location}` : ""}
@@ -446,7 +454,7 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
                       onClick={() => ask({
                         actionId: "object_os.object.delete",
                         params: { input: { id: detail.object.id } },
-                        question: `Delete ${detail.object.name} with all its records and attached files? Its ${detail.components.length} component${detail.components.length === 1 ? "" : "s"} will be kept. This cannot be undone.`
+                        question: deleteObjectQuestion(detail.object.name, detail.components.length)
                       })}
                     >
                       Delete…
@@ -473,7 +481,7 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
                 </div>
 
                 <div role="tabpanel" id={`objectos-panel-${tab}`} aria-labelledby={`objectos-tab-${tab}`} className="objectos-panel" tabIndex={0}>
-                  {tab === "overview" && <OverviewPanel detail={detail} photo={photo} busy={busy} run={run} onOpen={(id) => void openObject(id)} />}
+                  {tab === "overview" && <OverviewPanel detail={detail} photo={photo} busy={busy} run={run} onOpen={(id) => showObject(id)} />}
                   {tab === "maintenance" && <MaintenancePanel detail={detail} busy={busy} run={run} ask={ask} />}
                   {tab === "parts" && <PartsPanel detail={detail} busy={busy} run={run} ask={ask} />}
                   {tab === "modifications" && <ModificationsPanel detail={detail} busy={busy} run={run} ask={ask} />}

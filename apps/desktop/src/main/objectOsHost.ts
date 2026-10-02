@@ -190,6 +190,11 @@ export interface ObjectActionResult {
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
+/** "Object deleted.", "Object deleted with 2 files.", "Object deleted; 1 component kept." - no zero counts. */
+export function deletedMessage(files: number, componentsKept: number): string {
+  return `Object deleted${files > 0 ? ` with ${plural(files, "file")}` : ""}${componentsKept > 0 ? `; ${plural(componentsKept, "component")} kept` : ""}.`;
+}
+
 /**
  * The line main.ts journals for a result. Success messages are fixed text
  * with counts; a refusal's reason can quote what the owner typed (a unit, a
@@ -241,7 +246,7 @@ export async function runObjectOsAction(host: ObjectOsHost, actionId: string, pa
     case OBJECT_ACTION_IDS.objectDelete: {
       const r = module.deleteObject(input);
       if (!r.ok) return { ok: false, error: r.errors.join("; ") };
-      return { ok: true, message: `Object deleted with ${plural(r.value.files.length, "file")}; ${plural(r.value.childrenDetached.length, "component")} kept.`, value: r.value };
+      return { ok: true, message: deletedMessage(r.value.files.length, r.value.childrenDetached.length), value: r.value };
     }
     case OBJECT_ACTION_IDS.stateSet:
       return parsed(module.setState(input), "State updated.");
