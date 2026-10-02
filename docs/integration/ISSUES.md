@@ -120,6 +120,24 @@ The harness now makes the add-project flow's repository itself (`5298524`).
 - **Date inputs** show `mm/dd/yyyy` because that is the Linux Chromium locale here. On Windows they follow the system date format. **Needs Windows check.**
 - **ObjectOS tabs** still scroll sideways at 1280 (P1, phase 4).
 
+## Phase 4 status (polish)
+
+Each fix has a test (CSS rules in `apps/desktop/test/polish.test.mjs`, the rest beside the module's own tests).
+
+| # | Status | Commit | What changed |
+|---|---|---|---|
+| P1 | Fixed | `064e3d6` `2a701f1` | ObjectOS's nine detail tabs wrap onto a second row instead of scrolling sideways with cut-off labels. The kit tabs have a `wrap` option for this. |
+| P2 | Fixed | `2a701f1` | A settings version reads as one line ("v2 · 2026-10-02 · 4 values · less stringing") beside its buttons. |
+| P3 | Fixed | `a013be3` | Secure Vault's setup panel stays inside its card at 1280: panels have one column that may shrink, and technical text (the vault path) wraps. |
+| P4 | Fixed | `2a701f1` `52bcd37` | With nothing chosen, the empty detail column in GhostOS and ObjectOS shows its hint in a framed note instead of a lone line far to the right. |
+| P5 | Fixed in phase 3 | `9abe585` `f1630f2` | Reality RPG's and Skill Constellation's intro panels are the kit empty state, with no empty band above the text. |
+| P6 | Fixed | `0143830` | Audit's action ids wrap after "." and "_", not mid-word. The table was also wider than the content area at 1280 (the page scrolled sideways and Refresh was cut off); its columns now fit. Autopilot's rows share the class and are unchanged. |
+| P7 | Fixed in phase 3 | `a28874c` | See phase 3. |
+| P8 | Fixed | `e4037d6` | Utilities' date-calculator fields keep a modest width at 1920. |
+| P9 | Fixed | `7114285` | The Projects header says "latest fetch 2 minutes ago", and adds "1 never fetched" when repositories with a remote were never fetched. |
+| P10 | Fixed | `cc9928c` | "Where you left off" lists "Working tree scanned", "Commit abcdef1", "Uncommitted changes" and so on, instead of raw kinds. A commit shows its short sha, never its subject. |
+| From phase 2 | Fixed | `b26b0f2` | Skill Constellation: a label that would overlap a neighbour's goes above its star, so "Next.js" and "React" no longer write over each other. |
+
 ## Consistency (phase 3: one shared component set)
 
 | # | Sev | What | Evidence |
@@ -154,6 +172,6 @@ Checked and fine: the sidebar active state for every module (both sizes); Projec
 
 - **13 functional:** 2 High, 3 Medium, 8 Low. All fixed in phase 2, plus two found during it (F14, F15).
 - **8 consistency:** 1 High, 6 Medium, 1 Low. Done in phase 3, Autopilot apart (see its status).
-- **10 polish:** 3 Medium, 7 Low.
+- **10 polish:** 3 Medium, 7 Low. All fixed in phases 3 and 4.
 
 Of these 31 items, 9 are pre-existing on `main`.
