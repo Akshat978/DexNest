@@ -6,6 +6,7 @@
 |---|---|---|
 | `screenshots/before/electron/` | **The real DexNest Electron app**, launched under `xvfb` (Linux) | `empty` (fresh data root, nothing seeded), `normal` (after seeding), `flows/` (click-throughs) |
 | `screenshots/before/stub/` | **The Vite renderer with a stubbed preload bridge**, in Chromium (Playwright) | `loading`, `error`, `busy` |
+| `screenshots/after/electron/`, `after/stub/` | The same two methods, after the phase 2 fixes | **Only screens that changed.** A screen missing from `after/` looked the same as in `before/` |
 
 The stub is used only for states a healthy real app can't be put into on demand. For `loading` and `error`, the shell starts normally; the harness then makes every bridge read hang ("loading") or reject with "database is locked" ("error"), and opens the view. `busy` is the four new modules' large-dataset fixtures (500 objects, 4,200 GhostOS entries, 80 skills, level 42), taken from the UI audit's harness.
 
@@ -61,4 +62,6 @@ Run the Electron scripts with the Electron build of `better-sqlite3` in place, a
 - **Audit** is a hidden view. In the stub it can't be reopened after a reload, so it has no stub loading or error shots.
 - **"Busy" means large data.** A long-running operation (for example a slow push) can't be held open in the real app on demand, so it was not captured.
 
-Screenshots are JPEG (quality 62) to keep the repository manageable: 274 files, about 21 MB.
+Screenshots are JPEG (quality 62) to keep the repository manageable: 274 files, about 21 MB, in `before/`, and 68 files, about 5 MB, in `after/`.
+
+In `after/electron/flows/`, three GhostOS steps (26–28: turning a source on and off) were added, so later step numbers are three higher than in `before/`.

@@ -47,7 +47,7 @@ const objects = objectNames.map((_, i) => object(i));
 const attention = {
   summary: {
     items: [
-      { kind: "maintenance", objectId: ids[0], scheduleId: "sch_nozzle001", status: { state: "overdue", kind: "usage", dueAtReading: 400, latestReading: 412, left: -12, lastDoneAt: T } },
+      { kind: "maintenance", objectId: ids[0], scheduleId: "sch_nozzle001", status: { state: "overdue", kind: "usage", measurementKey: "print hours", dueAtReading: 400, latestReading: 412, left: -12, lastDoneAt: T } },
       { kind: "warranty", objectId: ids[3], state: "ending", daysLeft: 12 },
       { kind: "maintenance", objectId: ids[6], scheduleId: "sch_service01", status: { state: "due_soon", kind: "time", dueAt: day(-9), daysLeft: 9, lastDoneAt: day(356) } },
       { kind: "stock", partId: "prt_nozzle001", quantity: 1, lowStockAt: 2 }
@@ -63,7 +63,7 @@ const objectDetail = (large: boolean) => ({
   components: [object(1)],
   state: [{ objectId: ids[0], key: "firmware", value: "6.1.2", updatedAt: T }, { objectId: ids[0], key: "filament", value: "PETG, black", updatedAt: day(2) }],
   schedules: [
-    { schedule, status: { state: "overdue", kind: "usage", dueAtReading: 400, latestReading: 412, left: -12, lastDoneAt: T } },
+    { schedule, status: { state: "overdue", kind: "usage", measurementKey: "print hours", dueAtReading: 400, latestReading: 412, left: -12, lastDoneAt: T } },
     { schedule: { ...schedule, id: "sch_belt0001", title: "Check belt tension", rule: { kind: "time", every: 3, unit: "months" } }, status: { state: "ok", kind: "time", dueAt: day(-60), daysLeft: 60, lastDoneAt: day(30) } }
   ],
   maintenance: Array.from({ length: large ? 60 : 3 }, (_, i) => ({ id: `mnt_log${String(i).padStart(6, "0")}`, objectId: ids[0], scheduleId: schedule.id, title: i % 2 ? "Cleaned the bed" : "Replaced nozzle", doneAt: day(20 * i + 5), doneBy: "me", cost: i % 3 ? null : { amount: 1250, currency: "EUR" }, notes: "", usageReading: 200 * i, parts: i % 2 ? [] : [{ partId: "prt_nozzle001", quantity: 1 }], createdAt: T })),

@@ -58,6 +58,9 @@ await step("ghost-add-saved", async () => {
 await step("ghost-detail", async () => { await tab("Timeline").click(); await win.waitForTimeout(600); await main().getByRole("button", { name: /^Maya Chen/ }).first().click(); await win.waitForTimeout(1000); });
 await step("ghost-forget-confirm", async () => { await btn("Forget Maya Chen").click(); });
 await step("ghost-forget-done", async () => { await win.getByRole("alertdialog").getByRole("button", { name: "Forget", exact: true }).click(); await win.waitForTimeout(1500); });
+await step("ghost-sources-on", async () => { await tab("Sources").click(); await btn("Turn on").click(); await win.waitForTimeout(2500); });
+await step("ghost-sources-off-confirm", async () => { await btn("Turn off and remove what it added").click(); });
+await step("ghost-sources-off-done", async () => { await win.getByRole("alertdialog").getByRole("button", { name: "Turn off", exact: true }).click(); await win.waitForTimeout(2000); });
 
 // --- ObjectOS -----------------------------------------------------------------------
 await open(win, "object");

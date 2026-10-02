@@ -1,4 +1,4 @@
-# Integration QA: bugs and UI problems found (phase 1, "before")
+# Integration QA: bugs and UI problems found (phase 1), and their status
 
 Branch `cloud/integration`, all five modules merged. Every item below was seen in a captured screenshot, or in a console log captured with it. Paths are under `screenshots/before/`:
 
@@ -21,7 +21,7 @@ Phase 2 fixes the **functional bugs (F)**. Phase 3 handles **consistency (C)** a
 | F1 | **High** | GhostOS | **Forget never works.** Forget… → Forget shows "Forget in GhostOS requires confirmation." Nothing is forgotten, and the confirmation box stays open. Seen twice, on two fresh seeds. | E `flows/24-ghost-forget-confirm`, `flows/25-ghost-forget-done` | `ghost_os.forget` is a danger-level action, and the main process requires `confirmedDangerous: true`. `GhostOsView.tsx:191` sends only the target. ObjectOS sends the flag (`ObjectOsView.tsx:230`). Forgetting a connection or an observation goes through the same call, so it presumably fails too (not clicked) |
 | F2 | **High** (rule) | Tools | **OCR "Device" defaults to `gpu`.** `AGENTS.md`: "GPU must not be used unless explicitly enabled … Never on by default." Pre-existing. | E `electron/tools-*` (Device: gpu), S `stub/tools-*` | `ToolsView.tsx:39,58` `toolsState.ocrDevice ?? "gpu"`; `main.ts` OCR jobs record `device: "gpu"`. Needs a check of what the OCR worker actually does with the setting; Windows only |
 | F3 | Medium | Calendar | Console errors on every visit: duplicate React keys (`backup-reminder-<date>`, `journal-daily-<date>`), and **a `<button>` nested inside a `<button>`** (invalid HTML; React warns). Pre-existing. | E `electron/normal-console.json`, `empty-console.json` | Reminder items keyed by a non-unique id; a clickable card wrapping a button |
-| F4 | Medium | Ten older views | **A failed load looks like no data.** With every read failing, Calendar ("0 events"), Clipboard, Command, Deck, Drop, News, Settings, Timetable, Tools and Utilities show their normal or empty screens: no error, no retry. They have no loading state either. Pre-existing. | S `stub/{calendar,clipboard,command,deck,drop,news,settings,timetable,tools,utilities}-{error,loading}-*` | These views render the shell's state with fallbacks and never surface its load errors |
+| F4 | Medium (raised to Medium on review; already Medium) | Ten older views | **A failed load looks like no data.** With every read failing, Calendar ("0 events"), Clipboard, Command, Deck, Drop, News, Settings, Timetable, Tools and Utilities show their normal or empty screens: no error, no retry. They have no loading state either. Pre-existing. | S `stub/{calendar,clipboard,command,deck,drop,news,settings,timetable,tools,utilities}-{error,loading}-*` | These views render the shell's state with fallbacks and never surface its load errors |
 | F5 | Medium | Skill Constellation | **Stars and labels overlap on real data** (13 skills): "Docker" sits on "Vite", and "Next.js" on "React". Both are unreadable at both sizes. | E `electron/skills-normal-*`, `flows/42-skills-graph`, `43-skills-star-detail` | The layout places stars of strongly linked skills almost on top of each other; nothing separates them |
 | F6 | Low | Projects | Console error on every render of a project's detail: duplicate React key in "Where you left off" (`event · 2026-10-02` appears twice). Logged 32 times in one session. | E `flows/flows.json` (step 05 onwards) | Evidence rows keyed by their text |
 | F7 | Low | Demo data (`demo.seed`) | After seeding, Finance shows CA$0.00 everywhere. The seed adds its transactions to a new "Personal Finance" demo profile, but leaves the existing default profile active. Pre-existing. | E `electron/finance-normal-*` | `seedDemoData` keeps `profilesFile.activeProfileId` when the existing profile is kept |
@@ -33,6 +33,39 @@ Phase 2 fixes the **functional bugs (F)**. Phase 3 handles **consistency (C)** a
 | F13 | Low | External Devices | On a fresh install a provider that is simply **off** is shown as an error: a red "Govee provider is disabled." banner and an "Error" chip. Pre-existing. | E `electron/devices-*` | The disabled state is mapped to the error tone |
 
 Not bugs (harness artefacts): Autopilot's error boundary in the stub (the stub bridge lacks `autopilotMorningBrief`; the real app renders it); the Audit stub shots (left out).
+
+## Phase 2 status (functional bugs)
+
+Every item below is fixed with a test that fails without the fix (each fix was mutation-checked: reverting it makes its test fail). One commit per module. "After" screenshots of the screens that changed are in `screenshots/after/`; unchanged screens were not re-committed.
+
+| # | Status | Commit | Fix | After evidence |
+|---|---|---|---|---|
+| F1 | Fixed | `53e78c6` | GhostOS sends `confirmedDangerous` with Forget. "Turn off" (Developer Intelligence source) now asks first, in an inline confirm box, then sends the flag. A test scans the four new views for any confirmation-required action sent without it. | E `after/electron/flows/25-ghost-forget-done` ("Forgotten, with 3 dependent records."), `26`–`28` |
+| F2 | Fixed | `d05c966` | The OCR device defaults to **CPU**. Only the default changed: a saved `"gpu"` stays `"gpu"`. Tested both ways (no saved setting → cpu; saved gpu → gpu). Changing OCR settings no longer writes `gpu`. | E `after/electron/tools-*` (Device: cpu) |
+| F3 | Fixed | `73fb8bc` | Reminders are de-duplicated by id; the Upcoming row is a keyboard-operable `div role="button"`, so no button sits inside a button. A test parses every renderer `.tsx` and fails on a nested button. | E console: 0 errors (4 before, all Calendar) |
+| F4 | Fixed | `496115b` | The ten shell-data views show the shared "Could not load" card with Retry when the shell's load fails. No loading state was added: these views still show their normal screen while the shared load runs (a fast local read); the error case was the bug. | S `after/stub/*-error-*` (`command-loading-*` and `tools-loading-*` changed only through F8 and F2) |
+| F5 | Fixed | `7f92fac` | Layout keeps stars at least 56 px apart: a colliding star steps outward, then sideways within its sector. Only a star that would land on another moves. | E `after/electron/skills-normal-*`, `flows/45`–`47` |
+| F6 | Fixed | `dd5b64d` | Evidence rows keyed by position and text. | E console: 0 errors in flows |
+| F7 | Fixed | `3a37110` | After `demo.seed`, the demo profile becomes active unless the current profile holds the user's own transactions or recurring entries. | E `after/electron/finance-normal-*` |
+| F8 | Fixed | `f3510b0` | The action reads "Open Projects". The id `dev.open_dashboard` is unchanged, so pins and Stream Deck buttons keep working. | E `after/electron/command-*` |
+| F9 | Fixed | `45e590a` | The ObjectOS notice clears on opening another object or tab. | E `after/electron/flows/29`–`44` |
+| F10 | Fixed | `45e590a` | Zero and singular cases in the delete question and result. | E `after/electron/flows/43-object-delete-confirm`, `44-object-deleted` |
+| F11 | Fixed | `45e590a` | Usage due labels include the unit ("Overdue by 2 print hours"). | E `after/electron/object-normal-*`, `flows/33-object-tab-maintenance` |
+| F12 | Fixed | `475e378` | A rule applied to past activity says "Counts all past activity". | E `after/electron/flows/55-rpg-rules` |
+| F13 | Fixed | `9e15d48` | A provider that is off shows a neutral "Off" chip and a muted note; red is kept for real problems. | E `after/electron/devices-*` |
+| F14 | **New**, fixed | `496115b` | Found while fixing F4: if a boot warm-up read rejected, the splash never went away. Boot now always finishes. | S (error mode boots) |
+| F15 | **New**, fixed | `7824400` | Found while capturing: turning a GhostOS source off said "Removed 0 entrys". Plurals and zero counts fixed in GhostOS messages. | E `after/electron/flows/28-ghost-sources-off-done` |
+
+Flow step numbers moved by three after step 25 (three GhostOS source steps were added), so `before/flows/28` is `after/flows/31`, and so on.
+
+### Notes for the owner
+
+- **Vault OCR is GPU-only by design.** Its own UI says "PaddleOCR GPU only", and it was left as it is. F2 covers the Tools OCR setting only. Whether Vault OCR should get a CPU path is a decision, not a bug fix. **Needs Windows check:** what the OCR worker does with `cpu` on a real machine.
+- **A saved `"gpu"` is kept.** Anyone who already has `ocrDevice: "gpu"` in their settings keeps it; only new or unset installs get CPU. Earlier builds wrote `gpu` when OCR settings were changed, so some existing installs will still have it.
+- **Skill Constellation:** a stored layout is only re-spaced at the next rebuild of the constellation.
+- **Autopilot (for local review, not changed):** nothing broken in the real app. The stub bridge lacks `autopilotQueue`, `autopilotPushSettings` and `autopilotMorningBrief`, so Autopilot shows its error boundary in the stub. Preview only.
+- **Left for polish (phase 4):** the "Next.js" and "React" labels are no longer on top of each other but still sit close.
+- Heatmap and Audit differ between before and after only because of the data captured; they were not changed.
 
 ## Consistency (phase 3: one shared component set)
 
@@ -66,7 +99,7 @@ Checked and fine: the sidebar active state for every module (both sizes); Projec
 
 ## Counts
 
-- **13 functional:** 2 High, 3 Medium, 8 Low.
+- **13 functional:** 2 High, 3 Medium, 8 Low. All fixed in phase 2, plus two found during it (F14, F15).
 - **8 consistency:** 1 High, 6 Medium, 1 Low.
 - **10 polish:** 3 Medium, 7 Low.
 
