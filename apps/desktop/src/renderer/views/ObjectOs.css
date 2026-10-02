@@ -140,6 +140,16 @@ button.objectos-item:hover {
   gap: var(--space-1);
 }
 
+/* A due-state badge keeps the kit's inline layout, not the row's grid. */
+.objectos-row > .kit-badge {
+  display: inline-flex;
+}
+
+/* A form's submit button is its own width, not the form's. */
+.objectos form > .kit-button {
+  justify-self: start;
+}
+
 .objectos-card {
   background: var(--surface);
   border: 1px solid var(--border);

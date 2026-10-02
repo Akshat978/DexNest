@@ -860,6 +860,16 @@ div.calendar-side-event[role="button"]:focus-visible {
   gap: var(--space-5);
 }
 
+/* The stack's gap already spaces the kit header and empty state; their own
+   margins would double it. */
+.view-stack > .kit-header {
+  margin-bottom: 0;
+}
+
+.view-stack > .kit-empty {
+  margin: 0 auto;
+}
+
 .view-stack--search {
   gap: var(--space-4);
 }
