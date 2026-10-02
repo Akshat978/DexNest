@@ -72,7 +72,7 @@ const render = (props) => renderToStaticMarkup(createElement(View, { bridge, onA
 
 test("loading: a status, busy, no actions yet", () => {
   const html = render({});
-  assert.match(html, /role="status"[^>]*>Loading your character/);
+  assert.match(html, /role="status"[^>]*>(?:<[^>]+>)*Loading your character…/);
   assert.match(html, /aria-busy="true"/);
   assert.doesNotMatch(html, />Refresh</);
 });
@@ -146,10 +146,11 @@ test("deleting a rule and abandoning a quest ask first, in a modal", () => {
   assert.match(rules, /<p>\+5 Craft each time, at most 20 a day<\/p><p class="rpg-hint technical">dev.commit.observed<\/p>/);
   const quests = render({ initial: { snapshot: base, tab: "quests" } });
   assert.match(quests, /aria-label="Abandon Commit today">Abandon…<\/button>/);
-  const confirm = { actionId: "reality_rpg.rule.delete", params: { ruleId: "commits" }, question: "Delete the rule \"Commit observed\"? XP it already awarded stays.", confirmLabel: "Delete" };
+  const confirm = { actionId: "reality_rpg.rule.delete", params: { ruleId: "commits" }, title: "Delete the rule \"Commit observed\"?", detail: "XP it already awarded stays.", confirmLabel: "Delete" };
   const html = render({ initial: { snapshot: base, tab: "rules", confirm } });
-  assert.match(html, /<div class="rpg-backdrop"><div class="rpg-confirm" role="alertdialog" aria-labelledby="rpg-confirm-text" aria-modal="true">/);
-  assert.match(html, /<button type="button" class="rpg-danger">Delete<\/button><button type="button">Cancel<\/button>/);
+  assert.match(html, /<div class="kit-backdrop" style="--kit-accent:var\(--accent-loop\)"><div class="kit-dialog" role="alertdialog" aria-modal="true" aria-labelledby="([^"]+)" aria-describedby="([^"]+)">/);
+  assert.match(html, /<h2 id="[^"]+" class="kit-dialog__title">Delete the rule &quot;Commit observed&quot;\?<\/h2><p id="[^"]+" class="kit-dialog__description">XP it already awarded stays\.<\/p>/);
+  assert.match(html, /class="kit-button kit-button--ghost kit-button--md kit-confirm__cancel">Cancel<\/button><button type="button" class="kit-button kit-button--danger kit-button--md kit-confirm__ok">Delete<\/button>/);
 });
 test("rules: a rule applied to past activity says so, not \"Counts from 1970-01-01\" (Integration QA F12)", () => {
   const backfilled = { ...rule, id: "backfilled", name: "Backfilled", effectiveFrom: "1970-01-01T00:00:00.000Z" };

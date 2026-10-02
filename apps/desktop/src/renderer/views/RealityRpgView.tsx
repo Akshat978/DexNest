@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import type { AwardView, RealityRpgSettings, RealityRpgSnapshot, RealityRpgStatus, Rule } from "@dexnest/reality-rpg";
-import { PageHeader } from "../components/shared";
+import { Swords } from "lucide-react";
+import { accentStyle, Button, ConfirmDialog, EmptyNote, EmptyState, ErrorState, Field, InlineError, LoadingState, Notice, PageHeader, Select, TabPanel, Tabs, TextInput } from "../components/ui/kit";
 import {
   countsFromLabel,
   actionMessage,
@@ -10,7 +11,6 @@ import {
   EMPTY_QUEST_FORM,
   EMPTY_RULE_FORM,
   levelProgress,
-  nextTab,
   orderAchievements,
   progressText,
   questFromForm,
@@ -48,7 +48,10 @@ export interface RealityRpgViewProps {
 export interface Confirm {
   actionId: string;
   params: Record<string, unknown>;
-  question: string;
+  /** The question ("Delete the rule …?"). */
+  title: string;
+  /** What happens if the owner says yes. */
+  detail: string;
   confirmLabel: string;
 }
 
@@ -66,7 +69,6 @@ export function RealityRpgView({ bridge, onAction, initial }: RealityRpgViewProp
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState<Confirm | null>(initial?.confirm ?? null);
   const [tab, setTab] = useState<Tab>(initial?.tab ?? "character");
-  const tabRefs = useRef(new Map<Tab, HTMLButtonElement>());
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -105,92 +107,66 @@ export function RealityRpgView({ bridge, onAction, initial }: RealityRpgViewProp
 
   const state = viewState({ loading, error, snapshot });
 
-  function onTabKey(event: React.KeyboardEvent) {
-    const next = nextTab(tab, event.key);
-    if (!next) return;
-    event.preventDefault();
-    setTab(next);
-    tabRefs.current.get(next)?.focus();
-  }
-
   return (
-    <section className="view-stack rpg" aria-labelledby="rpg-title" aria-busy={state.kind === "loading"}>
+    <section className="view-stack rpg" style={accentStyle("loop")} aria-labelledby="rpg-title" aria-busy={state.kind === "loading"}>
       <PageHeader
-        eyebrow="Your activity, as a game"
+        icon={<Swords />}
         title="Reality RPG"
         titleId="rpg-title"
+        subtitle="Your activity, as a game"
         actions={state.kind === "ready" || state.kind === "off" ? (
           <>
-            {snapshot?.enabled && <button type="button" disabled={busy} onClick={() => void run("reality_rpg.refresh")}>Refresh</button>}
+            {snapshot?.enabled && <Button disabled={busy} onClick={() => void run("reality_rpg.refresh")}>Refresh</Button>}
             {snapshot?.enabled ? (
-              <button type="button" disabled={busy} onClick={() => void run("reality_rpg.disable")}>Turn off</button>
+              <Button variant="ghost" disabled={busy} onClick={() => void run("reality_rpg.disable")}>Turn off</Button>
             ) : (
-              <button type="button" disabled={busy} onClick={() => void run("reality_rpg.enable")}>Turn on</button>
+              <Button variant="primary" disabled={busy} onClick={() => void run("reality_rpg.enable")}>Turn on</Button>
             )}
           </>
         ) : undefined}
       />
-      {notice && <p className={notice.ok ? "rpg-notice" : "rpg-notice rpg-notice--error"} role={notice.ok ? "status" : "alert"}>{notice.text}</p>}
+      {notice && (notice.ok ? <Notice>{notice.text}</Notice> : <InlineError>{notice.text}</InlineError>)}
       {confirm && (
         <ConfirmDialog
-          confirm={confirm}
+          title={confirm.title}
+          confirmLabel={confirm.confirmLabel}
           busy={busy}
+          accent="loop"
           onCancel={() => setConfirm(null)}
           onConfirm={() => {
             const c = confirm;
             setConfirm(null);
             void run(c.actionId, c.params);
           }}
-        />
+        >
+          {confirm.detail}
+        </ConfirmDialog>
       )}
 
-      {state.kind === "loading" && <p className="empty-state" role="status">Loading your character…</p>}
+      {state.kind === "loading" && <LoadingState label="Loading your character" />}
 
-      {state.kind === "error" && (
-        <div className="rpg-error" role="alert">
-          <p>Reality RPG could not load: {state.message}</p>
-          <div className="button-row">
-            <button type="button" onClick={() => void load()}>Try again</button>
-          </div>
-        </div>
-      )}
+      {state.kind === "error" && <ErrorState title="Reality RPG could not load" message={state.message} onRetry={() => void load()} />}
 
       {state.kind === "off" && (
-        <div className="empty-state rpg-intro">
+        <EmptyState
+          icon={<Swords />}
+          title="Reality RPG is off"
+        >
           <p>Reality RPG turns what you already do in DexNest into XP, achievements and quests, by rules you write. It reads only the event types your rules name, never vault, finance or journal activity, and never the content of an event.</p>
           <p>Start with a rule: open Rules below and add one from the starter set, or write your own.</p>
-        </div>
+        </EmptyState>
       )}
 
       {(state.kind === "ready" || state.kind === "off") && snapshot && (
         <>
-          <div className="rpg-tabs" role="tablist" aria-label="Reality RPG sections" onKeyDown={onTabKey}>
-            {TABS.map((t) => (
-              <button
-                key={t}
-                type="button"
-                role="tab"
-                id={`rpg-tab-${t}`}
-                aria-selected={tab === t}
-                aria-controls={`rpg-panel-${t}`}
-                tabIndex={tab === t ? 0 : -1}
-                ref={(node) => {
-                  if (node) tabRefs.current.set(t, node);
-                  else tabRefs.current.delete(t);
-                }}
-                onClick={() => setTab(t)}
-              >
-                {TAB_LABELS[t]}
-              </button>
-            ))}
-          </div>
-          <div className="rpg-panel" role="tabpanel" id={`rpg-panel-${tab}`} aria-labelledby={`rpg-tab-${tab}`} tabIndex={0}>
+          <Tabs label="Reality RPG sections" idPrefix="rpg" value={tab} onChange={setTab} tabs={TABS.map((t) => ({ id: t, label: TAB_LABELS[t] }))} />
+          <TabPanel idPrefix="rpg" id={tab}>
             {tab === "character" && <CharacterPanel snapshot={snapshot} />}
             {tab === "quests" && <QuestsPanel snapshot={snapshot} busy={busy} run={run} ask={setConfirm} />}
             {tab === "achievements" && <AchievementsPanel snapshot={snapshot} />}
             {tab === "history" && <HistoryPanel snapshot={snapshot} bridge={bridge} />}
             {tab === "rules" && <RulesPanel snapshot={snapshot} busy={busy} run={run} ask={setConfirm} />}
-          </div>
+          </TabPanel>
         </>
       )}
     </section>
@@ -212,7 +188,7 @@ function CharacterPanel({ snapshot }: { snapshot: RealityRpgSnapshot }) {
       </div>
       <h3>Stats</h3>
       {sheet.stats.length === 0 ? (
-        <p className="empty-state">No XP yet. Switch on a rule and do the thing it names.</p>
+        <EmptyNote>No XP yet. Switch on a rule and do the thing it names.</EmptyNote>
       ) : (
         <ul className="rpg-stats">
           {sheet.stats.map((s) => (
@@ -233,7 +209,7 @@ function CharacterPanel({ snapshot }: { snapshot: RealityRpgSnapshot }) {
 
 function AchievementsPanel({ snapshot }: { snapshot: RealityRpgSnapshot }) {
   const views = orderAchievements(snapshot.achievements);
-  if (views.length === 0) return <p className="empty-state">No achievements defined. The starter set in Rules has a few.</p>;
+  if (views.length === 0) return <EmptyNote>No achievements defined. The starter set in Rules has a few.</EmptyNote>;
   return (
     <ul className="rpg-list">
       {views.map(({ achievement, unlocked, progress }) => (
@@ -258,7 +234,7 @@ function QuestsPanel({ snapshot, busy, run, ask }: { snapshot: RealityRpgSnapsho
   return (
     <div className="rpg-quests">
       {active.length === 0 ? (
-        <p className="empty-state">No active quests. Create one below.</p>
+        <EmptyNote>No active quests. Create one below.</EmptyNote>
       ) : (
         <ul className="rpg-list">
           {active.map(({ quest, progress, completions }) => (
@@ -270,14 +246,15 @@ function QuestsPanel({ snapshot, busy, run, ask }: { snapshot: RealityRpgSnapsho
                 {quest.window.kind === "fixed" && !progress.open ? " · window closed" : ""}
               </p>
               {completions > 0 && <p className="rpg-hint">Completed {completions} time{completions === 1 ? "" : "s"}</p>}
-              <button
-                type="button"
+              <Button
+                variant="ghost"
+                size="sm"
                 disabled={busy}
-                onClick={() => ask({ actionId: "reality_rpg.quest.abandon", params: { questId: quest.id }, question: `Abandon "${quest.title}"? Its progress so far is kept in history, but the quest stops counting.`, confirmLabel: "Abandon" })}
+                onClick={() => ask({ actionId: "reality_rpg.quest.abandon", params: { questId: quest.id }, title: `Abandon "${quest.title}"?`, detail: "Its progress so far is kept in history, but the quest stops counting.", confirmLabel: "Abandon" })}
                 aria-label={`Abandon ${quest.title}`}
               >
                 Abandon…
-              </button>
+              </Button>
             </li>
           ))}
         </ul>
@@ -293,17 +270,16 @@ function QuestsPanel({ snapshot, busy, run, ask }: { snapshot: RealityRpgSnapsho
         }}
       >
         <h3>New quest</h3>
-        <label>Title<input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} required /></label>
-        <label>
-          Goal
-          <select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value as QuestForm["kind"] })}>
+        <Field label="Title"><TextInput value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} required /></Field>
+        <Field label="Goal">
+          <Select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value as QuestForm["kind"] })}>
             <option value="count">Times a rule awards</option>
             <option value="days">Days with an award from a rule</option>
             <option value="xp">XP earned</option>
-          </select>
-        </label>
+          </Select>
+        </Field>
         {form.kind === "xp" ? (
-          <label>Stat (optional)<input value={form.stat} onChange={(e) => setForm({ ...form, stat: e.target.value })} /></label>
+          <Field label="Stat (optional)"><TextInput value={form.stat} onChange={(e) => setForm({ ...form, stat: e.target.value })} /></Field>
         ) : (
           <fieldset>
             <legend>Rules that count</legend>
@@ -320,23 +296,24 @@ function QuestsPanel({ snapshot, busy, run, ask }: { snapshot: RealityRpgSnapsho
             ))}
           </fieldset>
         )}
-        <label>Target<input type="number" min={1} value={form.target} onChange={(e) => setForm({ ...form, target: e.target.value })} /></label>
-        <label>
-          Window
-          <select value={form.window} onChange={(e) => setForm({ ...form, window: e.target.value as QuestForm["window"] })}>
+        <Field label="Target"><TextInput type="number" min={1} value={form.target} onChange={(e) => setForm({ ...form, target: e.target.value })} /></Field>
+        <Field label="Window">
+          <Select value={form.window} onChange={(e) => setForm({ ...form, window: e.target.value as QuestForm["window"] })}>
             <option value="none">Until done</option>
             <option value="daily">Every day</option>
             <option value="weekly">Every week</option>
             <option value="fixed">Between two dates</option>
-          </select>
-        </label>
+          </Select>
+        </Field>
         {form.window === "fixed" && (
           <>
-            <label>From<input type="date" value={form.from} onChange={(e) => setForm({ ...form, from: e.target.value })} /></label>
-            <label>To<input type="date" value={form.to} onChange={(e) => setForm({ ...form, to: e.target.value })} /></label>
+            <Field label="From"><TextInput type="date" value={form.from} onChange={(e) => setForm({ ...form, from: e.target.value })} /></Field>
+            <Field label="To"><TextInput type="date" value={form.to} onChange={(e) => setForm({ ...form, to: e.target.value })} /></Field>
           </>
         )}
-        <button type="submit" disabled={busy}>Create quest</button>
+        <div className="button-row">
+          <Button type="submit" variant="primary" disabled={busy}>Create quest</Button>
+        </div>
       </form>
     </div>
   );
@@ -346,7 +323,7 @@ function HistoryPanel({ snapshot, bridge }: { snapshot: RealityRpgSnapshot; brid
   const [rows, setRows] = useState<AwardView[]>(snapshot.recentAwards);
   const [more, setMore] = useState(snapshot.recentAwards.length >= 50);
   const [error, setError] = useState<string | null>(null);
-  if (rows.length === 0) return <p className="empty-state">No XP awarded yet.</p>;
+  if (rows.length === 0) return <EmptyNote>No XP awarded yet.</EmptyNote>;
   return (
     <div>
       <ul className="rpg-history">
@@ -361,10 +338,10 @@ function HistoryPanel({ snapshot, bridge }: { snapshot: RealityRpgSnapshot; brid
           </li>
         ))}
       </ul>
-      {error && <p className="rpg-notice rpg-notice--error" role="alert">{error}</p>}
+      {error && <InlineError>{error}</InlineError>}
       {more && (
-        <button
-          type="button"
+        <Button
+          variant="ghost"
           onClick={() => {
             const last = rows[rows.length - 1];
             if (!last) return;
@@ -379,7 +356,7 @@ function HistoryPanel({ snapshot, bridge }: { snapshot: RealityRpgSnapshot; brid
           }}
         >
           Show older
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -395,9 +372,9 @@ function RulesPanel({ snapshot, busy, run, ask }: { snapshot: RealityRpgSnapshot
 
   return (
     <div className="rpg-rules">
-      {invalid > 0 && <p className="rpg-notice rpg-notice--error" role="alert">{invalid} saved definition{invalid === 1 ? " is" : "s are"} no longer valid and {invalid === 1 ? "is" : "are"} being ignored.</p>}
+      {invalid > 0 && <InlineError>{invalid} saved definition{invalid === 1 ? " is" : "s are"} no longer valid and {invalid === 1 ? "is" : "are"} being ignored.</InlineError>}
       {snapshot.rules.length === 0 ? (
-        <p className="empty-state">No rules yet. Add one from the starter set or write your own.</p>
+        <EmptyNote>No rules yet. Add one from the starter set or write your own.</EmptyNote>
       ) : (
         <ul className="rpg-list">
           {snapshot.rules.map((rule) => (
@@ -415,14 +392,14 @@ function RulesPanel({ snapshot, busy, run, ask }: { snapshot: RealityRpgSnapshot
               <li key={t.id} className="rpg-item">
                 <p className="rpg-item__title">{t.name}</p>
                 <p className="technical">{t.match.types.join(", ")}{t.match.actionIds ? ` · ${t.match.actionIds.join(", ")}` : ""} · +{t.award.xp} {t.award.stat}</p>
-                <button type="button" disabled={busy} onClick={() => void run("reality_rpg.rule.save", { rule: { ...t, enabled: false } })} aria-label={`Add rule ${t.name}`}>Add</button>
+                <Button size="sm" disabled={busy} onClick={() => void run("reality_rpg.rule.save", { rule: { ...t, enabled: false } })} aria-label={`Add rule ${t.name}`}>Add</Button>
               </li>
             ))}
             {achievementTemplates.map((a) => (
               <li key={a.id} className="rpg-item">
                 <p className="rpg-item__title">{a.name}</p>
                 <p className="rpg-hint">{a.description}</p>
-                <button type="button" disabled={busy} onClick={() => void run("reality_rpg.achievement.save", { achievement: a })} aria-label={`Add achievement ${a.name}`}>Add</button>
+                <Button size="sm" disabled={busy} onClick={() => void run("reality_rpg.achievement.save", { achievement: a })} aria-label={`Add achievement ${a.name}`}>Add</Button>
               </li>
             ))}
           </ul>
@@ -439,23 +416,24 @@ function RulesPanel({ snapshot, busy, run, ask }: { snapshot: RealityRpgSnapshot
       >
         <h3>New rule</h3>
         <p className="rpg-hint">A rule names exact event types. It can never name vault, finance or journal activity, and it only reads an event's type, module, action and status - never its content.</p>
-        <label>Name<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></label>
-        <label>Event types<input className="technical" value={form.types} placeholder="action_executed" onChange={(e) => setForm({ ...form, types: e.target.value })} required /></label>
-        <label>Action ids (optional)<input className="technical" value={form.actionIds} placeholder="standup.generate" onChange={(e) => setForm({ ...form, actionIds: e.target.value })} /></label>
-        <label>Stream (optional)<input className="technical" value={form.stream} placeholder="audit" onChange={(e) => setForm({ ...form, stream: e.target.value })} /></label>
-        <label>
-          Status
-          <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as RuleForm["status"] })}>
+        <Field label="Name"><TextInput value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></Field>
+        <Field label="Event types"><TextInput className="technical" value={form.types} placeholder="action_executed" onChange={(e) => setForm({ ...form, types: e.target.value })} required /></Field>
+        <Field label="Action ids (optional)"><TextInput className="technical" value={form.actionIds} placeholder="standup.generate" onChange={(e) => setForm({ ...form, actionIds: e.target.value })} /></Field>
+        <Field label="Stream (optional)"><TextInput className="technical" value={form.stream} placeholder="audit" onChange={(e) => setForm({ ...form, stream: e.target.value })} /></Field>
+        <Field label="Status">
+          <Select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as RuleForm["status"] })}>
             <option value="">Any</option>
             <option value="success">Success</option>
             <option value="failed">Failed</option>
-          </select>
-        </label>
-        <label>XP<input type="number" min={1} max={500} value={form.xp} onChange={(e) => setForm({ ...form, xp: e.target.value })} /></label>
-        <label>Stat<input value={form.stat} placeholder="Craft" onChange={(e) => setForm({ ...form, stat: e.target.value })} required /></label>
-        <label>Most per day (optional)<input type="number" min={1} value={form.dailyCap} onChange={(e) => setForm({ ...form, dailyCap: e.target.value })} /></label>
+          </Select>
+        </Field>
+        <Field label="XP"><TextInput type="number" min={1} max={500} value={form.xp} onChange={(e) => setForm({ ...form, xp: e.target.value })} /></Field>
+        <Field label="Stat"><TextInput value={form.stat} placeholder="Craft" onChange={(e) => setForm({ ...form, stat: e.target.value })} required /></Field>
+        <Field label="Most per day (optional)"><TextInput type="number" min={1} value={form.dailyCap} onChange={(e) => setForm({ ...form, dailyCap: e.target.value })} /></Field>
         <label className="rpg-check"><input type="checkbox" checked={form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} />Switch on now</label>
-        <button type="submit" disabled={busy}>Save rule</button>
+        <div className="button-row">
+          <Button type="submit" variant="primary" disabled={busy}>Save rule</Button>
+        </div>
       </form>
     </div>
   );
@@ -473,57 +451,22 @@ function RuleRow({ rule, busy, run, ask }: { rule: Rule; busy: boolean; run(acti
         {Date.parse(rule.effectiveFrom) <= 0 ? countsFromLabel(rule.effectiveFrom) : <>Counts from <time className="technical" dateTime={rule.effectiveFrom}>{shortDate(rule.effectiveFrom)}</time></>}
       </p>
       <div className="button-row">
-        <button type="button" disabled={busy} onClick={() => void run("reality_rpg.rule.set_enabled", { ruleId: rule.id, enabled: !rule.enabled })} aria-label={`${rule.enabled ? "Switch off" : "Switch on"} ${rule.name}`}>
+        <Button size="sm" disabled={busy} onClick={() => void run("reality_rpg.rule.set_enabled", { ruleId: rule.id, enabled: !rule.enabled })} aria-label={`${rule.enabled ? "Switch off" : "Switch on"} ${rule.name}`}>
           {rule.enabled ? "Switch off" : "Switch on"}
-        </button>
+        </Button>
         {rule.enabled && (
-          <button type="button" disabled={busy} onClick={() => void run("reality_rpg.backfill", { ruleId: rule.id })} aria-label={`Apply ${rule.name} to past activity`}>Apply to past activity</button>
+          <Button size="sm" disabled={busy} onClick={() => void run("reality_rpg.backfill", { ruleId: rule.id })} aria-label={`Apply ${rule.name} to past activity`}>Apply to past activity</Button>
         )}
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="sm"
           disabled={busy}
-          onClick={() => ask({ actionId: "reality_rpg.rule.delete", params: { ruleId: rule.id }, question: `Delete the rule "${rule.name}"? XP it already awarded stays; it awards nothing from now on. This cannot be undone.`, confirmLabel: "Delete" })}
+          onClick={() => ask({ actionId: "reality_rpg.rule.delete", params: { ruleId: rule.id }, title: `Delete the rule "${rule.name}"?`, detail: "XP it already awarded stays; it awards nothing from now on. This cannot be undone.", confirmLabel: "Delete" })}
           aria-label={`Delete ${rule.name}`}
         >
           Delete…
-        </button>
+        </Button>
       </div>
     </li>
-  );
-}
-
-/** Asks before a change that cannot be undone. Modal: focus stays inside, Cancel is focused, Escape cancels. */
-function ConfirmDialog({ confirm, busy, onConfirm, onCancel }: { confirm: Confirm; busy: boolean; onConfirm(): void; onCancel(): void }) {
-  const cancelRef = useRef<HTMLButtonElement>(null);
-  const confirmRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    cancelRef.current?.focus();
-    return () => opener?.focus();
-  }, [confirm]);
-  function onKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      onCancel();
-      return;
-    }
-    if (e.key !== "Tab") return;
-    const order = [confirmRef.current, cancelRef.current].filter((b): b is HTMLButtonElement => b !== null && !b.disabled);
-    if (order.length === 0) return;
-    const at = order.indexOf(document.activeElement as HTMLButtonElement);
-    e.preventDefault();
-    const next = e.shiftKey ? (at <= 0 ? order.length - 1 : at - 1) : (at + 1) % order.length;
-    order[next]?.focus();
-  }
-  return (
-    <div className="rpg-backdrop">
-      <div className="rpg-confirm" role="alertdialog" aria-labelledby="rpg-confirm-text" aria-modal="true" onKeyDown={onKeyDown}>
-        <p id="rpg-confirm-text">{confirm.question}</p>
-        <div className="button-row">
-          <button type="button" ref={confirmRef} className="rpg-danger" disabled={busy} onClick={onConfirm}>{confirm.confirmLabel}</button>
-          <button type="button" ref={cancelRef} onClick={onCancel}>Cancel</button>
-        </div>
-      </div>
-    </div>
   );
 }

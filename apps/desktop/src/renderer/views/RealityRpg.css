@@ -10,43 +10,10 @@
   font-family: var(--font-tech);
 }
 
-.rpg-notice {
-  margin: 0;
-  color: var(--text);
-}
-
-.rpg-notice--error,
-.rpg-error {
-  color: var(--error);
-}
-
-.rpg-error {
-  display: grid;
-  gap: var(--space-2);
-}
-
 .rpg-hint {
   margin: 0;
   color: var(--text-muted);
   font-size: 0.85rem;
-}
-
-.rpg-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  border-bottom: 1px solid var(--border);
-  padding-bottom: var(--space-2);
-}
-
-.rpg-tabs [role="tab"][aria-selected="true"] {
-  border-color: var(--accent-loop);
-  color: var(--text);
-}
-
-.rpg-panel {
-  display: grid;
-  gap: var(--space-4);
 }
 
 .rpg-sheet,
@@ -147,11 +114,6 @@
   margin: 0;
 }
 
-.rpg-form label {
-  display: grid;
-  gap: var(--space-1);
-}
-
 .rpg-form fieldset {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -165,12 +127,10 @@
   gap: var(--space-2);
 }
 
-/* A solid outline in the module's accent: --focus-ring alone is a 40% glow
-   (about 2.3:1) and too faint to follow. */
-.rpg button:focus-visible,
-.rpg input:focus-visible,
-.rpg select:focus-visible,
-.rpg [role="tabpanel"]:focus-visible {
+/* A solid outline in the module's accent for the native checkboxes: --focus-ring
+   alone is a 40% glow (about 2.3:1) and too faint to follow. Kit controls bring
+   their own focus ring. */
+.rpg input[type="checkbox"]:focus-visible {
   outline: 2px solid var(--accent-loop);
   outline-offset: 2px;
   box-shadow: 0 0 0 4px var(--focus-ring);
@@ -181,10 +141,6 @@
    imports up front. */
 .accent-loop {
   --accent: var(--accent-loop);
-}
-
-.rpg-error {
-  justify-items: start;
 }
 
 /* Stats: compact cards, each with a bar against the strongest stat. */
@@ -226,34 +182,4 @@ ul.rpg-stats {
 
 .rpg-history__what .rpg-hint {
   font-size: 0.75rem;
-}
-
-.rpg-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  display: grid;
-  place-items: center;
-  padding: var(--space-5);
-  background: color-mix(in srgb, var(--bg) 72%, transparent);
-}
-
-.rpg-confirm {
-  width: min(32rem, 100%);
-  display: grid;
-  gap: var(--space-4);
-  padding: var(--space-5);
-  background: var(--surface);
-  border: 1px solid var(--error);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-panel);
-}
-
-.rpg-confirm p {
-  margin: 0;
-}
-
-.rpg-danger {
-  border-color: var(--error);
-  color: var(--error);
 }
