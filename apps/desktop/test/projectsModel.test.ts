@@ -144,6 +144,7 @@ import {
   changeRows,
   detailShortcut,
   lifecycleActions,
+  operationLabel,
   operationLines,
   runCommands
 } from "../src/renderer/views/projects/projectsModel.ts";
@@ -239,4 +240,11 @@ test("archived projects appear only under Archived", () => {
   const entries: ViewEntry[] = [{ project: project("live"), state: repo() }, { project: project("old", { archivedAt: NOW }), state: null }];
   assert.deepEqual(filterEntries(entries, DEFAULT_FILTERS, NOW, 30).map((e) => e.project.name), ["live"]);
   assert.deepEqual(homeSections(entries, { ...DEFAULT_FILTERS, status: "archived" }, NOW, 30).map((s) => s.entries.map((e) => e.project.name)), [["old"]]);
+});
+
+test("operationLabel: kinds and verbs in plain words", () => {
+  assert.equal(operationLabel("fetch"), "Fetch");
+  assert.equal(operationLabel("delete_remote_branch"), "Delete remote branch");
+  assert.equal(operationLabel("push_set_upstream"), "Push set upstream");
+  assert.equal(operationLabel(""), "Operation");
 });

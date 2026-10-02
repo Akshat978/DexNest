@@ -116,7 +116,7 @@ export function createProjectsHost(options: ProjectsHostOptions): ProjectsHost {
       const ranked = scoreRepository(repo, from, to);
       return {
         reason: ranked.reason,
-        evidence: ranked.evidence.slice(0, 6).map((ref) => `${ref.kind}${ref.observedAt ? ` · ${ref.observedAt.slice(0, 10)}` : ""}`),
+        evidence: ranked.evidence.slice(0, 6).map((ref) => `${ref.kind.replace(/_/g, " ")}${ref.observedAt ? ` · ${ref.observedAt.slice(0, 10)}` : ""}`),
         latestActivityAt: ranked.signals.latestActivityAt ?? null
       };
     }

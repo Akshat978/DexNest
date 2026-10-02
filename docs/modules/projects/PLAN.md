@@ -925,6 +925,40 @@ All ten defaults in section 18 are accepted as written.
 - **Kit**: `Tabs` (roving tabindex, arrows / Home / End, `aria-selected`,
   `aria-controls`) and `TabPanel`.
 
+### Refinements made in Phase 9 (polish)
+
+Screenshots at 1280x800 and 1920x1080 of the whole app (sidebar, top bar)
+with Projects next to Command, Clipboard, Tools, Finance, Heatmap, Backup and
+App Health, rendered from synthetic data with a throwaway harness (not
+committed; the images are too large for the repository). What was out of
+line, and what changed:
+
+- **Page header sat 16 px higher and tighter than every other view.** The
+  existing views use Tailwind `text-2xl` / `text-sm` plus the browser's
+  default `h1` and `p` margins; the kit header now has the same box, so the
+  title and subtitle line up when switching views.
+- **"Add project" was a solid accent fill**; every other view's main action
+  is a soft tinted button (`ActionButton` "soft"). Kit `primary` is now that,
+  a step stronger than `secondary`.
+- **Dialogs**: the wide wizard (52rem) slid under the sidebar at 1280 px,
+  because the main pane is its own stacking context. Kit dialogs now render
+  into `document.body`, so the backdrop covers the whole window. (Other
+  modules' dialogs leave the sidebar undimmed; that is theirs, unchanged.)
+- **A refused or loading operation's dialog title was the raw kind**
+  ("fetch", "delete_remote_branch"); it is now plain words
+  (`operationLabel`), also used for Recent operations.
+- **List layout** squeezed names to "Old scr…" and wrapped the actions onto
+  two lines; names now keep 14rem, the branch line shrinks with an ellipsis,
+  actions stay on one line and "fetched …" sits under them.
+- **Search hint** "( / )" in the placeholder is now a key chip like the top
+  bar's Ctrl K, and `aria-keyshortcuts="/"` tells screen readers.
+- **Where you left off**: evidence items are separated by a dot, and the
+  host writes kinds in words ("working tree", not "working_tree").
+- **Branches table** (Phase 8 fix) re-checked at both sizes: fits.
+- Checked and left as is: card grid uses `auto-fill`, so columns keep one
+  width across sections and a short section leaves space on the right
+  (deliberate); the detail header's title sits below its back button.
+
 ## 19. Phases for this module
 
 Each phase ends with the master gate (typecheck, tests, new tests,

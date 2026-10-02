@@ -17,6 +17,7 @@ import {
   formProblems,
   inputFromForm,
   lifecycleActions,
+  operationLabel,
   relativeTime,
   runCommands,
   stripAnsi,
@@ -169,7 +170,7 @@ export function OverviewTab({
           <ul className="projects-rows">
             {operations.slice(0, 8).map((op) => (
               <li key={op.id}>
-                <span className="projects-op-verb">{op.verb.replace(/_/g, " ")}</span>
+                <span className="projects-op-verb">{operationLabel(op.verb)}</span>
                 <Badge tone={op.outcome === "succeeded" ? "success" : op.state === "refused" ? "neutral" : op.outcome === "auth_needed" ? "warning" : "error"}>{op.undone ? "undone" : op.outcome ?? op.state}</Badge>
                 <span className="projects-muted">{relativeTime(op.startedAt, now)}</span>
                 {op.undoable && (

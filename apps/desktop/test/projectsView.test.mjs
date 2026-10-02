@@ -124,7 +124,9 @@ test("keyboard: only one card name is in the tab order (roving), search says its
   const html = home([{ project: project("a"), state: repo() }, { project: project("b"), state: repo() }, { project: project("c"), state: repo() }]);
   assert.equal((html.match(/class="projects-card__name" tabindex="0"/g) ?? []).length, 1);
   assert.equal((html.match(/class="projects-card__name" tabindex="-1"/g) ?? []).length, 2);
-  assert.match(html, /placeholder="Search projects…  \( \/ \)"/);
+  // The shortcut is announced (aria-keyshortcuts) and shown as a key chip, like the top bar's Ctrl K.
+  assert.match(html, /placeholder="Search projects…" aria-keyshortcuts="\/"/);
+  assert.match(html, /<kbd class="projects-search__key" aria-hidden="true">\/<\/kbd>/);
   assert.match(html, /<label for="projects-search"/);
 });
 
@@ -243,6 +245,13 @@ test("operation dialog: running with live output, the result, a refusal", () => 
   assert.equal(op.offerRequest("open_terminal", { kind: "push" }), null);
 });
 
+test("operation dialog: before the preview arrives (or when it is refused) the title is the operation in plain words", () => {
+  const bridge = { projectsPreview: () => new Promise(() => undefined), onProjectsOutput: () => noop };
+  const html = renderToStaticMarkup(createElement(op.OperationDialog, { bridge, projectId: "p", projectName: "DexNest", request: { kind: "delete_remote_branch", remote: "origin", name: "x" }, onClose: noop }));
+  assert.match(html, /class="kit-dialog__title">Delete remote branch<\/h2>/);
+  assert.doesNotMatch(html, /delete_remote_branch</);
+});
+
 // --- static ---------------------------------------------------------------------
 
 const sourceFiles = [
@@ -266,4 +275,37 @@ test("the renderer takes only pure code from @dexnest/projects: values from /dom
       assert.ok(m[1] || m[2] === "/domain", `${file}: ${m[0]}`);
     }
   }
+});
+
+// --- Phase 9: consistency with the existing views ---------------------------------
+
+const kitCss = readFileSync(join(desktop, "src/renderer/components/kit/kit.css"), "utf8");
+const rule = (selector) => {
+  const m = kitCss.match(new RegExp(`(^|\\n)${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\{([^}]*)\\}`));
+  assert.ok(m, `missing ${selector}`);
+  return m[2];
+};
+
+test("page header has the same box as the existing views' headers (text-2xl / text-sm, default h1 and p margins)", () => {
+  const title = rule(".kit-header__title");
+  assert.match(title, /font-size: 1\.5rem;/);
+  assert.match(title, /line-height: 2rem;/);
+  assert.match(title, /margin: 0\.67em 0;/);
+  const subtitle = rule(".kit-header__subtitle");
+  assert.match(subtitle, /font-size: 0\.875rem;/);
+  assert.match(subtitle, /line-height: 1\.25rem;/);
+  assert.match(subtitle, /margin: 1em 0;/);
+});
+
+test("primary buttons are soft accent buttons like the rest of the app, never a solid fill", () => {
+  const primary = rule(".kit-button--primary");
+  assert.match(primary, /background: color-mix\(in srgb, var\(--kit-accent\) \d+%, transparent\);/);
+  assert.match(primary, /color: var\(--kit-accent\);/);
+  assert.doesNotMatch(primary, /background: var\(--kit-accent\);/);
+});
+
+test("dialogs cover the whole window: rendered into document.body, inline only without a DOM", () => {
+  const kit = readFileSync(join(desktop, "src/renderer/components/kit/index.tsx"), "utf8");
+  assert.match(kit, /typeof document === "undefined" \? content : createPortal\(content, document\.body\)/);
+  assert.match(rule(".kit-backdrop"), /position: fixed;[\s\S]*inset: 0;/);
 });

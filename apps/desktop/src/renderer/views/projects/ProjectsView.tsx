@@ -152,10 +152,14 @@ export function ProjectsHome(props: ProjectsHomeProps) {
             id="projects-search"
             ref={props.searchRef}
             type="search"
-            placeholder="Search projects…  ( / )"
+            placeholder="Search projects…"
+            aria-keyshortcuts="/"
             value={filters.query}
             onChange={(e) => props.onFilters({ ...filters, query: e.target.value })}
           />
+          <kbd className="projects-search__key" aria-hidden="true">
+            /
+          </kbd>
         </div>
         <label className="projects-filter">
           <span>Group</span>

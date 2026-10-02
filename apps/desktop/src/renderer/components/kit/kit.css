@@ -38,17 +38,21 @@
   background: color-mix(in srgb, var(--kit-accent) 8%, transparent);
   color: var(--kit-accent);
 }
+/* Same box as the existing views' headers (text-2xl / text-sm with the
+   browser's default h1 and p margins), so titles line up across views. */
 .kit-header__title {
-  margin: 0;
+  margin: 0.67em 0;
   font-family: var(--font-ui);
   font-size: 1.5rem;
+  line-height: 2rem;
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--text);
 }
 .kit-header__subtitle {
-  margin: 0.125rem 0 0;
+  margin: 1em 0;
   font-size: 0.875rem;
+  line-height: 1.25rem;
   color: var(--text-muted);
 }
 .kit-header__actions {
@@ -143,10 +147,13 @@
   width: 0.875rem;
   height: 0.875rem;
 }
+/* The app's main actions are soft accent buttons (ActionButton "soft"), not
+   solid fills; primary is that, a step stronger than secondary. */
 .kit-button--primary {
-  background: var(--kit-accent);
-  border-color: var(--kit-accent);
-  color: var(--bg);
+  background: color-mix(in srgb, var(--kit-accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--kit-accent) 45%, transparent);
+  color: var(--kit-accent);
+  font-weight: 600;
 }
 .kit-button--secondary {
   background: color-mix(in srgb, var(--kit-accent) 8%, transparent);

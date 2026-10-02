@@ -10,6 +10,7 @@ import React, { useEffect, useRef, useState } from "react";
 import type { ExecuteResult, OperationPlan, Refusal } from "@dexnest/projects/domain";
 import { Badge, Button, Dialog } from "../../components/kit";
 import type { ProjectsBridge } from "./projectsBridge";
+import { operationLabel } from "./projectsModel";
 
 export type DialogPhase =
   | { kind: "loading" }
@@ -207,7 +208,7 @@ export function OperationDialog({ bridge, projectId, projectName, request, onClo
     }
   };
 
-  const title = phase.kind === "preview" || phase.kind === "running" ? phase.plan.title : phase.kind === "result" && phase.result.status === "done" ? phase.result.plan.title : String(request.kind ?? "Operation");
+  const title = phase.kind === "preview" || phase.kind === "running" ? phase.plan.title : phase.kind === "result" && phase.result.status === "done" ? phase.result.plan.title : operationLabel(String(request.kind ?? ""));
   const canRun = phase.kind === "preview" && (phase.plan.confirm.kind !== "type" || typed === phase.plan.confirm.text);
   const runLabel = phase.kind === "preview" ? (phase.plan.confirm.kind === "none" ? phase.plan.title : `Yes, ${phase.plan.title.toLowerCase()}`) : "Run";
   const result = phase.kind === "result" ? phase.result : null;

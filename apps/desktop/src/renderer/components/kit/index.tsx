@@ -8,6 +8,7 @@
 // packages/shared-ui unchanged once that package carries React.
 
 import React, { useEffect, useId, useRef } from "react";
+import { createPortal } from "react-dom";
 import "./kit.css";
 
 type Tone = "success" | "warning" | "error" | "info" | "neutral" | "accent";
@@ -300,7 +301,9 @@ export function Dialog({
       first.focus();
     }
   };
-  return (
+  // Rendered at the end of <body> so the backdrop covers the whole window,
+  // sidebar included, whatever stacking context the view sits in.
+  const content = (
     <div className="kit-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <div
         ref={ref}
@@ -320,6 +323,7 @@ export function Dialog({
       </div>
     </div>
   );
+  return typeof document === "undefined" ? content : createPortal(content, document.body);
 }
 
 export interface Toast {

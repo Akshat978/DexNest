@@ -542,3 +542,9 @@ export function operationLines(records: ReadonlyArray<{ id: string; verb: string
     undoable: r === latestFinished && r.state === "succeeded" && r.undo !== null && r.undoneBy === null
   }));
 }
+
+/** "delete_remote_branch" -> "Delete remote branch": an operation kind or verb in plain words. */
+export function operationLabel(kind: string): string {
+  const words = kind.replace(/_/g, " ").trim();
+  return words ? words[0].toUpperCase() + words.slice(1) : "Operation";
+}
