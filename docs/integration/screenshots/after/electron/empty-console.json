@@ -1,0 +1,326 @@
+[
+ {
+  "view": "command",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "search",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "clipboard",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "drop",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "tools",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "vault",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "journal",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "calendar",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "timetable",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "utilities",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "news",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "finder",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "capture",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "finance",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "dev",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "autopilot",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "skills",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "rpg",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "ghost",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "object",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "deck",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "heatmap",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "devices",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "backup",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "health",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "settings",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "audit",
+  "size": "1280x800",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "command",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "search",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "clipboard",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "drop",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "tools",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "vault",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "journal",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "calendar",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "timetable",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "utilities",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "news",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "finder",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "capture",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "finance",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "dev",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "autopilot",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "skills",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "rpg",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "ghost",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "object",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "deck",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "heatmap",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "devices",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "backup",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "health",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "settings",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ },
+ {
+  "view": "audit",
+  "size": "1920x1080",
+  "state": "empty",
+  "consoleErrors": []
+ }
+]

@@ -36,6 +36,8 @@ Not bugs (harness artefacts): Autopilot's error boundary in the stub (the stub b
 
 ## Phase 2 status (functional bugs)
 
+(`screenshots/after/` now shows the final branch, phase 5. The phase 2 shots there were replaced by their final versions, so they also include the phase 3 and 4 changes.)
+
 Every item below is fixed with a test that fails without the fix (each fix was mutation-checked: reverting it makes its test fail). One commit per module. "After" screenshots of the screens that changed are in `screenshots/after/`; unchanged screens were not re-committed.
 
 | # | Status | Commit | Fix | After evidence |

@@ -189,9 +189,8 @@
   "ok": true,
   "error": null,
   "said": [
-   "Saved to GhostOS.",
-   "Forget this entry and everything GhostOS derived from it? This cannot be undone, and a source cannot bring it back.ForgetCancel",
-   "Type to search your entries."
+   "Type to search your entries.",
+   "Forget this entry?GhostOS also forgets everything it derived from it. This cannot be undone, and a source cannot bring it back.CancelForget"
   ],
   "consoleErrors": []
  },
@@ -218,8 +217,7 @@
   "ok": true,
   "error": null,
   "said": [
-   "Source turned on. GhostOS reads it on its next sync.",
-   "Turn off Developer Intelligence and delete everything it added to GhostOS? This cannot be undone.Turn offCancel"
+   "Turn off Developer Intelligence?Everything it added to GhostOS is deleted, including detected habits. This cannot be undone.CancelTurn off"
   ],
   "consoleErrors": []
  },
@@ -228,7 +226,7 @@
   "ok": true,
   "error": null,
   "said": [
-   "Source turned off. Removed 0 entrys, 0 connections and 0 observations."
+   "Source turned off. It had added nothing."
   ],
   "consoleErrors": []
  },
@@ -339,7 +337,7 @@
   "ok": true,
   "error": null,
   "said": [
-   "Delete Kitchen scale with all its records and attached files? This cannot be undone.DeleteCancel"
+   "Delete Kitchen scale?All its records and attached files are deleted. This cannot be undone.CancelDelete"
   ],
   "consoleErrors": []
  },
@@ -402,7 +400,7 @@
   "error": null,
   "said": [
    "Quest created: Back up twice this month.",
-   "Abandon \"Keep the workshop running\"? Its progress so far is kept in history, but the quest stops counting.AbandonCancel"
+   "Abandon \"Keep the workshop running\"?Its progress so far is kept in history, but the quest stops counting.CancelAbandon"
   ],
   "consoleErrors": []
  },
@@ -448,7 +446,7 @@
   "error": null,
   "said": [
    "Quest abandoned: Keep the workshop running.",
-   "Delete the rule \"Memory kept in GhostOS\"? XP it already awarded stays; it awards nothing from now on. This cannot be undone.DeleteCancel"
+   "Delete the rule \"Memory kept in GhostOS\"?XP it already awarded stays; it awards nothing from now on. This cannot be undone.CancelDelete"
   ],
   "consoleErrors": []
  },
