@@ -1492,6 +1492,8 @@ kbd {
    input does not stretch across a 1920 window. */
 .utilities-date-controls {
   grid-template-columns: repeat(auto-fill, minmax(12rem, 16rem));
+  /* Rows keep their own height; the result panel beside them is taller. */
+  align-content: start;
 }
 
 .search-heading {
