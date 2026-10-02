@@ -1233,6 +1233,18 @@ kbd {
   padding: var(--space-4);
 }
 
+/* Audit: the six columns fit the content area at 1280 (they were 1,070 px
+   wide and pushed the page sideways); action ids wrap at the <wbr>s after
+   "." and "_", and mid-word only if one piece is wider than the column. */
+.audit-list .event-row {
+  grid-template-columns: 11rem 7rem minmax(9rem, 1fr) 5.5rem 6.5rem minmax(10rem, 1.4fr);
+}
+
+.audit-list .event-row p {
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
 .event-row p {
   overflow-wrap: anywhere;
 }
