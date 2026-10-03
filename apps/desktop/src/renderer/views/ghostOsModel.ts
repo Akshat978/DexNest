@@ -5,6 +5,7 @@
 // them equal.
 
 import type { EntityDetail, EntityType, Evidence, GhostOsStatus, Provenance, SearchHit, TimelineItem } from "@dexnest/ghost-os";
+import { dayKey, dayLabel, dayTimeLabel } from "../lib/dates.ts";
 
 export const ENTITY_TYPE_LIST: readonly EntityType[] = [
   "person", "project", "skill", "knowledge", "memory", "event", "habit", "decision", "file", "conversation", "place"
@@ -62,7 +63,7 @@ export function viewState(input: { loading: boolean; error: string | null; statu
 }
 
 const SOURCE_NAMES: Record<string, string> = {
-  "adapter:developer_intelligence": "Developer Intelligence",
+  "adapter:developer_intelligence": "Repository scan",
   "detector:time_of_day": "GhostOS habit detection (time of day)",
   "detector:weekly_rhythm": "GhostOS habit detection (weekly rhythm)"
 };
@@ -99,12 +100,13 @@ export function evidenceLabel(e: Evidence): string {
   }
 }
 
+/** A date as every screen writes it: "3 Oct 2026". */
 export function shortDate(iso: string): string {
-  return iso.slice(0, 10);
+  return dayLabel(iso);
 }
 
 export function shortDateTime(iso: string): string {
-  return `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
+  return dayTimeLabel(iso);
 }
 
 export function timelineLabel(item: TimelineItem): string {
@@ -321,7 +323,7 @@ export const pickerOptionId = (id: string) => `ghost-pick-${id}`;
 // --- Presentation (docs/DESIGN_LANGUAGE.md, GhostOS) ---------------------------------
 
 export interface TimelineGroup<T extends Pick<TimelineItem, "at">> {
-  /** YYYY-MM-DD, as shortDate shows it. */
+  /** The day as a key, YYYY-MM-DD. `dayHeading` writes it for people. */
   day: string;
   items: T[];
 }
@@ -330,7 +332,7 @@ export interface TimelineGroup<T extends Pick<TimelineItem, "at">> {
 export function groupByDay<T extends Pick<TimelineItem, "at">>(items: readonly T[]): TimelineGroup<T>[] {
   const groups: TimelineGroup<T>[] = [];
   for (const item of items) {
-    const day = shortDate(item.at);
+    const day = dayKey(item.at) ?? item.at.slice(0, 10);
     const last = groups[groups.length - 1];
     if (last && last.day === day) last.items.push(item);
     else groups.push({ day, items: [item] });
@@ -338,11 +340,11 @@ export function groupByDay<T extends Pick<TimelineItem, "at">>(items: readonly T
   return groups;
 }
 
-/** "Today", "Yesterday", or the date. `today` is YYYY-MM-DD in the same terms as shortDate. */
+/** "Today", "Yesterday", or the date in words. `day` and `today` are YYYY-MM-DD keys. */
 export function dayHeading(day: string, today: string): string {
   if (day === today) return "Today";
   const yesterday = new Date(Date.parse(`${today}T12:00:00.000Z`) - 86_400_000).toISOString().slice(0, 10);
-  return day === yesterday ? "Yesterday" : day;
+  return day === yesterday ? "Yesterday" : dayLabel(day);
 }
 
 /** How many sources are on, for the stat tile. */

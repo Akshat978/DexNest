@@ -89,7 +89,7 @@ const report = (overrides = {}) => ({
   ],
   ...overrides
 });
-const ready = { status: on, report: report(), repositories, projects: [{ id: "p1", path: "d:/code/zephyr" }], importRoots: [] };
+const ready = { status: on, report: report(), repositories, projects: [{ id: "p1", name: "zephyr", path: "d:/code/zephyr", isRepo: true }] };
 
 test("loading: the kit header in the Today accent, and a labelled loading state", () => {
   const html = render();
@@ -107,24 +107,30 @@ test("error: what failed, the raw reason, and a way to try again", () => {
   assert.match(html, /Try again/);
 });
 
-test("off: says what turning it on does, and offers Projects' folders as a checklist", () => {
-  const html = render({ status: { enabled: false, scanning: false, repositories: 0 }, importRoots: ["D:/code"], projects: [{ id: "p1", path: "D:/code/zephyr" }, { id: "p2", path: "E:/work/portal" }] });
+test("off: says what turning it on does, and lists the projects it will read - nothing to choose", () => {
+  const projects = [
+    { id: "p1", name: "Zephyr app", path: "D:/code/zephyr", isRepo: true },
+    { id: "p2", name: "Portal", path: "E:/work/portal", isRepo: null },
+    { id: "p3", name: "Docs", path: "D:/docs", isRepo: false }
+  ];
+  const html = render({ status: { enabled: false, scanning: false, repositories: 0 }, projects });
   assert.match(html, /Start your mornings here/);
   assert.match(html, /stays on this\s+computer/);
   assert.match(html, /never looks inside DexNest&#x27;s own data/);
-  assert.match(html, /<legend>Folders to watch, from Projects<\/legend>/);
-  assert.equal((html.match(/<input type="checkbox" checked=""/g) ?? []).length, 2, "the import folder, and the one project outside it");
-  assert.match(html, /D:\/code<\/span><span class="today-setup__kind">every repository inside/);
-  assert.match(html, /E:\/work\/portal<\/span><span class="today-setup__kind">this repository/);
-  assert.match(html, /Turn on and scan 2 folders/);
+  assert.match(html, /It reads your projects, from Projects/);
+  assert.match(html, /<span class="today-setup__name">Zephyr app<\/span><span class="kit-tech">D:\/code\/zephyr<\/span>/);
+  assert.match(html, /<span class="today-setup__name">Portal<\/span>/);
+  assert.doesNotMatch(html, /today-setup__name">Docs</, "a folder that is not a repository is not read");
+  assert.doesNotMatch(html, /type="checkbox"/, "Projects is the list; there is no second one to tick");
+  assert.match(html, /Turn on and scan 2 projects/);
   assert.doesNotMatch(html, /kit-stat|kit-hero/);
 });
 
-test("off with no projects: points at Projects instead of offering nothing to tick", () => {
+test("off with no projects: points at Projects", () => {
   const html = render({ status: { enabled: false, scanning: false, repositories: 0 } });
   assert.match(html, /Add your projects first/);
   assert.match(html, />Open Projects<\/button>/);
-  assert.doesNotMatch(html, /type="checkbox"/);
+  assert.doesNotMatch(html, /today-setup__name/);
 });
 
 test("on, no report yet: offers the scan, and shows why the last one failed", () => {
@@ -223,12 +229,29 @@ test("ready: a push and a pull are rows of their own", () => {
   assert.match(html, /lucide-arrow-down-to-line[\s\S]*?Pulled into main</);
 });
 
-test("ready: a watched folder with no repository in it is named, quietly", () => {
-  const watched = { roots: [{ path: "D:/code", domain: "windows" }, { path: "F:/empty", domain: "windows" }], manualRepositories: [] };
+test("ready: names come from Projects, in the hero and on the repository rows", () => {
+  const html = render({ ...ready, projects: [{ id: "p1", name: "Zephyr app", path: "D:/code/zephyr", isRepo: true }] });
+  assert.match(html, /<h2 class="kit-hero__title">Zephyr app<\/h2>/);
+  assert.match(html, /kit-row__title">Zephyr app @ feat\/sync</);
+  assert.match(html, /kit-row__title">api-gateway @ main</, "not a project: the scan's own name");
+});
+
+test("ready: says what is watched; a folder set by hand can be dropped, a project is managed in Projects", () => {
+  const watched = { roots: [{ path: "D:/code/zephyr", domain: "windows" }, { path: "F:/empty", domain: "windows" }], manualRepositories: [{ path: "D:/code/api-gateway", domain: "windows" }] };
   const html = render({ ...ready, watched });
-  assert.match(html, /<p class="today-note">No repository was found in this watched folder: <span class="kit-tech">F:\/empty<\/span><\/p>/);
-  assert.doesNotMatch(render({ ...ready, watched: { roots: [{ path: "D:/code", domain: "windows" }], manualRepositories: [] } }), /today-note/);
-  assert.doesNotMatch(render(ready), /today-note/);
+  assert.match(html, /<h2 id="today-watching">Watching<\/h2>/);
+  assert.match(html, /1 project and 2 other folders\. Projects are followed automatically/);
+  assert.match(html, />Manage in Projects<\/button>/);
+  // The project's own folder is not offered for removal; the two others are.
+  assert.equal((html.match(/>Stop watching<\/button>/g) ?? []).length, 2);
+  assert.match(html, /<span class="kit-tech">F:\/empty<\/span><\/span><span class="kit-row__meta">every repository inside</);
+  assert.match(html, /<span class="kit-tech">D:\/code\/api-gateway<\/span><\/span><span class="kit-row__meta">this repository</);
+  // And the one that found nothing is named.
+  assert.match(html, /No repository was found in this watched folder: <span class="kit-tech">F:\/empty<\/span>/);
+
+  const plain = render(ready);
+  assert.match(plain, /1 project\. Projects are followed automatically/);
+  assert.doesNotMatch(plain, /Stop watching|No repository was found/);
 });
 
 test("a stale report says so when the last scan failed", () => {
@@ -255,5 +278,5 @@ test("the view changes settings through the bridge and everything else through r
   assert.doesNotMatch(view, /setInterval|setTimeout/, "nothing polls: idle CPU stays at zero");
   const css = readSource(join(desktop, "src/renderer/views/Today.css"));
   assert.doesNotMatch(css, /#[0-9a-fA-F]{3,8}\b|rgba?\(/, "tokens only");
-  assert.match(readSource(join(desktop, "src/main/devIntelligenceHost.ts")), /dev-intelligence-update-settings[\s\S]{0,300}?options\.audit\?\.\("Developer Intelligence settings updated"/);
+  assert.match(readSource(join(desktop, "src/main/devIntelligenceHost.ts")), /dev-intelligence-update-settings[\s\S]{0,300}?options\.audit\?\.\("Repository scan settings updated"/);
 });

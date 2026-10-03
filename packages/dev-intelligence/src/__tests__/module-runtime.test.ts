@@ -29,6 +29,7 @@ import {
   createDevIntelligenceModule,
   defaultDevIntelligenceSettings,
   type DevIntelligenceSettings,
+  type LinkedRepository,
 } from '../module/runtime.js';
 import { cleanup, createGitRepo, createTempWorkspace, linkDirectory, nativeDomain } from './fixture-repos.js';
 
@@ -133,7 +134,7 @@ describe('Developer Intelligence module runtime', () => {
     fixture = undefined;
   });
 
-  async function setup(options: { paused?: boolean; timers?: SchedulerTimers; dbName?: string } = {}) {
+  async function setup(options: { paused?: boolean; timers?: SchedulerTimers; dbName?: string; linked?: () => LinkedRepository[] } = {}) {
     fixture ??= await buildFixture();
     persistence = await createSqlitePersistence({ dbPath: join(fixture.workspace, 'db', options.dbName ?? 'dexnest.sqlite') });
     const settings = memorySettings();
@@ -153,6 +154,7 @@ describe('Developer Intelligence module runtime', () => {
       scheduler,
       settings,
       timezone: 'UTC',
+      ...(options.linked ? { linkedRepositories: options.linked } : {}),
       audit: (summary, _metadata, status) => {
         audit.push({ summary, status });
       },
@@ -304,6 +306,51 @@ describe('Developer Intelligence module runtime', () => {
     await second.module.scanNow();
     expect(second.persistence.eventLog.query({ stream: 'dev', types: ['dev.repo.discovered'] }).length).toBe(discovered);
     expect(second.persistence.db.all('SELECT id FROM dev_todos').length).toBe(todosBefore);
+  });
+
+  it("follows the host's project list: scanned without being configured, under the project's name", async () => {
+    fixture = await buildFixture();
+    let projects: LinkedRepository[] = [
+      { path: fixture.app, domain: nativeDomain, displayName: 'My App' },
+      { path: fixture.dexnest, domain: nativeDomain, displayName: 'dexnest' },
+      // A project inside DexNest's data is left out, and nobody is told it was refused.
+      { path: join(fixture.dataRoot, 'files'), domain: nativeDomain, displayName: 'private' },
+    ];
+    const { module, settings } = await setup({ linked: () => projects });
+    // On, with no folder configured at all.
+    module.updateSettings({ enabled: true });
+    expect(settings.value.roots).toEqual([]);
+
+    const first = await module.scanNow();
+    expect(first?.scanRun.state).toBe('COMPLETED');
+    expect(first?.refusedRoots).toEqual([]);
+    expect((await module.listRepositories()).map((r) => r.displayName).sort()).toEqual(['My App', 'dexnest']);
+    expect((await module.status()).repositories).toBe(2);
+
+    // Renamed in Projects: the next scan carries the new name.
+    projects = projects.map((p) => (p.displayName === 'My App' ? { ...p, displayName: 'Storefront' } : p));
+    await module.scanNow();
+    expect((await module.listRepositories()).map((r) => r.displayName).sort()).toEqual(['Storefront', 'dexnest']);
+
+    // Archived or removed in Projects: it stops being followed, and stops appearing.
+    projects = projects.filter((p) => p.displayName !== 'Storefront');
+    await module.scanNow();
+    expect((await module.listRepositories()).map((r) => r.displayName)).toEqual(['dexnest']);
+    expect((await module.status()).repositories).toBe(1);
+    const report = (await module.latestStandup())!;
+    const states = report.sections.find((s) => s.kind === 'RepositoryState')!.items.map((i) => i.title);
+    expect(states).toEqual(['dexnest @ main']);
+    module.stop();
+  });
+
+  it('a project keeps its name when a watched folder also reaches it', async () => {
+    fixture = await buildFixture();
+    const { module } = await setup({ linked: () => [{ path: fixture!.app, domain: nativeDomain, displayName: 'My App' }] });
+    // The folder above both repositories is watched too; the walk finds `app` again.
+    module.updateSettings({ enabled: true, roots: [{ path: fixture.workspace, domain: nativeDomain }] });
+    await module.scanNow();
+    expect((await module.listRepositories()).map((r) => r.displayName).sort()).toEqual(['DeskNest', 'My App']);
+    module.stop();
   });
 
   it('holds scheduled scans off in Performance Mode, but not a scan the user asks for', async () => {

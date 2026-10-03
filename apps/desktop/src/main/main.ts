@@ -23,6 +23,7 @@ import { createActionRegistry, createStreamDeckActionCatalog, seededActions, str
 import { createLocalDb } from "@dexnest/local-db";
 import { createAutopilotHost, type AutopilotHost } from "./autopilotHost.js";
 import { createDevIntelligenceHost, type DevIntelligenceHost } from "./devIntelligenceHost.js";
+import { linkedProjectRepositories, projectNameForPath } from "./projectLinks.js";
 import { createSkillConstellationHost, type SkillConstellationHost } from "./skillConstellationHost.js";
 import { createRealityRpgHost, runRealityRpgAction, type RealityRpgHost } from "./realityRpgHost.js";
 import { createGhostOsHost, runGhostOsAction, type GhostOsHost } from "./ghostOsHost.js";
@@ -278,6 +279,7 @@ function startAutopilotHost(): void {
       database: localDb.getDatabase(),
       ipcMain,
       getWindow: () => mainWindow,
+      projectName: (projectPath) => projectNameForPath(projectsHost?.module.list({ includeArchived: true }) ?? [], projectPath),
       // Autopilot runs while nobody is looking at DexNest, so a run that needs
       // a person has to say so. Best effort: a missing toast must never fail a
       // run, and the runtime itself never touches Electron.
@@ -342,6 +344,9 @@ function startDevIntelligenceHost(): void {
       scheduler: hostScheduler,
       readSettings: () => readJsonFile<unknown>(devIntelligenceSettingsPath, {}),
       writeSettings: (settings) => { writeJsonFile(devIntelligenceSettingsPath, settings); },
+      // Projects is the one list of projects. The scan follows it, and calls
+      // each repository what its project is called.
+      linkedRepositories: () => linkedProjectRepositories(projectsHost?.module.list() ?? []),
       ipcMain,
       getWindow: () => mainWindow,
       audit: (summary, metadata, status) => {
@@ -6308,13 +6313,10 @@ function seedDemoData(optionsInput: Partial<DemoSeedOptions>, source: DexNestAct
   // 14/15. Dev + Deck
   if (options.devDeck) {
     try {
-      const demoProject: DexNestProject = markDemo({
-        id: createId("demo-project"), name: "DexNest Demo Project", path: join(demoFilesRoot, "dev"), description: "Safe demo project (commands are not run during seeding).", accent: "#3B82F6",
-        commands: { start: "echo demo start", build: "echo demo build", test: "echo demo test", typecheck: "echo demo typecheck", custom: "" },
-        urls: ["http://localhost:5173"], notes: "Demo only.", ports: [5173], createdAt: nowIso, updatedAt: nowIso, lastOpenedAt: null
-      });
-      mkdirSync(join(demoFilesRoot, "dev"), { recursive: true });
-      const projCount = seedRecordArray("dev.projects", loadProjects, (items) => saveProjects(items), [demoProject], options, manifest);
+      // No demo project. A project is a real folder of the user's, and the only
+      // folder the seed could point one at is inside DexNest's own data, where
+      // no project may live. Clearing still removes one seeded by an older build.
+      const projCount = 0;
 
       const routines: DexNestRoutine[] = [
         markDemo({ id: createId("demo-routine"), name: "Demo Morning Routine", description: "Open Command, Search, and Journal.", steps: [{ id: createId("step"), actionId: "command.open_home" }, { id: createId("step"), actionId: "search.open" }], enabled: true, createdAt: nowIso, updatedAt: nowIso, lastRunAt: null, lastRunStatus: null, lastRunSummary: null }),
@@ -20622,10 +20624,10 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
   }
 
   if (actionId === "dev.scan_repositories") {
-    if (!devIntelligenceHost) return { ok: false, actionId: action.id, error: "Developer Intelligence is not running." };
+    if (!devIntelligenceHost) return { ok: false, actionId: action.id, error: "The repository scan is not running." };
     try {
       const outcome = await devIntelligenceHost.module.scanNow();
-      if (!outcome) return { ok: true, actionId: action.id, message: "Nothing to scan yet. Add a folder in Developer Intelligence settings." };
+      if (!outcome) return { ok: true, actionId: action.id, message: "Nothing to scan yet. Add a project in Projects first." };
       const run = outcome.scanRun;
       const message = `Scan ${run.state.toLowerCase()}: ${run.repositoriesSucceeded} of ${run.repositoriesAttempted} repositories.`
         + (outcome.refusedRoots.length > 0 ? ` Skipped ${outcome.refusedRoots.length} folder(s) inside DexNest's private data.` : "");
@@ -20633,13 +20635,13 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
       return { ok: run.state !== "FAILED", actionId: action.id, message, scanRunId: run.id };
     } catch (error) {
       const reason = error instanceof Error ? error.message : "The scan failed.";
-      logActionEvent(action, "failed", source, "Developer scan failed.", {}, reason);
+      logActionEvent(action, "failed", source, "Repository scan failed.", {}, reason);
       return { ok: false, actionId: action.id, error: reason };
     }
   }
 
   if (actionId === "standup.generate") {
-    if (!devIntelligenceHost) return { ok: false, actionId: action.id, error: "Developer Intelligence is not running." };
+    if (!devIntelligenceHost) return { ok: false, actionId: action.id, error: "The repository scan is not running." };
     try {
       const report = await devIntelligenceHost.module.generateStandup();
       const message = `Standup ready: ${report.items.length} item(s).`;
@@ -20653,7 +20655,7 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
   }
 
   if (actionId === "skill_constellation.rebuild" || actionId === "skill_constellation.enable" || actionId === "skill_constellation.disable") {
-    if (!skillConstellationHost) return { ok: false, actionId: action.id, error: "Skill Constellation is not running. It needs Developer Intelligence." };
+    if (!skillConstellationHost) return { ok: false, actionId: action.id, error: "Skill Constellation is not running. It needs the repository scan." };
     const skills = skillConstellationHost.module;
     try {
       if (actionId === "skill_constellation.enable" || actionId === "skill_constellation.disable") {

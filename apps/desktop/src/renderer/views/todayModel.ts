@@ -59,14 +59,26 @@ function baseName(path: string): string {
   return parts[parts.length - 1] ?? path;
 }
 
-/** Repository ids are opaque; a person reads the folder's name. */
-export function repoLabels(repositories: readonly Repository[]): Map<string, RepoLabel> {
+/**
+ * Repository ids are opaque; a person reads a name. A repository that is a
+ * project is called what Projects calls it - the same name on every screen -
+ * and otherwise by what the scan recorded, then by its folder.
+ */
+export function repoLabels(repositories: readonly Repository[], projects: readonly { name: string; path: string }[] = []): Map<string, RepoLabel> {
   const labels = new Map<string, RepoLabel>();
   for (const repo of repositories) {
     const path = repo.roots[0]?.path ?? null;
-    labels.set(repo.id, { name: repo.displayName?.trim() || (path ? baseName(path) : repo.id), path });
+    const project = path ? projects.find((p) => samePath(p.path, path)) : undefined;
+    labels.set(repo.id, { name: project?.name?.trim() || repo.displayName?.trim() || (path ? baseName(path) : repo.id), path });
   }
   return labels;
+}
+
+/** A repository-state row's "name @ branch", with the name every other screen uses. */
+export function repoStateTitle(item: StandupItem, labels: ReadonlyMap<string, RepoLabel>): string {
+  const name = item.repositoryId ? labels.get(item.repositoryId)?.name : undefined;
+  const at = item.title.lastIndexOf(" @ ");
+  return name && at > 0 ? `${name}${item.title.slice(at)}` : item.title;
 }
 
 export function repoName(labels: ReadonlyMap<string, RepoLabel>, repositoryId: string | undefined): string | null {
@@ -251,25 +263,13 @@ export function windowLine(report: StandupReport): string {
   return `Since ${whenLabel(report.timeWindow.from, zone)} · written ${whenLabel(report.generatedAt, zone)}`;
 }
 
-// --- Watched folders -----------------------------------------------------------------------------
-
-/**
- * Watched folders in which the last scan found no repository, so a folder
- * that quietly contributes nothing is named instead of just being absent.
- */
-export function emptyWatchedFolders(settings: Pick<TodaySettings, "roots" | "manualRepositories"> | null, repositories: readonly Repository[]): string[] {
-  if (!settings) return [];
-  const found = repositories.flatMap((repo) => repo.roots.map((root) => root.path));
-  return [...settings.roots, ...settings.manualRepositories].map((root) => root.path).filter((folder) => !found.some((path) => within(path, folder)));
-}
-
-// --- Setup ---------------------------------------------------------------------------------------
-
-export interface SetupFolder {
-  path: string;
-  /** A folder to look inside for repositories, or one repository. */
-  kind: "root" | "repository";
-}
+// --- What is watched ---------------------------------------------------------------------------
+//
+// Projects is the one list of projects. The scan follows it without being
+// told: turning Today on needs no folders chosen, and adding, archiving or
+// removing a project is how what is watched changes. Folders configured
+// before that was so are still scanned; they are shown as extras that can be
+// dropped.
 
 function within(path: string, root: string): boolean {
   const p = path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
@@ -277,35 +277,64 @@ function within(path: string, root: string): boolean {
   return p === r || p.startsWith(`${r}/`);
 }
 
-/**
- * What Projects already knows about, offered as places to watch: its import
- * folders, and any project that sits outside all of them.
- */
-export function setupFolders(importRoots: readonly string[], projects: readonly { path: string }[]): SetupFolder[] {
-  const folders: SetupFolder[] = [];
-  const seen = new Set<string>();
-  const add = (path: string, kind: SetupFolder["kind"]) => {
-    const key = path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-    if (!path.trim() || seen.has(key)) return;
-    seen.add(key);
-    folders.push({ path, kind });
-  };
-  for (const root of importRoots) add(root, "root");
-  for (const project of projects) if (!importRoots.some((root) => within(project.path, root))) add(project.path, "repository");
-  return folders;
+export interface WatchedProject {
+  id: string;
+  name: string;
+  path: string;
 }
 
-/** Settings with the module on and the chosen folders added; everything already there is kept. */
-export function settingsWithFolders(current: TodaySettings, chosen: readonly SetupFolder[]): TodaySettings {
-  const merge = (existing: TodayRoot[], kind: SetupFolder["kind"]): TodayRoot[] => {
-    const out = [...existing];
-    for (const folder of chosen) {
-      if (folder.kind !== kind || out.some((r) => samePath(r.path, folder.path))) continue;
-      out.push({ path: folder.path, domain: "windows" });
-    }
-    return out;
+/** The projects the scan reads: those that are Git repositories. */
+export function watchedProjects(projects: readonly { id: string; name: string; path: string; isRepo: boolean | null }[]): WatchedProject[] {
+  return projects.filter((p) => p.isRepo !== false && p.path.trim().length > 0).map(({ id, name, path }) => ({ id, name, path }));
+}
+
+export interface ExtraFolder {
+  path: string;
+  /** A folder looked inside for repositories, or one repository. */
+  kind: "root" | "repository";
+}
+
+/** Folders watched by their own setting, not because they are projects. A folder that is a project is not an extra. */
+export function extraFolders(settings: Pick<TodaySettings, "roots" | "manualRepositories"> | null, projects: readonly { path: string }[]): ExtraFolder[] {
+  if (!settings) return [];
+  const isProject = (path: string) => projects.some((project) => samePath(project.path, path));
+  const seen = new Set<string>();
+  const out: ExtraFolder[] = [];
+  const add = (path: string, kind: ExtraFolder["kind"]) => {
+    const key = path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+    if (!path.trim() || isProject(path) || seen.has(key)) return;
+    seen.add(key);
+    out.push({ path, kind });
   };
-  return { ...current, enabled: true, roots: merge(current.roots, "root"), manualRepositories: merge(current.manualRepositories, "repository") };
+  for (const root of settings.roots) add(root.path, "root");
+  for (const repo of settings.manualRepositories) add(repo.path, "repository");
+  return out;
+}
+
+/** What an extra folder contributes, in words. */
+export function extraFolderKind(folder: ExtraFolder): string {
+  return folder.kind === "root" ? "every repository inside" : "this repository";
+}
+
+/** Extra folders in which the last scan found no repository: named, instead of quietly contributing nothing. */
+export function emptyWatchedFolders(extras: readonly ExtraFolder[], repositories: readonly Repository[]): string[] {
+  const found = repositories.flatMap((repo) => repo.roots.map((root) => root.path));
+  return extras.map((folder) => folder.path).filter((folder) => !found.some((path) => within(path, folder)));
+}
+
+/** Settings with one folder no longer watched, wherever it was listed. Nothing else changes. */
+export function settingsWithout(current: TodaySettings, path: string): TodaySettings {
+  const keep = (root: TodayRoot) => !samePath(root.path, path);
+  return { ...current, roots: current.roots.filter(keep), manualRepositories: current.manualRepositories.filter(keep) };
+}
+
+/** "8 projects", "1 project and 2 other folders". */
+export function watchingLine(projects: number, extras: number): string {
+  const count = (n: number, one: string, many: string) => `${n.toLocaleString("en")} ${n === 1 ? one : many}`;
+  const parts: string[] = [];
+  if (projects > 0 || extras === 0) parts.push(count(projects, "project", "projects"));
+  if (extras > 0) parts.push(count(extras, projects > 0 ? "other folder" : "folder", projects > 0 ? "other folders" : "folders"));
+  return parts.join(" and ");
 }
 
 /** How many rows a long section shows before "Show all". */

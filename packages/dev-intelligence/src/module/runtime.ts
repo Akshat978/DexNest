@@ -35,7 +35,7 @@ import type {
   StandupReport,
 } from '@dexnest/dev-intelligence-contracts';
 import { createDevIntelligencePersistence, type DevIntelligencePersistence } from '@dexnest/dev-intelligence-store';
-import { createStandupService, localDateString, type StandupClock } from '@dexnest/standup';
+import { createStandupService, currentRepositoryIds, localDateString, type StandupClock } from '@dexnest/standup';
 import { defaultDiscoveryConfig, type DiscoveryConfig } from '../config/roots.js';
 import { createDomainRegistry, type DomainRegistry } from '../domain/execution-domains.js';
 import { createGitAvailabilityProbe, type DomainAvailabilityProbe } from '../domain/availability.js';
@@ -46,6 +46,11 @@ export const DEV_SCAN_JOB = 'scan';
 export interface DevIntelligenceRoot {
   path: string;
   domain: RepositoryExecutionDomain;
+}
+
+/** A repository the host already knows by name: a project. */
+export interface LinkedRepository extends DevIntelligenceRoot {
+  displayName?: string;
 }
 
 export interface DevIntelligenceSettings {
@@ -129,6 +134,12 @@ export interface DevIntelligenceModuleOptions {
   availabilityProbe?: DomainAvailabilityProbe;
   timezone?: string;
   clock?: StandupClock;
+  /**
+   * Repositories the host keeps a list of - DexNest's Projects. They are
+   * scanned without being configured here, under the names given there, so
+   * there is one list of projects and one name for each. Read at every scan.
+   */
+  linkedRepositories?(): LinkedRepository[];
   /** A line in DexNest's audit log. Meaningful actions go there as well as to the dev stream. */
   audit?(summary: string, metadata: Record<string, unknown>, status: 'success' | 'failure'): void;
 }
@@ -180,6 +191,17 @@ export function createDevIntelligenceModule(options: DevIntelligenceModuleOption
     });
   }
 
+  /**
+   * The repositories being followed now: those the last finished scan looked
+   * for. One recorded earlier and since dropped - its project archived, its
+   * folder no longer watched - keeps its history in the store but is not listed.
+   */
+  async function currentRepositories(): Promise<Repository[]> {
+    const all = await persistence.repositories.listRepositories();
+    const current = currentRepositoryIds(await persistence.scanRuns.listRecent(20));
+    return current ? all.filter((repo) => current.has(repo.id)) : all;
+  }
+
   let unschedule: (() => void) | undefined;
   let scanning = false;
   let lastScan: DevIntelligenceStatus['lastScan'];
@@ -202,10 +224,13 @@ export function createDevIntelligenceModule(options: DevIntelligenceModuleOption
   function discoveryFor(settings: DevIntelligenceSettings): { discovery: DiscoveryConfig; refused: string[] } {
     const roots = partitionRoots(settings.roots);
     const manual = partitionRoots(settings.manualRepositories);
+    // A project inside DexNest's data is left out like any other folder there;
+    // it is not reported as refused, because nobody asked for it to be scanned.
+    const linked = (options.linkedRepositories?.() ?? []).filter((repo) => repo.domain !== 'windows' || !isSensitive(repo.path));
     return {
       discovery: defaultDiscoveryConfig({
         roots: roots.allowed,
-        manualRepositories: manual.allowed,
+        manualRepositories: [...linked, ...manual.allowed],
         // The data root is excluded from discovery as well, so a root that
         // contains it - DexNest's own checkout, say - walks around it.
         excludedRoots: [...settings.excludedRoots, ...options.boundary.sensitiveRoots],
@@ -254,7 +279,7 @@ export function createDevIntelligenceModule(options: DevIntelligenceModuleOption
       lastError = undefined;
       const ok = result.scanRun.state === 'COMPLETED' || result.scanRun.state === 'PARTIAL';
       options.audit?.(
-        `Developer scan ${result.scanRun.state.toLowerCase()}: ${result.scanRun.repositoriesSucceeded} of ${result.scanRun.repositoriesAttempted} repositories`,
+        `Repository scan ${result.scanRun.state.toLowerCase()}: ${result.scanRun.repositoriesSucceeded} of ${result.scanRun.repositoriesAttempted} repositories`,
         {
           scanRunId: result.scanRun.id,
           state: result.scanRun.state,
@@ -267,7 +292,7 @@ export function createDevIntelligenceModule(options: DevIntelligenceModuleOption
       );
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
-      options.audit?.(`Developer scan failed: ${lastError}`, { trigger: occurrence.trigger }, 'failure');
+      options.audit?.(`Repository scan failed: ${lastError}`, { trigger: occurrence.trigger }, 'failure');
       throw error;
     } finally {
       scanning = false;
@@ -312,7 +337,7 @@ export function createDevIntelligenceModule(options: DevIntelligenceModuleOption
         scanning,
         ...(lastScan ? { lastScan } : {}),
         ...(lastError ? { lastError } : {}),
-        repositories: (await persistence.repositories.listRepositories()).length,
+        repositories: (await currentRepositories()).length,
       };
     },
 
@@ -362,7 +387,7 @@ export function createDevIntelligenceModule(options: DevIntelligenceModuleOption
     },
 
     listRepositories() {
-      return persistence.repositories.listRepositories();
+      return currentRepositories();
     },
   };
 }

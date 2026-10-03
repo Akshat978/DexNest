@@ -108,7 +108,7 @@ export function ProjectsHome(props: ProjectsHomeProps) {
           <p>Choose the folder you keep your code in (for example <code className="kit-tech">D:\code</code>) and DexNest imports every Git repository inside it in one click. Or add a single project, or drop folders anywhere on this window.</p>
           {(props.suggestionsCount ?? 0) > 0 && (
             <p>
-              Developer Intelligence found {props.suggestionsCount} repositor{props.suggestionsCount === 1 ? "y" : "ies"} you can add in one go.
+              The repository scan found {props.suggestionsCount} repositor{props.suggestionsCount === 1 ? "y" : "ies"} you can add in one go.
             </p>
           )}
         </EmptyState>

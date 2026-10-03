@@ -9,6 +9,8 @@ import {
   changeTitle,
   continuations,
   emptyWatchedFolders,
+  extraFolderKind,
+  extraFolders,
   lifecycleTone,
   parseRepoState,
   projectIdForPath,
@@ -16,13 +18,15 @@ import {
   repoName,
   repoStateBadge,
   repoStateLine,
+  repoStateTitle,
   sectionItems,
   sectionOmitted,
   sectionTotal,
-  settingsWithFolders,
-  setupFolders,
+  settingsWithout,
   todayStats,
   viewState,
+  watchedProjects,
+  watchingLine,
   whenLabel,
   windowLine,
   type TodaySettings
@@ -155,16 +159,78 @@ test("a capped section: the overflow line is a count, not a row, and the total i
   assert.equal(sectionTotal(report({ Changed: [item("changed:no-activity", "Changed")] }), "Changed"), 0);
 });
 
-test("a watched folder that yielded no repository is named", () => {
-  const repos = [repo("a", "D:\\code\\zephyr"), repo("b", "E:\\work\\portal")];
-  const watched = {
-    roots: [{ path: "D:\\code", domain: "windows" as const }, { path: "F:\\empty", domain: "windows" as const }],
-    // Found whatever the slashes or case; a folder merely sharing a prefix ("D:\code" vs "D:\codex") is not a match.
-    manualRepositories: [{ path: "e:/work/portal/", domain: "windows" as const }, { path: "D:\\codex", domain: "windows" as const }]
+test("a repository that is a project is called what Projects calls it, on every row", () => {
+  const repos = [repo("a", "D:\\DeskNest", "DeskNest"), repo("b", "D:\\code\\notes")];
+  const labels = repoLabels(repos, [{ name: "dexnest", path: "d:/desknest/" }]);
+  assert.equal(repoName(labels, "a"), "dexnest", "the project's name, not the folder's");
+  assert.equal(repoName(labels, "b"), "notes", "not a project: the scan's name");
+  assert.equal(repoStateTitle(item("state:a", "RepositoryState", { title: "DeskNest @ feat/x", repositoryId: "a" }), labels), "dexnest @ feat/x");
+  assert.equal(repoStateTitle(item("state:b", "RepositoryState", { title: "notes @ main", repositoryId: "b" }), labels), "notes @ main");
+  assert.equal(repoStateTitle(item("state:c:error", "RepositoryState", { title: "gone: facts unavailable", repositoryId: "zzz" }), labels), "gone: facts unavailable");
+  // A project record without a name (older data) falls back instead of throwing.
+  assert.equal(repoName(repoLabels(repos, [{ path: "D:\\DeskNest" } as { name: string; path: string }]), "a"), "DeskNest");
+});
+
+test("what is watched: Projects' repositories, and any folder set by hand that is not one of them", () => {
+  const projects = [
+    { id: "p1", name: "dexnest", path: "D:\\DeskNest", isRepo: true },
+    { id: "p2", name: "notes", path: "D:\\code\\notes", isRepo: null },
+    { id: "p3", name: "docs", path: "D:\\docs", isRepo: false },
+    { id: "p4", name: "blank", path: " ", isRepo: true }
+  ];
+  assert.deepEqual(watchedProjects(projects), [
+    { id: "p1", name: "dexnest", path: "D:\\DeskNest" },
+    { id: "p2", name: "notes", path: "D:\\code\\notes" }
+  ], "a folder that is not a Git repository is not scanned; one not yet checked is");
+
+  const settings = {
+    roots: [{ path: "d:/desknest/", domain: "windows" as const }, { path: "F:\\src", domain: "windows" as const }],
+    manualRepositories: [{ path: "D:\\code\\notes", domain: "windows" as const }, { path: "E:\\old\\tool", domain: "windows" as const }, { path: "f:/src", domain: "windows" as const }]
   };
-  assert.deepEqual(emptyWatchedFolders(watched, repos), ["F:\\empty", "D:\\codex"]);
-  assert.deepEqual(emptyWatchedFolders(null, repos), []);
-  assert.deepEqual(emptyWatchedFolders({ roots: [], manualRepositories: [] }, []), []);
+  const extras = extraFolders(settings, projects);
+  assert.deepEqual(extras, [
+    { path: "F:\\src", kind: "root" },
+    { path: "E:\\old\\tool", kind: "repository" }
+  ], "a folder that is a project is not an extra, and one listed twice appears once");
+  assert.deepEqual(extras.map(extraFolderKind), ["every repository inside", "this repository"]);
+  assert.deepEqual(extraFolders(null, projects), []);
+});
+
+test("an extra folder that yielded no repository is named", () => {
+  const repos = [repo("a", "F:\\src\\tool"), repo("b", "E:\\work\\portal")];
+  const extras = [
+    { path: "F:\\src", kind: "root" as const },
+    { path: "e:/work/portal/", kind: "repository" as const },
+    { path: "F:\\srcx", kind: "root" as const }
+  ];
+  assert.deepEqual(emptyWatchedFolders(extras, repos), ["F:\\srcx"], "a folder merely sharing a prefix is not a match");
+  assert.deepEqual(emptyWatchedFolders([], repos), []);
+});
+
+test("stop watching removes the folder wherever it is listed, and nothing else", () => {
+  const current: TodaySettings = {
+    schemaVersion: 1,
+    enabled: true,
+    roots: [{ path: "F:\\src", domain: "windows" }, { path: "D:\\code", domain: "windows" }],
+    manualRepositories: [{ path: "f:/src/", domain: "windows" }, { path: "E:\\old", domain: "windows" }],
+    excludedRoots: ["D:\\code\\tmp"],
+    scanIntervalMinutes: 45,
+    runHealthChecks: false
+  };
+  const next = settingsWithout(current, "F:/src");
+  assert.deepEqual(next.roots, [{ path: "D:\\code", domain: "windows" }]);
+  assert.deepEqual(next.manualRepositories, [{ path: "E:\\old", domain: "windows" }]);
+  assert.deepEqual([next.enabled, next.excludedRoots, next.scanIntervalMinutes, next.runHealthChecks], [true, ["D:\\code\\tmp"], 45, false]);
+  assert.equal(current.roots.length, 2, "the settings read from disk are not changed in place");
+});
+
+test("the watching line counts projects and other folders in words", () => {
+  assert.equal(watchingLine(8, 0), "8 projects");
+  assert.equal(watchingLine(1, 0), "1 project");
+  assert.equal(watchingLine(1, 2), "1 project and 2 other folders");
+  assert.equal(watchingLine(3, 1), "3 projects and 1 other folder");
+  assert.equal(watchingLine(0, 2), "2 folders");
+  assert.equal(watchingLine(0, 0), "0 projects");
 });
 
 test("times are shown in the report's own timezone", () => {
@@ -173,24 +239,4 @@ test("times are shown in the report's own timezone", () => {
   assert.equal(whenLabel("not a date", "UTC"), "");
   assert.equal(whenLabel(null), "");
   assert.equal(windowLine(report({})), "Since 29 Jun, 09:12 · written 30 Jun, 08:40");
-});
-
-test("setup offers Projects' import folders, and any project outside them, once each", () => {
-  const folders = setupFolders(["D:\\code"], [{ path: "D:\\code\\zephyr" }, { path: "E:\\work\\portal" }, { path: "e:/work/portal/" }, { path: "D:\\codex" }]);
-  assert.deepEqual(folders, [
-    { path: "D:\\code", kind: "root" },
-    { path: "E:\\work\\portal", kind: "repository" },
-    { path: "D:\\codex", kind: "repository" }
-  ]);
-  assert.deepEqual(setupFolders([], []), []);
-});
-
-test("turning on adds the chosen folders and keeps everything already configured", () => {
-  const current: TodaySettings = { schemaVersion: 1, enabled: false, roots: [{ path: "D:\\code", domain: "windows" }], manualRepositories: [], excludedRoots: ["D:\\code\\tmp"], scanIntervalMinutes: 45, runHealthChecks: false };
-  const next = settingsWithFolders(current, [{ path: "d:/code/", kind: "root" }, { path: "F:\\src", kind: "root" }, { path: "E:\\work\\portal", kind: "repository" }]);
-  assert.equal(next.enabled, true);
-  assert.deepEqual(next.roots, [{ path: "D:\\code", domain: "windows" }, { path: "F:\\src", domain: "windows" }]);
-  assert.deepEqual(next.manualRepositories, [{ path: "E:\\work\\portal", domain: "windows" }]);
-  assert.deepEqual([next.excludedRoots, next.scanIntervalMinutes, next.runHealthChecks], [["D:\\code\\tmp"], 45, false]);
-  assert.equal(current.enabled, false, "the settings read from disk are not changed in place");
 });

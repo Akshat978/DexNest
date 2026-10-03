@@ -175,7 +175,7 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
       icon={<Stars />}
       title="Skill Constellation"
       titleId="skills-title"
-      subtitle="From Developer Intelligence"
+      subtitle="From the repository scan"
       actions={state.kind === "loading" || state.kind === "error" ? undefined : (
         <>
           <Button disabled={busy !== null} onClick={() => void run("skill_constellation.rebuild", "rebuild")}>
@@ -202,14 +202,14 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
 
       {state.kind === "off" && (
         <EmptyState icon={<Stars />} title="Skill Constellation is off">
-          <p>Skill Constellation draws your skills from what Developer Intelligence has already recorded about your repositories - technologies, TODOs and commits. It never scans your disk itself, and every star shows the evidence behind it.</p>
-          <p>Turn it on to rebuild after each new Developer Intelligence scan, or build it once now.</p>
+          <p>Skill Constellation draws your skills from what the repository scan has already recorded about your repositories - technologies, TODOs and commits. It never scans your disk itself, and every star shows the evidence behind it.</p>
+          <p>Turn it on to rebuild after each new repository scan, or build it once now.</p>
         </EmptyState>
       )}
 
       {state.kind === "empty" && (
         <EmptyState icon={<Stars />} title="No evidence yet">
-          <p>Skill Constellation reads only what Developer Intelligence has recorded, so scan your repositories in Developer Intelligence first, then rebuild.</p>
+          <p>Skill Constellation reads only what the repository scan has recorded, so scan your repositories from Today first, then rebuild.</p>
         </EmptyState>
       )}
 
@@ -359,7 +359,7 @@ function StatusLine({ snapshot, showHidden, onToggleHidden }: { snapshot: Conste
         {snapshot.lastBuild?.finishedAt ? <> · built <span className="technical">{shortDate(snapshot.lastBuild.finishedAt)}</span></> : null}
         {snapshot.enabled ? " · rebuilds on schedule" : " · off"}
       </p>
-      {snapshot.staleness.stale && <p className="skill-stale">Developer Intelligence has recorded something new since this was built. Rebuild to include it.</p>}
+      {snapshot.staleness.stale && <p className="skill-stale">The repository scan has recorded something new since this was built. Rebuild to include it.</p>}
       {snapshot.countsAllCommits && (
         <p className="skill-hint">Every commit counts, because no commit emails are set. Add yours below to count only your own.</p>
       )}

@@ -28,6 +28,8 @@ import {
   changeTitle,
   continuations,
   emptyWatchedFolders,
+  extraFolderKind,
+  extraFolders,
   lifecycleTone,
   observedAt,
   projectIdForPath,
@@ -35,19 +37,22 @@ import {
   repoName,
   repoStateBadge,
   repoStateLine,
+  repoStateTitle,
   SECTION_PREVIEW,
   sectionItems,
   sectionOmitted,
   sectionTotal,
-  settingsWithFolders,
-  setupFolders,
+  settingsWithout,
   severityTone,
   todayStats,
   viewState,
+  watchedProjects,
+  watchingLine,
   whenLabel,
   windowLine,
   type ChangeKind,
-  type SetupFolder,
+  type ExtraFolder,
+  type WatchedProject,
   type TodaySettings,
   type TodayStatus
 } from "./todayModel";
@@ -71,17 +76,16 @@ export interface TodayBridge {
 
 /** What Projects already knows, read through its own bridge when it is there. */
 interface ProjectsReads {
-  projectsList?(options?: { includeArchived?: boolean }): Promise<Array<{ project: { id: string; path: string } }>>;
-  projectsSettings?(): Promise<{ importRoots?: string[] }>;
+  projectsList?(options?: { includeArchived?: boolean }): Promise<Array<{ project: { id: string; name: string; path: string; git?: { isRepo: boolean | null } } }>>;
 }
 
 interface Loaded {
   status: TodayStatus | null;
   report: StandupReport | null;
   repositories: Repository[];
-  projects: Array<{ id: string; path: string }>;
-  importRoots: string[];
-  /** The folders being watched, to name any that yielded no repository. */
+  /** Projects' list: what the scan follows, and the names it uses. */
+  projects: Array<{ id: string; name: string; path: string; isRepo: boolean | null }>;
+  /** Folders watched by their own setting, from before the scan followed Projects. */
   watched: Pick<TodaySettings, "roots" | "manualRepositories"> | null;
 }
 
@@ -93,7 +97,7 @@ export interface TodayViewProps {
   initial?: Partial<Loaded> & { error?: string | null };
 }
 
-const EMPTY: Loaded = { status: null, report: null, repositories: [], projects: [], importRoots: [], watched: null };
+const EMPTY: Loaded = { status: null, report: null, repositories: [], projects: [], watched: null };
 
 function errorText(e: unknown): string {
   return e instanceof Error ? e.message : "Something went wrong.";
@@ -136,28 +140,25 @@ export function TodayView({ bridge, onAction, initial }: TodayViewProps) {
   const [error, setError] = useState<string | null>(initial?.error ?? null);
   const [notice, setNotice] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [unchecked, setUnchecked] = useState<ReadonlySet<string>>(new Set());
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const projectsBridge = bridge as TodayBridge & ProjectsReads;
-      const [status, report, repositories, watched, projects, projectsSettings] = await Promise.all([
+      const [status, report, repositories, watched, projects] = await Promise.all([
         bridge.devIntelligenceStatus(),
         bridge.standupLatest(),
         bridge.devIntelligenceRepositories(),
         bridge.devIntelligenceSettings().catch(() => null),
         // Projects is optional here: without it the hero's button is simply not offered.
-        projectsBridge.projectsList ? projectsBridge.projectsList().catch(() => []) : Promise.resolve([]),
-        projectsBridge.projectsSettings ? projectsBridge.projectsSettings().catch(() => null) : Promise.resolve(null)
+        projectsBridge.projectsList ? projectsBridge.projectsList().catch(() => []) : Promise.resolve([])
       ]);
       setData({
         status,
         report,
         repositories,
-        projects: (projects ?? []).map((p) => ({ id: p.project.id, path: p.project.path })),
-        importRoots: projectsSettings?.importRoots ?? [],
+        projects: (projects ?? []).map((p) => ({ id: p.project.id, name: p.project.name, path: p.project.path, isRepo: p.project.git?.isRepo ?? null })),
         watched
       });
     } catch (e) {
@@ -188,27 +189,42 @@ export function TodayView({ bridge, onAction, initial }: TodayViewProps) {
     [onAction, load]
   );
 
-  const { status, report, repositories, projects, importRoots, watched } = data;
+  const { status, report, repositories, projects, watched } = data;
   const state = viewState({ loading, error, status, report });
-  const labels = repoLabels(repositories);
-  const folders = setupFolders(importRoots, projects);
-  const chosen = folders.filter((f) => !unchecked.has(f.path));
+  const labels = repoLabels(repositories, projects);
+  const following = watchedProjects(projects);
+  const extras = extraFolders(watched, projects);
 
-  /** Turns Developer Intelligence on with the chosen folders, then runs the first scan. */
-  const turnOn = useCallback(
-    async (selected: readonly SetupFolder[]) => {
-      setBusy("setup");
+  /** Turns the repository scan on, then runs the first scan. What it reads is Projects' list; nothing is chosen here. */
+  const turnOn = useCallback(async () => {
+    setBusy("setup");
+    setNotice(null);
+    try {
+      await bridge.devIntelligenceUpdateSettings({ ...(await bridge.devIntelligenceSettings()), enabled: true });
+    } catch (e) {
+      setNotice({ ok: false, text: errorText(e) });
+      setBusy(null);
+      return;
+    }
+    await run("dev.scan_repositories");
+  }, [bridge, run]);
+
+  /** Stops watching a folder that was configured by hand. Projects are managed in Projects. */
+  const stopWatching = useCallback(
+    async (path: string) => {
+      setBusy("watch");
       setNotice(null);
       try {
-        await bridge.devIntelligenceUpdateSettings(settingsWithFolders(await bridge.devIntelligenceSettings(), selected));
+        await bridge.devIntelligenceUpdateSettings(settingsWithout(await bridge.devIntelligenceSettings(), path));
+        setNotice({ ok: true, text: "No longer watched. It drops out of the report at the next scan." });
+        await load();
       } catch (e) {
         setNotice({ ok: false, text: errorText(e) });
+      } finally {
         setBusy(null);
-        return;
       }
-      await run("dev.scan_repositories");
     },
-    [bridge, run]
+    [bridge, load]
   );
 
   const scanning = busy === "dev.scan_repositories" || busy === "setup" || status?.scanning === true;
@@ -246,9 +262,9 @@ export function TodayView({ bridge, onAction, initial }: TodayViewProps) {
           icon={<Sunrise />}
           title="Start your mornings here"
           actions={
-            folders.length > 0 ? (
-              <Button variant="primary" disabledReason={busy ? "Working…" : chosen.length === 0 ? "Choose at least one folder." : null} onClick={() => void turnOn(chosen)}>
-                {busy === "setup" || busy === "dev.scan_repositories" ? "Scanning…" : `Turn on and scan ${chosen.length === 1 ? "1 folder" : `${chosen.length} folders`}`}
+            following.length > 0 ? (
+              <Button variant="primary" disabledReason={busy ? "Working…" : null} onClick={() => void turnOn()}>
+                {busy === "setup" || busy === "dev.scan_repositories" ? "Scanning…" : `Turn on and scan ${following.length === 1 ? "1 project" : `${following.length} projects`}`}
               </Button>
             ) : (
               <Button variant="primary" onClick={() => void run("dev.open_dashboard", {}, false)}>Open Projects</Button>
@@ -259,28 +275,18 @@ export function TodayView({ bridge, onAction, initial }: TodayViewProps) {
             Today reads your repositories and writes a Standup: where you left off, what changed since the last one, and what needs attention. It stays on this
             computer, reads through git without changing anything, and never looks inside DexNest's own data.
           </p>
-          {folders.length > 0 ? (
-            <fieldset className="today-setup">
-              <legend>Folders to watch, from Projects</legend>
-              {folders.map((folder) => (
-                <label key={folder.path} className="today-setup__row">
-                  <input
-                    type="checkbox"
-                    checked={!unchecked.has(folder.path)}
-                    onChange={(event) => {
-                      const next = new Set(unchecked);
-                      if (event.target.checked) next.delete(folder.path);
-                      else next.add(folder.path);
-                      setUnchecked(next);
-                    }}
-                  />
-                  <Technical>{folder.path}</Technical>
-                  <span className="today-setup__kind">{folder.kind === "root" ? "every repository inside" : "this repository"}</span>
-                </label>
+          {following.length > 0 ? (
+            <div className="today-setup" role="group" aria-label="Projects Today will read">
+              <p className="today-setup__title">It reads your projects, from Projects</p>
+              {following.map((project) => (
+                <p key={project.id} className="today-setup__row">
+                  <span className="today-setup__name">{project.name}</span>
+                  <Technical>{project.path}</Technical>
+                </p>
               ))}
-            </fieldset>
+            </div>
           ) : (
-            <p>Add your projects first, then come back here: Today offers their folders as the places to watch.</p>
+            <p>Add your projects first, then come back here: Today reads whatever is in Projects, under the names you gave them there.</p>
           )}
         </EmptyState>
       )}
@@ -300,7 +306,7 @@ export function TodayView({ bridge, onAction, initial }: TodayViewProps) {
         </EmptyState>
       )}
 
-      {state === "ready" && report && <Report report={report} status={status} labels={labels} projects={projects} emptyFolders={emptyWatchedFolders(watched, repositories)} busy={busy !== null} run={run} />}
+      {state === "ready" && report && <Report report={report} status={status} labels={labels} projects={projects} following={following} extras={extras} emptyFolders={emptyWatchedFolders(extras, repositories)} busy={busy !== null} run={run} onStopWatching={stopWatching} />}
     </section>
   );
 }
@@ -310,10 +316,16 @@ function Report({
   status,
   labels,
   projects,
+  following,
+  extras,
   emptyFolders,
   busy,
-  run
+  run,
+  onStopWatching
 }: {
+  following: readonly WatchedProject[];
+  extras: readonly ExtraFolder[];
+  onStopWatching(path: string): Promise<void>;
   /** Watched folders the last scan found no repository in. */
   emptyFolders: readonly string[];
   report: StandupReport;
@@ -451,9 +463,34 @@ function Report({
                   omitted={sectionOmitted(report, "RepositoryState")}
                   row={(item) => {
                     const badge = repoStateBadge(item);
-                    return <ListRow key={item.id} icon={<GitBranch />} tone={badge.tone} title={item.title} meta={repoStateLine(item.summary)} trailing={<Badge tone={badge.tone}>{badge.label}</Badge>} />;
+                    return <ListRow key={item.id} icon={<GitBranch />} tone={badge.tone} title={repoStateTitle(item, labels)} meta={repoStateLine(item.summary)} trailing={<Badge tone={badge.tone}>{badge.label}</Badge>} />;
                   }}
                 />
+              )}
+            </Card>
+            <Card aria-labelledby="today-watching">
+              <SectionTitle id="today-watching">Watching</SectionTitle>
+              <p className="today-note">
+                {watchingLine(following.length, extras.length)}. Projects are followed automatically: add, archive or remove one in Projects to change what is read.
+              </p>
+              <Button size="sm" variant="ghost" onClick={() => void run("dev.open_dashboard", {}, false)}>Manage in Projects</Button>
+              {extras.length > 0 && (
+                <div className="today-rows today-watching">
+                  {extras.map((folder) => (
+                    <ListRow
+                      key={folder.path}
+                      icon={<FolderGit2 />}
+                      tone="neutral"
+                      title={<Technical>{folder.path}</Technical>}
+                      meta={extraFolderKind(folder)}
+                      trailing={
+                        <Button size="sm" variant="ghost" disabledReason={busy ? "Working…" : null} onClick={() => void onStopWatching(folder.path)}>
+                          Stop watching
+                        </Button>
+                      }
+                    />
+                  ))}
+                </div>
               )}
             </Card>
           </>

@@ -110,9 +110,9 @@ export function OverviewTab({
       <Card className="projects-detail__card">
         <SectionTitle>Where you left off</SectionTitle>
         {leftOff === undefined ? (
-          <p className="projects-muted">Asking Developer Intelligence…</p>
+          <p className="projects-muted">Asking the repository scan…</p>
         ) : leftOff === null ? (
-          <p className="projects-muted">Developer Intelligence has nothing on this repository yet (it's turned off, or hasn't scanned it).</p>
+          <p className="projects-muted">The repository scan has nothing on this repository yet (it's turned off, or hasn't scanned it).</p>
         ) : (
           <>
             <p className="projects-leftoff">{leftOff.reason}</p>

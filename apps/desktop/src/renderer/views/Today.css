@@ -30,6 +30,20 @@
   overflow-wrap: anywhere;
 }
 
+/* A watched folder: the whole path readable, the button on a line of its own. */
+.today-watching .kit-row {
+  flex-wrap: wrap;
+}
+
+.today-watching .kit-row__title {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.today-watching .kit-row__trailing {
+  flex-basis: 100%;
+}
+
 /* The hero: the reason is the point, the path is a quiet second line. */
 .today-reason {
   margin: 0;
@@ -44,7 +58,7 @@
   color: var(--text-muted);
 }
 
-/* Setup: the folders Projects already knows, as a checklist. */
+/* Setup: the projects Today will read, listed so there is nothing to guess. */
 .today-setup {
   display: grid;
   gap: var(--space-2);
@@ -56,8 +70,8 @@
   text-align: left;
 }
 
-.today-setup legend {
-  padding: 0 var(--space-2);
+.today-setup__title {
+  margin: 0;
   font-size: 0.75rem;
   font-weight: 600;
   letter-spacing: 0.14em;
@@ -67,24 +81,19 @@
 
 .today-setup__row {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: var(--space-3);
   min-width: 0;
-  cursor: pointer;
+  margin: 0;
 }
 
-.today-setup__row input {
+.today-setup__name {
   flex: none;
-  accent-color: var(--accent-today);
+  font-weight: 500;
 }
 
 .today-setup__row .kit-tech {
+  min-width: 0;
   overflow-wrap: anywhere;
-}
-
-.today-setup__kind {
-  margin-left: auto;
-  flex: none;
-  font-size: 0.8125rem;
   color: var(--text-muted);
 }

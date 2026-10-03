@@ -4,8 +4,12 @@ import type { RepositoryExecutionDomain } from '@dexnest/dev-intelligence-contra
 export interface DiscoveryConfig {
   /** Root directories to scan (bounded). */
   roots: Array<{ path: string; domain: RepositoryExecutionDomain }>;
-  /** Explicit repositories to include without scanning parents. */
-  manualRepositories: Array<{ path: string; domain: RepositoryExecutionDomain }>;
+  /**
+   * Explicit repositories to include without scanning parents. `displayName`
+   * is the name its owner gave it elsewhere (a project's name); without one
+   * the repository is called by its folder.
+   */
+  manualRepositories: Array<{ path: string; domain: RepositoryExecutionDomain; displayName?: string }>;
   /** Paths that must not be entered. */
   excludedRoots: string[];
   /** Specific repo paths to skip. */

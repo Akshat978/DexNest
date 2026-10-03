@@ -98,7 +98,7 @@ test("history lines name the rule and action, never event content", () => {
   const award = { ruleName: "Copies", actionId: "clipboard.copy", eventType: "action_executed" } as AwardView;
   assert.equal(awardLabel(award), "Copies · clipboard.copy");
   assert.equal(awardLabel({ ...award, ruleName: null, actionId: null }), "a deleted rule · action_executed");
-  assert.equal(shortDate("2026-06-01T23:59:00.000Z"), "2026-06-01");
+  assert.equal(shortDate("2026-06-01T23:59:00.000Z"), "1 Jun 2026");
   assert.equal(shortDate("x"), "unknown date");
 });
 
@@ -136,7 +136,7 @@ test("a rule reads as a sentence; stat bars are shares of the strongest stat", (
 
 test("countsFromLabel: the epoch means all past activity", () => {
   assert.equal(countsFromLabel("1970-01-01T00:00:00.000Z"), "Counts all past activity");
-  assert.match(countsFromLabel("2026-06-01T00:00:00.000Z"), /^Counts from 2026-06-01/);
+  assert.match(countsFromLabel("2026-06-01T00:00:00.000Z"), /^Counts from 1 Jun 2026/);
 });
 
 test("XP by day: oldest first, a slot for every day, and honest about a short page", () => {

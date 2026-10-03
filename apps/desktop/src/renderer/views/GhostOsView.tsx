@@ -265,7 +265,7 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
           }
         >
           <p>GhostOS keeps a local model of you: people, projects, skills, memories, decisions and habits, and how they connect over time. Every fact says where it came from and how sure it is.</p>
-          <p>Add something yourself, or turn on Developer Intelligence under Sources. GhostOS never reads your vault, finance, journal, clipboard, captures or chat histories, and nothing leaves this computer.</p>
+          <p>Add something yourself, or connect your repositories under Sources. GhostOS never reads your vault, finance, journal, clipboard, captures or chat histories, and nothing leaves this computer.</p>
         </EmptyState>
       )}
 
@@ -285,7 +285,7 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
 
       {confirmDisable && (
         <ConfirmDialog
-          title="Turn off Developer Intelligence?"
+          title="Stop reading the repository scan?"
           confirmLabel="Turn off"
           busy={busy}
           error={refusal}
@@ -406,10 +406,10 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
             {tab === "sources" && (
               <div className="ghost-sources">
                 <section className="ghost-card" aria-labelledby="ghost-di-title">
-                  <h3 id="ghost-di-title">Developer Intelligence</h3>
-                  <p>When on, GhostOS reads Developer Intelligence's repository and technology records and its commit events: repositories become projects, languages and tools become skills, and commits become one observation per repository per day. It never reads commit messages, other event types, or any file.</p>
+                  <h3 id="ghost-di-title">Repository scan</h3>
+                  <p>When on, GhostOS reads the repository scan's repository and technology records and its commit events: repositories become projects, languages and tools become skills, and commits become one observation per repository per day. It never reads commit messages, other event types, or any file.</p>
                   {!di?.installed ? (
-                    <p className="ghost-hint">Developer Intelligence is not running, so there is nothing to turn on.</p>
+                    <p className="ghost-hint">The repository scan is not running, so there is nothing to turn on.</p>
                   ) : di.enabled ? (
                     <>
                       <p className="ghost-meta">

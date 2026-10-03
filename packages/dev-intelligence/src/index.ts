@@ -166,5 +166,6 @@ export {
   type DevIntelligenceSettings,
   type DevIntelligenceStatus,
   type DevIntelligenceRoot,
+  type LinkedRepository,
   type ScanOutcome,
 } from './module/runtime.js';

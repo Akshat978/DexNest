@@ -115,7 +115,7 @@ test("due labels, for time and usage schedules", () => {
   assert.equal(dueLabel(time("overdue", -1)), "Overdue by 1 day");
   assert.equal(dueLabel(time("overdue", 0)), "Due today");
   assert.equal(dueLabel(time("due_soon", 10)), "Due in 10 days");
-  assert.equal(dueLabel(time("ok", 40)), "OK, next 2026-07-10");
+  assert.equal(dueLabel(time("ok", 40)), "OK, next 10 Jul 2026");
   const usage = (state: "ok" | "due_soon" | "overdue", left: number): DueStatus => ({ state, kind: "usage", measurementKey: "print hours", dueAtReading: 400, latestReading: 400 - left, left, lastDoneAt: null });
   // With the reading's unit (Integration QA F11: it used to say "Overdue by 12.5").
   assert.equal(dueLabel(usage("overdue", -12.5)), "Overdue by 12.5 print hours");

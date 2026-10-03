@@ -191,6 +191,17 @@ async function loadRepoFacts(
 }
 
 /**
+ * The repositories the last finished scan looked for, or undefined when no
+ * scan has finished. A repository recorded once stays in the store; when its
+ * project is archived or its folder is no longer watched, the next scan does
+ * not look for it, and it should stop appearing as if it were still followed.
+ */
+export function currentRepositoryIds(recentScans: readonly ScanRun[]): ReadonlySet<string> | undefined {
+  const last = recentScans.find((scan) => (scan.state === 'COMPLETED' || scan.state === 'PARTIAL') && scan.targetRepositoryIds !== undefined);
+  return last?.targetRepositoryIds ? new Set(last.targetRepositoryIds) : undefined;
+}
+
+/**
  * Collect facts for all (or filtered) repositories. Never throws on per-repo errors.
  */
 export async function collectFacts(
@@ -203,10 +214,12 @@ export async function collectFacts(
     const want = new Set(repositoryIds);
     repos = repos.filter((r) => want.has(r.id));
   }
+  const recentScans = await persistence.scanRuns.listRecent(20);
+  const current = currentRepositoryIds(recentScans);
+  if (current) repos = repos.filter((r) => current.has(r.id));
+
   // Stable order
   repos = [...repos].sort((a, b) => a.id.localeCompare(b.id));
-
-  const recentScans = await persistence.scanRuns.listRecent(20);
 
   const repositories: RepoFacts[] = [];
   for (const repo of repos) {

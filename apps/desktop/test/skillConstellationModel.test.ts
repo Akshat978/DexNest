@@ -105,7 +105,7 @@ test("evidence groups by repository, busiest first, newest first inside", () => 
 test("labels say what the numbers are, not a level", () => {
   assert.equal(percent(0.4249), "42%");
   assert.equal(percent(Number.NaN), "0%");
-  assert.equal(shortDate("2026-05-01T12:30:00.000Z"), "2026-05-01");
+  assert.equal(shortDate("2026-05-01T12:30:00.000Z"), "1 May 2026");
   assert.equal(shortDate("never"), "unknown date");
   assert.equal(starLabel(skill("go")), "GO, language, strength 42%, 3 pieces of evidence in 2 repositories");
   assert.equal(starLabel(skill("go", { evidenceCount: 1, repositoryCount: 1 })), "GO, language, strength 42%, 1 piece of evidence in 1 repository");

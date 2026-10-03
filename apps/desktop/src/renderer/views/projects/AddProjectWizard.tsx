@@ -113,10 +113,10 @@ export function WizardBody({
 
         <section className="projects-wizard__section" aria-labelledby="projects-wizard-suggestions">
           <h3 id="projects-wizard-suggestions">
-            <Sparkles aria-hidden="true" /> Suggestions from Developer Intelligence
+            <Sparkles aria-hidden="true" /> Suggestions from the repository scan
           </h3>
           {suggestions.length === 0 ? (
-            <p className="projects-wizard__muted">Nothing new found. Developer Intelligence suggests repositories it has discovered that aren't projects yet.</p>
+            <p className="projects-wizard__muted">Nothing new found. The repository scan suggests repositories it has discovered that aren't projects yet.</p>
           ) : (
             <>
               <ul className="projects-wizard__suggestions">

@@ -261,7 +261,7 @@ test("history: newest first, with kind and time; empty says so", () => {
   const html = render({ initial: { ...ready, detail, tab: "history", history } });
   assert.match(html, /aria-label="History, newest first"/);
   assert.match(html, /Replaced nozzle: me/);
-  assert.match(html, /Maintenance · <time class="technical" datetime="2026-06-01T09:00:00.000Z">2026-06-01 09:00<\/time>/i);
+  assert.match(html, /Maintenance · <time class="technical" datetime="2026-06-01T09:00:00.000Z">1 Jun 2026, 09:00<\/time>/i);
   assert.match(render({ initial: { ...ready, detail, tab: "history", history: [] } }), /No history yet\./);
 });
 

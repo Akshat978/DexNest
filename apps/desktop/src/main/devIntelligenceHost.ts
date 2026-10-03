@@ -19,7 +19,8 @@ import {
   createDevIntelligenceModule,
   normalizeDevIntelligenceSettings,
   type DevIntelligenceModule,
-  type DevIntelligenceSettings
+  type DevIntelligenceSettings,
+  type LinkedRepository
 } from "@dexnest/dev-intelligence";
 
 export interface DevIntelligenceHostOptions {
@@ -39,6 +40,8 @@ export interface DevIntelligenceHostOptions {
   ipcMain: IpcMain;
   getWindow(): BrowserWindow | null;
   audit(summary: string, metadata: Record<string, unknown>, status: "success" | "failure"): void;
+  /** DexNest's projects: scanned without separate setup, under their Projects names. */
+  linkedRepositories?(): LinkedRepository[];
 }
 
 export interface DevIntelligenceHost {
@@ -65,7 +68,8 @@ export function createDevIntelligenceHost(options: DevIntelligenceHostOptions): 
       read: () => normalizeDevIntelligenceSettings(options.readSettings()),
       write: (settings) => options.writeSettings(settings)
     },
-    audit: options.audit
+    audit: options.audit,
+    ...(options.linkedRepositories ? { linkedRepositories: options.linkedRepositories } : {})
   });
 
   const channels: string[] = [];
@@ -74,7 +78,7 @@ export function createDevIntelligenceHost(options: DevIntelligenceHostOptions): 
     options.ipcMain.handle(channel, (event, ...args: unknown[]) => {
       const window = options.getWindow();
       if (!window || window.isDestroyed() || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) {
-        throw new Error("Developer Intelligence requires the trusted desktop main frame.");
+        throw new Error("The repository scan requires the trusted desktop main frame.");
       }
       return listener(...args);
     });
@@ -85,7 +89,7 @@ export function createDevIntelligenceHost(options: DevIntelligenceHostOptions): 
   handle("dexnest:dev-intelligence-update-settings", (next) => {
     const saved = module.updateSettings(next);
     // Turning the scan on or pointing it at folders is a change worth a line in the log.
-    options.audit?.("Developer Intelligence settings updated", { enabled: saved.enabled, roots: saved.roots.length, manualRepositories: saved.manualRepositories.length }, "success");
+    options.audit?.("Repository scan settings updated", { enabled: saved.enabled, roots: saved.roots.length, manualRepositories: saved.manualRepositories.length }, "success");
     return saved;
   });
   handle("dexnest:dev-intelligence-scan", () => module.scanNow());

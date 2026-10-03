@@ -9,10 +9,10 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import type { DeveloperEvent, StandupReport, TodoMarker } from '@dexnest/dev-intelligence-contracts';
+import type { DeveloperEvent, ScanRun, StandupReport, TodoMarker } from '@dexnest/dev-intelligence-contracts';
 import { createStandupService } from '../service.js';
 import { rankContinuations, scoreRepository } from '../ranking.js';
-import { collectFacts, eventTime, isBaseline } from '../facts.js';
+import { collectFacts, currentRepositoryIds, eventTime, isBaseline } from '../facts.js';
 import { SECTION_ITEM_CAP } from '../sections.js';
 import { createFakePersistence, createFakeStandupStore, makeCommitEvent, makeRepo, makeSnapshot, mutableClock } from './fakes.js';
 
@@ -179,5 +179,46 @@ describe('only one repository is the most recently active', () => {
     expect(eventTime(commit('a', 'x', '2026-09-20T08:05:00-06:00', '2026-09-20T15:00:00.000Z'))).toBe('2026-09-20T14:05:00.000Z');
     expect(eventTime(commit('a', 'x', 'not a date', '2026-09-20T15:00:00.000Z'))).toBe('2026-09-20T15:00:00.000Z');
     expect(eventTime(event('a', 'dev.working_tree.changed', 'w', '2026-09-20T15:00:00.000Z', {}, '2026-09-20T01:00:00.000Z'))).toBe('2026-09-20T15:00:00.000Z');
+  });
+});
+
+describe('a repository no longer followed stops appearing', () => {
+  const scan = (id: string, startedAt: string, state: ScanRun['state'], targets?: string[]): ScanRun => ({
+    schemaVersion: 1,
+    id,
+    state,
+    startedAt,
+    repositoriesAttempted: targets?.length ?? 0,
+    repositoriesSucceeded: targets?.length ?? 0,
+    repositoriesFailed: 0,
+    cancelRequested: false,
+    ...(targets ? { targetRepositoryIds: targets } : {}),
+  });
+
+  it('the last finished scan says what is followed; an unfinished or failed one does not', () => {
+    expect(currentRepositoryIds([])).toBeUndefined();
+    expect(currentRepositoryIds([scan('s3', '2026-09-20T17:00:00.000Z', 'STARTED', ['a'])])).toBeUndefined();
+    const ids = currentRepositoryIds([
+      scan('s4', '2026-09-20T17:30:00.000Z', 'FAILED', ['a', 'b', 'c']),
+      scan('s3', '2026-09-20T17:00:00.000Z', 'PARTIAL', ['a', 'b']),
+      scan('s2', '2026-09-20T16:00:00.000Z', 'COMPLETED', ['a', 'b', 'c']),
+    ]);
+    expect([...ids!].sort()).toEqual(['a', 'b']);
+  });
+
+  it('the Standup covers what the last scan looked for, not everything ever recorded', async () => {
+    const report = await reportFor({
+      repositories: [baselined('kept'), baselined('archived')],
+      snapshots: [makeSnapshot('kept', { dirty: 1 }), makeSnapshot('archived', { dirty: 5 })],
+      scanRuns: [scan('s1', '2026-09-20T17:00:00.000Z', 'COMPLETED', ['kept'])],
+    });
+    expect(section(report, 'RepositoryState').items.map((i) => i.repositoryId)).toEqual(['kept']);
+    expect(report.continuationCandidates!.map((c) => c.repositoryId)).toEqual(['kept']);
+    expect(report.diagnostics?.repositoryCount).toBe(1);
+  });
+
+  it('before any scan has finished, every recorded repository is covered', async () => {
+    const report = await reportFor({ repositories: [baselined('a'), baselined('b')], snapshots: [makeSnapshot('a'), makeSnapshot('b')] });
+    expect(section(report, 'RepositoryState').items.map((i) => i.repositoryId)).toEqual(['a', 'b']);
   });
 });

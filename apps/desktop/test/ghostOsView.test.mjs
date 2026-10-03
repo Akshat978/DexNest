@@ -120,9 +120,9 @@ test("timeline: filterable by type, searchable, each row says where it came from
   assert.match(html, /<form class="ghost-search" role="search" aria-label="Search GhostOS">/);
   assert.match(html, /<label for="ghost-search-input">/);
   assert.match(html, /Zephyr app: 2 commits observed/);
-  assert.match(html, /Observation · <time class="technical" datetime="2026-06-01T09:00:00.000Z">2026-06-01<\/time> · from a source, 60% sure/i);
-  assert.match(html, /Person · <time[^>]*>2026-06-01<\/time> · entered by you/);
-  assert.match(html, /<span>Zephyr app stopped: uses Go<\/span><span class="ghost-meta">Connection ended · <time[^>]*>2026-05-01<\/time>/i);
+  assert.match(html, /Observation · <time class="technical" datetime="2026-06-01T09:00:00.000Z">1 Jun 2026<\/time> · from a source, 60% sure/i);
+  assert.match(html, /Person · <time[^>]*>1 Jun 2026<\/time> · entered by you/);
+  assert.match(html, /<span>Zephyr app stopped: uses Go<\/span><span class="ghost-meta">Connection ended · <time[^>]*>1 May 2026<\/time>/i);
   assert.match(html, />Sync now</);
 });
 
@@ -152,19 +152,19 @@ test("entity detail: every fact with its source and its evidence", () => {
   const html = render({ initial: { status: full, items, detail } });
   assert.match(html, /<h3 id="ghost-detail-title">Zephyr app<\/h3>/);
   // The entity, each connection and each observation carries a source line.
-  assert.match(html, /From Developer Intelligence · 100% sure/);
-  assert.match(html, /From Developer Intelligence · 90% sure/);
-  assert.match(html, /From Developer Intelligence · 60% sure/);
+  assert.match(html, /From Repository scan · 100% sure/);
+  assert.match(html, /From Repository scan · 90% sure/);
+  assert.match(html, /From Repository scan · 60% sure/);
   assert.equal((html.match(/Entered by you/g) ?? []).length, 2);
   // Evidence, where it is not the owner.
   assert.match(html, /Repository record repo-app/);
   assert.match(html, /Technology fact in repo-app: package.json \(package.json\)/);
-  assert.match(html, /Commit abcdef1 in repo-app at 2026-06-01 09:00/);
+  assert.match(html, /Commit abcdef1 in repo-app at 1 Jun 2026, 09:00/);
   assert.match(html, /Commit 1234567 in repo-app/);
   // Connections both ways, with validity.
   assert.match(html, /uses → <button type="button" class="ghost-link">TypeScript<\/button>/);
-  assert.match(html, /← worked on <button type="button" class="ghost-link">Me<\/button> until <time[^>]*>2026-05-01<\/time>/i);
-  assert.match(html, /uses → <button type="button" class="ghost-link">TypeScript<\/button> from <time[^>]*>2026-06-01<\/time>/i);
+  assert.match(html, /← worked on <button type="button" class="ghost-link">Me<\/button> until <time[^>]*>1 May 2026<\/time>/i);
+  assert.match(html, /uses → <button type="button" class="ghost-link">TypeScript<\/button> from <time[^>]*>1 Jun 2026<\/time>/i);
   // A source's entry is forgotten, not edited.
   assert.doesNotMatch(html, />Edit</);
   assert.match(html, /aria-label="Forget Zephyr app"/);
@@ -236,7 +236,7 @@ test("add: a labelled form whose fields follow the type", () => {
   assert.match(file, /Path \(a reference; GhostOS never opens it\)/);
 });
 
-test("sources: what Developer Intelligence gives, what it never gives, and off removes what it added", () => {
+test("sources: what the repository scan gives, what it never gives, and off removes what it added", () => {
   const on = render({ initial: { status: full, tab: "sources" } });
   assert.match(on, /It never reads commit messages, other event types, or any file/);
   assert.match(on, />Turn off and remove what it added</);
@@ -246,7 +246,7 @@ test("sources: what Developer Intelligence gives, what it never gives, and off r
   const off = render({ initial: { status: empty, tab: "sources" } });
   assert.match(off, />Turn on</);
   const missing = render({ initial: { status: status(zero, di(false, false)), tab: "sources" } });
-  assert.match(missing, /Developer Intelligence is not running/);
+  assert.match(missing, /The repository scan is not running/);
   assert.doesNotMatch(missing, />Turn on</);
 });
 
@@ -264,7 +264,7 @@ test("sources: turning the source off asks first (it deletes what it added), the
   const on = render({ initial: { status: full, tab: "sources" } });
   assert.doesNotMatch(on, /role="alertdialog"/, "no confirmation until asked");
   const asking = render({ initial: { status: full, tab: "sources", confirmDisable: true } });
-  assert.match(asking, /role="alertdialog" aria-modal="true" aria-labelledby="([^"]+)"[^>]*>[\s\S]*<h2 id="\1" class="kit-dialog__title">Turn off Developer Intelligence\?<\/h2>/);
+  assert.match(asking, /role="alertdialog" aria-modal="true" aria-labelledby="([^"]+)"[^>]*>[\s\S]*<h2 id="\1" class="kit-dialog__title">Stop reading the repository scan\?<\/h2>/);
   assert.match(asking, /Everything it added to GhostOS is deleted, including detected habits\. This cannot be undone\./);
   assert.match(asking, />Cancel<\/button><button type="button" class="kit-button kit-button--danger kit-button--md kit-confirm__ok">Turn off<\/button>/);
 });
@@ -302,7 +302,7 @@ test("timeline: numbers first, rows grouped under day headings, each row marked 
   assert.match(html, /kit-stat__label">Sources on</);
   // Day headings: today, and a dated one for older rows. Hidden from screen readers - every row reads its own date.
   assert.match(html, /<li class="ghost-day" aria-hidden="true">Today<\/li>/);
-  assert.match(html, /<li class="ghost-day" aria-hidden="true">2026-05-01<\/li>/);
+  assert.match(html, /<li class="ghost-day" aria-hidden="true">1 May 2026<\/li>/);
   // Icons: an observation, an ended connection, a person.
   assert.match(html, /<span class="ghost-type-icon" aria-hidden="true"><svg[^>]*lucide-eye/);
   assert.match(html, /<span class="ghost-type-icon" aria-hidden="true"><svg[^>]*lucide-unlink/);

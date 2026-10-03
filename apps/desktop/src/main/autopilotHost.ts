@@ -76,6 +76,12 @@ export interface AutopilotHostOptions {
   /** Shows the operator a native notification. Injected, so this file stays testable. */
   notify?: (message: { title: string; body: string }) => void;
   /**
+   * What Projects calls the project at this folder, if it is one. Used only
+   * to label a project the way every other screen does; which projects can be
+   * queued is still decided by past runs alone.
+   */
+  projectName?: (projectPath: string) => string | null;
+  /**
    * Where push settings live, and how to read and write them.
    *
    * Injected rather than resolved here: the path is under the app's data root,
@@ -1244,7 +1250,7 @@ export function createAutopilotHost(options: AutopilotHostOptions): AutopilotHos
         if (existing && existing.lastUsedAt >= run.createdAt) continue;
         seen.set(path, {
           projectPath: path,
-          label: path.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? path,
+          label: options.projectName?.(path) ?? path.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? path,
           lastUsedAt: run.createdAt
         });
       }

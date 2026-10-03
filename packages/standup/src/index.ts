@@ -70,7 +70,7 @@ export {
 
 export { SECTION_ITEM_CAP, STANDUP_SCHEMA_VERSION, buildSections } from './sections.js';
 
-export { collectFacts, type RepoFacts, type CollectedFacts } from './facts.js';
+export { collectFacts, currentRepositoryIds, eventTime, isBaseline, type RepoFacts, type CollectedFacts } from './facts.js';
 
 export {
   detectOpenIssues,

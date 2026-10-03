@@ -294,14 +294,13 @@ function todayBridge(): Record<string, AnyFn> {
     items: [], continuationCandidates: candidates
   };
   const off = scenario === "empty";
-  const projects = repos.slice(0, 3).map((r, i) => ({ project: { id: `p${i}`, path: r.roots[0].path }, fetch: null }));
+  const projects = repos.slice(0, 5).map((r, i) => ({ project: { id: `p${i}`, name: ["Zephyr notes", "API gateway", "Dashboard", "dotfiles", "notes-cli"][i], path: r.roots[0].path, git: { isRepo: true } }, fetch: null }));
   return {
     devIntelligenceStatus: async () => ({ enabled: !off, scanning: false, repositories: off ? 0 : count }),
-    devIntelligenceSettings: async () => ({ schemaVersion: 1, enabled: !off, roots: [], manualRepositories: [], excludedRoots: [], scanIntervalMinutes: 30, runHealthChecks: true }),
+    devIntelligenceSettings: async () => ({ schemaVersion: 1, enabled: !off, roots: [{ path: "D:/code/billing-service", domain: "windows" }, { path: "F:/archive", domain: "windows" }], manualRepositories: [], excludedRoots: [], scanIntervalMinutes: 30, runHealthChecks: true }),
     devIntelligenceRepositories: async () => (off ? [] : repos),
     standupLatest: async () => (off ? null : report),
-    projectsList: async () => [...projects, { project: { id: "p9", path: "E:/work/client-portal" }, fetch: null }],
-    projectsSettings: async () => ({ importRoots: ["D:/code"] })
+    projectsList: async () => [...projects, { project: { id: "p9", name: "Client portal", path: "E:/work/client-portal", git: { isRepo: true } }, fetch: null }]
   };
 }
 

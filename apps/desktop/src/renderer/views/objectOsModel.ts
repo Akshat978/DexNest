@@ -21,6 +21,7 @@ import type {
   TimelineItem,
   TimelineKind
 } from "@dexnest/object-os";
+import { dayLabel, dayTimeLabel } from "../lib/dates.ts";
 
 // --- lists and labels ---------------------------------------------------------
 
@@ -140,8 +141,9 @@ export function moneyAmountText(m: Money | null): string {
   return formatMoney(m).split(" ")[0] ?? "";
 }
 
-export const shortDate = (iso: string) => iso.slice(0, 10);
-export const shortDateTime = (iso: string) => `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
+/** A date as every screen writes it: "3 Oct 2026". Also takes a plain YYYY-MM-DD day. */
+export const shortDate = (iso: string) => dayLabel(iso);
+export const shortDateTime = (iso: string) => dayTimeLabel(iso);
 
 export function fileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;

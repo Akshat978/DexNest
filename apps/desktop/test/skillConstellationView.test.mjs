@@ -92,7 +92,7 @@ test("error: an alert with the reason and a way to retry", () => {
   assert.match(html, /<button type="button" class="kit-button kit-button--ghost kit-button--sm">(?:<[^>]+>)*<\/span>Try again<\/button>/);
 });
 
-test("off: explains it reads only Developer Intelligence, and offers to turn on or build once", () => {
+test("off: explains it reads only the repository scan, and offers to turn on or build once", () => {
   const html = render({ initial: { snapshot: { ...ready, enabled: false, skills: [], layout: [], links: [], lastBuild: null } } });
   assert.match(html, /never scans your disk/);
   assert.match(html, />Turn on</);
@@ -117,7 +117,7 @@ test("labels: only the fifteen strongest stars are written, plus the selected on
 test("empty: says why there is nothing and what to do", () => {
   const html = render({ initial: { snapshot: { ...ready, skills: [], layout: [], links: [] } } });
   assert.match(html, /No evidence yet/);
-  assert.match(html, /scan your repositories in Developer Intelligence/);
+  assert.match(html, /scan your repositories from Today first/);
   assert.doesNotMatch(html, /class="skill-sky"/, "no constellation drawn");
 });
 
@@ -145,7 +145,7 @@ test("ready: stars are labelled buttons with one tab stop; hidden skills are not
   assert.match(html, /Select a star to see why it is there/);
 });
 
-test("stale: says Developer Intelligence has something newer", () => {
+test("stale: says the repository scan has something newer", () => {
   const html = render({ initial: { snapshot: { ...ready, staleness: { ...staleness, stale: true, devChanged: true } } } });
   assert.match(html, /recorded something new since this was built/);
 });
@@ -163,7 +163,7 @@ test("a selected star shows why: repositories, files, dates, the numbers behind 
   assert.match(html, /<q class="skill-evidence__todo">TODO: tidy the router<\/q>/);
   assert.match(html, /abcdef1234/, "a commit shows its sha, not a subject");
   assert.match(html, /kit-meter__label">Variety<\/span><span class="kit-meter__value">45% · 2 repositories, 2 kinds</);
-  assert.match(html, /kit-meter__label">Recency<\/span><span class="kit-meter__value">80% · last 2026-05-01</);
+  assert.match(html, /kit-meter__label">Recency<\/span><span class="kit-meter__value">80% · last 1 May 2026</);
   assert.match(html, /aria-label="Close evidence for TypeScript"/);
 });
 

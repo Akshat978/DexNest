@@ -4,6 +4,7 @@
 // The module re-validates everything; these builders only shape input.
 
 import type { AchievementView, AwardView, QuestView, RealityRpgSnapshot, Rule } from "@dexnest/reality-rpg";
+import { dayLabel } from "../lib/dates.ts";
 
 export type ViewState =
   | { kind: "loading" }
@@ -145,10 +146,9 @@ export function statShare(xp: number, topXp: number): number {
   return topXp <= 0 ? 0 : Math.max(0, Math.min(100, Math.round((xp / topXp) * 100)));
 }
 
-/** A calendar date; the full time goes in the title attribute. */
+/** A calendar date, "3 Oct 2026"; the full time goes in the title attribute. */
 export function shortDate(iso: string): string {
-  const t = Date.parse(iso);
-  return Number.isFinite(t) ? new Date(t).toISOString().slice(0, 10) : "unknown date";
+  return dayLabel(iso);
 }
 
 /** The outcome text an action returned, or its error. */

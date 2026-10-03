@@ -10,6 +10,7 @@ import type {
   EvidenceView,
   SkillLayoutPoint
 } from "@dexnest/skill-constellation";
+import { dayLabel } from "../lib/dates.ts";
 
 export type ViewState =
   | { kind: "loading" }
@@ -135,10 +136,9 @@ export function percent(value: number): string {
   return `${Math.round((Number.isFinite(value) ? Math.min(Math.max(value, 0), 1) : 0) * 100)}%`;
 }
 
-/** A calendar date for evidence; the full time is in the title attribute. */
+/** A calendar date for evidence, "3 Oct 2026"; the full time is in the title attribute. */
 export function shortDate(iso: string): string {
-  const parsed = Date.parse(iso);
-  return Number.isFinite(parsed) ? new Date(parsed).toISOString().slice(0, 10) : "unknown date";
+  return dayLabel(iso);
 }
 
 export function starLabel(skill: ConstellationSkill): string {

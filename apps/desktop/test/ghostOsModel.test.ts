@@ -65,10 +65,10 @@ test("each type shows only its own fields", () => {
 test("every fact says where it came from and how sure", () => {
   assert.equal(sourceLabel({ origin: "manual", sourceId: null, confidence: 1 }), "Entered by you");
   assert.equal(sourceLabel({ origin: "manual", sourceId: null, confidence: 0.5 }), "Entered by you · you said 50% sure");
-  assert.equal(sourceLabel({ origin: "adapter", sourceId: "adapter:developer_intelligence", confidence: 0.6 }), "From Developer Intelligence · 60% sure");
+  assert.equal(sourceLabel({ origin: "adapter", sourceId: "adapter:developer_intelligence", confidence: 0.6 }), "From Repository scan · 60% sure");
   assert.equal(sourceLabel({ origin: "derived", sourceId: "detector:time_of_day", confidence: 0.95 }), "Derived by GhostOS habit detection (time of day) · 95% sure");
   assert.equal(originLabel("adapter", 0.9), "from a source, 90% sure");
-  assert.equal(evidenceLabel({ kind: "commit", repositoryId: "repo", sha: "abcdef1234", at: NOW }), "Commit abcdef1 in repo at 2026-06-30 12:00");
+  assert.equal(evidenceLabel({ kind: "commit", repositoryId: "repo", sha: "abcdef1234", at: NOW }), "Commit abcdef1 in repo at 30 Jun 2026, 12:00");
   assert.equal(evidenceLabel({ kind: "technology", factId: "f", repositoryId: "repo", evidencePath: "package.json", evidenceKind: "package.json" }), "Technology fact in repo: package.json (package.json)");
 });
 
@@ -158,6 +158,6 @@ test("timeline rows group by day in their own order; headings say Today and Yest
   assert.equal(dayHeading("2026-06-03", "2026-06-03"), "Today");
   assert.equal(dayHeading("2026-06-02", "2026-06-03"), "Yesterday");
   assert.equal(dayHeading("2026-02-28", "2026-03-01"), "Yesterday", "across a month end");
-  assert.equal(dayHeading("2026-05-30", "2026-06-03"), "2026-05-30");
+  assert.equal(dayHeading("2026-05-30", "2026-06-03"), "30 May 2026");
   assert.deepEqual(sourcesOn({ adapters: [{ enabled: true, installed: true }, { enabled: false, installed: true }, { enabled: false, installed: false }] } as never), { on: 1, installed: 2 });
 });

@@ -57,6 +57,7 @@ function makeRepository(
   domain: RepositoryExecutionDomain,
   path: string,
   now: string,
+  displayName?: string,
 ): Repository {
   // The real path, not the one the walk arrived by: a repository reached
   // through a junction is recorded where it actually lives.
@@ -65,7 +66,7 @@ function makeRepository(
   return {
     schemaVersion: 1,
     id,
-    displayName: displayNameFromPath(real),
+    displayName: displayName?.trim() || displayNameFromPath(real),
     discoveredAt: now,
     lastSeenAt: now,
     roots: [{ path: real, domain }],
@@ -100,9 +101,9 @@ export async function discoverRepositories(
   const disabled = new Set(config.disabledRepositoryIds);
   const sensitive = (path: string) => options.isSensitive?.(path) === true;
 
-  const tryAdd = (domain: RepositoryExecutionDomain, path: string) => {
+  const tryAdd = (domain: RepositoryExecutionDomain, path: string, displayName?: string) => {
     if (sensitive(path)) return;
-    const repo = makeRepository(domain, path, now);
+    const repo = makeRepository(domain, path, now, displayName);
     if (disabled.has(repo.id)) return;
     if (seenIds.has(repo.id)) return;
     if (found.length >= config.maxRepositories) return;
@@ -139,7 +140,9 @@ export async function discoverRepositories(
         continue;
       }
       if (await isGitRepo(manual.path)) {
-        tryAdd(manual.domain, manual.path);
+        // Named repositories come first, so a walk that reaches the same
+        // folder later does not rename it back to its folder name.
+        tryAdd(manual.domain, manual.path, manual.displayName);
       } else {
         failures.push({
           path: manual.path,
