@@ -57,6 +57,7 @@ import { AuditView } from "./views/AuditView";
 import { AutopilotView } from "./views/AutopilotView";
 import { SkillConstellationView, type SkillConstellationBridge } from "./views/SkillConstellationView";
 import { RealityRpgView, type RealityRpgBridge } from "./views/RealityRpgView";
+import { TodayView, type TodayBridge } from "./views/TodayView";
 import { GhostOsView, type GhostOsBridge } from "./views/GhostOsView";
 import { ObjectOsView, type ObjectOsBridge } from "./views/ObjectOsView";
 import { ProjectsView } from "./views/projects/ProjectsView";
@@ -2056,7 +2057,7 @@ interface DataManagementDeleteResult {
   lastDeletion: DataManagementLastDeletion;
 }
 
-export interface DexNestBridge extends SkillConstellationBridge, RealityRpgBridge, GhostOsBridge, ObjectOsBridge {
+export interface DexNestBridge extends SkillConstellationBridge, RealityRpgBridge, GhostOsBridge, ObjectOsBridge, TodayBridge {
   getAppInfo: () => Promise<AppInfo>;
   listActions: () => Promise<ActionDefinition[]>;
   listProjects: () => Promise<DexNestProject[]>;
@@ -6438,6 +6439,7 @@ function DexNestApp() {
             <AppHealthView healthState={appHealthState ? addVoiceValidationHealth(appHealthState, actions, voiceWorkflowSettings) : appHealthState} onRunChecks={async () => { const r = await runUiAction("system.health.run_checks", "module_ui", {}) as { health?: AppHealthState }; const health = r?.health ?? await getBridge().getAppHealth(); setAppHealthState(addVoiceValidationHealth(health, actions, voiceWorkflowSettings)); }} onAction={runUiAction} />
           )}
           {activeView === "audit" && <AuditView events={events} onRefresh={handleAction} refreshEvents={refreshEvents} />}
+          {activeView === "today" && <TodayView bridge={getBridge()} onAction={(actionId, params) => runUiAction(actionId, "module_ui", params ?? {})} />}
           {activeView === "autopilot" && <AutopilotView />}
           {activeView === "skills" && <SkillConstellationView bridge={getBridge()} onAction={(actionId) => runUiAction(actionId, "module_ui", {})} />}
           {activeView === "rpg" && <RealityRpgView bridge={getBridge()} onAction={(actionId, params) => runUiAction(actionId, "module_ui", params ?? {})} />}

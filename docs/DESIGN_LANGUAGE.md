@@ -67,6 +67,7 @@ accent and uses it for identity, not decoration:
 | Reality RPG | `--accent-rpg` (gold) |
 | GhostOS | `--accent-ghost` (spectral orchid) |
 | ObjectOS | `--accent-object` (coral) |
+| Today | `--accent-today` (dawn) |
 
 Set it once on the view root with `style={accentStyle("ghost")}`; every kit
 component inside follows. Meaning colours (`--success`, `--warning`,

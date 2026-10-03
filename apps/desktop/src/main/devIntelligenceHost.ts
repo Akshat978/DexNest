@@ -82,7 +82,12 @@ export function createDevIntelligenceHost(options: DevIntelligenceHostOptions): 
 
   handle("dexnest:dev-intelligence-status", () => module.status());
   handle("dexnest:dev-intelligence-settings", () => module.getSettings());
-  handle("dexnest:dev-intelligence-update-settings", (next) => module.updateSettings(next));
+  handle("dexnest:dev-intelligence-update-settings", (next) => {
+    const saved = module.updateSettings(next);
+    // Turning the scan on or pointing it at folders is a change worth a line in the log.
+    options.audit?.("Developer Intelligence settings updated", { enabled: saved.enabled, roots: saved.roots.length, manualRepositories: saved.manualRepositories.length }, "success");
+    return saved;
+  });
   handle("dexnest:dev-intelligence-scan", () => module.scanNow());
   handle("dexnest:dev-intelligence-repositories", () => module.listRepositories());
   handle("dexnest:standup-generate", (input) =>

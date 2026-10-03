@@ -239,9 +239,9 @@ test("Hero, DashboardGrid and Reveal: one big moment, a 2:1 layout, a staggered 
 
 test("every module accent is a token, and the newer modules have their own", () => {
   const tokens = readSource(join(desktop, "../../packages/shared-ui/src/tokens.css"));
-  for (const name of ["autopilot", "skills", "rpg", "ghost", "object"]) assert.match(tokens, new RegExp(`--accent-${name}: #`), name);
+  for (const name of ["autopilot", "skills", "rpg", "ghost", "object", "today"]) assert.match(tokens, new RegExp(`--accent-${name}: #`), name);
   const meta = readSource(join(desktop, "src/renderer/lib/moduleMeta.ts"));
-  for (const [id, token] of [["autopilot", "autopilot"], ["skills", "skills"], ["rpg", "rpg"], ["ghost", "ghost"], ["object", "object"]]) {
+  for (const [id, token] of [["autopilot", "autopilot"], ["skills", "skills"], ["rpg", "rpg"], ["ghost", "ghost"], ["object", "object"], ["today", "today"]]) {
     assert.match(meta, new RegExp(`${id}: \\{ icon: \\w+, accent: "var\\(--accent-${token}\\)" \\}`), id);
   }
 });

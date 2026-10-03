@@ -636,6 +636,26 @@ export const seededActions = [
     enabled: true,
     status: "available"
   },
+  // Today is a reading of the latest Standup. Not phone- or Deck-exposed: a
+  // Standup names local repositories and paths.
+  {
+    id: "standup.open",
+    title: "Open Today",
+    moduleId: "standup",
+    module: "standup",
+    description: "Open Today: where you left off, what changed since the last Standup, and what needs attention.",
+    category: "navigation",
+    dangerLevel: "safe",
+    requiresConfirmation: false,
+    confirmationRule: null,
+    reversible: false,
+    undoActionId: null,
+    handlerType: "internal_function",
+    handlerRef: "desktop.view.today",
+    allowedTriggers: ["command", "module_ui"],
+    enabled: true,
+    status: "available"
+  },
   // Skill Constellation reads only what Developer Intelligence already
   // recorded and writes only its own skill_ tables. Not phone- or
   // Deck-exposed: its evidence names local repositories and paths.

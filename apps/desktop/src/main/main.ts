@@ -20023,6 +20023,7 @@ function navigationTargetForAction(actionId: string): { view: string; focusAssis
     "settings.open": { view: "settings", message: "DexNest opened Settings." },
     "audit.open_history": { view: "audit", message: "DexNest opened Audit." },
     "autopilot.open": { view: "autopilot", message: "DexNest opened Autopilot." },
+    "standup.open": { view: "today", message: "DexNest opened Today." },
     "skill_constellation.open": { view: "skills", message: "DexNest opened Skill Constellation." },
     "reality_rpg.open": { view: "rpg", message: "DexNest opened Reality RPG." },
     "ghost_os.open": { view: "ghost", message: "DexNest opened GhostOS." },

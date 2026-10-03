@@ -1,0 +1,82 @@
+/* Today: the morning screen (docs/DESIGN_LANGUAGE.md, section 8).
+   Dawn accent; everything else is the kit's. Tokens only. */
+
+.today-rows {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.today .kit-card {
+  display: grid;
+  gap: var(--space-3);
+  align-content: start;
+}
+
+.today .kit-card > .kit-button {
+  justify-self: start;
+}
+
+/* The side column is narrow: a reason or a state line wraps instead of being cut off. */
+.today .kit-dash__side .kit-row__meta {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* The hero: the reason is the point, the path is a quiet second line. */
+.today-reason {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--text);
+}
+
+.today-path {
+  display: block;
+  margin-top: var(--space-2);
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+}
+
+/* Setup: the folders Projects already knows, as a checklist. */
+.today-setup {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-4) 0 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface-2) 70%, transparent);
+  text-align: left;
+}
+
+.today-setup legend {
+  padding: 0 var(--space-2);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.today-setup__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  cursor: pointer;
+}
+
+.today-setup__row input {
+  flex: none;
+  accent-color: var(--accent-today);
+}
+
+.today-setup__row .kit-tech {
+  overflow-wrap: anywhere;
+}
+
+.today-setup__kind {
+  margin-left: auto;
+  flex: none;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}

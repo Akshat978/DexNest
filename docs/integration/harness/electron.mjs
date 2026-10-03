@@ -14,7 +14,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const desktop = resolve(here, "../../../apps/desktop");
 
 export const VIEWS = [
-  ["command", "Command"], ["search", "Search / Ask"], ["clipboard", "Clipboard"], ["drop", "Drop"], ["tools", "Tools"], ["vault", "Vault"],
+  ["command", "Command"], ["today", "Today"], ["search", "Search / Ask"], ["clipboard", "Clipboard"], ["drop", "Drop"], ["tools", "Tools"], ["vault", "Vault"],
   ["journal", "Journal"], ["calendar", "Calendar"], ["timetable", "Timetable"], ["utilities", "Utilities"], ["news", "News"], ["finder", "Finder"],
   ["capture", "Capture"], ["finance", "Finance"], ["dev", "Projects"], ["autopilot", "Autopilot"], ["skills", "Skills"], ["rpg", "Reality RPG"],
   ["ghost", "GhostOS"], ["object", "ObjectOS"], ["deck", "Deck"], ["heatmap", "Heatmap"], ["devices", "External Devices"], ["backup", "Backup"],

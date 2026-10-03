@@ -391,6 +391,11 @@ export const fallbackBridge: DexNestBridge = {
   skillConstellationHistory: async () => [],
   skillConstellationSettings: async () => ({ ...fallbackSkillSettings }),
   skillConstellationUpdateSettings: async (settings) => settings,
+  devIntelligenceStatus: async () => ({ enabled: false, scanning: false, repositories: 0 }),
+  devIntelligenceSettings: async () => ({ schemaVersion: 1, enabled: false, roots: [], manualRepositories: [], excludedRoots: [], scanIntervalMinutes: 30, runHealthChecks: true }),
+  devIntelligenceUpdateSettings: async (settings) => settings,
+  devIntelligenceRepositories: async () => [],
+  standupLatest: async () => null,
   realityRpgStatus: async () => ({ enabled: false, processing: false, lastRun: null, lastError: null }),
   realityRpgSnapshot: async () => ({
     enabled: false,

@@ -1,13 +1,13 @@
 import {
   Activity, Calculator, CalendarClock, CalendarDays, ClipboardList, CloudSun, Code2, Command,
   Bot, HardDriveDownload, Inbox, LayoutGrid, Lightbulb, Newspaper, NotebookPen, PackageSearch,
-  Ghost, Package, ScrollText, Settings as SettingsIcon, Share2, Sparkles, Stars, Stethoscope, Swords, Vault, Wallet, Wrench,
+  Ghost, Package, ScrollText, Settings as SettingsIcon, Share2, Sparkles, Stars, Stethoscope, Sunrise, Swords, Vault, Wallet, Wrench,
   type LucideIcon
 } from "lucide-react";
 
 /** Every view the shell can route to. */
 export type ViewId =
-  | "command" | "dev" | "autopilot" | "skills" | "rpg" | "ghost" | "object" | "deck" | "clipboard" | "drop" | "tools" | "vault"
+  | "command" | "today" | "dev" | "autopilot" | "skills" | "rpg" | "ghost" | "object" | "deck" | "clipboard" | "drop" | "tools" | "vault"
   | "search" | "capture" | "journal" | "calendar" | "timetable" | "utilities" | "news"
   | "finder" | "finance" | "heatmap" | "devices" | "backup" | "health" | "audit" | "settings";
 
@@ -29,6 +29,7 @@ export interface SidebarView {
  */
 export const SIDEBAR_VIEWS: SidebarView[] = [
   { id: "command", label: "Command", accentClass: "accent-command", actionId: "command.open_home" },
+  { id: "today", label: "Today", accentClass: "accent-today", actionId: "standup.open" },
   { id: "search", label: "Search / Ask", accentClass: "accent-search", actionId: "search.open" },
   { id: "clipboard", label: "Clipboard", accentClass: "accent-clipboard", actionId: "clipboard.open" },
   { id: "drop", label: "Drop", accentClass: "accent-drop", actionId: "drop.open" },
@@ -72,6 +73,7 @@ export function accentTint(accent: string, percent: number): string {
 
 export const MODULE_META: Record<string, { icon: LucideIcon; accent: string }> = {
   command: { icon: Command, accent: "#22D3EE" },
+  today: { icon: Sunrise, accent: "var(--accent-today)" },
   dev: { icon: Code2, accent: "#3B82F6" },
   autopilot: { icon: Bot, accent: "var(--accent-autopilot)" },
   skills: { icon: Stars, accent: "var(--accent-skills)" },

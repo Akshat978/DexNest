@@ -711,6 +711,10 @@ div.calendar-side-event[role="button"]:focus-visible {
   --accent: var(--accent-object);
 }
 
+.accent-today {
+  --accent: var(--accent-today);
+}
+
 .accent-deck {
   --accent: var(--accent-deck);
 }

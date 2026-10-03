@@ -261,10 +261,54 @@ function autopilotBridge(): Record<string, AnyFn> {
   };
 }
 
+// --- Today ------------------------------------------------------------------------------------
+
+function todayBridge(): Record<string, AnyFn> {
+  const large = scenario === "large";
+  const names = ["zephyr", "api-gateway", "dashboard", "dotfiles", "notes-cli", "billing-service"];
+  const count = large ? 40 : names.length;
+  const repos = Array.from({ length: count }, (_, i) => ({ schemaVersion: 1, id: `repo-${i}`, roots: [{ path: `D:/code/${names[i % names.length]}${i >= names.length ? `-${i}` : ""}`, domain: "windows" }], displayName: `${names[i % names.length]}${i >= names.length ? `-${i}` : ""}`, discoveredAt: T, lastSeenAt: T }));
+  const ev = (kind: string, i: number, hours: number) => [{ kind, id: `${kind}-${i}`, repositoryId: `repo-${i % count}`, observedAt: new Date(Date.parse("2026-06-30T08:00:00.000Z") - hours * 3_600_000).toISOString() }];
+  const subjects = ["Add offline queue for note edits", "Fix token refresh race in the gateway", "Split the settings form into sections", "Bump vite to 7 and fix the type errors", "Cache the invoice totals query", "Tidy the shell prompt"];
+  const changed = [
+    ...Array.from({ length: large ? 45 : 5 }, (_, i) => ({ id: `changed:commit:c${i}`, section: "Changed", title: subjects[i % subjects.length], summary: "Commit observed", repositoryId: `repo-${i % count}`, evidence: ev("commit", i, i + 1), sortKey: `a${i}` })),
+    { id: "changed:branch:b1", section: "Changed", title: "Branch main → feat/offline-sync", repositoryId: "repo-0", evidence: ev("event", 0, 3), sortKey: "b" },
+    { id: "changed:todo-new:t1", section: "Changed", title: "New TODO: retry the upload when the socket drops", repositoryId: "repo-0", evidence: ev("todo", 0, 5), sortKey: "c" },
+    { id: "changed:todo-resolved:t2", section: "Changed", title: "Resolved FIXME: totals are off by a cent on refunds", repositoryId: "repo-5", evidence: ev("todo", 5, 9), sortKey: "d" }
+  ];
+  const attention = [
+    { id: "attention:NEW:a", section: "NeedsAttention", title: "[NEW] Health check failing: pnpm test", summary: "3 of 212 tests failed on the last run.", repositoryId: "repo-1", lifecycle: "NEW", severity: "critical", evidence: ev("health", 1, 2), sortKey: "a" },
+    { id: "attention:ONGOING:b", section: "NeedsAttention", title: "[ONGOING] Merge in progress", summary: "A merge was started and not finished. Unresolved for 3 day(s).", repositoryId: "repo-2", lifecycle: "ONGOING", severity: "warning", evidence: ev("working_tree", 2, 70), sortKey: "b" },
+    { id: "attention:RESOLVED:c", section: "NeedsAttention", title: "[RESOLVED] Health check failing: pnpm lint", summary: "Passing again.", repositoryId: "repo-0", lifecycle: "RESOLVED", severity: "info", evidence: ev("health", 0, 6), sortKey: "c" }
+  ];
+  const state = repos.map((r, i) => ({ id: `state:${r.id}`, section: "RepositoryState", title: `${r.displayName} @ ${["feat/offline-sync", "main", "main", "main", "wip/args", "main"][i % 6]}`, summary: [`dirty=6, staged=2, conflicts=0, clean=false`, `dirty=0, staged=0, conflicts=0, clean=true`, `dirty=1, staged=0, conflicts=2, clean=false`, `dirty=0, staged=0, conflicts=0, clean=true`, `dirty=3, staged=0, conflicts=0, clean=false`, `dirty=0, staged=0, conflicts=0, clean=true`][i % 6], repositoryId: r.id, evidence: [], sortKey: `s${String(i).padStart(3, "0")}` }));
+  const candidates = [
+    { repositoryId: "repo-0", rank: 0, reason: "Most recently active repository, with six uncommitted changes on feat/offline-sync.", evidence: [] },
+    { repositoryId: "repo-4", rank: 1, reason: "Three uncommitted changes, last touched yesterday.", evidence: [] },
+    { repositoryId: "repo-2", rank: 2, reason: "A merge is in progress with two conflicts.", evidence: [] }
+  ];
+  const report = {
+    id: "report-1", occurrenceId: "standup:2026-06-30", triggerKind: "scheduled", generatedAt: "2026-06-30T08:40:00.000Z", schemaVersion: 1,
+    timeWindow: { kind: "since_last_standup", from: "2026-06-29T09:12:00.000Z", to: "2026-06-30T08:40:00.000Z", timezone: "UTC" },
+    sections: [{ kind: "Continue", items: [], continuationCandidates: candidates }, { kind: "Changed", items: changed }, { kind: "NeedsAttention", items: attention }, { kind: "RepositoryState", items: state }, { kind: "History", items: [] }],
+    items: [], continuationCandidates: candidates
+  };
+  const off = scenario === "empty";
+  const projects = repos.slice(0, 3).map((r, i) => ({ project: { id: `p${i}`, path: r.roots[0].path }, fetch: null }));
+  return {
+    devIntelligenceStatus: async () => ({ enabled: !off, scanning: false, repositories: off ? 0 : count }),
+    devIntelligenceSettings: async () => ({ schemaVersion: 1, enabled: !off, roots: [], manualRepositories: [], excludedRoots: [], scanIntervalMinutes: 30, runHealthChecks: true }),
+    devIntelligenceRepositories: async () => (off ? [] : repos),
+    standupLatest: async () => (off ? null : report),
+    projectsList: async () => [...projects, { project: { id: "p9", path: "E:/work/client-portal" }, fetch: null }],
+    projectsSettings: async () => ({ importRoots: ["D:/code"] })
+  };
+}
+
 // --- mount ------------------------------------------------------------------------------------
 
 const overrides: Record<string, AnyFn> =
-  view === "object" ? objectBridge() : view === "ghost" ? ghostBridge() : view === "rpg" ? rpgBridge() : view === "skills" ? skillsBridge() : view === "autopilot" ? autopilotBridge() : {};
+  view === "object" ? objectBridge() : view === "ghost" ? ghostBridge() : view === "rpg" ? rpgBridge() : view === "skills" ? skillsBridge() : view === "autopilot" ? autopilotBridge() : view === "today" ? todayBridge() : {};
 
 // Every read the shell or a view makes. The shell starts normally; the shoot
 // script then sets window.__harnessMode to "loading" or "error" and opens the
