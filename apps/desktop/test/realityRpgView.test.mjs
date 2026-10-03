@@ -91,16 +91,34 @@ test("off: explains what it reads and what it never reads, and offers to turn on
   assert.match(html, /role="tablist"/);
 });
 
-test("character sheet: level, XP to next, progress, stats", () => {
-  const html = render({ initial: { snapshot: base } });
-  assert.match(html, /Level <span class="technical">2<\/span>/);
-  assert.match(html, /150 XP to level 3/);
-  assert.match(html, /<progress class="rpg-bar" max="100" value="25" aria-label="Progress to level 3">/);
-  // Stats are cards with a bar against the strongest stat (Craft 120 is the top, Focus 30 a quarter of it).
-  assert.match(html, /<span class="rpg-stat__name">Craft<\/span><span class="technical">120 XP<\/span><span class="rpg-stat__bar" aria-hidden="true"><span style="width:100%"><\/span><\/span>/);
-  assert.match(html, /<span class="rpg-stat__name">Focus<\/span><span class="technical">30 XP<\/span><span class="rpg-stat__bar" aria-hidden="true"><span style="width:25%"><\/span><\/span>/);
+test("character sheet: a hero with the level ring, stat tiles strongest first, XP by day, quests, recent XP, next achievement", () => {
+  const html = render({ initial: { snapshot: base, today: "2026-06-03" } });
+  // The hero: the level as a ring a screen reader can read, the XP total, what's next.
+  assert.match(html, /<section class="kit-hero">/);
+  assert.match(html, /kit-hero__eyebrow">Level 2</);
+  assert.match(html, /kit-hero__title">150 XP</);
+  assert.match(html, /role="img" aria-label="Level 2, 25% of the way to level 3"/);
+  assert.match(html, /150 XP to level 3 · strongest stat: Craft · 1 of 2 achievements/);
+  // Stat tiles, strongest first, each against the strongest.
+  assert.match(html, /kit-stat__label">Craft<\/p><\/div><p class="kit-stat__value">120 XP<\/p><p class="kit-stat__foot"><span class="kit-stat__hint">strongest</);
+  assert.match(html, /kit-stat__label">Focus<\/p><\/div><p class="kit-stat__value">30 XP<\/p><p class="kit-stat__foot"><span class="kit-stat__hint">25% of Craft</);
+  // XP by day, with a text version; both awards fall in the window and fewer than 50 are loaded, so no caveat.
+  assert.match(html, /XP earned per day over the last 14 days: [^<]*02 1, 03 5/);
+  assert.doesNotMatch(html, /latest 50 awards/);
+  // Active quest as a meter; recent XP as rows; the next achievement with its progress.
+  assert.match(html, /kit-meter__label">Commit today<\/span><span class="kit-meter__value">1 of 2 times today</);
+  assert.match(html, /kit-row__title">Commit observed<\/span>/);
+  assert.match(html, /\+5 Craft/);
+  assert.match(html, /kit-row__title">Committed week</);
+  assert.match(html, /aria-valuenow="43"/, "3 of 7 days");
   assert.match(html, />Turn off</);
   assert.match(html, />Refresh</);
+});
+
+test("character sheet: with 50 awards loaded that don't reach back two weeks, the chart says it may be short", () => {
+  const many = Array.from({ length: 50 }, (_, i) => ({ ...base.recentAwards[0], id: `a${i}`, localDay: "2026-06-03" }));
+  const html = render({ initial: { snapshot: { ...base, recentAwards: many }, today: "2026-06-03" } });
+  assert.match(html, /From your latest 50 awards; earlier days may have more\./);
 });
 
 test("tabs: one tab stop, the selected tab controls a labelled panel", () => {
@@ -111,27 +129,30 @@ test("tabs: one tab stop, the selected tab controls a labelled panel", () => {
   assert.match(html, /role="tabpanel" id="rpg-panel-quests" aria-labelledby="rpg-tab-quests"/);
 });
 
-test("quests: progress as numbers, completions, abandon, and a labelled form", () => {
+test("quests: cards with a progress meter, completions, abandon, and a labelled form", () => {
   const html = render({ initial: { snapshot: base, tab: "quests" } });
-  assert.match(html, /Commit today/);
-  assert.match(html, /1 of 2 times today/);
+  assert.match(html, /<li class="rpg-quest">/);
+  assert.match(html, /rpg-item__title">Commit today</);
+  assert.match(html, /kit-meter__label">1 of 2 times today</);
+  assert.match(html, /role="progressbar"[^>]*aria-valuenow="50"/);
   assert.match(html, /Completed 4 times/);
   assert.match(html, /aria-label="Abandon Commit today"/);
   assert.match(html, /<form class="rpg-form" aria-label="New quest">/);
 });
 
-test("achievements: unlocked with a date, locked with progress", () => {
+test("achievements: medallions - earned ones lit with a date, locked ones dim with progress; the state is read out", () => {
   const html = render({ initial: { snapshot: base, tab: "achievements" } });
-  assert.match(html, /First steps · unlocked/);
+  assert.match(html, /1 of 2 unlocked/);
+  assert.match(html, /<li class="rpg-medal rpg-medal--done">[\s\S]*?First steps<span class="kit-visually-hidden"> · unlocked<\/span>/);
   assert.match(html, /datetime="2026-06-02T10:00:00.000Z"/i);
-  assert.match(html, /3 of 7 days/);
+  assert.match(html, /<li class="rpg-medal">[\s\S]*?Committed week<span class="kit-visually-hidden"> · locked<\/span>[\s\S]*?3 of 7 days/);
 });
 
 test("history: what earned the XP, never what the event said; deleted rules say so", () => {
   const html = render({ initial: { snapshot: base, tab: "history" } });
-  assert.match(html, /<span class="rpg-history__what"><span>Commit observed<\/span><span class="rpg-hint technical">dev.commit.observed<\/span><\/span>/);
-  assert.match(html, /<span>A deleted rule<\/span><span class="rpg-hint technical">clipboard.copy<\/span>/);
-  assert.match(html, /\+5 Craft/);
+  assert.match(html, /kit-row__title">Commit observed<\/span><span class="kit-row__meta"><span class="technical">dev.commit.observed<\/span>/);
+  assert.match(html, /kit-row__title">A deleted rule<\/span><span class="kit-row__meta"><span class="technical">clipboard.copy<\/span>/);
+  assert.match(html, /rpg-history__xp">\+5 Craft</);
 });
 
 test("off: no Refresh while processing is off", () => {
@@ -182,4 +203,13 @@ test("design tokens only: no literal colours; fonts from tokens; the module acce
   const css = files[1];
   for (const [, family] of css.matchAll(/font-family:\s*([^;]+);/g)) assert.match(family.trim(), /^var\(--font-(ui|tech)\)$/, family);
   assert.match(css, /var\(--accent-rpg\)/);
+});
+
+test("character sheet: a quiet fortnight says so instead of an empty chart; off shows no empty sheet", () => {
+  const quiet = render({ initial: { snapshot: base, today: "2026-07-30" } });
+  assert.match(quiet, /No XP in the last 14 days\./);
+  assert.doesNotMatch(quiet, /class="kit-bars"/);
+  const html = render({ initial: { snapshot: off } });
+  assert.doesNotMatch(html, /kit-hero/);
+  assert.match(html, /Nothing earned yet\. Add a rule in/);
 });

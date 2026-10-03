@@ -3,7 +3,7 @@
 // JSON the module validates, and how history reads. No DOM, no bridge, no I/O.
 // The module re-validates everything; these builders only shape input.
 
-import type { AchievementView, AwardView, RealityRpgSnapshot, Rule } from "@dexnest/reality-rpg";
+import type { AchievementView, AwardView, QuestView, RealityRpgSnapshot, Rule } from "@dexnest/reality-rpg";
 
 export type ViewState =
   | { kind: "loading" }
@@ -183,4 +183,77 @@ export function nextTab(current: Tab, key: string): Tab | null {
 /** "Applying a rule to past activity" sets it to count from the epoch: say that, not "1970-01-01". */
 export function countsFromLabel(effectiveFrom: string): string {
   return Date.parse(effectiveFrom) <= 0 ? "Counts all past activity" : `Counts from ${shortDate(effectiveFrom)}`;
+}
+
+// --- Character sheet presentation (docs/DESIGN_LANGUAGE.md, Reality RPG) -------------
+
+/** A local calendar day, YYYY-MM-DD, n days before `today` (also YYYY-MM-DD). */
+export function dayBefore(today: string, n: number): string {
+  const t = Date.parse(`${today}T12:00:00.000Z`) - n * 86_400_000;
+  return new Date(t).toISOString().slice(0, 10);
+}
+
+/**
+ * XP per local day for the last `days` days, oldest first, from the awards the
+ * view has. Those are only the most recent ones (the snapshot carries 50), so
+ * `complete` says whether they reach back far enough to cover the whole range -
+ * the chart says so when they don't, rather than showing a quiet week that
+ * wasn't.
+ */
+export function xpByDay(
+  awards: readonly Pick<AwardView, "localDay" | "xp">[],
+  days: number,
+  today: string,
+  pageSize = 50
+): { data: { label: string; value: number; title: string }[]; complete: boolean } {
+  const first = dayBefore(today, days - 1);
+  const totals = new Map<string, number>();
+  for (const a of awards) if (a.localDay >= first && a.localDay <= today) totals.set(a.localDay, (totals.get(a.localDay) ?? 0) + a.xp);
+  const oldest = awards.reduce<string | null>((min, a) => (min === null || a.localDay < min ? a.localDay : min), null);
+  const complete = awards.length < pageSize || (oldest !== null && oldest < first);
+  const data = Array.from({ length: days }, (_, i) => {
+    const day = dayBefore(today, days - 1 - i);
+    const value = totals.get(day) ?? 0;
+    return { label: day.slice(8), value, title: `${day}: ${value} XP` };
+  });
+  return { data, complete };
+}
+
+/** The locked achievement closest to done: what to aim for next. */
+export function nextAchievement(views: readonly AchievementView[]): AchievementView | null {
+  const locked = views.filter((v) => !v.unlocked && v.progress.target > 0);
+  if (locked.length === 0) return null;
+  return [...locked].sort((a, b) => b.progress.current / b.progress.target - a.progress.current / a.progress.target || a.achievement.name.localeCompare(b.achievement.name))[0] ?? null;
+}
+
+/** Stats strongest first, with each one's share of the strongest. */
+export function rankedStats(stats: readonly { stat: string; xp: number }[]): { stat: string; xp: number; share: number }[] {
+  const top = Math.max(0, ...stats.map((s) => s.xp));
+  return [...stats].sort((a, b) => b.xp - a.xp || a.stat.localeCompare(b.stat)).map((s) => ({ ...s, share: statShare(s.xp, top) }));
+}
+
+/** The hero's line under the XP total. */
+export function heroLine(snapshot: Pick<RealityRpgSnapshot, "sheet" | "achievements">): string {
+  const { sheet } = snapshot;
+  const parts = [sheet.xpToNextLevel === null ? "Top of the level curve" : `${sheet.xpToNextLevel.toLocaleString("en")} XP to level ${sheet.level + 1}`];
+  const top = rankedStats(sheet.stats)[0];
+  if (top) parts.push(`strongest stat: ${top.stat}`);
+  const unlocked = snapshot.achievements.filter((a) => a.unlocked).length;
+  if (snapshot.achievements.length > 0) parts.push(`${unlocked} of ${snapshot.achievements.length} achievements`);
+  return parts.join(" · ");
+}
+
+/** Today as a local calendar day, YYYY-MM-DD. */
+export function localToday(now: Date = new Date()): string {
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+/** A quest's progress as one line: "1 of 2 times today", "3 of 5 days · window closed". */
+export function questProgressText(quest: Pick<QuestView["quest"], "condition" | "window">, progress: Pick<QuestView["progress"], "current" | "target" | "open">): string {
+  const window = quest.window.kind === "daily" ? " today" : quest.window.kind === "weekly" ? " this week" : "";
+  const closed = quest.window.kind === "fixed" && !progress.open ? " · window closed" : "";
+  return `${progressText(progress.current, progress.target, conditionUnit(quest.condition.kind))}${window}${closed}`;
 }

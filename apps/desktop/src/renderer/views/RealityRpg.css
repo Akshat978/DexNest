@@ -1,6 +1,8 @@
-/* Reality RPG. DexNest design tokens only - no literal colours. Accent is the
-   existing --accent-rpg token; fonts are --font-ui and, for numbers, ids and
-   dates, --font-tech. Nothing animates. */
+/* Reality RPG: a character sheet, gold on black (docs/DESIGN_LANGUAGE.md).
+   Design tokens only - no literal colours. The accent is --accent-rpg; fonts
+   are --font-ui and, for numbers, ids and dates, --font-tech. The kit's visual
+   layer draws the hero, tiles, meters and charts; this file only lays out the
+   module's own pieces. Nothing animates while idle. */
 
 .rpg {
   font-family: var(--font-ui);
@@ -13,72 +15,187 @@
 .rpg-hint {
   margin: 0;
   color: var(--text-muted);
-  font-size: 0.85rem;
+  font-size: 0.8125rem;
 }
 
-.rpg-sheet,
 .rpg-quests,
-.rpg-rules {
+.rpg-rules,
+.rpg-achievements {
+  display: grid;
+  gap: var(--space-4);
+}
+
+/* --- Character -------------------------------------------------------------------- */
+/* The caveat under the XP chart sits clear of its axis. */
+.kit-bars + .rpg-hint {
+  margin-top: var(--space-2);
+}
+
+.rpg-meters,
+.rpg-rows,
+.rpg-next {
   display: grid;
   gap: var(--space-3);
 }
 
-.rpg-level {
-  display: grid;
-  gap: var(--space-1);
-  padding: var(--space-4);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-}
-
-.rpg-level p {
-  margin: 0;
-}
-
-.rpg-level__number {
-  font-size: 1.5rem;
-}
-
-.rpg-bar {
-  width: 100%;
-  height: 0.6rem;
-  accent-color: var(--accent-rpg);
-}
-
-.rpg-stats,
-.rpg-list,
-.rpg-history {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
+.rpg-rows {
   gap: var(--space-2);
 }
 
-.rpg-stats li,
-.rpg-history li {
-  display: flex;
-  justify-content: space-between;
+/* --- Quests: cards with a meter --------------------------------------------------- */
+.rpg-quest-grid {
+  display: grid;
   gap: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  background: var(--surface-2);
-  border-radius: var(--radius-sm);
+  grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
-.rpg-history li span:first-child {
-  flex: 1;
-  min-width: 0;
-  overflow-wrap: anywhere;
+.rpg-quest {
+  position: relative;
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, var(--surface-2));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--surface-2) 85%, transparent) 0%, color-mix(in srgb, var(--surface) 90%, transparent) 100%);
+}
+
+.rpg-quest--met {
+  border-color: color-mix(in srgb, var(--success) 40%, var(--border));
+}
+
+.rpg-quest p {
+  margin: 0;
+}
+
+.rpg-quest > button {
+  justify-self: start;
+}
+
+.rpg-quest__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.rpg-quest__icon {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--accent-rpg) 25%, transparent);
+  background: color-mix(in srgb, var(--accent-rpg) 10%, transparent);
+  color: var(--accent-rpg);
+}
+
+.rpg-quest__icon svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+/* --- Achievements: medallions, earned ones lit in gold ----------------------------- */
+.rpg-medals {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rpg-medal {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-2);
+  padding: var(--space-5) var(--space-4) var(--space-4);
+  text-align: center;
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, var(--surface-2));
+  background: color-mix(in srgb, var(--surface-2) 60%, transparent);
+}
+
+.rpg-medal p {
+  margin: 0;
+}
+
+.rpg-medal .kit-meter {
+  width: 100%;
+  text-align: left;
+}
+
+.rpg-medal__badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-disabled);
+}
+
+.rpg-medal__badge svg {
+  width: 1.5rem;
+  height: 1.5rem;
+}
+
+.rpg-medal__name {
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.rpg-medal--done {
+  border-color: color-mix(in srgb, var(--accent-rpg) 40%, var(--border));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-rpg) 9%, var(--surface-2)) 0%, var(--surface) 100%);
+}
+
+.rpg-medal--done .rpg-medal__badge {
+  border-color: color-mix(in srgb, var(--accent-rpg) 60%, transparent);
+  background: color-mix(in srgb, var(--accent-rpg) 14%, var(--surface));
+  color: var(--accent-rpg);
+  box-shadow: 0 0 18px color-mix(in srgb, var(--accent-rpg) 35%, transparent);
+}
+
+.rpg-medal--done .rpg-medal__name {
+  color: var(--text);
+}
+
+/* --- History ------------------------------------------------------------------------ */
+.rpg-history {
+  display: grid;
+  gap: var(--space-2);
+  max-width: 56rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rpg-history__xp {
+  color: var(--accent-rpg);
+}
+
+/* --- Rules (unchanged in behaviour) --------------------------------------------------- */
+.rpg-list {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
 .rpg-item {
   display: grid;
   gap: var(--space-1);
-  padding: var(--space-3);
-  background: var(--surface);
-  border: 1px solid var(--border);
+  padding: var(--space-3) var(--space-4);
   border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, var(--surface-2));
+  background: color-mix(in srgb, var(--surface-2) 70%, transparent);
 }
 
 .rpg-item p {
@@ -86,11 +203,8 @@
 }
 
 .rpg-item__title {
+  font-weight: 500;
   color: var(--text);
-}
-
-.rpg-item--done {
-  border-color: var(--accent-rpg);
 }
 
 .rpg-item--off .rpg-item__title {
@@ -101,24 +215,52 @@
   justify-self: start;
 }
 
+/* Section headings inside a panel read like the kit's section titles. */
+.rpg-rules h3 {
+  margin: var(--space-2) 0 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.rpg-rules > section {
+  display: grid;
+  gap: var(--space-2);
+}
+
+/* The technical line of a rule is small print, not a headline. */
+.rpg-item .technical {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+/* --- Forms -------------------------------------------------------------------------- */
 .rpg-form {
   display: grid;
   gap: var(--space-3);
   max-width: 36rem;
   padding: var(--space-4);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, var(--surface-2));
+  background: color-mix(in srgb, var(--surface-2) 50%, transparent);
 }
 
 .rpg-form h3 {
   margin: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
 }
 
 .rpg-form fieldset {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
   display: grid;
   gap: var(--space-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
 }
 
 .rpg-check {
@@ -134,52 +276,4 @@
   outline: 2px solid var(--accent-rpg);
   outline-offset: 2px;
   box-shadow: 0 0 0 4px var(--focus-ring);
-}
-
-/* The sidebar's accent class for this module, next to the module's own styles
-   rather than in the shared stylesheet. Loaded with the view, which the shell
-   imports up front. */
-.accent-loop {
-  --accent: var(--accent-rpg);
-}
-
-/* Stats: compact cards, each with a bar against the strongest stat. */
-ul.rpg-stats {
-  grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
-  max-width: 64rem;
-}
-
-.rpg-stats li {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: var(--space-1) var(--space-3);
-  align-items: baseline;
-}
-
-.rpg-stat__bar {
-  grid-column: 1 / -1;
-  height: 4px;
-  border-radius: 999px;
-  background: var(--border);
-  overflow: hidden;
-}
-
-.rpg-stat__bar > span {
-  display: block;
-  height: 100%;
-  background: var(--accent-rpg);
-}
-
-/* History: readable width; what happened leads, the event type is small. */
-.rpg-history {
-  max-width: 56rem;
-}
-
-.rpg-history__what {
-  display: grid;
-  gap: 2px;
-}
-
-.rpg-history__what .rpg-hint {
-  font-size: 0.75rem;
 }

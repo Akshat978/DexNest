@@ -1,7 +1,34 @@
 import React, { useCallback, useEffect, useState } from "react";
 import type { AwardView, RealityRpgSettings, RealityRpgSnapshot, RealityRpgStatus, Rule } from "@dexnest/reality-rpg";
-import { Swords } from "lucide-react";
-import { accentStyle, Button, ConfirmDialog, EmptyNote, EmptyState, ErrorState, Field, InlineError, LoadingState, Notice, PageHeader, Select, TabPanel, Tabs, TextInput } from "../components/ui/kit";
+import { Lock, Swords, Target, Trophy, Zap } from "lucide-react";
+import {
+  accentStyle,
+  BarChart,
+  Button,
+  Card,
+  ConfirmDialog,
+  DashboardGrid,
+  EmptyNote,
+  EmptyState,
+  ErrorState,
+  Field,
+  Hero,
+  InlineError,
+  ListRow,
+  LoadingState,
+  Meter,
+  Notice,
+  PageHeader,
+  Reveal,
+  Ring,
+  SectionTitle,
+  Select,
+  StatGrid,
+  StatTile,
+  TabPanel,
+  Tabs,
+  TextInput
+} from "../components/ui/kit";
 import {
   countsFromLabel,
   actionMessage,
@@ -10,7 +37,13 @@ import {
   conditionUnit,
   EMPTY_QUEST_FORM,
   EMPTY_RULE_FORM,
+  heroLine,
   levelProgress,
+  localToday,
+  nextAchievement,
+  questProgressText,
+  rankedStats,
+  xpByDay,
   orderAchievements,
   progressText,
   questFromForm,
@@ -41,7 +74,7 @@ export interface RealityRpgViewProps {
   /** Runs a registered reality_rpg.* action through the action registry. */
   onAction(actionId: string, params?: Record<string, unknown>): Promise<unknown>;
   /** Tests only: start from a known state instead of loading. */
-  initial?: { snapshot: RealityRpgSnapshot | null; error?: string | null; tab?: Tab; confirm?: Confirm | null };
+  initial?: { snapshot: RealityRpgSnapshot | null; error?: string | null; tab?: Tab; confirm?: Confirm | null; today?: string };
 }
 
 /** A change that asks first: deleting a rule, abandoning a quest. */
@@ -161,7 +194,7 @@ export function RealityRpgView({ bridge, onAction, initial }: RealityRpgViewProp
         <>
           <Tabs label="Reality RPG sections" idPrefix="rpg" value={tab} onChange={setTab} tabs={TABS.map((t) => ({ id: t, label: TAB_LABELS[t] }))} />
           <TabPanel idPrefix="rpg" id={tab}>
-            {tab === "character" && <CharacterPanel snapshot={snapshot} />}
+            {tab === "character" && <CharacterPanel snapshot={snapshot} today={initial?.today ?? localToday()} off={state.kind === "off"} onOpen={setTab} />}
             {tab === "quests" && <QuestsPanel snapshot={snapshot} busy={busy} run={run} ask={setConfirm} />}
             {tab === "achievements" && <AchievementsPanel snapshot={snapshot} />}
             {tab === "history" && <HistoryPanel snapshot={snapshot} bridge={bridge} />}
@@ -173,57 +206,133 @@ export function RealityRpgView({ bridge, onAction, initial }: RealityRpgViewProp
   );
 }
 
-function CharacterPanel({ snapshot }: { snapshot: RealityRpgSnapshot }) {
+const STAT_TONES = ["accent", "info", "success", "warning"] as const;
+
+function CharacterPanel({ snapshot, today, off, onOpen }: { snapshot: RealityRpgSnapshot; today: string; off: boolean; onOpen(tab: Tab): void }) {
   const { sheet } = snapshot;
+  if (off) {
+    // The explanation above already says what this is; don't add an empty sheet under it.
+    return (
+      <EmptyNote>
+        Nothing earned yet. Add a rule in <Button size="sm" variant="ghost" onClick={() => onOpen("rules")}>Rules</Button>, then turn Reality RPG on.
+      </EmptyNote>
+    );
+  }
   const pct = levelProgress(sheet);
+  const stats = rankedStats(sheet.stats);
+  const days = xpByDay(snapshot.recentAwards, 14, today);
+  const active = snapshot.quests.filter((q) => q.quest.status === "active");
+  const next = nextAchievement(snapshot.achievements);
+  const ringLabel = sheet.xpToNextLevel === null ? `Level ${sheet.level}, the top of the curve` : `Level ${sheet.level}, ${pct}% of the way to level ${sheet.level + 1}`;
   return (
-    <div className="rpg-sheet">
-      <div className="rpg-level">
-        <p className="rpg-level__number">Level <span className="technical">{sheet.level}</span></p>
-        <p className="technical">{sheet.totalXp} XP</p>
-        <progress className="rpg-bar" max={100} value={pct} aria-label={`Progress to level ${sheet.level + 1}`}>{pct}%</progress>
-        <p className="rpg-hint">
-          {sheet.xpToNextLevel === null ? "Top of the level curve." : `${sheet.xpToNextLevel} XP to level ${sheet.level + 1}.`}
-        </p>
-      </div>
-      <h3>Stats</h3>
-      {sheet.stats.length === 0 ? (
+    <Reveal className="rpg-sheet">
+      <Hero
+        eyebrow={`Level ${sheet.level}`}
+        title={`${sheet.totalXp.toLocaleString("en")} XP`}
+        visual={<Ring value={pct} size={128} stroke={10} center={String(sheet.level)} caption="level" label={ringLabel} />}
+      >
+        {heroLine(snapshot)}
+      </Hero>
+
+      {stats.length === 0 ? (
         <EmptyNote>No XP yet. Switch on a rule and do the thing it names.</EmptyNote>
       ) : (
-        <ul className="rpg-stats">
-          {sheet.stats.map((s) => (
-            <li key={s.stat}>
-              <span className="rpg-stat__name">{s.stat}</span>
-              <span className="technical">{s.xp} XP</span>
-              <span className="rpg-stat__bar" aria-hidden="true"><span style={{ width: `${statShare(s.xp, Math.max(...sheet.stats.map((x) => x.xp)))}%` }} /></span>
-            </li>
+        <StatGrid columns={stats.length >= 4 ? 4 : stats.length === 3 ? 3 : 2}>
+          {stats.slice(0, 4).map((s, i) => (
+            <StatTile key={s.stat} label={s.stat} value={`${s.xp.toLocaleString("en")} XP`} tone={STAT_TONES[i % STAT_TONES.length]} hint={i === 0 ? "strongest" : `${s.share}% of ${stats[0]!.stat}`} />
           ))}
-        </ul>
+        </StatGrid>
       )}
+
+      <DashboardGrid
+        main={
+          <>
+            <Card accent="rpg">
+              <SectionTitle>XP · last 14 days</SectionTitle>
+              {days.data.some((d) => d.value > 0) ? (
+                <>
+                  <BarChart data={days.data} labelEvery={2} label="XP earned per day over the last 14 days" />
+                  {!days.complete && <p className="rpg-hint">From your latest 50 awards; earlier days may have more.</p>}
+                </>
+              ) : (
+                <EmptyNote>No XP in the last 14 days.</EmptyNote>
+              )}
+            </Card>
+            <Card>
+              <SectionTitle count={active.length} action={<Button size="sm" variant="ghost" onClick={() => onOpen("quests")}>All quests</Button>}>Active quests</SectionTitle>
+              {active.length === 0 ? (
+                <EmptyNote>No active quests. Start one in Quests.</EmptyNote>
+              ) : (
+                <div className="rpg-meters">
+                  {active.slice(0, 4).map(({ quest, progress }) => (
+                    <Meter key={quest.id} label={quest.title} value={progress.current} max={progress.target} display={questProgressText(quest, progress)} tone={progress.met ? "success" : "accent"} />
+                  ))}
+                </div>
+              )}
+            </Card>
+          </>
+        }
+        side={
+          <>
+            <Card>
+              <SectionTitle action={snapshot.recentAwards.length > 0 ? <Button size="sm" variant="ghost" onClick={() => onOpen("history")}>History</Button> : undefined}>Recent XP</SectionTitle>
+              {snapshot.recentAwards.length === 0 ? (
+                <EmptyNote>Nothing earned yet.</EmptyNote>
+              ) : (
+                <div className="rpg-rows">
+                  {snapshot.recentAwards.slice(0, 5).map((a) => (
+                    <ListRow key={a.id} icon={<Zap />} title={awardTitle(a)} meta={<time dateTime={a.occurredAt} title={a.occurredAt}>{shortDate(a.occurredAt)}</time>} trailing={`+${a.xp} ${a.stat}`} />
+                  ))}
+                </div>
+              )}
+            </Card>
+            <Card>
+              <SectionTitle action={snapshot.achievements.length > 0 ? <Button size="sm" variant="ghost" onClick={() => onOpen("achievements")}>All</Button> : undefined}>Next achievement</SectionTitle>
+              {next ? (
+                <div className="rpg-next">
+                  <ListRow icon={<Trophy />} title={next.achievement.name} meta={next.achievement.description} />
+                  <Meter label="Progress" value={next.progress.current} max={next.progress.target} display={progressText(next.progress.current, next.progress.target, conditionUnit(next.achievement.condition.kind))} />
+                </div>
+              ) : (
+                <EmptyNote>{snapshot.achievements.length > 0 ? "Every achievement is unlocked." : "No achievements defined yet."}</EmptyNote>
+              )}
+            </Card>
+          </>
+        }
+      />
+
       {snapshot.lastRun && (
         <p className="rpg-hint">Last processed <time className="technical" dateTime={snapshot.lastRun.startedAt} title={snapshot.lastRun.startedAt}>{shortDate(snapshot.lastRun.startedAt)}</time>{snapshot.enabled ? "" : " · processing is off"}</p>
       )}
-    </div>
+    </Reveal>
   );
 }
 
 function AchievementsPanel({ snapshot }: { snapshot: RealityRpgSnapshot }) {
   const views = orderAchievements(snapshot.achievements);
   if (views.length === 0) return <EmptyNote>No achievements defined. The starter set in Rules has a few.</EmptyNote>;
+  const unlockedCount = views.filter((v) => v.unlocked).length;
   return (
-    <ul className="rpg-list">
-      {views.map(({ achievement, unlocked, progress }) => (
-        <li key={achievement.id} className={unlocked ? "rpg-item rpg-item--done" : "rpg-item"}>
-          <p className="rpg-item__title">{achievement.name}{unlocked ? " · unlocked" : ""}</p>
-          <p className="rpg-hint">{achievement.description}</p>
-          {unlocked ? (
-            <p className="rpg-hint">Unlocked <time className="technical" dateTime={unlocked.unlockedAt}>{shortDate(unlocked.unlockedAt)}</time></p>
-          ) : (
-            <p className="technical">{progressText(progress.current, progress.target, conditionUnit(achievement.condition.kind))}</p>
-          )}
-        </li>
-      ))}
-    </ul>
+    <div className="rpg-achievements">
+      <p className="rpg-hint">{unlockedCount} of {views.length} unlocked</p>
+      <ul className="rpg-medals">
+        {views.map(({ achievement, unlocked, progress }) => (
+          <li key={achievement.id} className={unlocked ? "rpg-medal rpg-medal--done" : "rpg-medal"}>
+            <span className="rpg-medal__badge" aria-hidden="true">{unlocked ? <Trophy /> : <Lock />}</span>
+            <p className="rpg-medal__name">
+              {achievement.name}
+              <span className="kit-visually-hidden">{unlocked ? " · unlocked" : " · locked"}</span>
+            </p>
+            <p className="rpg-hint">{achievement.description}</p>
+            {unlocked ? (
+              <p className="rpg-hint">Unlocked <time className="technical" dateTime={unlocked.unlockedAt}>{shortDate(unlocked.unlockedAt)}</time></p>
+            ) : (
+              <Meter size="sm" label="Progress" value={progress.current} max={progress.target} display={progressText(progress.current, progress.target, conditionUnit(achievement.condition.kind))} />
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -236,15 +345,14 @@ function QuestsPanel({ snapshot, busy, run, ask }: { snapshot: RealityRpgSnapsho
       {active.length === 0 ? (
         <EmptyNote>No active quests. Create one below.</EmptyNote>
       ) : (
-        <ul className="rpg-list">
+        <ul className="rpg-quest-grid">
           {active.map(({ quest, progress, completions }) => (
-            <li key={quest.id} className="rpg-item">
-              <p className="rpg-item__title">{quest.title}</p>
-              <p className="technical">
-                {progressText(progress.current, progress.target, conditionUnit(quest.condition.kind))}
-                {quest.window.kind === "daily" ? " today" : quest.window.kind === "weekly" ? " this week" : ""}
-                {quest.window.kind === "fixed" && !progress.open ? " · window closed" : ""}
-              </p>
+            <li key={quest.id} className={progress.met ? "rpg-quest rpg-quest--met" : "rpg-quest"}>
+              <div className="rpg-quest__head">
+                <span className="rpg-quest__icon" aria-hidden="true"><Target /></span>
+                <p className="rpg-item__title">{quest.title}</p>
+              </div>
+              <Meter label={questProgressText(quest, progress)} value={progress.current} max={progress.target} tone={progress.met ? "success" : "accent"} display={progress.met ? "done" : undefined} />
               {completions > 0 && <p className="rpg-hint">Completed {completions} time{completions === 1 ? "" : "s"}</p>}
               <Button
                 variant="ghost"
@@ -329,12 +437,17 @@ function HistoryPanel({ snapshot, bridge }: { snapshot: RealityRpgSnapshot; brid
       <ul className="rpg-history">
         {rows.map((a) => (
           <li key={a.id}>
-            <span className="rpg-history__what">
-              <span>{awardTitle(a)}</span>
-              <span className="rpg-hint technical">{awardSource(a)}</span>
-            </span>
-            <span className="technical">+{a.xp} {a.stat}</span>
-            <time className="technical" dateTime={a.occurredAt} title={a.occurredAt}>{shortDate(a.occurredAt)}</time>
+            <ListRow
+              icon={<Zap />}
+              title={awardTitle(a)}
+              meta={<span className="technical">{awardSource(a)}</span>}
+              trailing={
+                <>
+                  <span className="rpg-history__xp">+{a.xp} {a.stat}</span>
+                  <time dateTime={a.occurredAt} title={a.occurredAt}>{shortDate(a.occurredAt)}</time>
+                </>
+              }
+            />
           </li>
         ))}
       </ul>

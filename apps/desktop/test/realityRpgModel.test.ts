@@ -5,6 +5,12 @@ import { test } from "node:test";
 import type { AchievementView, AwardView, RealityRpgSnapshot } from "@dexnest/reality-rpg";
 import {
   actionMessage,
+  dayBefore,
+  heroLine,
+  nextAchievement,
+  questProgressText,
+  rankedStats,
+  xpByDay,
   awardLabel,
   awardSource,
   awardTitle,
@@ -131,4 +137,45 @@ test("a rule reads as a sentence; stat bars are shares of the strongest stat", (
 test("countsFromLabel: the epoch means all past activity", () => {
   assert.equal(countsFromLabel("1970-01-01T00:00:00.000Z"), "Counts all past activity");
   assert.match(countsFromLabel("2026-06-01T00:00:00.000Z"), /^Counts from 2026-06-01/);
+});
+
+test("XP by day: oldest first, a slot for every day, and honest about a short page", () => {
+  assert.equal(dayBefore("2026-03-01", 1), "2026-02-28");
+  const awards = [
+    { localDay: "2026-06-03", xp: 5 },
+    { localDay: "2026-06-03", xp: 2 },
+    { localDay: "2026-06-01", xp: 4 },
+    { localDay: "2026-05-01", xp: 99 }
+  ];
+  const r = xpByDay(awards, 3, "2026-06-03");
+  assert.deepEqual(r.data.map((d) => [d.label, d.value]), [["01", 4], ["02", 0], ["03", 7]]);
+  assert.equal(r.data[2]!.title, "2026-06-03: 7 XP");
+  assert.equal(r.complete, true, "fewer than a page loaded: that is everything");
+  const full = Array.from({ length: 50 }, () => ({ localDay: "2026-06-03", xp: 1 }));
+  assert.equal(xpByDay(full, 14, "2026-06-03").complete, false, "a full page that doesn't reach the start may be missing days");
+  const reaching = [...full.slice(1), { localDay: "2026-05-01", xp: 1 }];
+  assert.equal(xpByDay(reaching, 14, "2026-06-03").complete, true, "a full page that reaches past the start covers the range");
+});
+
+test("stats strongest first; the next achievement is the closest locked one; the hero line", () => {
+  assert.deepEqual(rankedStats([{ stat: "Focus", xp: 30 }, { stat: "Craft", xp: 120 }]).map((s) => [s.stat, s.share]), [["Craft", 100], ["Focus", 25]]);
+  const view = (id: string, current: number, target: number, unlocked = false) =>
+    ({ achievement: { id, name: id, description: "", condition: { kind: "count", ruleIds: [], target } }, unlocked: unlocked ? { achievementId: id, unlockedAt: "2026-06-01T00:00:00.000Z", tippingAwardId: "x" } : null, progress: { current, target, met: unlocked } }) as unknown as AchievementView;
+  assert.equal(nextAchievement([view("far", 1, 10), view("close", 4, 5), view("done", 5, 5, true)])?.achievement.id, "close");
+  assert.equal(nextAchievement([view("done", 5, 5, true)]), null);
+  const sheet = { totalXp: 150, level: 2, xpIntoLevel: 50, xpToNextLevel: 150, stats: [{ stat: "Craft", xp: 120 }] };
+  assert.equal(heroLine({ sheet, achievements: [view("done", 5, 5, true), view("far", 1, 10)] }), "150 XP to level 3 · strongest stat: Craft · 1 of 2 achievements");
+  assert.equal(heroLine({ sheet: { ...sheet, xpToNextLevel: null, stats: [] }, achievements: [] }), "Top of the level curve");
+});
+
+test("a quest's progress reads as one line, with its window", () => {
+  const q = (window: object, condition = { kind: "count" }) => ({ window, condition }) as never;
+  assert.equal(questProgressText(q({ kind: "daily" }), { current: 1, target: 2, open: true }), "1 of 2 times today");
+  assert.equal(questProgressText(q({ kind: "weekly" }, { kind: "days" }), { current: 3, target: 5, open: true }), "3 of 5 days this week");
+  assert.equal(questProgressText(q({ kind: "fixed" }, { kind: "xp" }), { current: 9, target: 5, open: false }), "5 of 5 XP · window closed");
+});
+
+test("the hero line groups thousands", () => {
+  const sheet = { totalXp: 48210, level: 42, xpIntoLevel: 100, xpToNextLevel: 4300, stats: [] };
+  assert.equal(heroLine({ sheet, achievements: [] }), "4,300 XP to level 43");
 });
