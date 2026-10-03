@@ -167,5 +167,5 @@ test("components use design tokens only: no literal colours, fonts from tokens",
   for (const [, family] of css.matchAll(/font-family:\s*([^;]+);/g)) {
     assert.match(family.trim(), /^var\(--font-(ui|tech)\)$/, `font-family ${family} must be a token`);
   }
-  assert.match(css, /var\(--accent-dev\)/, "the module uses the Dev accent");
+  assert.match(css, /var\(--accent-skills\)/, "the module uses its own accent");
 });

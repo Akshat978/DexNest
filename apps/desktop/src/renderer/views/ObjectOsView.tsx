@@ -295,7 +295,7 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
     ) : undefined;
 
   return (
-    <section className="view-stack objectos" style={accentStyle("tools")} aria-labelledby="objectos-title" aria-busy={state.kind === "loading" || busy}>
+    <section className="view-stack objectos" style={accentStyle("object")} aria-labelledby="objectos-title" aria-busy={state.kind === "loading" || busy}>
       <PageHeader icon={<Package />} title="ObjectOS" titleId="objectos-title" subtitle="Your things, and everything about them" actions={headerActions} />
       <div className="objectos-live" aria-live="polite">
         {notice && (notice.ok ? <Notice>{notice.text}</Notice> : <InlineError>{notice.text}</InlineError>)}
@@ -326,7 +326,7 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
           title={confirm.title}
           confirmLabel={confirm.confirmLabel ?? "Delete"}
           busy={busy}
-          accent="tools"
+          accent="object"
           onConfirm={() => void confirmNow()}
           onCancel={() => setConfirm(null)}
         >

@@ -295,7 +295,7 @@ test("the add form marks the name as required", () => {
 test("delete asks first: an alert dialog that names what is kept", () => {
   const confirm = { actionId: "object_os.object.delete", params: { input: { id: printer.id } }, title: "Delete Workshop printer?", detail: "All its records and attached files are deleted. Its 1 component will be kept. This cannot be undone." };
   const html = render({ initial: { ...ready, detail, confirm } });
-  assert.match(html, /<div class="kit-backdrop" style="--kit-accent:var\(--accent-tools\)"><div class="kit-dialog" role="alertdialog" aria-modal="true" aria-labelledby="([^"]+)" aria-describedby="([^"]+)"><header class="kit-dialog__header"><h2 id="\1" class="kit-dialog__title">Delete Workshop printer\?<\/h2><p id="\2" class="kit-dialog__description">/);
+  assert.match(html, /<div class="kit-backdrop" style="--kit-accent:var\(--accent-object\)"><div class="kit-dialog" role="alertdialog" aria-modal="true" aria-labelledby="([^"]+)" aria-describedby="([^"]+)"><header class="kit-dialog__header"><h2 id="\1" class="kit-dialog__title">Delete Workshop printer\?<\/h2><p id="\2" class="kit-dialog__description">/);
   assert.match(html, /Its 1 component will be kept/);
   assert.match(html, />Cancel<\/button><button type="button" class="kit-button kit-button--danger kit-button--md kit-confirm__ok">Delete<\/button>/);
 });
@@ -342,7 +342,7 @@ test("design tokens only: no literal colours; fonts from tokens; the tools accen
   }
   const css = files[1];
   for (const [, family] of css.matchAll(/font-family:\s*([^;]+);/g)) assert.match(family.trim(), /^var\(--font-(ui|tech)\)$/, family);
-  assert.match(css, /var\(--accent-tools\)/);
+  assert.match(css, /var\(--accent-object\)/);
   assert.doesNotMatch(css, /animation|transition/, "nothing animates");
 });
 
@@ -363,8 +363,8 @@ test("table buttons keep their label on one line", () => {
 test("the shell routes to it: sidebar entry, icon, action", () => {
   const meta = readFileSync(join(desktop, "src/renderer/lib/moduleMeta.ts"), "utf8");
   const shell = readFileSync(join(desktop, "src/renderer/main.tsx"), "utf8");
-  assert.match(meta, /\{ id: "object", label: "ObjectOS", accentClass: "accent-tools", actionId: "object_os.open" \}/);
-  assert.match(meta, /object: \{ icon: Package, accent: "var\(--accent-tools\)" \}/);
+  assert.match(meta, /\{ id: "object", label: "ObjectOS", accentClass: "accent-object", actionId: "object_os.open" \}/);
+  assert.match(meta, /object: \{ icon: Package, accent: "var\(--accent-object\)" \}/);
   assert.match(shell, /activeView === "object" && <ObjectOsView bridge=\{getBridge\(\)\}/);
   // After integration the shell bridge extends every module's bridge; ObjectOS's must be one of them.
   assert.match(shell, /export interface DexNestBridge extends [^{]*\bObjectOsBridge\b[^{]*\{/);

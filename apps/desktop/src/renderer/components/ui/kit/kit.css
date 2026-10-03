@@ -648,3 +648,405 @@
     animation: none;
   }
 }
+
+/* ===================================================================================
+   Visual layer (visual.tsx): stat tiles, meters, rings, bars, sparklines, rows,
+   hero, dashboard layout, reveal. See docs/DESIGN_LANGUAGE.md.
+   =================================================================================== */
+
+/* --- Stat tile ---------------------------------------------------------------------- */
+.kit-stat-grid {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+@media (min-width: 1024px) {
+  .kit-stat-grid--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .kit-stat-grid--4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+.kit-stat {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--space-4) var(--space-4) var(--space-4) calc(var(--space-4) + 2px);
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, var(--surface-2));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--surface-2) 85%, transparent) 0%, color-mix(in srgb, var(--surface) 90%, transparent) 100%);
+  transition: border-color 0.2s ease;
+}
+.kit-stat:hover {
+  border-color: color-mix(in srgb, var(--kit-tone) 30%, var(--border));
+}
+.kit-stat__rail {
+  position: absolute;
+  left: 0;
+  top: var(--space-4);
+  width: 3px;
+  height: 1.75rem;
+  border-radius: 0 999px 999px 0;
+  background: var(--kit-tone);
+  box-shadow: 0 0 12px var(--kit-tone);
+}
+.kit-stat__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.kit-stat__icon {
+  display: inline-flex;
+  color: var(--kit-tone);
+}
+.kit-stat__icon svg {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+.kit-stat__label {
+  margin: 0;
+  font-size: 0.625rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.kit-stat__value {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-tech);
+  font-size: 1.375rem;
+  font-weight: 600;
+  line-height: 1.75rem;
+  color: var(--text);
+}
+.kit-stat__foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+}
+.kit-stat__delta {
+  font-family: var(--font-tech);
+}
+.kit-stat__delta--good { color: var(--success); }
+.kit-stat__delta--bad { color: var(--error); }
+
+/* --- Meter ------------------------------------------------------------------------- */
+.kit-meter {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.kit-meter__row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-size: 0.75rem;
+}
+.kit-meter__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.kit-meter__value {
+  flex: none;
+  font-family: var(--font-tech);
+  color: var(--text-muted);
+}
+.kit-meter__track {
+  position: relative;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border) 70%, transparent);
+}
+.kit-meter--sm .kit-meter__track { height: 4px; }
+.kit-meter--lg .kit-meter__track { height: 10px; }
+.kit-meter__fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--kit-tone) 70%, transparent), var(--kit-tone));
+  box-shadow: 0 0 10px color-mix(in srgb, var(--kit-tone) 50%, transparent);
+  transition: width 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* --- Ring ---------------------------------------------------------------------------- */
+.kit-ring {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+}
+.kit-ring__track {
+  stroke: color-mix(in srgb, var(--border) 80%, transparent);
+}
+.kit-ring__fill {
+  stroke: var(--kit-tone);
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--kit-tone) 55%, transparent));
+  transition: stroke-dashoffset 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.kit-ring__center {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.1;
+}
+.kit-ring__value {
+  font-family: var(--font-tech);
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--text);
+}
+.kit-ring__caption {
+  font-size: 0.625rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* --- Bars ------------------------------------------------------------------------------- */
+.kit-bars {
+  margin: 0;
+}
+.kit-bars__plot {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+}
+.kit-bars__bar {
+  flex: 1;
+  min-width: 2px;
+  border-radius: 3px 3px 0 0;
+  background: var(--kit-tone);
+  transition: filter 0.15s ease;
+}
+.kit-bars__bar:hover {
+  filter: brightness(1.25);
+}
+.kit-bars__axis {
+  display: flex;
+  gap: 3px;
+  margin-top: var(--space-2);
+  font-family: var(--font-tech);
+  font-size: 0.625rem;
+  color: var(--text-disabled);
+}
+.kit-bars__axis span {
+  flex: 1;
+  min-width: 2px;
+  white-space: nowrap;
+}
+
+/* --- Sparkline ----------------------------------------------------------------------------- */
+.kit-spark {
+  display: block;
+  overflow: visible;
+}
+.kit-spark--fill {
+  width: 100%;
+}
+.kit-spark__line {
+  stroke: var(--kit-tone);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.kit-spark__area {
+  fill: color-mix(in srgb, var(--kit-tone) 14%, transparent);
+}
+
+/* --- Rich row --------------------------------------------------------------------------------- */
+.kit-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, var(--surface-2));
+  background: color-mix(in srgb, var(--surface-2) 70%, transparent);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.kit-row--action {
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+.kit-row--action:hover {
+  border-color: color-mix(in srgb, var(--kit-tone) 35%, var(--border));
+  background: color-mix(in srgb, var(--kit-tone) 5%, var(--surface-2));
+}
+.kit-row--action:focus-visible {
+  outline: 2px solid var(--focus-outline);
+  outline-offset: 2px;
+}
+.kit-row--selected {
+  border-color: color-mix(in srgb, var(--kit-tone) 55%, var(--border));
+  background: color-mix(in srgb, var(--kit-tone) 8%, var(--surface-2));
+}
+.kit-row__icon {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--kit-tone) 25%, transparent);
+  background: color-mix(in srgb, var(--kit-tone) 10%, transparent);
+  color: var(--kit-tone);
+}
+.kit-row__icon svg {
+  width: 1rem;
+  height: 1rem;
+}
+.kit-row__text {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
+}
+.kit-row__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text);
+}
+.kit-row__meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+.kit-row__trailing {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-tech);
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+/* --- Hero ------------------------------------------------------------------------------------- */
+.kit-hero {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-5);
+  overflow: hidden;
+  padding: var(--space-6);
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--kit-accent) 30%, var(--border));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--kit-accent) 10%, var(--surface-2)) 0%, var(--surface) 70%);
+}
+.kit-hero__glow {
+  position: absolute;
+  top: -40%;
+  right: -10%;
+  width: 60%;
+  height: 180%;
+  pointer-events: none;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--kit-accent) 18%, transparent), transparent);
+}
+.kit-hero__body {
+  position: relative;
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  max-width: 40rem;
+}
+.kit-hero__eyebrow {
+  margin: 0;
+  font-family: var(--font-tech);
+  font-size: 0.6875rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--kit-accent);
+}
+.kit-hero__title {
+  margin: 0;
+  font-size: 1.75rem;
+  line-height: 2.25rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+.kit-hero__text {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+.kit-hero__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.kit-hero__visual {
+  position: relative;
+  flex: none;
+}
+
+/* --- Dashboard layout --------------------------------------------------------------------- */
+.kit-dash {
+  display: grid;
+  gap: var(--space-5);
+  grid-template-columns: minmax(0, 1fr);
+}
+@media (min-width: 1024px) {
+  .kit-dash { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+}
+/* A section title opening a card sits at the card's top padding, not below it. */
+.kit-card > .kit-section-title:first-child,
+.kit-card > .kit-card__bar + .kit-section-title {
+  margin-top: 0;
+}
+
+.kit-dash__main,
+.kit-dash__side {
+  display: grid;
+  align-content: start;
+  gap: var(--space-5);
+  min-width: 0;
+}
+
+/* --- Reveal: one staggered rise on mount ------------------------------------------------------ */
+.kit-reveal {
+  display: grid;
+  gap: var(--space-5);
+}
+.kit-reveal__item {
+  min-width: 0;
+  animation: kit-rise 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(min(var(--kit-i, 0), 8) * 45ms);
+}
+@keyframes kit-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kit-stat,
+  .kit-meter__fill,
+  .kit-ring__fill,
+  .kit-row--action,
+  .kit-reveal__item {
+    animation: none;
+    transition: none;
+  }
+}

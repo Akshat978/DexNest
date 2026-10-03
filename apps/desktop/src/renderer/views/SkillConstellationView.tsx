@@ -159,7 +159,7 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
   );
 
   return (
-    <section className="view-stack skill-constellation" style={accentStyle("dev")} aria-labelledby="skills-title" aria-busy={state.kind === "loading"}>
+    <section className="view-stack skill-constellation" style={accentStyle("skills")} aria-labelledby="skills-title" aria-busy={state.kind === "loading"}>
       {header}
       {notice && <Notice tone="info">{notice}</Notice>}
 

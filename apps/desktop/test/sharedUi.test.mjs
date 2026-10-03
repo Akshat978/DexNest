@@ -154,3 +154,94 @@ test("tabs can wrap onto a second row; without wrap they stay one scrolling row"
   assert.match(render(kit.Tabs, { label: "T", idPrefix: "t", value: "a", onChange: noop, tabs }), /^<div class="kit-tabs" role="tablist"/);
   assert.match(readSource(join(ui, "kit/kit.css")), /\.kit-tabs--wrap \{\n  flex-wrap: wrap;\n  overflow-x: visible;\n\}/);
 });
+
+// --- The visual layer (docs/DESIGN_LANGUAGE.md) -----------------------------------------------
+
+test("visual layer: fractions are clamped and never NaN; a sparkline spans its box", () => {
+  assert.equal(kit.fraction(5, 10), 0.5);
+  assert.equal(kit.fraction(15, 10), 1);
+  assert.equal(kit.fraction(-3, 10), 0);
+  assert.equal(kit.fraction(Number.NaN, 10), 0);
+  assert.equal(kit.fraction(3, 0), 0);
+  assert.equal(kit.sparkPath([], 100, 20), "");
+  assert.equal(kit.sparkPath([4], 100, 20), "M0 10 L100 10", "one point is a flat line");
+  const path = kit.sparkPath([0, 5, 10], 100, 20);
+  assert.equal(path, "M0.0 20.0 L50.0 10.0 L100.0 0.0", "lowest at the bottom, highest at the top");
+  assert.doesNotMatch(kit.sparkPath([1, Number.NaN, 3], 60, 10), /NaN/);
+});
+
+test("StatTile: a quiet label, the value in mono, a delta coloured by meaning, a tone through a token", () => {
+  const html = render(kit.StatTile, { label: "Active today", value: "2h 57m", delta: { label: "+12%", good: true }, hint: "vs yesterday", tone: "success" });
+  assert.match(html, /class="kit-stat"/);
+  assert.match(html, /--kit-tone:var\(--success\)/);
+  assert.match(html, /kit-stat__label">Active today</);
+  assert.match(html, /kit-stat__value">2h 57m</);
+  assert.match(html, /kit-stat__delta--good">\+12%</);
+  const bad = render(kit.StatTile, { label: "Spent", value: "CA$10", delta: { label: "+40%", good: false } });
+  assert.match(bad, /kit-stat__delta--bad/, "more spending is bad news even though the number went up");
+  assert.match(render(kit.StatGrid, { columns: 3 }, "x"), /kit-stat-grid--3/);
+});
+
+test("Meter and Ring: real progress semantics for assistive tech, clamped fills", () => {
+  const meter = render(kit.Meter, { label: "Deep work", value: 3, max: 20, display: "3h of 20h" });
+  assert.match(meter, /role="progressbar"/);
+  assert.match(meter, /aria-valuenow="15"/);
+  assert.match(meter, /aria-label="Deep work"/);
+  assert.match(meter, /width:15%/);
+  assert.match(meter, /3h of 20h/);
+  assert.match(render(kit.Meter, { label: "Over", value: 50, max: 20 }), /width:100%/, "never past the end");
+  const ring = render(kit.Ring, { value: 220, max: 300, label: "Level 2, 220 of 300 XP", center: "2", caption: "level" });
+  assert.match(ring, /role="img"[^>]*aria-label="Level 2, 220 of 300 XP"/);
+  assert.match(ring, /kit-ring__value">2<\/span><span class="kit-ring__caption">level</);
+  assert.match(ring, /stroke-dashoffset="[\d.]+"/);
+});
+
+test("BarChart and Sparkline carry a text version for screen readers", () => {
+  const bars = render(kit.BarChart, { data: [{ label: "0", value: 0 }, { label: "1", value: 30 }, { label: "2", value: 60 }], label: "Hourly activity", labelEvery: 2 });
+  assert.match(bars, /aria-label="Hourly activity"/);
+  assert.match(bars, /kit-visually-hidden">Hourly activity: 0 0, 1 30, 2 60/);
+  assert.match(bars, /height:100%/, "the tallest bar fills the plot");
+  assert.match(bars, /height:2%/, "an empty bar is still a sliver, not invisible");
+  assert.match(render(kit.Sparkline, { values: [1, 2, 3], label: "Last 7 days" }), /role="img" aria-label="Last 7 days"/);
+  const filled = render(kit.Sparkline, { values: [1, 2, 3], label: "Trend", fill: true, height: 40 });
+  assert.match(filled, /class="kit-spark kit-spark--fill"/);
+  assert.match(filled, /preserveAspectRatio="none"/);
+  assert.doesNotMatch(filled, /<svg[^>]* width=/, "fills its container instead of a fixed width");
+  assert.match(filled, /vector-effect="non-scaling-stroke"/, "the line keeps its weight when stretched");
+});
+
+test("ListRow: a button when it opens something, pressed when selected; a plain row otherwise", () => {
+  const action = render(kit.ListRow, { title: "Workshop 3D printer", meta: "Replace nozzle", trailing: "overdue", onClick: noop, selected: true, tone: "error" });
+  assert.match(action, /^<button type="button" class="kit-row kit-row--action kit-row--selected"/);
+  assert.match(action, /aria-pressed="true"/);
+  assert.match(action, /--kit-tone:var\(--error\)/);
+  const plain = render(kit.ListRow, { title: "Read only" });
+  assert.match(plain, /^<div class="kit-row"/);
+  assert.doesNotMatch(plain, /<button/);
+});
+
+test("Hero, DashboardGrid and Reveal: one big moment, a 2:1 layout, a staggered entrance that reduced motion turns off", () => {
+  const hero = render(kit.Hero, { eyebrow: "Level 7", title: "Builder", visual: "ring", actions: "act" }, "220 XP");
+  assert.match(hero, /<section class="kit-hero">/);
+  assert.match(hero, /<h2 class="kit-hero__title">Builder<\/h2>/);
+  assert.match(hero, /kit-hero__glow" aria-hidden="true"/);
+  const dash = render(kit.DashboardGrid, { main: "m", side: "s" });
+  assert.match(dash, /kit-dash__main">m<\/div><aside class="kit-dash__side">s<\/aside>/);
+  const reveal = render(kit.Reveal, {}, createElement("p", { key: "a" }, "a"), createElement("p", { key: "b" }, "b"));
+  assert.match(reveal, /--kit-i:0[\s\S]*--kit-i:1/);
+  const css = readSource(join(ui, "kit/kit.css"));
+  const reduced = css.slice(css.lastIndexOf("@media (prefers-reduced-motion: reduce)"));
+  for (const cls of [".kit-reveal__item", ".kit-meter__fill", ".kit-ring__fill"]) assert.ok(reduced.includes(cls), `${cls} stops under reduced motion`);
+  const entrance = css.match(/\.kit-reveal__item \{[^}]*\}/)?.[0] ?? "";
+  assert.match(entrance, /animation: kit-rise/);
+  assert.doesNotMatch(entrance, /infinite/, "the entrance plays once; nothing loops while idle");
+});
+
+test("every module accent is a token, and the newer modules have their own", () => {
+  const tokens = readSource(join(desktop, "../../packages/shared-ui/src/tokens.css"));
+  for (const name of ["autopilot", "skills", "rpg", "ghost", "object"]) assert.match(tokens, new RegExp(`--accent-${name}: #`), name);
+  const meta = readSource(join(desktop, "src/renderer/lib/moduleMeta.ts"));
+  for (const [id, token] of [["autopilot", "autopilot"], ["skills", "skills"], ["rpg", "rpg"], ["ghost", "ghost"], ["object", "object"]]) {
+    assert.match(meta, new RegExp(`${id}: \\{ icon: \\w+, accent: "var\\(--accent-${token}\\)" \\}`), id);
+  }
+});

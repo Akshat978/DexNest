@@ -36,6 +36,13 @@
   --accent-heatmap: #EF4444;
   --accent-voice: #06B6D4;
   --accent-loop: #EAB308;
+  /* Module identities for the newer modules (docs/DESIGN_LANGUAGE.md). Each
+     sits apart in hue or lightness from its sidebar neighbours. */
+  --accent-autopilot: #0EA5E9;
+  --accent-skills: #A5B4FC;
+  --accent-rpg: #FCD34D;
+  --accent-ghost: #F0ABFC;
+  --accent-object: #FB7185;
   --success: #22C55E;
   --warning: #F59E0B;
   --error: #EF4444;

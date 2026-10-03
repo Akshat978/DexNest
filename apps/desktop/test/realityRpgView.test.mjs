@@ -148,7 +148,7 @@ test("deleting a rule and abandoning a quest ask first, in a modal", () => {
   assert.match(quests, /aria-label="Abandon Commit today">Abandon…<\/button>/);
   const confirm = { actionId: "reality_rpg.rule.delete", params: { ruleId: "commits" }, title: "Delete the rule \"Commit observed\"?", detail: "XP it already awarded stays.", confirmLabel: "Delete" };
   const html = render({ initial: { snapshot: base, tab: "rules", confirm } });
-  assert.match(html, /<div class="kit-backdrop" style="--kit-accent:var\(--accent-loop\)"><div class="kit-dialog" role="alertdialog" aria-modal="true" aria-labelledby="([^"]+)" aria-describedby="([^"]+)">/);
+  assert.match(html, /<div class="kit-backdrop" style="--kit-accent:var\(--accent-rpg\)"><div class="kit-dialog" role="alertdialog" aria-modal="true" aria-labelledby="([^"]+)" aria-describedby="([^"]+)">/);
   assert.match(html, /<h2 id="[^"]+" class="kit-dialog__title">Delete the rule &quot;Commit observed&quot;\?<\/h2><p id="[^"]+" class="kit-dialog__description">XP it already awarded stays\.<\/p>/);
   assert.match(html, /class="kit-button kit-button--ghost kit-button--md kit-confirm__cancel">Cancel<\/button><button type="button" class="kit-button kit-button--danger kit-button--md kit-confirm__ok">Delete<\/button>/);
 });
@@ -181,5 +181,5 @@ test("design tokens only: no literal colours; fonts from tokens; the module acce
   }
   const css = files[1];
   for (const [, family] of css.matchAll(/font-family:\s*([^;]+);/g)) assert.match(family.trim(), /^var\(--font-(ui|tech)\)$/, family);
-  assert.match(css, /var\(--accent-loop\)/);
+  assert.match(css, /var\(--accent-rpg\)/);
 });

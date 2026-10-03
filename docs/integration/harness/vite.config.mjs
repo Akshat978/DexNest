@@ -22,6 +22,8 @@ export default {
       // React lives in apps/desktop's node_modules, not the repo root's.
       react: resolve(desktop, "node_modules/react"),
       "react-dom": resolve(desktop, "node_modules/react-dom"),
+      // For pages outside apps/desktop (docs/design/gallery).
+      "lucide-react": resolve(desktop, "node_modules/lucide-react"),
       "@dexnest/action-registry": resolve(repoRoot, "packages/action-registry/src/index.ts"),
       "@dexnest/shared-types": resolve(repoRoot, "packages/shared-types/src/index.ts"),
       "@dexnest/shared-ui/tokens.css": resolve(repoRoot, "packages/shared-ui/src/tokens.css"),

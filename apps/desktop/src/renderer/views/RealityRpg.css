@@ -1,5 +1,5 @@
 /* Reality RPG. DexNest design tokens only - no literal colours. Accent is the
-   existing --accent-loop token; fonts are --font-ui and, for numbers, ids and
+   existing --accent-rpg token; fonts are --font-ui and, for numbers, ids and
    dates, --font-tech. Nothing animates. */
 
 .rpg {
@@ -43,7 +43,7 @@
 .rpg-bar {
   width: 100%;
   height: 0.6rem;
-  accent-color: var(--accent-loop);
+  accent-color: var(--accent-rpg);
 }
 
 .rpg-stats,
@@ -90,7 +90,7 @@
 }
 
 .rpg-item--done {
-  border-color: var(--accent-loop);
+  border-color: var(--accent-rpg);
 }
 
 .rpg-item--off .rpg-item__title {
@@ -131,7 +131,7 @@
    alone is a 40% glow (about 2.3:1) and too faint to follow. Kit controls bring
    their own focus ring. */
 .rpg input[type="checkbox"]:focus-visible {
-  outline: 2px solid var(--accent-loop);
+  outline: 2px solid var(--accent-rpg);
   outline-offset: 2px;
   box-shadow: 0 0 0 4px var(--focus-ring);
 }
@@ -140,7 +140,7 @@
    rather than in the shared stylesheet. Loaded with the view, which the shell
    imports up front. */
 .accent-loop {
-  --accent: var(--accent-loop);
+  --accent: var(--accent-rpg);
 }
 
 /* Stats: compact cards, each with a bar against the strongest stat. */
@@ -167,7 +167,7 @@ ul.rpg-stats {
 .rpg-stat__bar > span {
   display: block;
   height: 100%;
-  background: var(--accent-loop);
+  background: var(--accent-rpg);
 }
 
 /* History: readable width; what happened leads, the event type is small. */

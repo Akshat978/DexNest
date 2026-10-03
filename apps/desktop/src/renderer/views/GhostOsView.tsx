@@ -207,7 +207,7 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
   const refusal = confirming && notice && !notice.ok ? notice.text : null;
 
   return (
-    <section className="view-stack ghost" style={accentStyle("search")} aria-labelledby="ghost-title" aria-busy={state.kind === "loading"}>
+    <section className="view-stack ghost" style={accentStyle("ghost")} aria-labelledby="ghost-title" aria-busy={state.kind === "loading"}>
       <PageHeader
         icon={<Ghost />}
         title="GhostOS"
@@ -245,7 +245,7 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
           confirmLabel="Forget"
           busy={busy}
           error={refusal}
-          accent="search"
+          accent="ghost"
           onConfirm={() => void forget()}
           onCancel={() => { setConfirmForget(null); setNotice(null); }}
         >
@@ -259,7 +259,7 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
           confirmLabel="Turn off"
           busy={busy}
           error={refusal}
-          accent="search"
+          accent="ghost"
           onConfirm={() => void run("ghost_os.adapter.disable", confirmed({ adapterId: "developer_intelligence" })).then((ok) => ok && setConfirmDisable(false))}
           onCancel={() => { setConfirmDisable(false); setNotice(null); }}
         >

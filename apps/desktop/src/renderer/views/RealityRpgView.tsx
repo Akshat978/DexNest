@@ -108,7 +108,7 @@ export function RealityRpgView({ bridge, onAction, initial }: RealityRpgViewProp
   const state = viewState({ loading, error, snapshot });
 
   return (
-    <section className="view-stack rpg" style={accentStyle("loop")} aria-labelledby="rpg-title" aria-busy={state.kind === "loading"}>
+    <section className="view-stack rpg" style={accentStyle("rpg")} aria-labelledby="rpg-title" aria-busy={state.kind === "loading"}>
       <PageHeader
         icon={<Swords />}
         title="Reality RPG"
@@ -131,7 +131,7 @@ export function RealityRpgView({ bridge, onAction, initial }: RealityRpgViewProp
           title={confirm.title}
           confirmLabel={confirm.confirmLabel}
           busy={busy}
-          accent="loop"
+          accent="rpg"
           onCancel={() => setConfirm(null)}
           onConfirm={() => {
             const c = confirm;

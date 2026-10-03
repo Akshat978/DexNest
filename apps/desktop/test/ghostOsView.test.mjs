@@ -142,7 +142,7 @@ test("links are readable text with an accent underline, not accent-coloured text
   const css = readFileSync(join(desktop, "src/renderer/views/GhostOs.css"), "utf8");
   const link = css.match(/\.ghost-link \{([^}]*)\}/)?.[1] ?? "";
   assert.match(link, /color: var\(--text\);/);
-  assert.match(link, /text-decoration-color: var\(--accent-search\);/);
+  assert.match(link, /text-decoration-color: var\(--accent-ghost\);/);
 });
 
 test("entity detail: every fact with its source and its evidence", () => {
@@ -275,15 +275,15 @@ test("design tokens only: no literal colours; fonts from tokens; the module acce
   }
   const css = files[1];
   for (const [, family] of css.matchAll(/font-family:\s*([^;]+);/g)) assert.match(family.trim(), /^var\(--font-(ui|tech)\)$/, family);
-  assert.match(css, /var\(--accent-search\)/);
+  assert.match(css, /var\(--accent-ghost\)/);
   assert.doesNotMatch(css, /animation|transition/, "nothing animates");
 });
 
 test("the shell routes to it: sidebar entry, icon, action", () => {
   const meta = readFileSync(join(desktop, "src/renderer/lib/moduleMeta.ts"), "utf8");
   const shell = readFileSync(join(desktop, "src/renderer/main.tsx"), "utf8");
-  assert.match(meta, /\{ id: "ghost", label: "GhostOS", accentClass: "accent-search", actionId: "ghost_os.open" \}/);
-  assert.match(meta, /ghost: \{ icon: Ghost, accent: "var\(--accent-search\)" \}/);
+  assert.match(meta, /\{ id: "ghost", label: "GhostOS", accentClass: "accent-ghost", actionId: "ghost_os.open" \}/);
+  assert.match(meta, /ghost: \{ icon: Ghost, accent: "var\(--accent-ghost\)" \}/);
   assert.match(shell, /activeView === "ghost" && <GhostOsView bridge=\{getBridge\(\)\}/);
 });
 

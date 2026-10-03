@@ -1,5 +1,5 @@
 /* Skill Constellation. DexNest design tokens only - no literal colours. The
-   module uses the Dev accent (--accent-dev); fonts are --font-ui and, for
+   module uses the Dev accent (--accent-skills); fonts are --font-ui and, for
    paths, dates and numbers, --font-tech. Nothing animates: an open
    constellation costs no CPU. */
 
@@ -76,7 +76,7 @@
 }
 
 .skill-star__core {
-  fill: var(--accent-dev);
+  fill: var(--accent-skills);
 }
 
 .skill-star__halo {
@@ -95,7 +95,7 @@
 }
 
 .skill-star--selected .skill-star__halo {
-  stroke: var(--accent-dev);
+  stroke: var(--accent-skills);
   stroke-width: 3;
 }
 
@@ -226,7 +226,7 @@
 .skill-constellation input[type="checkbox"]:focus-visible,
 .skill-constellation summary:focus-visible {
   box-shadow: 0 0 0 4px var(--focus-ring);
-  outline: 2px solid var(--accent-dev);
+  outline: 2px solid var(--accent-skills);
   outline-offset: 2px;
 }
 

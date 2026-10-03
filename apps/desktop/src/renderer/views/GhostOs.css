@@ -1,5 +1,5 @@
 /* GhostOS. DexNest design tokens only - no literal colours. Accent is the
-   existing --accent-search token; fonts are --font-ui and, for ids, paths,
+   existing --accent-ghost token; fonts are --font-ui and, for ids, paths,
    numbers and dates, --font-tech. Nothing animates. */
 
 .ghost {
@@ -22,7 +22,7 @@
 .ghost-item:focus-visible,
 .ghost-link:focus-visible,
 .ghost-picker input:focus-visible {
-  outline: 2px solid var(--accent-search);
+  outline: 2px solid var(--accent-ghost);
   outline-offset: 2px;
   box-shadow: 0 0 0 4px var(--focus-ring);
 }
@@ -114,7 +114,7 @@
 }
 
 .ghost-item[aria-current="true"] {
-  border-color: var(--accent-search);
+  border-color: var(--accent-ghost);
 }
 
 .ghost-card {
@@ -132,7 +132,7 @@
 }
 
 .ghost-detail {
-  border-top: 2px solid var(--accent-search);
+  border-top: 2px solid var(--accent-ghost);
 }
 
 .ghost-notes {
@@ -182,14 +182,14 @@
   margin: 0;
 }
 
-/* Text colour with an accent underline: --accent-search as text is about
+/* Text colour with an accent underline: --accent-ghost as text is about
    4.4:1 on the surfaces, under AA's 4.5:1. */
 .ghost-link {
   background: none;
   border: none;
   padding: 0;
   color: var(--text);
-  text-decoration-color: var(--accent-search);
+  text-decoration-color: var(--accent-ghost);
   text-decoration-thickness: 2px;
   text-underline-offset: 3px;
   font-family: var(--font-ui);
@@ -260,7 +260,7 @@
 .ghost-picker-option:hover,
 .ghost-picker-option[aria-selected="true"] {
   background: var(--surface-hover);
-  outline: 1px solid var(--accent-search);
+  outline: 1px solid var(--accent-ghost);
 }
 
 .ghost-picked {
@@ -290,8 +290,8 @@ button.ghost-chip {
 
 button.ghost-chip[aria-pressed="true"] {
   color: var(--text);
-  background: color-mix(in srgb, var(--accent-search) 18%, transparent);
-  border-color: var(--accent-search);
+  background: color-mix(in srgb, var(--accent-ghost) 18%, transparent);
+  border-color: var(--accent-ghost);
 }
 
 .ghost-detail-head {
@@ -308,5 +308,5 @@ button.ghost-chip[aria-pressed="true"] {
 
 /* Other rows of the selected entry: marked, not selected. */
 .ghost-item--related {
-  border-left: 3px solid color-mix(in srgb, var(--accent-search) 55%, transparent);
+  border-left: 3px solid color-mix(in srgb, var(--accent-ghost) 55%, transparent);
 }

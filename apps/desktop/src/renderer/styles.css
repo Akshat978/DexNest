@@ -691,6 +691,26 @@ div.calendar-side-event[role="button"]:focus-visible {
   --accent: var(--accent-dev);
 }
 
+.accent-autopilot {
+  --accent: var(--accent-autopilot);
+}
+
+.accent-skills {
+  --accent: var(--accent-skills);
+}
+
+.accent-rpg {
+  --accent: var(--accent-rpg);
+}
+
+.accent-ghost {
+  --accent: var(--accent-ghost);
+}
+
+.accent-object {
+  --accent: var(--accent-object);
+}
+
 .accent-deck {
   --accent: var(--accent-deck);
 }
