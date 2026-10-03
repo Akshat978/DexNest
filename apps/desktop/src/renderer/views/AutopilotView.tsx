@@ -7,6 +7,8 @@ import { AutopilotPush } from "./AutopilotPush";
 import "./Autopilot.css";
 import type { projectRun } from "@dexnest/autopilot-runtime";
 import { PageHeader } from "../components/shared";
+import { Activity, AlertCircle, Bot, CheckCircle2, ListChecks } from "lucide-react";
+import { accentStyle, Badge, Button, Hero, PageHeader as KitPageHeader, StatGrid, StatTile } from "../components/ui/kit";
 
 // The Autopilot Control Center.
 //
@@ -183,6 +185,22 @@ function bridge(): AutopilotBridge {
 }
 
 const ACTIVE_STATES: RunState[] = ["RUNNING", "PAUSE_REQUESTED", "RECONCILING"];
+
+/** A run's state as a badge: the colour follows what the operator should do about it. */
+export function runStateTone(state: string, attention: boolean): "success" | "warning" | "error" | "info" | "neutral" | "accent" {
+  if (attention) return "warning";
+  if (["RUNNING", "PAUSE_REQUESTED", "RECONCILING"].includes(state)) return "accent";
+  if (state === "COMPLETED") return "success";
+  if (state === "FAILED") return "error";
+  if (["NEEDS_REVIEW", "PAUSED_NEEDS_REVIEW", "BLOCKED"].includes(state)) return "warning";
+  return "neutral";
+}
+
+/** The numbers across the top of the dashboard, from the categories the runtime already assigns. */
+export function runCounts(runs: readonly { category: string }[]): { total: number; active: number; attention: number; completed: number } {
+  const count = (category: string) => runs.filter((r) => r.category === category).length;
+  return { total: runs.length, active: count("ACTIVE"), attention: count("NEEDS ATTENTION"), completed: count("COMPLETED") };
+}
 const HANDOFF_STATUS_LABELS: Record<string, string> = {
   PROPOSED: "Handoff proposed", APPROVED: "Handoff approved", ACTIVATING: "Handoff activating",
   ACTIVE: "Handoff active", CANCELLED: "Handoff cancelled", SUPERSEDED: "Handoff superseded", FAILED: "Handoff failed"
@@ -294,20 +312,21 @@ export function AutopilotView() {
   const held = run && ["READY", "PAUSED"].includes(run.state);
 
   return (
-    <section className="view-stack" aria-labelledby="autopilot-title">
-      <PageHeader
-        eyebrow="Plan → iterations → checkpoints · your project, on its own branch"
+    <section className="view-stack autopilot" style={accentStyle("autopilot")} aria-labelledby="autopilot-title">
+      <KitPageHeader
+        icon={<Bot />}
         title="Autopilot Control Center"
         titleId="autopilot-title"
-        actions={(
-          <button type="button" onClick={() => void refresh()}>Refresh</button>
-        )}
+        subtitle="Plan → iterations → checkpoints · your project, on its own branch"
+        actions={<Button onClick={() => void refresh()}>Refresh</Button>}
       />
 
       {error && <p className="empty-state" role="alert">{error}</p>}
 
-      <nav className="autopilot-areas" aria-label="Autopilot areas">
-        {["New Run", "Queue", "Runs", "Selected Run", "Notifications"].map(value => <button type="button" key={value} aria-pressed={area === value} disabled={value === "Selected Run" && !run} onClick={() => setArea(value)}>{value}</button>)}
+      {/* The kit's tab look; still a nav of toggle buttons, because the areas are
+          shown and hidden in place and "Selected Run" is disabled until there is one. */}
+      <nav className="autopilot-areas kit-tabs" aria-label="Autopilot areas">
+        {["New Run", "Queue", "Runs", "Selected Run", "Notifications"].map(value => <button type="button" key={value} className={area === value ? "kit-tab kit-tab--on" : "kit-tab"} aria-pressed={area === value} disabled={value === "Selected Run" && !run} onClick={() => setArea(value)}>{value}</button>)}
       </nav>
       <div hidden={area !== "New Run"}>
         <AutopilotNewRun
@@ -323,14 +342,20 @@ export function AutopilotView() {
       {/* Where what needs you actually reaches you. */}
       <div hidden={area !== "Notifications"}><AutopilotPush refreshedAt={refreshedAt} /></div>
       <section hidden={area !== "Runs"} aria-label="Runs dashboard">
+        {runs.length > 0 && (
+          <StatGrid columns={4}>
+            <StatTile label="Runs" value={String(runCounts(runs).total)} icon={<ListChecks />} />
+            <StatTile label="Active" value={String(runCounts(runs).active)} icon={<Activity />} tone="info" hint={runCounts(runs).active > 0 ? "working now" : "nothing running"} />
+            <StatTile label="Needs you" value={String(runCounts(runs).attention)} icon={<AlertCircle />} tone={runCounts(runs).attention > 0 ? "warning" : "neutral"} />
+            <StatTile label="Completed" value={String(runCounts(runs).completed)} icon={<CheckCircle2 />} tone="success" />
+          </StatGrid>
+        )}
         {brief && brief.runs.length > 0 && (
-          <div className="card">
-            <h3>Last night</h3>
-            <p>
-              {brief.needsYou === 0
-                ? "Nothing needs you."
-                : <strong>{brief.needsYou} run{brief.needsYou === 1 ? "" : "s"} need{brief.needsYou === 1 ? "s" : ""} you.</strong>}
-              {" "}
+          <Hero
+            eyebrow={`Last ${brief.sinceHours} hours`}
+            title={brief.needsYou === 0 ? "Nothing needs you." : `${brief.needsYou} run${brief.needsYou === 1 ? "" : "s"} need${brief.needsYou === 1 ? "s" : ""} you.`}
+          >
+            <p className="autopilot-brief__line">
               {brief.runs.length} run{brief.runs.length === 1 ? "" : "s"} moved in the last {brief.sinceHours} hours
               {brief.filesChanged > 0 ? `, touching ${brief.filesChanged} file${brief.filesChanged === 1 ? "" : "s"}` : ""}
               {brief.costUsd > 0 ? ` for $${brief.costUsd.toFixed(2)}` : ""}.
@@ -358,9 +383,9 @@ export function AutopilotView() {
                 </li>
               ))}
             </ul>
-          </div>
+          </Hero>
         )}
-      <h2>Runs</h2>
+      <h2 className="autopilot-section-title">Runs</h2>
       <label>Filter runs<select value={filter} onChange={event => setFilter(event.target.value)}>
         {["ACTIVE", "NEEDS ATTENTION", "COMPLETED", "STOPPED / FAILED", "ALL"].map(value => <option key={value}>{value}</option>)}
       </select></label>
@@ -381,7 +406,7 @@ export function AutopilotView() {
                 <p>Turns {item.turn} · grant {item.consumed}/{item.maxTurns} · verification {item.latestVerification ?? "not run"}</p>
                 <p className="technical">Created {item.createdAt} · Last activity {item.updatedAt}</p>
               </div>
-              <span>{item.state}{item.attention ? " · Needs attention" : ""}</span>
+              <Badge tone={runStateTone(item.state, item.attention)}>{item.state}{item.attention ? " · Needs attention" : ""}</Badge>
             </button>
           ))
         )}
@@ -524,8 +549,8 @@ export function AutopilotView() {
               <>
                 <p>
                   <strong>{changes.files} file{changes.files === 1 ? "" : "s"}</strong>
-                  {" · "}<span style={{ color: "#22C55E" }}>+{changes.insertions}</span>
-                  {" "}<span style={{ color: "#EF4444" }}>−{changes.deletions}</span>
+                  {" · "}<span style={{ color: "var(--success)" }}>+{changes.insertions}</span>
+                  {" "}<span style={{ color: "var(--error)" }}>−{changes.deletions}</span>
                 </p>
                 {changes.phases.map(phase => (
                   <details key={`${phase.planItemId ?? phase.ordinal}`} className="autopilot-mechanism">

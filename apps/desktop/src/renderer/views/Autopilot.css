@@ -1,6 +1,11 @@
-.autopilot-areas { display: flex; flex-wrap: wrap; gap: var(--space-2); }
-.autopilot-areas button[aria-pressed="true"] { border-color: var(--text); background: var(--surface); }
-.event-row.autopilot-run-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-4); text-align: left; }
+/* Areas wear the kit's tab look (kit-tabs / kit-tab on the nav and its buttons). */
+.autopilot-areas.kit-tabs { flex-wrap: wrap; }
+.autopilot-areas .kit-tab:disabled { opacity: 0.45; cursor: not-allowed; }
+.event-row.autopilot-run-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: var(--space-4); padding: var(--space-4); text-align: left; border-radius: var(--radius-lg); border: 1px solid color-mix(in srgb, var(--border) 80%, var(--surface-2)); background: linear-gradient(180deg, color-mix(in srgb, var(--surface-2) 85%, transparent) 0%, color-mix(in srgb, var(--surface) 90%, transparent) 100%); cursor: pointer; }
+.event-row.autopilot-run-card:hover { border-color: color-mix(in srgb, var(--accent-autopilot) 35%, var(--border)); }
+.event-row.autopilot-run-card[aria-current="true"] { border-color: color-mix(in srgb, var(--accent-autopilot) 60%, var(--border)); }
+.autopilot-run-card strong { font-size: 0.9375rem; font-weight: 600; color: var(--text); }
+.autopilot-run-card p { font-size: 0.8125rem; color: var(--text-muted); }
 .autopilot-run-card > div { min-width: 0; display: grid; gap: var(--space-2); }
 .autopilot-run-card p { margin: 0; overflow-wrap: anywhere; }
 .autopilot-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); }
@@ -48,16 +53,16 @@
 
 /* The agent's own reasoning is context, not the point; tool calls are. */
 .activity-thinking { opacity: 0.65; font-style: italic; }
-.activity-tool { color: var(--accent, #0ea5e9); }
-.activity-result { color: #16a34a; }
-.activity-error { color: #dc2626; }
+.activity-tool { color: var(--accent-autopilot); }
+.activity-result { color: var(--success); }
+.activity-error { color: var(--error); }
 
 .plan-done { opacity: 0.6; text-decoration: line-through; }
 .plan-active { font-weight: 600; }
 .plan-blocked,
-.iteration-failed { color: #dc2626; }
+.iteration-failed { color: var(--error); }
 .iteration-abandoned { opacity: 0.6; }
-.iteration-verified strong { color: #16a34a; }
+.iteration-verified strong { color: var(--success); }
 
 .autopilot-where {
   margin: 0.5rem 0 0;
@@ -65,7 +70,7 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   border-radius: 0.375rem;
-  background: rgba(127, 127, 127, 0.12);
+  background: color-mix(in srgb, var(--text-muted) 12%, transparent);
 }
 
 /* Mechanism, not the run. Present for when something goes wrong, quiet
@@ -83,7 +88,7 @@
    like every other card does not read as one. The accent is the only thing in
    the view that says "this is waiting on you". */
 .autopilot-decision {
-  border-left: 3px solid #f59e0b;
+  border-left: 3px solid var(--warning);
 }
 
 .autopilot-decision .row {
@@ -105,7 +110,7 @@
 }
 
 .autopilot-error {
-  color: #dc2626;
+  color: var(--error);
   margin: 0.5rem 0 0;
 }
 
@@ -123,7 +128,7 @@
 .autopilot-sessions > li {
   padding: 0.5rem 0.6rem;
   border-radius: 0.375rem;
-  background: rgba(127, 127, 127, 0.1);
+  background: color-mix(in srgb, var(--text-muted) 10%, transparent);
 }
 
 .autopilot-sessions > li.session-blocked { opacity: 0.55; }
@@ -162,13 +167,13 @@
 .autopilot-queue > li {
   padding: 0.45rem 0.6rem;
   border-radius: 0.375rem;
-  background: rgba(127, 127, 127, 0.1);
+  background: color-mix(in srgb, var(--text-muted) 10%, transparent);
   border-left: 3px solid transparent;
 }
 
-.autopilot-queue > li.queue-running { border-left-color: #f59e0b; }
-.autopilot-queue > li.queue-done { border-left-color: #16a34a; }
-.autopilot-queue > li.queue-failed { border-left-color: #dc2626; }
+.autopilot-queue > li.queue-running { border-left-color: var(--warning); }
+.autopilot-queue > li.queue-done { border-left-color: var(--success); }
+.autopilot-queue > li.queue-failed { border-left-color: var(--error); }
 .autopilot-queue > li.queue-pending { opacity: 0.65; }
 .autopilot-queue > li.queue-skipped,
 .autopilot-queue > li.queue-abandoned { opacity: 0.75; }
@@ -191,7 +196,7 @@
 .autopilot-usage-turns td {
   text-align: right;
   padding: 0.2rem 0.5rem;
-  border-bottom: 1px solid rgba(127, 127, 127, 0.2);
+  border-bottom: 1px solid color-mix(in srgb, var(--text-muted) 20%, transparent);
 }
 
 .autopilot-usage-turns th:first-child,
@@ -210,14 +215,14 @@
 .autopilot-attention > li {
   padding: 0.45rem 0.6rem;
   border-radius: 0.375rem;
-  background: rgba(127, 127, 127, 0.1);
+  background: color-mix(in srgb, var(--text-muted) 10%, transparent);
   border-left: 3px solid transparent;
 }
 
-.autopilot-attention > li.attention-urgent { border-left-color: #dc2626; }
-.autopilot-attention > li.attention-action_required { border-left-color: #f59e0b; }
-.autopilot-attention > li.attention-attention { border-left-color: #3b82f6; }
-.autopilot-attention > li.attention-info { border-left-color: rgba(127, 127, 127, 0.4); }
+.autopilot-attention > li.attention-urgent { border-left-color: var(--error); }
+.autopilot-attention > li.attention-action_required { border-left-color: var(--warning); }
+.autopilot-attention > li.attention-attention { border-left-color: var(--info); }
+.autopilot-attention > li.attention-info { border-left-color: color-mix(in srgb, var(--text-muted) 40%, transparent); }
 .autopilot-attention > li.attention-held { opacity: 0.6; }
 .autopilot-attention p { margin: 0.2rem 0 0; }
 
@@ -234,7 +239,7 @@
 .autopilot-devices > li {
   padding: 0.5rem 0.6rem;
   border-radius: 0.375rem;
-  background: rgba(127, 127, 127, 0.1);
+  background: color-mix(in srgb, var(--text-muted) 10%, transparent);
 }
 
 .autopilot-devices > li.device-disabled { opacity: 0.6; }
@@ -263,3 +268,21 @@
   letter-spacing: 0.4rem;
   margin: 0.4rem 0;
 }
+
+/* The dashboard: a section title in the kit's style, and the last-night brief inside its hero. */
+.autopilot-section-title {
+  margin: var(--space-5) 0 var(--space-3);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.autopilot-brief__line { margin: 0 0 var(--space-3); }
+.kit-hero .autopilot-devices { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+.kit-hero .autopilot-devices li { padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); background: color-mix(in srgb, var(--surface-2) 70%, transparent); }
+.kit-hero .autopilot-devices p { margin: 2px 0 0; }
+/* A run's name in the brief reads as a link to it, not as a boxed button. */
+.kit-hero .autopilot-devices .link-button { padding: 0; border: 0; background: none; color: var(--accent-autopilot); font: inherit; cursor: pointer; }
+.kit-hero .autopilot-devices .link-button:hover { text-decoration: underline; }
+.autopilot > [aria-label="Runs dashboard"] { display: grid; gap: var(--space-5); }

@@ -225,10 +225,46 @@ function skillsBridge(): Record<string, AnyFn> {
   };
 }
 
+// --- Autopilot --------------------------------------------------------------------------------
+// Only the Runs dashboard is staged: the dashboard list, the brief, and just
+// enough of the selected run for the view to settle. The run controls are not.
+
+const apRuns = (count: number) => Array.from({ length: count }, (_, i) => {
+  const state = ["RUNNING", "NEEDS_REVIEW", "COMPLETED", "COMPLETED", "PAUSED", "FAILED"][i % 6];
+  const category = { RUNNING: "ACTIVE", NEEDS_REVIEW: "NEEDS ATTENTION", COMPLETED: "COMPLETED", PAUSED: "NEEDS ATTENTION", FAILED: "STOPPED / FAILED" }[state] as string;
+  return {
+    id: `run-${i}`, goal: ["Add offline sync to the Zephyr notes app", "Fix the flaky login test in api-gateway", "Migrate the settings page to the new form kit", "Bump dependencies and fix the type errors", "Split the report builder into smaller modules", "Port the CLI to the new config loader"][i % 6],
+    project: ["D:/code/zephyr", "D:/code/api-gateway", "D:/code/dashboard"][i % 3], primary: i % 2 ? "codex" : "claude", consultant: i % 3 ? null : "codex",
+    state, category, attention: category === "NEEDS ATTENTION", turn: 3 + i, maxTurns: 12, consumed: 3 + i, latestVerification: i % 4 === 3 ? "FAIL" : "PASS",
+    createdAt: day(i + 1), updatedAt: day(i)
+  };
+});
+
+function autopilotBridge(): Record<string, AnyFn> {
+  const empty = scenario === "empty";
+  const runs = empty ? [] : apRuns(scenario === "large" ? 60 : 6);
+  const brief = {
+    sinceHours: 12, generatedAt: T, needsYou: 2, costUsd: 4.37, filesChanged: 23,
+    runs: empty ? [] : runs.slice(0, 3).map((r, i) => ({ runId: r.id, label: r.goal, goal: r.goal, state: r.state, headline: ["4 of 6 phases done, checks passing", "Stopped on a decision about the token refresh", "Finished, all checks passing"][i], action: i === 1 ? "decide" : "none", detail: "Keep the old refresh endpoint, or remove it?", phasesDone: [4, 2, 5][i], phasesTotal: [6, 5, 5][i], costUsd: [1.92, 0.88, 1.57][i], assumptions: i, filesChanged: [11, 4, 8][i], insertions: [412, 37, 196][i], deletions: [88, 12, 140][i], finishedItself: i === 2, lastActivityAt: day(0) }))
+  };
+  const snapshot = (id: string) => ({ run: { spec: { workers: { primary: "claude" } }, id, state: "RUNNING", goal: runs[0]?.goal ?? "", createdAt: T, updatedAt: T, reconcileReason: null, failureReason: null }, steps: [], events: [], operations: [], pendingApprovals: [] });
+  return {
+    autopilotDashboard: async () => runs,
+    autopilotMorningBrief: async () => brief,
+    autopilotGetRun: async (id: unknown) => snapshot(String(id)),
+    autopilotReport: async () => ({}),
+    autopilotQueue: async () => null,
+    autopilotPushSettings: async () => null,
+    autopilotDevices: async () => [],
+    autopilotPairingCurrent: async () => null,
+    listProjects: async () => []
+  };
+}
+
 // --- mount ------------------------------------------------------------------------------------
 
 const overrides: Record<string, AnyFn> =
-  view === "object" ? objectBridge() : view === "ghost" ? ghostBridge() : view === "rpg" ? rpgBridge() : view === "skills" ? skillsBridge() : {};
+  view === "object" ? objectBridge() : view === "ghost" ? ghostBridge() : view === "rpg" ? rpgBridge() : view === "skills" ? skillsBridge() : view === "autopilot" ? autopilotBridge() : {};
 
 // Every read the shell or a view makes. The shell starts normally; the shoot
 // script then sets window.__harnessMode to "loading" or "error" and opens the
@@ -248,6 +284,7 @@ for (const name of [...new Set([...Object.keys(base), ...projectsReads])]) {
   };
 }
 base.onProjectsOutput = () => () => undefined;
+base.onAutopilotChanged = () => () => undefined;
 (window as unknown as { dexNest: unknown }).dexNest = base;
 try {
   sessionStorage.setItem("dexnest:lastActiveView", view);
