@@ -74,6 +74,7 @@ function home(entries, extra = {}) {
       onFilters: noop,
       onLayout: noop,
       onAdd: noop,
+      onImport: noop,
       onFetchAll: noop,
       onPullAll: noop,
       onRefresh: noop,
@@ -85,12 +86,18 @@ function home(entries, extra = {}) {
   );
 }
 
-test("no projects yet: a big 'Add your first project' with the drag-drop hint and the suggestions count", () => {
+test("no projects yet: 'Import projects' first, then adding one, the drag-drop hint and the suggestions count", () => {
   const html = home([], { suggestionsCount: 3 });
-  assert.match(html, /Add your first project/);
-  assert.match(html, /drop a folder anywhere on this window/);
+  assert.match(html, /Bring in your projects/);
+  assert.match(html, /Import projects<\/button>[\s\S]*Add one project<\/button>/, "import is the first, primary button");
+  assert.match(html, /imports every Git repository inside it in one click/);
+  assert.match(html, /drop folders anywhere on this window/);
   assert.match(html, /found 3 repositories you can add/);
-  assert.match(html, /Add project<\/button>/);
+});
+
+test("home header: Import projects sits beside Add project", () => {
+  const html = home([{ project: project("one"), state: repo() }]);
+  assert.match(html, /Import projects<\/button>[\s\S]*Add project<\/button>/);
 });
 
 test("home: needs attention first, then favourites, then the rest; badges and fetched-ago on cards", () => {

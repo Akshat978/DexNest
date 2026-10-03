@@ -7,12 +7,13 @@
 // (debounced) and after each operation - never on a timer.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Download, FolderGit2, FolderPlus, LayoutGrid, List, Plus, RefreshCw, Search } from "lucide-react";
+import { Download, FolderGit2, FolderPlus, FolderSearch, LayoutGrid, List, Plus, RefreshCw, Search } from "lucide-react";
 
 import type { ProjectGroup, ProjectSummary, ProjectsSettings, RepoState } from "@dexnest/projects";
 import type { ExecuteResult } from "@dexnest/projects/domain";
 import { Button, EmptyState, ErrorState, LoadingState, PageHeader, SectionTitle, Segmented, Toasts, useToasts } from "../../components/ui/kit";
 import { AddProjectWizard } from "./AddProjectWizard";
+import { ImportProjectsDialog } from "./ImportProjectsDialog";
 import { OperationDialog } from "./OperationDialog";
 import { ProjectDetail, type RunActionResult } from "./ProjectDetail";
 import type { RunResultView } from "./DetailTabs";
@@ -46,6 +47,8 @@ export interface ProjectsHomeProps {
   onFilters(next: HomeFilters): void;
   onLayout(layout: "grid" | "list"): void;
   onAdd(): void;
+  /** "Import projects": every repository under a folder, in one go. */
+  onImport(): void;
   onFetchAll(): void;
   onPullAll(): void;
   onRefresh(): void;
@@ -85,11 +88,14 @@ export function ProjectsHome(props: ProjectsHomeProps) {
         <PageHeader icon={<FolderGit2 />} title="Projects" subtitle="Your code projects, their branches and how far they are from GitHub." accent="dev" />
         <EmptyState
           icon={<FolderPlus />}
-          title="Add your first project"
+          title="Bring in your projects"
           actions={
             <>
-              <Button variant="primary" icon={<Plus />} onClick={props.onAdd}>
-                Add project
+              <Button variant="primary" icon={<FolderSearch />} onClick={props.onImport}>
+                Import projects
+              </Button>
+              <Button variant="secondary" icon={<Plus />} onClick={props.onAdd}>
+                Add one project
               </Button>
               {(props.suggestionsCount ?? 0) > 0 && (
                 <Button variant="secondary" onClick={props.onAdd}>
@@ -99,7 +105,7 @@ export function ProjectsHome(props: ProjectsHomeProps) {
             </>
           }
         >
-          <p>Choose a folder, paste a path, or drop a folder anywhere on this window. DexNest fills in the rest.</p>
+          <p>Choose the folder you keep your code in (for example <code className="kit-tech">D:\code</code>) and DexNest imports every Git repository inside it in one click. Or add a single project, or drop folders anywhere on this window.</p>
           {(props.suggestionsCount ?? 0) > 0 && (
             <p>
               Developer Intelligence found {props.suggestionsCount} repositor{props.suggestionsCount === 1 ? "y" : "ies"} you can add in one go.
@@ -125,6 +131,9 @@ export function ProjectsHome(props: ProjectsHomeProps) {
             </Button>
             <Button variant="ghost" icon={<Download />} onClick={props.onPullAll} title="Pull every clean project that can fast-forward">
               Pull all
+            </Button>
+            <Button variant="secondary" icon={<FolderSearch />} onClick={props.onImport} title="Import every repository inside a folder, in one go">
+              Import projects
             </Button>
             <Button variant="primary" icon={<Plus />} onClick={props.onAdd}>
               Add project
@@ -292,6 +301,9 @@ export function ProjectsView({ bridge: given, runAction, commandResults, clearCo
   const [legacyChanged, setLegacyChanged] = useState(false);
   const [suggestionsCount, setSuggestionsCount] = useState(0);
   const [wizard, setWizard] = useState<{ open: boolean; path: string | null }>({ open: false, path: null });
+  const [importer, setImporter] = useState<{ open: boolean; roots: string[] | null }>({ open: false, roots: null });
+  const importerOpen = useRef(false);
+  importerOpen.current = importer.open;
   const [dragging, setDragging] = useState(false);
   const [operation, setOperation] = useState<{ projectId: string; name: string; request: Record<string, unknown>; key: number } | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -356,16 +368,17 @@ export function ProjectsView({ bridge: given, runAction, commandResults, clearCo
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
-      if (isSearchShortcut(event.key, target?.tagName, Boolean(target?.isContentEditable)) && !operation && !wizard.open) {
+      if (isSearchShortcut(event.key, target?.tagName, Boolean(target?.isContentEditable)) && !operation && !wizard.open && !importer.open) {
         event.preventDefault();
         searchRef.current?.focus();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [operation, wizard.open]);
+  }, [operation, wizard.open, importer.open]);
 
   // Drop a folder anywhere on the window -> the wizard, already inspecting it.
+  // Several folders, or any drop while Import is open -> Import, looking inside them.
   useEffect(() => {
     const over = (event: DragEvent) => {
       if (!hasDraggedFiles(event)) return;
@@ -379,10 +392,11 @@ export function ProjectsView({ bridge: given, runAction, commandResults, clearCo
       if (!hasDraggedFiles(event)) return;
       event.preventDefault();
       setDragging(false);
-      const file = event.dataTransfer?.files[0];
-      const path = file && bridge.projectsPathForFile ? bridge.projectsPathForFile(file) : null;
-      if (path) setWizard({ open: true, path });
-      else push("error", "DexNest couldn't read the dropped folder's path. Use Choose folder instead.");
+      const files = [...(event.dataTransfer?.files ?? [])];
+      const paths = files.map((file) => (bridge.projectsPathForFile ? bridge.projectsPathForFile(file) : null)).filter((p): p is string => Boolean(p));
+      if (paths.length === 0) push("error", "DexNest couldn't read the dropped folder's path. Use Choose folder instead.");
+      else if (importerOpen.current || paths.length > 1) setImporter({ open: true, roots: paths });
+      else setWizard({ open: true, path: paths[0]! });
     };
     window.addEventListener("dragover", over);
     window.addEventListener("dragleave", leave);
@@ -509,6 +523,7 @@ export function ProjectsView({ bridge: given, runAction, commandResults, clearCo
         onFilters={setFilters}
         onLayout={(layout) => void bridge.projectsUpdateSettings({ layout }).then(setSettings)}
         onAdd={() => setWizard({ open: true, path: null })}
+        onImport={() => setImporter({ open: true, roots: null })}
         onFetchAll={async () => {
           push("info", "Fetching all projects…");
           const outcome = await bridge.projectsFetchAll();
@@ -555,7 +570,21 @@ export function ProjectsView({ bridge: given, runAction, commandResults, clearCo
           }}
         />
       )}
-      {dragging && !wizard.open && (
+      {importer.open && (
+        <ImportProjectsDialog
+          bridge={bridge}
+          initialRoots={importer.roots}
+          rememberedRoots={settings.importRoots ?? []}
+          dragging={dragging}
+          onClose={() => setImporter({ open: false, roots: null })}
+          onImported={(message) => {
+            push("success", message);
+            changed();
+            void bridge.projectsSettings().then(setSettings, () => undefined);
+          }}
+        />
+      )}
+      {dragging && !wizard.open && !importer.open && (
         <div className="projects-dropzone" aria-hidden="true">
           Drop a folder to add it as a project
         </div>

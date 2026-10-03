@@ -19,6 +19,7 @@ import type {
   SaveResult,
   Suggestion,
   AddManyResult,
+  FolderScanResult,
   HistoryEntry,
   DiffStat,
   LegacyReimportResult
@@ -57,6 +58,9 @@ export interface ProjectsBridge {
   projectsRemove(projectId: string): Promise<void>;
   projectsSuggestions(): Promise<Suggestion[]>;
   projectsAddSuggestions(paths: string[]): Promise<AddManyResult>;
+  /** Every repository under these folders (Developer Intelligence's walk), new or already added. */
+  projectsScanFolders(roots: string[]): Promise<FolderScanResult>;
+  projectsImportFolders(paths: string[]): Promise<AddManyResult>;
   projectsClone(input: { url: string; parentDir: string; folderName?: string }): Promise<CloneResult & { inspection?: InspectResult }>;
   projectsImportLegacy(): Promise<LegacyReimportResult>;
   projectsLegacyChanged(): Promise<boolean>;
@@ -75,8 +79,8 @@ const unavailable = "The desktop app isn't connected.";
 export const fallbackProjectsBridge: ProjectsBridge = {
   projectsList: async () => [],
   projectsGet: async () => null,
-  projectsSettings: async () => ({ schemaVersion: 1, staleDays: 30, scheduledFetch: { enabled: false, intervalMinutes: 30 }, fetchConcurrency: 4, terminal: "auto", vscodePath: null, layout: "grid" }),
-  projectsUpdateSettings: async (s) => ({ schemaVersion: 1, staleDays: 30, scheduledFetch: { enabled: false, intervalMinutes: 30 }, fetchConcurrency: 4, terminal: "auto", vscodePath: null, layout: "grid", ...s }),
+  projectsSettings: async () => ({ schemaVersion: 1, staleDays: 30, scheduledFetch: { enabled: false, intervalMinutes: 30 }, fetchConcurrency: 4, terminal: "auto", vscodePath: null, layout: "grid", importRoots: [] }),
+  projectsUpdateSettings: async (s) => ({ schemaVersion: 1, staleDays: 30, scheduledFetch: { enabled: false, intervalMinutes: 30 }, fetchConcurrency: 4, terminal: "auto", vscodePath: null, layout: "grid", importRoots: [], ...s }),
   projectsGroups: async () => [],
   projectsSaveGroup: async () => [],
   projectsDeleteGroup: async () => [],
@@ -100,6 +104,8 @@ export const fallbackProjectsBridge: ProjectsBridge = {
   projectsRemove: async () => undefined,
   projectsSuggestions: async () => [],
   projectsAddSuggestions: async () => ({ added: [], skipped: [] }),
+  projectsScanFolders: async (roots) => ({ roots: [], candidates: [], refused: roots.map((path) => ({ path, reason: unavailable })), truncated: false, unreadable: 0 }),
+  projectsImportFolders: async () => ({ added: [], skipped: [] }),
   projectsClone: async () => ({ status: "refused", reason: unavailable }),
   projectsImportLegacy: async () => ({ kind: "absent" }),
   projectsLegacyChanged: async () => false,

@@ -29,15 +29,18 @@ import { normaliseProjectInput, type Project, type ProjectInput } from "../domai
 import { githubLinks } from "../domain/remote.ts";
 import type { RepoState } from "../domain/repoState.ts";
 import type { Confirmation } from "../domain/safety.ts";
-import { normaliseProjectsSettings, type ProjectsSettings } from "../domain/settings.ts";
+import { MAX_IMPORT_ROOTS, normaliseProjectsSettings, type ProjectsSettings } from "../domain/settings.ts";
 import { GitReadError, type DiffStat, type GitReader, type HistoryEntry } from "../git/reader.ts";
 import {
   addSuggestions,
   inspectFolder,
   listSuggestions,
   saveInspectedProject,
+  scanFoldersForImport,
   type AddManyResult,
   type DiscoveredReposPort,
+  type FolderScanPort,
+  type FolderScanResult,
   type InspectFsPort,
   type InspectResult,
   type SaveResult,
@@ -85,6 +88,8 @@ export interface ProjectsModuleOptions {
   isSensitive(path: string): boolean;
   launch: LaunchPort;
   discovered?: DiscoveredReposPort;
+  /** Finds repositories under chosen folders, for "Import projects". */
+  folderScan?: FolderScanPort;
   continuation?: ContinuationPort;
   scheduler: ModuleScheduler;
   settings: { read(): unknown; write(value: ProjectsSettings): void };
@@ -147,6 +152,10 @@ export interface ProjectsModule {
   touch(projectId: string): void;
   suggestions(): Promise<Suggestion[]>;
   addSuggestions(paths: readonly string[]): Promise<AddManyResult>;
+  /** Every repository under these folders, marked new or already a project. Remembers the folders. */
+  scanFolders(roots: readonly string[]): Promise<FolderScanResult>;
+  /** Adds the chosen repositories in one go; refusals and duplicates are reported, not fatal. */
+  importFolders(paths: readonly string[]): Promise<AddManyResult>;
   clone(input: Omit<CloneRequest, "source">, source: string): Promise<CloneResult & { inspection?: InspectResult }>;
   importLegacy(): LegacyReimportResult;
   legacyChanged(): boolean;
@@ -504,6 +513,22 @@ export function createProjectsModule(options: ProjectsModuleOptions): ProjectsMo
       for (const project of result.added) emit("projects.project.added", project.id, "module_ui", projectEventPayload(project.id, "suggestion"));
       return result;
     },
+    async scanFolders(roots) {
+      if (!options.folderScan) return { roots: [], candidates: [], refused: roots.map((path) => ({ path, reason: "Folder import isn't available." })), truncated: false, unreadable: 0 };
+      const result = await scanFoldersForImport(roots, options.folderScan, { fs: options.inspectFs, isSensitive: options.isSensitive, projects: store.list({ includeArchived: true }), platform });
+      if (result.roots.length > 0) {
+        // Newest first, deduplicated as the file system sees paths.
+        const previous = settings().importRoots.filter((r) => !result.roots.some((n) => comparablePath(n, platform) === comparablePath(r, platform)));
+        const importRoots = [...result.roots, ...previous].slice(0, MAX_IMPORT_ROOTS);
+        options.settings.write(normaliseProjectsSettings({ ...settings(), importRoots }));
+      }
+      return result;
+    },
+    async importFolders(paths) {
+      const result = await addSuggestions(paths, inspectDeps(), { now: now(), newCommandId });
+      for (const project of result.added) emit("projects.project.added", project.id, "module_ui", projectEventPayload(project.id, "folder_import"));
+      return result;
+    },
     async clone(input, source) {
       const result = await options.gitOps.clone({ ...input, source });
       if (result.status === "done" && result.outcome === "succeeded") return { ...result, inspection: await inspectFolder(result.path, inspectDeps()) };
@@ -574,6 +599,11 @@ export function createProjectsModule(options: ProjectsModuleOptions): ProjectsMo
             const paths = Array.isArray(p.paths) ? p.paths.filter((x): x is string => typeof x === "string") : [];
             const r = await module.addSuggestions(paths);
             return { ok: r.skipped.length === 0, message: `Added ${r.added.length}; ${r.skipped.length} skipped.`, data: r };
+          }
+          case "projects.import_folder": {
+            const paths = Array.isArray(p.paths) ? p.paths.filter((x): x is string => typeof x === "string") : [];
+            const r = await module.importFolders(paths);
+            return { ok: r.skipped.length === 0, message: `Imported ${r.added.length}; ${r.skipped.length} skipped.`, data: r };
           }
           case "projects.open_vscode":
             return open(need(), "vscode", { path: str(p.path) });

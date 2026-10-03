@@ -278,3 +278,100 @@ export async function addSuggestions(paths: readonly string[], deps: InspectDeps
   }
   return out;
 }
+
+// --- "Import projects": every repository under a folder, in one go ----------
+//
+// The walk itself is the host's (Developer Intelligence's discovery: bounded
+// depth and folder count, junction loops followed once, node_modules and
+// hidden folders skipped, nothing inside the data boundary). This decides what
+// the owner is shown: each repository found, whether it is already a project,
+// and which chosen folders were refused before any walk began.
+
+export interface FolderScanPort {
+  /** Repositories under these folders. `truncated` when a limit stopped the walk early. */
+  scan(roots: readonly string[]): Promise<{ repositories: Array<{ path: string; displayName: string | null }>; truncated: boolean; unreadable: number }>;
+}
+
+export interface ImportCandidate {
+  path: string;
+  name: string;
+  /** Already a project (archived ones included): shown, not ticked, never added twice. */
+  existing: { id: string; name: string; archived: boolean } | null;
+}
+
+export interface FolderScanResult {
+  roots: string[];
+  candidates: ImportCandidate[];
+  refused: Array<{ path: string; reason: string }>;
+  truncated: boolean;
+  unreadable: number;
+}
+
+/** Checks the chosen folders, walks the allowed ones, and marks what is already a project. */
+export async function scanFoldersForImport(
+  rawRoots: readonly string[],
+  port: FolderScanPort,
+  deps: { fs: Pick<InspectFsPort, "realpath" | "kind">; isSensitive(path: string): boolean; projects: readonly Project[]; platform?: Platform }
+): Promise<FolderScanResult> {
+  const platform = deps.platform ?? process.platform;
+  const roots: string[] = [];
+  const refused: FolderScanResult["refused"] = [];
+  for (const raw of rawRoots) {
+    const path = raw.trim().replace(/^"(.*)"$/, "$1");
+    if (!path) continue;
+    // The boundary first, by the written path and by where it really leads.
+    if (deps.isSensitive(path)) {
+      refused.push({ path, reason: "Inside DexNest's own data folder." });
+      continue;
+    }
+    const kind = deps.fs.kind(path);
+    if (kind !== "dir") {
+      refused.push({ path, reason: kind === "missing" ? "That folder doesn't exist." : "That's a file, not a folder." });
+      continue;
+    }
+    let real: string;
+    try {
+      real = deps.fs.realpath(path);
+    } catch {
+      refused.push({ path, reason: "That folder can't be opened." });
+      continue;
+    }
+    if (deps.isSensitive(real)) {
+      refused.push({ path, reason: "It leads into DexNest's own data folder (through a link)." });
+      continue;
+    }
+    if (!roots.some((r) => comparablePath(r, platform) === comparablePath(path, platform))) roots.push(path);
+  }
+  if (roots.length === 0) return { roots, candidates: [], refused, truncated: false, unreadable: 0 };
+
+  const byPath = new Map<string, Project>();
+  for (const p of deps.projects) {
+    if (p.realPath) byPath.set(p.realPath, p);
+    byPath.set(comparablePath(p.path, platform), p);
+  }
+  const scanned = await port.scan(roots);
+  const candidates: ImportCandidate[] = [];
+  const seen = new Set<string>();
+  for (const repo of scanned.repositories) {
+    if (deps.isSensitive(repo.path)) continue;
+    let real: string;
+    try {
+      real = deps.fs.realpath(repo.path);
+    } catch {
+      continue;
+    }
+    if (deps.isSensitive(real)) continue;
+    const key = comparablePath(real, platform);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const project = byPath.get(key) ?? byPath.get(comparablePath(repo.path, platform)) ?? null;
+    candidates.push({
+      path: repo.path,
+      name: repo.displayName ?? basename(real),
+      existing: project ? { id: project.id, name: project.name, archived: project.archivedAt !== null } : null
+    });
+  }
+  // New ones first, then by name.
+  candidates.sort((a, b) => Number(a.existing !== null) - Number(b.existing !== null) || a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+  return { roots, candidates, refused, truncated: scanned.truncated, unreadable: scanned.unreadable };
+}

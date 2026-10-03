@@ -16,7 +16,11 @@ export interface ProjectsSettings {
   /** Owner-chosen VS Code executable, when it isn't found automatically. */
   vscodePath: string | null;
   layout: HomeLayout;
+  /** Folders "Import projects" last looked in, newest first, so a re-check is one click. */
+  importRoots: string[];
 }
+
+export const MAX_IMPORT_ROOTS = 5;
 
 export const SCHEDULED_FETCH_MIN_MINUTES = 15;
 
@@ -27,7 +31,8 @@ export const DEFAULT_PROJECTS_SETTINGS: ProjectsSettings = {
   fetchConcurrency: 4,
   terminal: "auto",
   vscodePath: null,
-  layout: "grid"
+  layout: "grid",
+  importRoots: []
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -41,7 +46,7 @@ function intIn(value: unknown, min: number, max: number, fallback: number): numb
 /** Accepts anything read back from disk; unknown or out-of-range values fall back to defaults. */
 export function normaliseProjectsSettings(raw: unknown): ProjectsSettings {
   const d = DEFAULT_PROJECTS_SETTINGS;
-  if (!isRecord(raw)) return { ...d, scheduledFetch: { ...d.scheduledFetch } };
+  if (!isRecord(raw)) return { ...d, scheduledFetch: { ...d.scheduledFetch }, importRoots: [] };
   const fetch = isRecord(raw.scheduledFetch) ? raw.scheduledFetch : {};
   return {
     schemaVersion: 1,
@@ -53,6 +58,9 @@ export function normaliseProjectsSettings(raw: unknown): ProjectsSettings {
     fetchConcurrency: intIn(raw.fetchConcurrency, 1, 8, d.fetchConcurrency),
     terminal: raw.terminal === "windows_terminal" || raw.terminal === "powershell" ? raw.terminal : "auto",
     vscodePath: typeof raw.vscodePath === "string" && raw.vscodePath.trim() ? raw.vscodePath.trim() : null,
-    layout: raw.layout === "list" ? "list" : "grid"
+    layout: raw.layout === "list" ? "list" : "grid",
+    importRoots: Array.isArray(raw.importRoots)
+      ? [...new Set(raw.importRoots.filter((r): r is string => typeof r === "string" && r.trim().length > 0).map((r) => r.trim()))].slice(0, MAX_IMPORT_ROOTS)
+      : []
   };
 }

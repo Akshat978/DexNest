@@ -212,6 +212,8 @@ contextBridge.exposeInMainWorld("dexNest", {
   projectsRemove: (projectId: string) => ipcRenderer.invoke("dexnest:projects-remove", projectId),
   projectsSuggestions: () => ipcRenderer.invoke("dexnest:projects-suggestions"),
   projectsAddSuggestions: (paths: string[]) => ipcRenderer.invoke("dexnest:projects-add-suggestions", paths),
+  projectsScanFolders: (roots: string[]) => ipcRenderer.invoke("dexnest:projects-scan-folders", roots),
+  projectsImportFolders: (paths: string[]) => ipcRenderer.invoke("dexnest:projects-import-folders", paths),
   projectsClone: (input: { url: string; parentDir: string; folderName?: string }) => ipcRenderer.invoke("dexnest:projects-clone", input),
   projectsImportLegacy: () => ipcRenderer.invoke("dexnest:projects-import-legacy"),
   projectsLegacyChanged: () => ipcRenderer.invoke("dexnest:projects-legacy-changed"),

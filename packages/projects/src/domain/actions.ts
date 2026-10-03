@@ -33,6 +33,7 @@ export const PROJECTS_ACTIONS: readonly ProjectsActionContract[] = [
   { id: "projects.import_legacy", title: "Import projects.json", safety: "normal", triggers: UI, network: false },
   { id: "projects.clone", title: "Clone repository", safety: "normal", triggers: UI, network: true },
   { id: "projects.suggestions.add", title: "Add suggested repositories", safety: "normal", triggers: UI, network: false },
+  { id: "projects.import_folder", title: "Import projects from folders", safety: "normal", triggers: UI, network: false },
   { id: "projects.open_vscode", title: "Open project in VS Code", safety: "read", triggers: DECK, network: false },
   { id: "projects.open_terminal", title: "Open terminal in project", safety: "read", triggers: DECK, network: false },
   { id: "projects.open_folder", title: "Open project folder", safety: "read", triggers: DECK, network: false },

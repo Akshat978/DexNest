@@ -1083,6 +1083,24 @@ export const seededActions = [
     status: "available"
   },
   {
+    id: "projects.import_folder",
+    title: "Import projects from folders",
+    moduleId: "projects",
+    module: "projects",
+    description: "Add every chosen repository found under a folder as a project, in one go.",
+    category: "project",
+    dangerLevel: "caution",
+    requiresConfirmation: false,
+    confirmationRule: null,
+    reversible: false,
+    undoActionId: null,
+    handlerType: "internal_function",
+    handlerRef: "projects.import_folder",
+    allowedTriggers: ["module_ui"],
+    enabled: true,
+    status: "available"
+  },
+  {
     id: "projects.open_vscode",
     title: "Open project in VS Code",
     moduleId: "projects",

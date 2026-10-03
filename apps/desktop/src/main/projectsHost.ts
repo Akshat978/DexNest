@@ -34,6 +34,7 @@ import type { DevIntelligenceModule } from "@dexnest/dev-intelligence";
 
 import { isTrustedMainFrame } from "./trustedFrame.js";
 import { evidenceLine } from "./leftOffEvidence.js";
+import { createFolderScan } from "./projectsFolderScan.js";
 
 export interface ProjectsHostOptions {
   database: SqlDatabase;
@@ -101,6 +102,8 @@ export function createProjectsHost(options: ProjectsHostOptions): ProjectsHost {
     }
   };
 
+  const folderScan = createFolderScan(isSensitive);
+
   const continuation: ContinuationPort = {
     async forProject(project): Promise<LeftOff | null> {
       const di = options.getDevIntelligence();
@@ -149,6 +152,7 @@ export function createProjectsHost(options: ProjectsHostOptions): ProjectsHost {
       }
     },
     discovered,
+    folderScan,
     continuation,
     scheduler: options.scheduler,
     settings: { read: options.readSettings, write: options.writeSettings },
@@ -201,6 +205,9 @@ export function createProjectsHost(options: ProjectsHostOptions): ProjectsHost {
   handle("dexnest:projects-remove", (projectId) => projects.remove(id(projectId)));
   handle("dexnest:projects-suggestions", () => projects.suggestions());
   handle("dexnest:projects-add-suggestions", (paths) => projects.addSuggestions(Array.isArray(paths) ? paths.filter((x): x is string => typeof x === "string") : []));
+  const paths = (value: unknown): string[] => (Array.isArray(value) ? value.filter((x): x is string => typeof x === "string").slice(0, 500) : []);
+  handle("dexnest:projects-scan-folders", (roots) => projects.scanFolders(paths(roots)));
+  handle("dexnest:projects-import-folders", (chosen) => projects.importFolders(paths(chosen)));
   handle("dexnest:projects-clone", (input) => {
     const i = opt(input);
     return projects.clone({ url: String(i.url ?? ""), parentDir: String(i.parentDir ?? ""), folderName: typeof i.folderName === "string" ? i.folderName : undefined, onOutput: (line) => sendOutput("", line) }, "module_ui");
