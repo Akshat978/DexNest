@@ -22,6 +22,14 @@
   overflow-wrap: anywhere;
 }
 
+/* A quiet line under the header: something worth knowing, nothing wrong. */
+.today-note {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
 /* The hero: the reason is the point, the path is a quiet second line. */
 .today-reason {
   margin: 0;

@@ -1,7 +1,12 @@
 /** Marker kinds commonly observed in source (facts only). */
 export type TodoMarkerKind = 'TODO' | 'FIXME' | 'HACK' | 'XXX' | 'NOTE' | 'BUG' | string;
 
-export type TodoMarkerStatus = 'open' | 'resolved';
+/**
+ * `retracted`: recorded by an earlier, looser detector and no longer counted
+ * as a marker at all (the word in a string, in prose). Never open, and never
+ * reported as resolved - nobody did the work, there was no work.
+ */
+export type TodoMarkerStatus = 'open' | 'resolved' | 'retracted';
 
 /** Lifecycle classification produced by reconcile (facts only). */
 export type TodoLifecycleAction =

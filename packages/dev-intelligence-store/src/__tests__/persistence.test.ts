@@ -17,6 +17,32 @@ describe('sqlite persistence', () => {
     dir = '';
   });
 
+  it('a repository\'s baseline is absent until set, set once, and never undone', async () => {
+    dir = await mkdtemp(join(tmpdir(), 'dev-store-'));
+    const p = await createSqlitePersistence({ dbPath: join(dir, 't.sqlite'), migrationsDir });
+    const repo = {
+      schemaVersion: 1 as const,
+      id: 'repo_b',
+      discoveredAt: '2026-01-01T00:00:00.000Z',
+      lastSeenAt: '2026-01-01T00:00:00.000Z',
+      roots: [{ path: '/tmp/b', domain: 'wsl' as const }],
+    };
+
+    await p.repositories.upsertRepository(repo);
+    expect((await p.repositories.getRepository('repo_b'))!.baselinedAt).toBeUndefined();
+
+    await p.repositories.upsertRepository({ ...repo, baselinedAt: '2026-01-01T00:05:00.000Z' });
+    expect((await p.repositories.getRepository('repo_b'))!.baselinedAt).toBe('2026-01-01T00:05:00.000Z');
+
+    // A later scan upserts without it, and another tries to move it: neither changes it.
+    await p.repositories.upsertRepository({ ...repo, lastSeenAt: '2026-02-01T00:00:00.000Z' });
+    await p.repositories.upsertRepository({ ...repo, baselinedAt: '2026-03-01T00:00:00.000Z' });
+    const stored = (await p.repositories.listRepositories()).find((r) => r.id === 'repo_b')!;
+    expect(stored.baselinedAt).toBe('2026-01-01T00:05:00.000Z');
+    expect(stored.lastSeenAt).toBe('2026-01-01T00:00:00.000Z');
+    p.close();
+  });
+
   it('applies migrations and idempotently appends events', async () => {
     dir = await mkdtemp(join(tmpdir(), 'dev-store-'));
     const p = await createSqlitePersistence({

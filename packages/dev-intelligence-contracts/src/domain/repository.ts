@@ -27,6 +27,13 @@ export interface Repository {
   displayName?: string;
   discoveredAt: string; // ISO-8601
   lastSeenAt: string; // ISO-8601
+  /**
+   * When the repository's first complete inspection finished. Everything
+   * observed up to this instant is what the repository already contained -
+   * its history - and must not be reported as a change. Absent until that
+   * first inspection has completed.
+   */
+  baselinedAt?: string; // ISO-8601
 }
 
 export interface GitCommit {

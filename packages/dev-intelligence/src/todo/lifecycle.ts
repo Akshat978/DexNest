@@ -27,6 +27,8 @@ export interface ReconcileTodosResult {
   results: TodoLifecycleResult[];
   open: TodoMarker[];
   resolved: TodoMarker[];
+  /** Markers withdrawn because they were never markers. Not results: nothing happened in the repository. */
+  retracted: TodoMarker[];
 }
 
 export async function reconcileTodos(options: {
@@ -40,6 +42,12 @@ export async function reconcileTodos(options: {
    * the files it did not read. Defaults to true for existing callers.
    */
   complete?: boolean;
+  /**
+   * Fingerprints still present in the files but no longer counted as markers
+   * (see TodoScanResult.retracted). A stored open marker with one of these is
+   * withdrawn quietly rather than reported as resolved.
+   */
+  retracted?: readonly string[];
 }): Promise<ReconcileTodosResult> {
   const now = options.now ?? new Date().toISOString();
   const existing = await options.store.listByRepository(options.repositoryId);
@@ -48,6 +56,8 @@ export async function reconcileTodos(options: {
   const results: TodoLifecycleResult[] = [];
   const open: TodoMarker[] = [];
   const resolved: TodoMarker[] = [];
+  const retracted: TodoMarker[] = [];
+  const withdrawn = new Set(options.retracted ?? []);
 
   for (const obs of options.observed) {
     seen.add(obs.fingerprint);
@@ -60,7 +70,7 @@ export async function reconcileTodos(options: {
     );
 
     let action: TodoLifecycleResult['action'];
-    if (!prev || prev.status === 'resolved') {
+    if (!prev || prev.status !== 'open') {
       // re-open or create
       const created: TodoMarker = {
         ...marker,
@@ -99,9 +109,18 @@ export async function reconcileTodos(options: {
   }
 
   for (const prev of existing) {
+    if (prev.status !== 'open' || seen.has(prev.fingerprint)) continue;
+    if (!withdrawn.has(prev.fingerprint)) continue;
+    // Seen in a file this scan read, so safe to act on even in a partial scan.
+    const gone: TodoMarker = { ...prev, status: 'retracted' };
+    await options.store.upsert(gone);
+    retracted.push(gone);
+  }
+
+  for (const prev of existing) {
     if (options.complete === false) break;
     if (prev.status !== 'open') continue;
-    if (seen.has(prev.fingerprint)) continue;
+    if (seen.has(prev.fingerprint) || withdrawn.has(prev.fingerprint)) continue;
     const closed: TodoMarker = {
       ...prev,
       status: 'resolved',
@@ -113,5 +132,5 @@ export async function reconcileTodos(options: {
     resolved.push(closed);
   }
 
-  return { results, open, resolved };
+  return { results, open, resolved, retracted };
 }

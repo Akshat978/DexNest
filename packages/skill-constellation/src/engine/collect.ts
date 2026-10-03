@@ -90,6 +90,8 @@ export async function collectInput(options: {
       });
     }
     for (const marker of await options.reader.todos.listByRepository(repo.id)) {
+      // Withdrawn by the scanner: it was never a marker, so it is evidence of nothing.
+      if (marker.status === 'retracted') continue;
       // The marker's text is deliberately not carried into the input.
       todos.push({
         id: marker.id,

@@ -21,7 +21,9 @@ describe('TODO/FIXME/HACK/XXX lifecycle', () => {
 
   it('extracts markers and skips secret-like paths', () => {
     const markers = extractMarkersFromText(
-      '// TODO: fix me\n/* FIXME: later */\n# HACK: temp\nXXX: watch\n',
+      // Each in a comment form TypeScript actually has; see todo-real-markers.test.ts
+      // for what is deliberately not counted.
+      '// TODO: fix me\n/* FIXME: later */\n  // HACK: temp\n * XXX: watch\n',
       'src/a.ts',
     );
     expect(markers.map((m) => m.kind).sort()).toEqual([

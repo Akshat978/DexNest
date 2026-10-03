@@ -24,6 +24,12 @@ export interface RepoFacts {
   readonly errorMessage?: string;
   readonly errorKind?: 'load_failure' | 'scan_failed';
   readonly snapshot?: RepositorySnapshot;
+  /**
+   * When the repository's first complete inspection finished. What was
+   * observed up to then is what it already held, and is not in `events`.
+   */
+  readonly baselinedAt?: string;
+  /** What happened in the window. History found at the first inspection is left out. */
   readonly events: readonly DeveloperEvent[];
   readonly openTodos: readonly TodoMarker[];
   readonly resolvedTodos: readonly TodoMarker[];
@@ -41,6 +47,8 @@ export interface CollectedFacts {
 const EVENT_TYPES_OF_INTEREST = [
   'dev.commit.observed',
   'dev.branch.changed',
+  'dev.push.observed',
+  'dev.pull.observed',
   'dev.working_tree.changed',
   'dev.conflict.observed',
   'dev.git_operation.started',
@@ -49,6 +57,33 @@ const EVENT_TYPES_OF_INTEREST = [
   'dev.todo.resolved',
   'dev.health.completed',
 ] as const;
+
+/** Events whose own time is when the thing happened, not when a scan noticed it. */
+const DATED_BY_OCCURRENCE = new Set(['dev.commit.observed', 'dev.push.observed', 'dev.pull.observed']);
+
+/**
+ * When the event happened, as a UTC instant. A commit, push or pull carries
+ * the time Git recorded; everything else is known only by when it was seen.
+ */
+export function eventTime(event: DeveloperEvent): string {
+  if (!DATED_BY_OCCURRENCE.has(event.type)) return event.observedAt;
+  const time = new Date(event.occurredAt);
+  return Number.isNaN(time.getTime()) ? event.observedAt : time.toISOString();
+}
+
+/**
+ * Whether something was already there when the repository was first inspected.
+ * A repository scanned before baselines existed has none until its next scan;
+ * until then nothing is treated as history.
+ */
+export function isBaseline(baselinedAt: string | undefined, observedAt: string): boolean {
+  return baselinedAt !== undefined && observedAt <= baselinedAt;
+}
+
+function isHistory(event: DeveloperEvent, baselinedAt: string | undefined): boolean {
+  if ((event.payload as { baseline?: unknown } | null)?.baseline === true) return true;
+  return isBaseline(baselinedAt, event.observedAt);
+}
 
 async function loadRepoFacts(
   persistence: PersistencePorts,
@@ -68,12 +103,12 @@ async function loadRepoFacts(
       });
       // Upper bound: drop events at/after window.to
       for (const e of batch) {
-        if (e.observedAt < window.to) {
+        if (e.observedAt < window.to && !isHistory(e, repo.baselinedAt)) {
           events.push(e);
         }
       }
     }
-    events.sort((a, b) => a.observedAt.localeCompare(b.observedAt));
+    events.sort((a, b) => eventTime(a).localeCompare(eventTime(b)));
 
     const openTodos = await persistence.todos.listByRepository(repo.id, {
       status: 'open',
@@ -115,6 +150,7 @@ async function loadRepoFacts(
           `Last scan ${lastScanRelevant.id} marked FAILED`,
         errorKind: 'scan_failed',
         snapshot,
+        baselinedAt: repo.baselinedAt,
         events,
         openTodos,
         resolvedTodos,
@@ -129,6 +165,7 @@ async function loadRepoFacts(
       displayName: repo.displayName,
       ok: true,
       snapshot,
+      baselinedAt: repo.baselinedAt,
       events,
       openTodos,
       resolvedTodos,

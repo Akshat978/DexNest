@@ -165,6 +165,9 @@ export function createStandupService(
         partialFailureCount: facts.repositories.filter((r) => !r.ok).length,
         openIssueCount: lifecycle.openStates.length,
         windowKind: timeWindow.kind,
+        changedTotal: built.totals.changed,
+        needsAttentionTotal: built.totals.needsAttention,
+        repositoryStateTotal: built.totals.repositoryState,
       },
     };
 

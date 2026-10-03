@@ -30,6 +30,11 @@ function runGit(cwd: string, args: string[]): void {
   }
 }
 
+/** Run git in a fixture repository, with the fixtures' identity and no user config. */
+export function gitIn(cwd: string, args: string[]): void {
+  runGit(cwd, args);
+}
+
 export interface FixtureRepo {
   path: string;
   name: string;

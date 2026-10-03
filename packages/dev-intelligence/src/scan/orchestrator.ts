@@ -25,6 +25,7 @@ import {
   emitConflictIfNeeded,
   emitGitOperationIfNeeded,
   emitHealthCompleted,
+  emitRefTransfer,
   emitRepoDiscovered,
   emitRepoSnapshot,
   emitTechnologyObserved,
@@ -36,7 +37,10 @@ import {
 } from '../events/emit.js';
 import { mapPool } from './concurrency.js';
 import { scanTodoCandidates } from '../todo/scan.js';
-import { listCandidateFiles } from '../git/readonly-git.js';
+import { listCandidateFiles, readRefTransfers, type GitInspectOptions } from '../git/readonly-git.js';
+
+/** Most remote-tracking refs whose reflog one inspection will read. */
+const MAX_TRANSFER_REFS = 10;
 import { reconcileTodos } from '../todo/lifecycle.js';
 import { reconcileTechnologies } from '../tech/lifecycle.js';
 import { runEnabledHealthChecks } from '../health/runner.js';
@@ -119,6 +123,43 @@ export class ScanOrchestrator {
 
   requestCancel(): void {
     this.activeCancel?.cancel();
+  }
+
+  /**
+   * Records pushes and pulls made since the previous inspection. Only the
+   * reflogs of refs that actually moved are read, so an unchanged repository
+   * costs nothing. A reflog that cannot be read is not a failed scan.
+   */
+  private async observeTransfers(
+    ctx: EmitContext,
+    repositoryId: string,
+    previous: RepositorySnapshot,
+    current: RepositorySnapshot,
+    git: GitInspectOptions,
+  ): Promise<void> {
+    const before = new Map(previous.git.branches.map((b) => [b.name, b.tipSha]));
+    const movedRemotes = current.git.branches
+      .filter((b) => b.isRemote && !b.name.endsWith('/HEAD') && b.tipSha && before.get(b.name) !== b.tipSha)
+      .map((b) => b.name)
+      .slice(0, MAX_TRANSFER_REFS);
+    const headMoved = previous.git.headSha !== current.git.headSha;
+    if (movedRemotes.length === 0 && !headMoved) return;
+    try {
+      const transfers = await readRefTransfers(git, {
+        remoteRefs: movedRemotes,
+        includeHead: headMoved,
+        since: previous.capturedAt,
+      });
+      for (const transfer of transfers) {
+        await emitRefTransfer(ctx, repositoryId, {
+          ...transfer,
+          // A pull is recorded against HEAD; name the branch it landed on.
+          ref: transfer.kind === 'pull' ? current.git.currentBranch ?? transfer.ref : transfer.ref,
+        });
+      }
+    } catch {
+      /* the reflog is a convenience; the scan's facts do not depend on it */
+    }
   }
 
   /**
@@ -291,13 +332,28 @@ export class ScanOrchestrator {
 
             await emitRepoSnapshot(emitCtx, snapshot);
 
+            // Until a repository has been inspected completely once, what
+            // it holds is its history, not news: those commits are recorded
+            // as baseline so nothing reports them as work just done.
+            const baselining = !existing?.baselinedAt;
+
             for (const commit of snapshot.git.recentCommits) {
               await emitCommitObserved(
                 emitCtx,
                 repo.id,
                 commit,
                 snapshot.git.currentBranch,
+                baselining,
               );
+            }
+
+            if (!baselining && previousSnap && !cancel.aborted) {
+              await this.observeTransfers(emitCtx, repo.id, previousSnap, snapshot, {
+                cwd: item.root.path,
+                domain: item.root.domain,
+                runner,
+                cancel,
+              });
             }
 
             await emitBranchChangedIfNeeded(
@@ -324,8 +380,11 @@ export class ScanOrchestrator {
               !!previousSnap?.contentFingerprint &&
               previousSnap.contentFingerprint === snapshot.contentFingerprint;
 
+            // A repository still being baselined is read in full even when
+            // nothing changed: one recorded before the baseline existed needs
+            // its markers checked against today's detector once.
             const skippedHeavy =
-              this.incremental && fingerprintUnchanged && !!previousSnap;
+              this.incremental && fingerprintUnchanged && !!previousSnap && !baselining;
 
             let todosTouched = 0;
             let techObserved = 0;
@@ -349,6 +408,7 @@ export class ScanOrchestrator {
               const todoResult = await reconcileTodos({
                 repositoryId: repo.id,
                 observed: todoScan.todos,
+                retracted: todoScan.retracted,
                 store: this.persistence.todos,
                 now,
                 complete: todoScan.complete,
@@ -416,6 +476,18 @@ export class ScanOrchestrator {
                 await emitHealthCompleted(emitCtx, hr);
                 healthRuns += 1;
               }
+            }
+
+            if (baselining && !cancel.aborted) {
+              // The first inspection ran to the end: from here on, anything
+              // newly observed in this repository is a change.
+              await this.persistence.repositories.upsertRepository({
+                ...(existing ?? repo),
+                lastSeenAt: now,
+                roots: repo.roots,
+                displayName: repo.displayName ?? existing?.displayName,
+                baselinedAt: new Date().toISOString(),
+              });
             }
 
             return {

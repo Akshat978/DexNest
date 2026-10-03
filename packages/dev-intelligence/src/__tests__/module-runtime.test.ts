@@ -219,24 +219,70 @@ describe('Developer Intelligence module runtime', () => {
     expect(audit.map((a) => a.status)).toEqual(['success']);
   });
 
-  it('collapses duplicate triggers into one scan and one Standup a day', async () => {
-    const { module, persistence } = await setup();
+  it('collapses duplicate triggers into one scan, and timer scans into one Standup a day', async () => {
+    const timers = heldTimers();
+    const { module, persistence } = await setup({ timers });
     module.updateSettings({ enabled: true, roots: [{ path: fixture!.workspace, domain: nativeDomain }] });
+    await module.start();
+    const scans = () => persistence.db.all('SELECT id FROM dev_scan_runs').length;
+    const reports = (kind: string) =>
+      Number(persistence.db.all<{ n: number }>(`SELECT COUNT(*) AS n FROM standup_reports WHERE trigger_kind = '${kind}'`)[0]!.n);
 
-    // Two manual triggers at once join one run.
+    // The timer fires again the same day: still one scheduled Standup, the same one.
+    timers.fireAll();
+    await waitFor(async () => scans() === 1 && reports('scheduled') === 1);
+    const morning = (await module.latestStandup())!;
+    timers.fireAll();
+    await settle();
+    await waitFor(async () => !(await module.status()).scanning);
+    expect(reports('scheduled')).toBe(1);
+    expect((await module.latestStandup())!.id).toBe(morning.id);
+
+    // Two requests at once join one run.
+    const before = scans();
     const [a, b] = await Promise.all([module.scanNow(), module.scanNow()]);
     expect(a?.scanRun.id).toBe(b?.scanRun.id);
-    const runs = persistence.db.all<{ n: number }>('SELECT COUNT(*) AS n FROM dev_scan_runs');
-    expect(Number(runs[0]!.n)).toBe(1);
+    expect(scans()).toBe(before + 1);
+    module.stop();
+  });
 
-    // A second scan the same day reuses the day's scheduled Standup.
-    const c = await module.scanNow();
-    expect(c?.scanRun.id).not.toBe(a?.scanRun.id);
-    expect(c?.standupReportId).toBe(a?.standupReportId);
-    const scheduled = persistence.db.all<{ n: number }>(
-      `SELECT COUNT(*) AS n FROM standup_reports WHERE trigger_kind = 'scheduled'`,
-    );
-    expect(Number(scheduled[0]!.n)).toBe(1);
+  it('a scan the user asks for writes a fresh Standup that covers the same day', async () => {
+    const timers = heldTimers();
+    const { module, persistence } = await setup({ timers });
+    module.updateSettings({ enabled: true, roots: [{ path: fixture!.workspace, domain: nativeDomain }] });
+    await module.start();
+    timers.fireAll();
+    await waitFor(async () => (await module.latestStandup()) !== null && !(await module.status()).scanning);
+    const morning = (await module.latestStandup())!;
+    const changedIn = (report: { sections: readonly { kind: string; items: readonly { title: string }[] }[] }) =>
+      report.sections.find((s) => s.kind === 'Changed')!.items.map((i) => i.title);
+    expect(changedIn(morning), 'the first scan is a baseline: history is not news').toEqual(['No activity in window']);
+
+    // Work, then "Scan now".
+    await writeFile(join(fixture!.app, 'feature.ts'), 'export const f = 1;\n', 'utf8');
+    git(fixture!.app, ['add', 'feature.ts']);
+    git(fixture!.app, ['commit', '-m', 'app: the feature']);
+    const first = await module.scanNow();
+    const afterWork = (await module.latestStandup())!;
+    expect(afterWork.id, 'not the morning report again').not.toBe(morning.id);
+    expect(first?.standupReportId).toBe(afterWork.id);
+    expect(afterWork.triggerKind).toBe('manual');
+    expect(afterWork.timeWindow.from, "starts where the day's report started").toBe(morning.timeWindow.from);
+    expect(changedIn(afterWork)).toContain('app: the feature');
+
+    // Asking again keeps the whole day in view, not just the minutes since.
+    const second = await module.scanNow();
+    const again = (await module.latestStandup())!;
+    expect(second?.standupReportId).toBe(again.id);
+    expect(again.id).not.toBe(afterWork.id);
+    expect(again.timeWindow.from).toBe(morning.timeWindow.from);
+    expect(changedIn(again)).toContain('app: the feature');
+
+    // "Write a new Standup" does the same without scanning.
+    const written = await module.generateStandup();
+    expect(written.timeWindow.from).toBe(morning.timeWindow.from);
+    expect(changedIn(written)).toContain('app: the feature');
+    expect(persistence.db.all(`SELECT id FROM standup_reports WHERE trigger_kind = 'scheduled'`)).toHaveLength(1);
     module.stop();
   });
 

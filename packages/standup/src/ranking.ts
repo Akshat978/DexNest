@@ -7,9 +7,14 @@
  * - failing health check: 800 each
  * - dirty (unstaged+untracked) count: 10 each
  * - staged count: 5 each
- * - recent commits in window: 15 each
+ * - commits made in the window: 15 each
  * - open TODOs: 8 each
  * - recency of latest activity in window: up to 500 (more recent = higher)
+ *
+ * Activity is what was done in the repository - a commit, a push, a pull, at
+ * the time it happened - never the fact that a scan looked
+ * at it. A scan visits every repository at the same moment; counting that as
+ * activity made them all "most recently active".
  *
  * Tie-break: higher score wins; equal score → lexicographic repositoryId ASC.
  * Cap: top CONTINUATION_CAP candidates.
@@ -19,7 +24,7 @@ import type {
   ContinuationCandidate,
   StandupEvidenceRef,
 } from '@dexnest/dev-intelligence-contracts';
-import type { RepoFacts } from './facts.js';
+import { eventTime, type RepoFacts } from './facts.js';
 
 export const CONTINUATION_WEIGHTS = {
   unfinishedGitOp: 1000,
@@ -34,6 +39,13 @@ export const CONTINUATION_WEIGHTS = {
 } as const;
 
 export const CONTINUATION_CAP = 5;
+
+/**
+ * What counts as something done in a repository: the events that carry the
+ * time Git recorded. A branch change is known only by when a scan noticed it,
+ * which is the same moment for every repository, so it cannot rank them.
+ */
+const ACTIVITY_TYPES = new Set(['dev.commit.observed', 'dev.push.observed', 'dev.pull.observed']);
 
 export interface RankedRepo {
   readonly repositoryId: string;
@@ -66,7 +78,11 @@ function recencyScore(
   return Math.round(ratio * CONTINUATION_WEIGHTS.recencyMax);
 }
 
-function buildReason(signals: RankedRepo['signals']): string {
+/**
+ * Why a repository is worth returning to. `mostRecent` is true for the one
+ * repository with the latest activity; it is the only one called that.
+ */
+function buildReason(signals: RankedRepo['signals'], mostRecent: boolean): string {
   const parts: string[] = [];
 
   if (signals.unfinishedOp) {
@@ -94,7 +110,7 @@ function buildReason(signals: RankedRepo['signals']): string {
   }
   if (signals.recentCommits > 0) {
     parts.push(
-      `${signals.recentCommits} commit${signals.recentCommits === 1 ? '' : 's'} in window`,
+      `${signals.recentCommits} new commit${signals.recentCommits === 1 ? '' : 's'}`,
     );
   }
   if (signals.openTodos > 0) {
@@ -104,15 +120,13 @@ function buildReason(signals: RankedRepo['signals']): string {
   }
 
   if (parts.length === 0) {
-    if (signals.latestActivityAt) {
-      return `Most recently active repository (last activity ${signals.latestActivityAt}).`;
-    }
+    if (mostRecent) return 'Most recently active repository.';
+    if (signals.latestActivityAt) return 'Recent activity, nothing outstanding.';
     return 'Repository present with no outstanding attention signals.';
   }
 
-  // Prefer "Most recently active…" framing when activity + dirty dominate
   if (
-    signals.latestActivityAt &&
+    mostRecent &&
     !signals.unfinishedOp &&
     signals.conflicts === 0 &&
     signals.failingHealth === 0
@@ -129,6 +143,8 @@ export function scoreRepository(
   repo: RepoFacts,
   windowFrom: string,
   windowTo: string,
+  /** Whether this is the repository with the latest activity of those being ranked. */
+  mostRecent = false,
 ): RankedRepo {
   const git = repo.snapshot?.git;
   const dirty =
@@ -158,19 +174,9 @@ export function scoreRepository(
 
   let latestActivityAt: string | undefined;
   for (const e of repo.events) {
-    if (!latestActivityAt || e.observedAt > latestActivityAt) {
-      latestActivityAt = e.observedAt;
-    }
-  }
-  if (repo.snapshot?.capturedAt) {
-    const c = repo.snapshot.capturedAt;
-    if (
-      c >= windowFrom &&
-      c < windowTo &&
-      (!latestActivityAt || c > latestActivityAt)
-    ) {
-      latestActivityAt = c;
-    }
+    if (!ACTIVITY_TYPES.has(e.type)) continue;
+    const at = eventTime(e);
+    if (!latestActivityAt || at > latestActivityAt) latestActivityAt = at;
   }
 
   const signals = {
@@ -214,11 +220,11 @@ export function scoreRepository(
       kind: 'event',
       id: e.eventId,
       repositoryId: repo.repositoryId,
-      observedAt: e.observedAt,
+      observedAt: eventTime(e),
     });
   }
 
-  const reason = buildReason(signals);
+  const reason = buildReason(signals, mostRecent);
   if (!reason || reason.trim().length === 0) {
     throw new Error('continuation reason must be non-empty');
   }
@@ -241,9 +247,22 @@ export function rankContinuations(
   windowTo: string,
   cap: number = CONTINUATION_CAP,
 ): ContinuationCandidate[] {
-  const ranked = repos
-    .filter((r) => r.ok || r.snapshot !== undefined)
-    .map((r) => scoreRepository(r, windowFrom, windowTo))
+  const eligible = repos.filter((r) => r.ok || r.snapshot !== undefined);
+  // Exactly one repository can be the most recently active: the latest
+  // activity, the lowest id on a tie. None when nothing was done anywhere.
+  let mostRecentId: string | undefined;
+  let mostRecentAt: string | undefined;
+  for (const r of eligible) {
+    const at = scoreRepository(r, windowFrom, windowTo).signals.latestActivityAt;
+    if (at === undefined) continue;
+    if (mostRecentAt === undefined || at > mostRecentAt || (at === mostRecentAt && r.repositoryId < (mostRecentId ?? ''))) {
+      mostRecentAt = at;
+      mostRecentId = r.repositoryId;
+    }
+  }
+
+  const ranked = eligible
+    .map((r) => scoreRepository(r, windowFrom, windowTo, r.repositoryId === mostRecentId))
     // Only surface candidates with some signal OR any activity
     .filter(
       (r) =>

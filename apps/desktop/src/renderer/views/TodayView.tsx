@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import type { Repository, StandupItem, StandupReport } from "@dexnest/dev-intelligence-contracts";
-import { AlertTriangle, CheckCircle2, Code2, FolderGit2, GitBranch, GitCommitHorizontal, ListTodo, PencilLine, RefreshCw, Sunrise } from "lucide-react";
+import { AlertTriangle, ArrowDownToLine, ArrowUpFromLine, CheckCircle2, Code2, FolderGit2, GitBranch, GitCommitHorizontal, ListTodo, PencilLine, RefreshCw, Sunrise } from "lucide-react";
 import {
   accentStyle,
   Badge,
@@ -27,6 +27,7 @@ import {
   changeKind,
   changeTitle,
   continuations,
+  emptyWatchedFolders,
   lifecycleTone,
   observedAt,
   projectIdForPath,
@@ -36,6 +37,8 @@ import {
   repoStateLine,
   SECTION_PREVIEW,
   sectionItems,
+  sectionOmitted,
+  sectionTotal,
   settingsWithFolders,
   setupFolders,
   severityTone,
@@ -78,6 +81,8 @@ interface Loaded {
   repositories: Repository[];
   projects: Array<{ id: string; path: string }>;
   importRoots: string[];
+  /** The folders being watched, to name any that yielded no repository. */
+  watched: Pick<TodaySettings, "roots" | "manualRepositories"> | null;
 }
 
 export interface TodayViewProps {
@@ -88,7 +93,7 @@ export interface TodayViewProps {
   initial?: Partial<Loaded> & { error?: string | null };
 }
 
-const EMPTY: Loaded = { status: null, report: null, repositories: [], projects: [], importRoots: [] };
+const EMPTY: Loaded = { status: null, report: null, repositories: [], projects: [], importRoots: [], watched: null };
 
 function errorText(e: unknown): string {
   return e instanceof Error ? e.message : "Something went wrong.";
@@ -96,6 +101,8 @@ function errorText(e: unknown): string {
 
 const CHANGE_ICONS: Record<ChangeKind, React.ComponentType> = {
   commit: GitCommitHorizontal,
+  push: ArrowUpFromLine,
+  pull: ArrowDownToLine,
   branch: GitBranch,
   "todo-new": ListTodo,
   "todo-resolved": CheckCircle2,
@@ -103,7 +110,7 @@ const CHANGE_ICONS: Record<ChangeKind, React.ComponentType> = {
 };
 
 /** A section's rows, the first few until asked for the rest. */
-function Rows<T>({ items, row, label }: { items: readonly T[]; row(item: T): React.ReactNode; label: string }) {
+function Rows<T>({ items, row, label, omitted = 0 }: { items: readonly T[]; row(item: T): React.ReactNode; label: string; omitted?: number }) {
   const [all, setAll] = useState(false);
   const shown = all ? items : items.slice(0, SECTION_PREVIEW);
   return (
@@ -113,6 +120,11 @@ function Rows<T>({ items, row, label }: { items: readonly T[]; row(item: T): Rea
         <Button variant="ghost" size="sm" onClick={() => setAll(!all)} aria-expanded={all}>
           {all ? "Show fewer" : `Show all ${items.length.toLocaleString("en")} ${label}`}
         </Button>
+      )}
+      {omitted > 0 && (all || items.length <= SECTION_PREVIEW) && (
+        <EmptyNote>
+          {omitted.toLocaleString("en")} more {label} are not listed: a Standup keeps the first {items.length.toLocaleString("en")}.
+        </EmptyNote>
       )}
     </>
   );
@@ -131,10 +143,11 @@ export function TodayView({ bridge, onAction, initial }: TodayViewProps) {
     setError(null);
     try {
       const projectsBridge = bridge as TodayBridge & ProjectsReads;
-      const [status, report, repositories, projects, projectsSettings] = await Promise.all([
+      const [status, report, repositories, watched, projects, projectsSettings] = await Promise.all([
         bridge.devIntelligenceStatus(),
         bridge.standupLatest(),
         bridge.devIntelligenceRepositories(),
+        bridge.devIntelligenceSettings().catch(() => null),
         // Projects is optional here: without it the hero's button is simply not offered.
         projectsBridge.projectsList ? projectsBridge.projectsList().catch(() => []) : Promise.resolve([]),
         projectsBridge.projectsSettings ? projectsBridge.projectsSettings().catch(() => null) : Promise.resolve(null)
@@ -144,7 +157,8 @@ export function TodayView({ bridge, onAction, initial }: TodayViewProps) {
         report,
         repositories,
         projects: (projects ?? []).map((p) => ({ id: p.project.id, path: p.project.path })),
-        importRoots: projectsSettings?.importRoots ?? []
+        importRoots: projectsSettings?.importRoots ?? [],
+        watched
       });
     } catch (e) {
       setError(errorText(e));
@@ -174,7 +188,7 @@ export function TodayView({ bridge, onAction, initial }: TodayViewProps) {
     [onAction, load]
   );
 
-  const { status, report, repositories, projects, importRoots } = data;
+  const { status, report, repositories, projects, importRoots, watched } = data;
   const state = viewState({ loading, error, status, report });
   const labels = repoLabels(repositories);
   const folders = setupFolders(importRoots, projects);
@@ -286,7 +300,7 @@ export function TodayView({ bridge, onAction, initial }: TodayViewProps) {
         </EmptyState>
       )}
 
-      {state === "ready" && report && <Report report={report} status={status} labels={labels} projects={projects} busy={busy !== null} run={run} />}
+      {state === "ready" && report && <Report report={report} status={status} labels={labels} projects={projects} emptyFolders={emptyWatchedFolders(watched, repositories)} busy={busy !== null} run={run} />}
     </section>
   );
 }
@@ -296,9 +310,12 @@ function Report({
   status,
   labels,
   projects,
+  emptyFolders,
   busy,
   run
 }: {
+  /** Watched folders the last scan found no repository in. */
+  emptyFolders: readonly string[];
   report: StandupReport;
   status: TodayStatus | null;
   labels: ReturnType<typeof repoLabels>;
@@ -318,6 +335,17 @@ function Report({
   return (
     <>
       {status?.lastError && <InlineError>The last scan failed, so this may be out of date: {status.lastError}</InlineError>}
+      {emptyFolders.length > 0 && (
+        <p className="today-note">
+          No repository was found in {emptyFolders.length === 1 ? "this watched folder" : "these watched folders"}:{" "}
+          {emptyFolders.map((folder, i) => (
+            <React.Fragment key={folder}>
+              {i > 0 && ", "}
+              <Technical>{folder}</Technical>
+            </React.Fragment>
+          ))}
+        </p>
+      )}
 
       {top ? (
         <Hero
@@ -359,13 +387,14 @@ function Report({
         main={
           <>
             <Card aria-labelledby="today-attention">
-              <SectionTitle id="today-attention" count={attention.length}>Needs attention</SectionTitle>
+              <SectionTitle id="today-attention" count={sectionTotal(report, "NeedsAttention")}>Needs attention</SectionTitle>
               {attention.length === 0 ? (
                 <EmptyNote>No failing health checks, conflicts or unfinished git operations.</EmptyNote>
               ) : (
                 <Rows
                   items={attention}
                   label="issues"
+                  omitted={sectionOmitted(report, "NeedsAttention")}
                   row={(item) => (
                     <ListRow
                       key={item.id}
@@ -381,13 +410,14 @@ function Report({
             </Card>
 
             <Card aria-labelledby="today-changed">
-              <SectionTitle id="today-changed" count={changed.length}>Changed since the last Standup</SectionTitle>
+              <SectionTitle id="today-changed" count={sectionTotal(report, "Changed")}>Changed since the last Standup</SectionTitle>
               {changed.length === 0 ? (
                 <EmptyNote>No commits, branch changes or TODO changes in this window.</EmptyNote>
               ) : (
                 <Rows
                   items={changed}
                   label="changes"
+                  omitted={sectionOmitted(report, "Changed")}
                   row={(item) => {
                     const kind = changeKind(item);
                     const Icon = CHANGE_ICONS[kind];
@@ -411,13 +441,14 @@ function Report({
               </Card>
             )}
             <Card aria-labelledby="today-repos">
-              <SectionTitle id="today-repos" count={states.length}>Repositories</SectionTitle>
+              <SectionTitle id="today-repos" count={sectionTotal(report, "RepositoryState")}>Repositories</SectionTitle>
               {states.length === 0 ? (
                 <EmptyNote>No repositories were found in the folders being watched.</EmptyNote>
               ) : (
                 <Rows
                   items={states}
                   label="repositories"
+                  omitted={sectionOmitted(report, "RepositoryState")}
                   row={(item) => {
                     const badge = repoStateBadge(item);
                     return <ListRow key={item.id} icon={<GitBranch />} tone={badge.tone} title={item.title} meta={repoStateLine(item.summary)} trailing={<Badge tone={badge.tone}>{badge.label}</Badge>} />;

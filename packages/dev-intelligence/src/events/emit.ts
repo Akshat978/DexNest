@@ -14,6 +14,7 @@ import type {
   GitState,
   HealthCompletedPayload,
   HealthRun,
+  RefTransferPayload,
   RepoDiscoveredPayload,
   RepoSnapshotPayload,
   RepositorySnapshot,
@@ -30,6 +31,7 @@ import {
   fingerprintConflictObserved,
   fingerprintGitOperation,
   fingerprintHealthCompleted,
+  fingerprintRefTransfer,
   fingerprintRepoDiscovered,
   fingerprintRepoSnapshot,
   fingerprintTechnologyObserved,
@@ -61,6 +63,16 @@ function envelope<T>(
     fingerprint,
     payload,
   };
+}
+
+/**
+ * Git writes dates with the author's own offset ("...T16:44:57-06:00"). Stored
+ * like that, two instants do not compare as text, and every reader of
+ * `occurredAt` compares as text. One form: UTC.
+ */
+function utcOrNow(date: string | undefined): string {
+  const time = date ? new Date(date) : undefined;
+  return time && !Number.isNaN(time.getTime()) ? time.toISOString() : new Date().toISOString();
 }
 
 export interface EmitContext {
@@ -121,6 +133,8 @@ export async function emitCommitObserved(
   repositoryId: string,
   commit: GitCommit,
   branch?: string,
+  /** The commit was already there at the repository's first inspection. */
+  baseline = false,
 ): Promise<boolean> {
   const fp = fingerprintCommitObserved(repositoryId, commit.sha);
   const payload: CommitObservedPayload = {
@@ -129,6 +143,7 @@ export async function emitCommitObserved(
     authorDate: commit.authorDate,
     branch,
     ...(commit.authorEmail ? { authorEmail: commit.authorEmail } : {}),
+    ...(baseline ? { baseline: true } : {}),
   };
   return ctx.events.append(
     envelope(
@@ -136,7 +151,27 @@ export async function emitCommitObserved(
       repositoryId,
       fp,
       payload,
-      commit.authorDate || new Date().toISOString(),
+      utcOrNow(commit.authorDate),
+      ctx.sourceIdentity,
+    ),
+  );
+}
+
+/** A push or pull read from the reflog. `occurredAt` is the time Git recorded. */
+export async function emitRefTransfer(
+  ctx: EmitContext,
+  repositoryId: string,
+  transfer: { kind: 'push' | 'pull'; ref: string; sha: string; at: string; detail: string },
+): Promise<boolean> {
+  const type = transfer.kind === 'push' ? 'dev.push.observed' : 'dev.pull.observed';
+  const payload: RefTransferPayload = { ref: transfer.ref, sha: transfer.sha, detail: transfer.detail };
+  return ctx.events.append(
+    envelope(
+      type,
+      repositoryId,
+      fingerprintRefTransfer(type, repositoryId, transfer.ref, transfer.sha, transfer.at),
+      payload,
+      transfer.at,
       ctx.sourceIdentity,
     ),
   );

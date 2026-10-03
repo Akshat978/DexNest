@@ -9,6 +9,11 @@
  *
  * Events from denied modules and the game's own events are dropped here, so
  * nothing downstream can see them even by mistake.
+ *
+ * So is history. A repository's first scan records the commits it already
+ * held, marked `baseline`; they were not made now, and a rule that rewards a
+ * commit must not pay out for twenty old ones the day a folder is added. The
+ * flag is read as a boolean and nothing else from the payload is.
  */
 
 import { isDeniedModule, isDeniedName, isSelfFeeding, isSelfName } from './privacy.ts';
@@ -16,7 +21,7 @@ import type { ObservedEvent, RawEvent } from './types.ts';
 
 export type Projection =
   | { kept: true; event: ObservedEvent }
-  | { kept: false; reason: 'denied' | 'self' | 'malformed' };
+  | { kept: false; reason: 'denied' | 'self' | 'malformed' | 'history' };
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$/;
 
@@ -25,6 +30,10 @@ function identifier(payload: unknown, field: 'module' | 'actionId' | 'status'): 
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
   const value = (payload as Record<string, unknown>)[field];
   return typeof value === 'string' && IDENTIFIER.test(value) ? value : null;
+}
+
+function isBaselineHistory(payload: unknown): boolean {
+  return Boolean(payload) && typeof payload === 'object' && !Array.isArray(payload) && (payload as Record<string, unknown>).baseline === true;
 }
 
 export function projectEvent(raw: RawEvent): Projection {
@@ -42,6 +51,7 @@ export function projectEvent(raw: RawEvent): Projection {
     return { kept: false, reason: 'denied' };
   }
   if (isSelfName(module) || isSelfName(actionId)) return { kept: false, reason: 'self' };
+  if (isBaselineHistory(raw.payload)) return { kept: false, reason: 'history' };
 
   return {
     kept: true,

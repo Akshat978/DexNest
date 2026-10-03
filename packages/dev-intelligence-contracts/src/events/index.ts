@@ -5,6 +5,7 @@ export type {
   RepoDiscoveredPayload,
   RepoSnapshotPayload,
   CommitObservedPayload,
+  RefTransferPayload,
   BranchChangedPayload,
   WorkingTreeChangedPayload,
   ConflictObservedPayload,
@@ -18,6 +19,7 @@ export type {
 export {
   fingerprintFromParts,
   fingerprintCommitObserved,
+  fingerprintRefTransfer,
   fingerprintRepoSnapshot,
   fingerprintRepoDiscovered,
   fingerprintBranchChanged,

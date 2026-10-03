@@ -43,6 +43,15 @@ describe('projectEvent keeps an allow-listed envelope and nothing else', () => {
     expect(p.kept && p.event).toMatchObject({ module: 'developer_intelligence', actionId: null, status: null });
   });
 
+  it('history is dropped: a commit the first scan found already there earns nothing', () => {
+    const commit = (payload: unknown) => projectEvent(raw({ type: 'dev.commit.observed', stream: 'dev', module: 'developer_intelligence', payload }));
+    expect(commit({ sha: 'abc', baseline: true })).toEqual({ kept: false, reason: 'history' });
+    expect(commit({ sha: 'abc' }).kept, 'a commit made after the baseline counts').toBe(true);
+    // Only the boolean true is history; a look-alike is not.
+    expect(commit({ sha: 'abc', baseline: 'true' }).kept).toBe(true);
+    expect(commit({ sha: 'abc', baseline: false }).kept).toBe(true);
+  });
+
   it('a payload field that is not a short identifier is not kept (free text never passes)', () => {
     const p = projectEvent(raw({ payload: { module: 'clipboard', actionId: 'copied the text "hello world"', status: 'x'.repeat(200) } }));
     expect(p.kept && p.event).toMatchObject({ actionId: null, status: null });

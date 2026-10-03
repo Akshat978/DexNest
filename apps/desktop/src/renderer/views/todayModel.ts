@@ -87,9 +87,25 @@ export function projectIdForPath(projects: readonly { id: string; path: string }
 /** Items the engine adds so a section is never empty; the screen shows an empty state instead. */
 const PLACEHOLDER_IDS = new Set(["changed:no-activity", "attention:none", "state:no-repos", "history:empty"]);
 
+/** The engine's "N more not shown" line at the end of a capped section. A count, not an item. */
+const isOverflow = (item: StandupItem) => item.id.endsWith(":overflow");
+
+/** A section's real items: no placeholders, and not the overflow line. */
 export function sectionItems(report: StandupReport, kind: StandupSectionKind): StandupItem[] {
   const section = report.sections.find((s) => s.kind === kind);
-  return (section?.items ?? []).filter((item) => !PLACEHOLDER_IDS.has(item.id));
+  return (section?.items ?? []).filter((item) => !PLACEHOLDER_IDS.has(item.id) && !isOverflow(item));
+}
+
+/** How many items a capped section left out, read from its overflow line. */
+export function sectionOmitted(report: StandupReport, kind: StandupSectionKind): number {
+  const overflow = report.sections.find((s) => s.kind === kind)?.items.find(isOverflow);
+  const count = overflow ? Number(/^(\d+) more/.exec(overflow.title)?.[1]) : 0;
+  return Number.isFinite(count) ? count : 0;
+}
+
+/** Everything the section found, shown or not: the number its heading and its tile carry. */
+export function sectionTotal(report: StandupReport, kind: StandupSectionKind): number {
+  return sectionItems(report, kind).length + sectionOmitted(report, kind);
 }
 
 export interface Continuation {
@@ -107,10 +123,12 @@ export function continuations(report: StandupReport, labels: ReadonlyMap<string,
     .map((c) => ({ repositoryId: c.repositoryId, name: repoName(labels, c.repositoryId) ?? c.repositoryId, path: labels.get(c.repositoryId)?.path ?? null, reason: c.reason }));
 }
 
-export type ChangeKind = "commit" | "branch" | "todo-new" | "todo-resolved" | "other";
+export type ChangeKind = "commit" | "push" | "pull" | "branch" | "todo-new" | "todo-resolved" | "other";
 
 export function changeKind(item: StandupItem): ChangeKind {
   if (item.id.startsWith("changed:commit:")) return "commit";
+  if (item.id.startsWith("changed:push:")) return "push";
+  if (item.id.startsWith("changed:pull:")) return "pull";
   if (item.id.startsWith("changed:branch:")) return "branch";
   if (item.id.startsWith("changed:todo-new:")) return "todo-new";
   if (item.id.startsWith("changed:todo-resolved:")) return "todo-resolved";
@@ -199,12 +217,12 @@ export interface TodayStats {
 }
 
 export function todayStats(report: StandupReport, status: TodayStatus | null): TodayStats {
-  const attention = sectionItems(report, "NeedsAttention").filter((i) => i.lifecycle !== "RESOLVED" && i.id !== "needsattention:overflow");
+  const attention = sectionItems(report, "NeedsAttention").filter((i) => i.lifecycle !== "RESOLVED");
   const states = sectionItems(report, "RepositoryState").map((i) => parseRepoState(i.summary)).filter((s): s is RepoState => s !== null);
   const isClean = (s: RepoState) => s.clean && s.dirty === 0 && s.staged === 0 && s.conflicts === 0;
   return {
     repositories: status?.repositories ?? states.length,
-    changes: sectionItems(report, "Changed").filter((i) => i.id !== "changed:overflow").length,
+    changes: sectionTotal(report, "Changed"),
     attention: attention.length,
     newIssues: attention.filter((i) => i.lifecycle === "NEW").length,
     uncommitted: states.filter((s) => !isClean(s)).length,
@@ -233,6 +251,18 @@ export function windowLine(report: StandupReport): string {
   return `Since ${whenLabel(report.timeWindow.from, zone)} · written ${whenLabel(report.generatedAt, zone)}`;
 }
 
+// --- Watched folders -----------------------------------------------------------------------------
+
+/**
+ * Watched folders in which the last scan found no repository, so a folder
+ * that quietly contributes nothing is named instead of just being absent.
+ */
+export function emptyWatchedFolders(settings: Pick<TodaySettings, "roots" | "manualRepositories"> | null, repositories: readonly Repository[]): string[] {
+  if (!settings) return [];
+  const found = repositories.flatMap((repo) => repo.roots.map((root) => root.path));
+  return [...settings.roots, ...settings.manualRepositories].map((root) => root.path).filter((folder) => !found.some((path) => within(path, folder)));
+}
+
 // --- Setup ---------------------------------------------------------------------------------------
 
 export interface SetupFolder {
@@ -241,11 +271,11 @@ export interface SetupFolder {
   kind: "root" | "repository";
 }
 
-const within = (path: string, root: string) => {
+function within(path: string, root: string): boolean {
   const p = path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
   const r = root.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
   return p === r || p.startsWith(`${r}/`);
-};
+}
 
 /**
  * What Projects already knows about, offered as places to watch: its import

@@ -15,8 +15,14 @@
  *     data is refused outright, and the orchestrator gets the boundary as
  *     `isSensitive` so no file under it is read even from an allowed root.
  *   - Standup follows the scan. The first scan of the local day produces that
- *     day's scheduled Standup; every later trigger for the same day resolves to
- *     the same report, because the engine keys scheduled reports by occurrence.
+ *     day's scheduled Standup; every later scheduled trigger for the same day
+ *     resolves to the same report, because the engine keys scheduled reports
+ *     by occurrence.
+ *   - Asking is different from the timer. A scan or a Standup the user asked
+ *     for writes a new report, and one that replaces today's covers the same
+ *     ground: it starts where today's started and runs to now. Otherwise
+ *     "Scan now" would rescan and then show the morning's report unchanged, or
+ *     show only the minutes since the last press.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -29,7 +35,7 @@ import type {
   StandupReport,
 } from '@dexnest/dev-intelligence-contracts';
 import { createDevIntelligencePersistence, type DevIntelligencePersistence } from '@dexnest/dev-intelligence-store';
-import { createStandupService, type StandupClock } from '@dexnest/standup';
+import { createStandupService, localDateString, type StandupClock } from '@dexnest/standup';
 import { defaultDiscoveryConfig, type DiscoveryConfig } from '../config/roots.js';
 import { createDomainRegistry, type DomainRegistry } from '../domain/execution-domains.js';
 import { createGitAvailabilityProbe, type DomainAvailabilityProbe } from '../domain/availability.js';
@@ -148,12 +154,31 @@ export function createDevIntelligenceModule(options: DevIntelligenceModuleOption
   const persistence = createDevIntelligencePersistence({ database: options.database, events: options.events });
   const domains = options.domains ?? createDomainRegistry();
   const availabilityProbe = options.availabilityProbe ?? createGitAvailabilityProbe(options.runner);
+  const timezone = options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   const standup = createStandupService({
     persistence,
     standupStore: persistence.standup,
     ...(options.clock ? { clock: options.clock } : {}),
-    timezone: options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
+    timezone,
   });
+
+  /**
+   * A new report because the user asked for one. If today already has a
+   * report, the new one starts where that one started, so it shows the whole
+   * day so far rather than only what happened since the last time they asked.
+   */
+  async function refreshStandup(): Promise<StandupReport> {
+    const now = options.clock?.now() ?? new Date();
+    const latest = await persistence.standup.getLatestSuccessfulReport();
+    const today = latest !== null && latest !== undefined && localDateString(new Date(latest.generatedAt), timezone) === localDateString(now, timezone);
+    return standup.generateStandup({
+      triggerKind: 'manual',
+      forceNewOccurrence: true,
+      ...(today && latest.timeWindow.from < now.toISOString()
+        ? { window: { kind: 'custom', from: latest.timeWindow.from, to: now.toISOString(), timezone } }
+        : {}),
+    });
+  }
 
   let unschedule: (() => void) | undefined;
   let scanning = false;
@@ -212,8 +237,10 @@ export function createDevIntelligenceModule(options: DevIntelligenceModuleOption
 
       let standupReportId: string | undefined;
       if (result.scanRun.state !== 'FAILED' && result.scanRun.state !== 'CANCELLED') {
-        // Scheduled: one report per local day, however many scans run.
-        const report = await standup.generateStandup({ triggerKind: 'scheduled' });
+        // On the timer: one report per local day, however many scans run.
+        // Asked for: a fresh report over the same day, so the scan shows.
+        const report =
+          occurrence.trigger === 'manual' ? await refreshStandup() : await standup.generateStandup({ triggerKind: 'scheduled' });
         standupReportId = report.id;
       }
 
@@ -320,11 +347,8 @@ export function createDevIntelligenceModule(options: DevIntelligenceModuleOption
       return lastScan;
     },
 
-    async generateStandup(generateOptions) {
-      const report = await standup.generateStandup({
-        triggerKind: 'manual',
-        ...(generateOptions?.forceNew ? { forceNewOccurrence: true } : {}),
-      });
+    async generateStandup() {
+      const report = await refreshStandup();
       options.audit?.('Standup generated', { reportId: report.id, occurrenceId: report.occurrenceId }, 'success');
       return report;
     },

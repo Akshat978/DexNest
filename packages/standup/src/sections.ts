@@ -11,7 +11,7 @@ import type {
   StandupSection,
   StandupTimeWindow,
 } from '@dexnest/dev-intelligence-contracts';
-import type { RepoFacts } from './facts.js';
+import { eventTime, isBaseline, type RepoFacts } from './facts.js';
 import type { LifecycleTransitionResult } from './lifecycle.js';
 import { rankContinuations } from './ranking.js';
 
@@ -30,7 +30,7 @@ function truncateItems(
   kept.push({
     id: `${section.toLowerCase()}:overflow`,
     section,
-    title: `${overflow} more item(s) omitted`,
+    title: `${overflow} more not shown`,
     summary: `Section capped at ${SECTION_ITEM_CAP} items for bounded reports (${items.length} total before cap).`,
     evidence: [],
     sortKey: `zzz-overflow`,
@@ -61,6 +61,12 @@ export interface BuiltSections {
   readonly sections: readonly StandupSection[];
   readonly items: readonly StandupItem[];
   readonly continuationCandidates: readonly ContinuationCandidate[];
+  /**
+   * How many real items each section had before the cap. A capped section
+   * holds SECTION_ITEM_CAP items and one "more not shown" line; this is the
+   * number to show as the section's count.
+   */
+  readonly totals: { readonly changed: number; readonly needsAttention: number; readonly repositoryState: number };
 }
 
 export function buildSections(input: BuildSectionsInput): BuiltSections {
@@ -100,10 +106,32 @@ export function buildSections(input: BuildSectionsInput): BuiltSections {
             kind: 'commit',
             id: e.eventId,
             repositoryId: repo.repositoryId,
-            observedAt: e.observedAt,
+            // When the commit was made, not when a scan came across it.
+            observedAt: eventTime(e),
           },
         ],
-        sortKey: `changed:commit:${e.observedAt}:${e.eventId}`,
+        sortKey: `changed:commit:${eventTime(e)}:${e.eventId}`,
+      });
+    }
+
+    for (const e of repo.events) {
+      if (e.type !== 'dev.push.observed' && e.type !== 'dev.pull.observed') continue;
+      const payload = e.payload as { ref?: string };
+      const pushed = e.type === 'dev.push.observed';
+      changedItems.push({
+        id: `changed:${pushed ? 'push' : 'pull'}:${e.eventId}`,
+        section: 'Changed',
+        title: pushed ? `Pushed to ${payload.ref ?? 'the remote'}` : `Pulled into ${payload.ref ?? 'the current branch'}`,
+        repositoryId: repo.repositoryId,
+        evidence: [
+          {
+            kind: 'event',
+            id: e.eventId,
+            repositoryId: repo.repositoryId,
+            observedAt: eventTime(e),
+          },
+        ],
+        sortKey: `changed:${pushed ? 'push' : 'pull'}:${eventTime(e)}:${e.eventId}`,
       });
     }
 
@@ -113,6 +141,9 @@ export function buildSections(input: BuildSectionsInput): BuiltSections {
         previousBranch?: string;
         currentBranch?: string;
       };
+      // The event also fires when the same branch gains a commit, and the
+      // first time a branch is seen at all. Only a switch is a change here.
+      if (!payload.previousBranch || !payload.currentBranch || payload.previousBranch === payload.currentBranch) continue;
       changedItems.push({
         id: `changed:branch:${e.eventId}`,
         section: 'Changed',
@@ -131,6 +162,7 @@ export function buildSections(input: BuildSectionsInput): BuiltSections {
     }
 
     for (const t of repo.openTodos) {
+      if (isBaseline(repo.baselinedAt, t.firstObservedAt)) continue; // already there when first inspected
       if (t.firstObservedAt >= window.from && t.firstObservedAt < window.to) {
         changedItems.push({
           id: `changed:todo-new:${t.id}`,
@@ -167,6 +199,8 @@ export function buildSections(input: BuildSectionsInput): BuiltSections {
       });
     }
   }
+
+  const totals = { changed: changedItems.length, needsAttention: 0, repositoryState: 0 };
 
   // Empty / no-changes deterministic marker when nothing changed and no repos activity
   if (changedItems.length === 0) {
@@ -210,6 +244,8 @@ export function buildSections(input: BuildSectionsInput): BuiltSections {
       sortKey: `attention:${ann.lifecycle}:${issue.identity.fingerprint}`,
     });
   }
+
+  totals.needsAttention = attentionItems.length;
 
   if (attentionItems.length === 0) {
     attentionItems.push({
@@ -270,6 +306,8 @@ export function buildSections(input: BuildSectionsInput): BuiltSections {
       sortKey: `state:${repo.repositoryId}`,
     });
   }
+
+  totals.repositoryState = stateItems.length;
 
   if (stateItems.length === 0) {
     stateItems.push({
@@ -359,7 +397,7 @@ export function buildSections(input: BuildSectionsInput): BuiltSections {
   ];
 
   const items = sections.flatMap((s) => s.items);
-  return { sections, items, continuationCandidates };
+  return { sections, items, continuationCandidates, totals };
 }
 
 export function emptyReportSkeleton(

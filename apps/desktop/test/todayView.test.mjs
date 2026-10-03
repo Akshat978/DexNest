@@ -201,6 +201,36 @@ test("ready: a long section shows its first rows and offers the rest", () => {
   assert.match(html, /aria-expanded="false"[^>]*>Show all 30 changes<\/button>/);
 });
 
+test("ready: a capped section shows its real total, and says what is not listed", () => {
+  const shown = Array.from({ length: 5 }, (_, i) => ({ id: `changed:commit:${i}`, section: "Changed", title: `Commit number ${i}`, evidence: [] }));
+  const r = report();
+  const capped = { ...r, sections: r.sections.map((s) => (s.kind === "Changed" ? { ...s, items: [...shown, { id: "changed:overflow", section: "Changed", title: "37 more not shown", evidence: [] }] } : s)) };
+  const html = render({ ...ready, report: capped });
+  assert.match(html, /Changed since the last Standup<span class="kit-section-title__count">42<\/span>/);
+  assert.match(html, /kit-stat__label">Changes<\/p><\/div><p class="kit-stat__value">42</, "the tile agrees with the heading");
+  assert.match(html, /37 more changes are not listed: a Standup keeps the first 5\./);
+  assert.doesNotMatch(html, /kit-row__title">37 more not shown/, "the overflow line is not a row");
+});
+
+test("ready: a push and a pull are rows of their own", () => {
+  const r = report();
+  const items = [
+    { id: "changed:push:1", section: "Changed", title: "Pushed to origin/main", repositoryId: "a", evidence: [{ kind: "event", id: "1", observedAt: "2026-06-30T07:15:00.000Z" }] },
+    { id: "changed:pull:2", section: "Changed", title: "Pulled into main", repositoryId: "b", evidence: [] }
+  ];
+  const html = render({ ...ready, report: { ...r, sections: r.sections.map((s) => (s.kind === "Changed" ? { ...s, items } : s)) } });
+  assert.match(html, /lucide-arrow-up-from-line[\s\S]*?Pushed to origin\/main<\/span><span class="kit-row__meta">zephyr · 30 Jun, 07:15</);
+  assert.match(html, /lucide-arrow-down-to-line[\s\S]*?Pulled into main</);
+});
+
+test("ready: a watched folder with no repository in it is named, quietly", () => {
+  const watched = { roots: [{ path: "D:/code", domain: "windows" }, { path: "F:/empty", domain: "windows" }], manualRepositories: [] };
+  const html = render({ ...ready, watched });
+  assert.match(html, /<p class="today-note">No repository was found in this watched folder: <span class="kit-tech">F:\/empty<\/span><\/p>/);
+  assert.doesNotMatch(render({ ...ready, watched: { roots: [{ path: "D:/code", domain: "windows" }], manualRepositories: [] } }), /today-note/);
+  assert.doesNotMatch(render(ready), /today-note/);
+});
+
 test("a stale report says so when the last scan failed", () => {
   assert.match(render({ ...ready, status: { ...on, lastError: "git timed out" } }), /role="alert"[^>]*>The last scan failed, so this may be out of date: git timed out/);
 });

@@ -22,7 +22,65 @@ import {
 import { isExcludedDirName } from '../discovery/exclusions.js';
 
 const MARKER_RE =
-  /\b(TODO|FIXME|HACK|XXX)(?:\s*[:\-]?\s*|\s+)([^\n\r]{0,240})/g;
+  /\b(TODO|FIXME|HACK|XXX)(?![A-Za-z0-9_])(?:\s*[:\-]?\s*|\s+)([^\n\r]{0,240})/g;
+
+// A marker counts only where a person would write one: as the first word of a
+// comment, or at the start of a line of prose followed by a colon. The word
+// inside a string, a test name or a sentence about TODOs is not a TODO.
+// Matching the bare word made DexNest's own repository report over a hundred.
+
+/** Text between a comment opener and the marker: nothing but spacing and decoration. */
+const LEAD = String.raw`[\s@!\-]*$`;
+const SLASH_COMMENT = new RegExp(String.raw`(?:\/\/+|\/\*+|^\s*\*+)` + LEAD);
+const HASH_COMMENT = new RegExp(String.raw`#+` + LEAD);
+const HTML_COMMENT = new RegExp(String.raw`<!--` + LEAD);
+const SQL_COMMENT = new RegExp(String.raw`(?:--+|\/\*+|^\s*\*+)` + LEAD);
+const BLOCK_COMMENT = new RegExp(String.raw`(?:\/\*+|^\s*\*+)` + LEAD);
+/** Start of a line of prose: optional bullet, number, checkbox, heading or emphasis. */
+const PROSE_START = /^\s*(?:>\s*)*(?:(?:[-*+]|\d+[.)])\s+)?(?:\[[ xX]\]\s+)?(?:#{1,6}\s+)?(?:\*\*|__)?$/;
+
+const HASH_EXT = new Set(['.py', '.rb', '.sh', '.bash', '.zsh', '.yml', '.yaml', '.toml']);
+const MARKUP_EXT = new Set(['.html', '.vue', '.svelte']);
+const PROSE_EXT = new Set(['.md', '.txt']);
+
+function commentPatterns(ext: string): RegExp[] {
+  if (ext === '.json') return [];
+  if (HASH_EXT.has(ext)) return [HASH_COMMENT];
+  if (ext === '.php') return [SLASH_COMMENT, HASH_COMMENT];
+  if (MARKUP_EXT.has(ext)) return [HTML_COMMENT, SLASH_COMMENT];
+  if (ext === '.sql') return [SQL_COMMENT];
+  if (ext === '.css') return [BLOCK_COMMENT];
+  if (ext === '') return [HASH_COMMENT, SLASH_COMMENT];
+  return [SLASH_COMMENT];
+}
+
+/** Whether `index` lies inside a string literal opened earlier on the line. */
+function insideString(line: string, index: number, ext: string): boolean {
+  // Rust lifetimes ('a) are not strings; counting them would hide real comments.
+  const quotes = ext === '.rs' ? ['"'] : ['"', "'", '`'];
+  for (const quote of quotes) {
+    let count = 0;
+    for (let i = 0; i < index; i++) {
+      if (line[i] === '\\') i += 1;
+      else if (line[i] === quote) count += 1;
+    }
+    if (count % 2 === 1) return true;
+  }
+  return false;
+}
+
+function isRealMarker(line: string, markerIndex: number, afterMarker: string, ext: string): boolean {
+  const before = line.slice(0, markerIndex);
+  if (PROSE_EXT.has(ext)) {
+    // "TODO: write the intro", "- [ ] TODO: ..." - not "the TODO scanner reads ...".
+    return PROSE_START.test(before) && /^\s*:/.test(afterMarker);
+  }
+  for (const pattern of commentPatterns(ext)) {
+    const opener = pattern.exec(before);
+    if (opener && !insideString(line, opener.index, ext)) return true;
+  }
+  return false;
+}
 
 const SECRET_LIKE_NAMES = new Set(
   [
@@ -144,6 +202,12 @@ export interface TodoScanResult {
    * second walk of the directory that could reach what this one refused.
    */
   safeFiles: string[];
+  /**
+   * Fingerprints the first, looser detector would have recorded and this one
+   * does not: the word in a string or in prose. Still present in the files,
+   * so not resolved - never markers in the first place.
+   */
+  retracted: string[];
 }
 
 export interface ObservedTodo {
@@ -217,11 +281,32 @@ function shouldSkipFile(relPath: string, size: number, maxBytes: number): boolea
   return false;
 }
 
+/** How the first detector matched: the bare word, anywhere. Kept only to find what it recorded wrongly. */
+const LOOSE_MARKER_RE = /\b(TODO|FIXME|HACK|XXX)(?:\s*[:\-]?\s*|\s+)([^\n\r]{0,240})/g;
+
+/**
+ * Fingerprints the first detector would have recorded for this text. A stored
+ * marker that is in this set but not among the real markers was never a
+ * marker; the reconciler withdraws it instead of calling it resolved.
+ */
+export function looseMarkerFingerprints(content: string): string[] {
+  const out: string[] = [];
+  for (const line of content.split(/\r?\n/)) {
+    LOOSE_MARKER_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = LOOSE_MARKER_RE.exec(line)) !== null) {
+      out.push(fingerprintTodoMarker(m[1]! as TodoMarkerKind, (m[2] ?? '').trim()));
+    }
+  }
+  return out;
+}
+
 export function extractMarkersFromText(
   content: string,
   filePath: string,
 ): ObservedTodo[] {
   const out: ObservedTodo[] = [];
+  const ext = extname(filePath).toLowerCase();
   const lines = content.split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
@@ -229,6 +314,7 @@ export function extractMarkersFromText(
     let m: RegExpExecArray | null;
     while ((m = MARKER_RE.exec(line)) !== null) {
       const kind = m[1]! as TodoMarkerKind;
+      if (!isRealMarker(line, m.index, line.slice(m.index + kind.length), ext)) continue;
       const text = (m[2] ?? '').trim();
       const fingerprint = fingerprintTodoMarker(kind, text);
       out.push({
@@ -290,6 +376,7 @@ export async function scanTodoCandidates(options: TodoScanOptions): Promise<Todo
   let refusedSensitive = 0;
   let refusedOutside = 0;
   const safeFiles: string[] = [];
+  const loose = new Set<string>();
 
   let rootReal: string;
   try {
@@ -340,10 +427,15 @@ export async function scanTodoCandidates(options: TodoScanOptions): Promise<Todo
     if (isProbablyBinary(buf)) continue;
 
     filesRead += 1;
-    todos.push(...extractMarkersFromText(buf.toString('utf8'), rel));
+    const text = buf.toString('utf8');
+    todos.push(...extractMarkersFromText(text, rel));
+    for (const fingerprint of looseMarkerFingerprints(text)) loose.add(fingerprint);
   }
 
-  return { todos, complete, candidates: candidates.length, filesRead, refusedSensitive, refusedOutside, safeFiles };
+  const real = new Set(todos.map((todo) => todo.fingerprint));
+  const retracted = [...loose].filter((fingerprint) => !real.has(fingerprint));
+
+  return { todos, complete, candidates: candidates.length, filesRead, refusedSensitive, refusedOutside, safeFiles, retracted };
 }
 
 /** The markers alone. Prefer scanTodoCandidates where completeness matters. */

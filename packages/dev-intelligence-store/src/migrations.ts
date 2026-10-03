@@ -208,6 +208,15 @@ CREATE INDEX IF NOT EXISTS idx_dev_scan_diagnostics_scan
   ON dev_scan_diagnostics(scan_run_id);
 `,
   },
+  {
+    // When each repository's first complete inspection finished. NULL for a
+    // repository scanned before this existed; the next scan fills it in.
+    version: 3,
+    name: 'repository-baseline',
+    sql: `
+ALTER TABLE dev_repositories ADD COLUMN baselined_at TEXT;
+`,
+  },
 ];
 
 export const STANDUP_MIGRATIONS: readonly ModuleMigration[] = [

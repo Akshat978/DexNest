@@ -228,6 +228,72 @@ export function parseCommitLog(stdout: string): GitCommit[] {
   return commits;
 }
 
+/** A push or a pull, as the repository's reflog recorded it. */
+export interface RefTransfer {
+  kind: 'push' | 'pull';
+  /** `origin/main` for a push; the local branch, or `HEAD`, for a pull. */
+  ref: string;
+  sha: string;
+  /** When Git recorded it, ISO-8601 UTC. */
+  at: string;
+  detail: string;
+}
+
+const REFLOG_FMT = '%H%x1f%gD%x1f%gs%x1e';
+
+/** Parse `git log -g --date=iso-strict --format=REFLOG_FMT`: commit, `ref@{time}`, subject. */
+export function parseReflog(stdout: string): Array<{ sha: string; ref: string; at: string; subject: string }> {
+  const out: Array<{ sha: string; ref: string; at: string; subject: string }> = [];
+  for (const record of stdout.split('\x1e')) {
+    const [sha, selector, subject] = record.replace(/^\n/, '').split('\x1f');
+    if (!sha || !selector) continue;
+    const m = /^(.*)@\{(.+)\}$/.exec(selector.trim());
+    if (!m) continue;
+    const time = new Date(m[2]!);
+    if (Number.isNaN(time.getTime())) continue;
+    out.push({ sha: sha.trim(), ref: m[1]!, at: time.toISOString(), subject: (subject ?? '').trim() });
+  }
+  return out;
+}
+
+/** A pull leaves several reflog lines when it rebases; only the one that finished it counts. */
+function isPullSubject(subject: string): boolean {
+  return /^pull\b/.test(subject) && !/\((?:start|pick|continue|skip)\)/.test(subject);
+}
+
+/**
+ * Pushes and pulls since `since`, read from reflogs: the remote-tracking refs
+ * given (a push leaves "update by push" there) and HEAD (a pull leaves
+ * "pull: ..."). Reading a reflog changes nothing and contacts no remote, and
+ * it sees the transfer however it was made. A ref with no reflog yields nothing.
+ */
+export async function readRefTransfers(
+  opts: GitInspectOptions,
+  query: { remoteRefs: readonly string[]; includeHead: boolean; since: string; limit?: number },
+): Promise<RefTransfer[]> {
+  const limit = query.limit ?? 30;
+  const transfers: RefTransfer[] = [];
+  const read = async (ref: string) => {
+    const r = await git(opts, ['log', '-g', `-n${limit}`, '--date=iso-strict', `--format=${REFLOG_FMT}`, ref, '--']);
+    return r.ok ? parseReflog(r.stdout).filter((entry) => entry.at > query.since) : [];
+  };
+  for (const name of query.remoteRefs) {
+    for (const entry of await read(`refs/remotes/${name}`)) {
+      if (entry.subject === 'update by push') {
+        transfers.push({ kind: 'push', ref: name, sha: entry.sha, at: entry.at, detail: entry.subject });
+      }
+    }
+  }
+  if (query.includeHead) {
+    for (const entry of await read('HEAD')) {
+      if (isPullSubject(entry.subject)) {
+        transfers.push({ kind: 'pull', ref: 'HEAD', sha: entry.sha, at: entry.at, detail: entry.subject });
+      }
+    }
+  }
+  return transfers.sort((a, b) => a.at.localeCompare(b.at));
+}
+
 export async function detectInterruptedOperation(
   cwd: string,
 ): Promise<string | undefined> {

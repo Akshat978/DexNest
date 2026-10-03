@@ -8,6 +8,8 @@ export type DeveloperEventType =
   | 'dev.repo.snapshot'
   | 'dev.commit.observed'
   | 'dev.branch.changed'
+  | 'dev.push.observed'
+  | 'dev.pull.observed'
   | 'dev.working_tree.changed'
   | 'dev.conflict.observed'
   | 'dev.git_operation.started'
@@ -70,6 +72,26 @@ export interface CommitObservedPayload {
    * not as "someone else".
    */
   authorEmail?: string;
+  /**
+   * True when the commit was already in the repository the first time it was
+   * inspected: history, not something that just happened. Consumers that
+   * react to new work (awards, "what changed") must skip these.
+   */
+  baseline?: boolean;
+}
+
+/**
+ * A push or a pull, read from the repository's own reflog, so it is seen
+ * however it was done - command line, an editor, or DexNest. `occurredAt` on
+ * the envelope is the time Git recorded.
+ */
+export interface RefTransferPayload {
+  /** The branch as the reflog names it: `origin/main` for a push, `main` for a pull. */
+  ref: string;
+  /** The commit the ref pointed at afterwards. */
+  sha: string;
+  /** Git's own one-line description ("update by push", "pull: Fast-forward"). */
+  detail: string;
 }
 
 export interface BranchChangedPayload {

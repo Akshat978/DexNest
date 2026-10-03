@@ -68,7 +68,7 @@ describe('Developer Intelligence on the shared foundation', () => {
     const p = await open();
     const dev = inspectModuleMigrations(p.database, DEV_INTELLIGENCE_MODULE, DEV_INTELLIGENCE_MIGRATIONS);
     const standup = inspectModuleMigrations(p.database, STANDUP_MODULE, STANDUP_MIGRATIONS);
-    expect(dev.applied).toEqual([1, 2]);
+    expect(dev.applied).toEqual([1, 2, 3]); // 3: dev_repositories.baselined_at
     expect(dev.pending).toEqual([]);
     expect(standup.applied).toEqual([10]);
 
@@ -88,7 +88,7 @@ describe('Developer Intelligence on the shared foundation', () => {
     const broken = [
       ...DEV_INTELLIGENCE_MIGRATIONS,
       {
-        version: 3,
+        version: 4,
         name: 'broken',
         sql: 'CREATE TABLE dev_half_done (id TEXT); INSERT INTO dev_no_such_table VALUES (1);',
       },
@@ -96,8 +96,8 @@ describe('Developer Intelligence on the shared foundation', () => {
     expect(() => runModuleMigrations(p.database, DEV_INTELLIGENCE_MODULE, broken)).toThrow(ModuleMigrationError);
 
     const state = inspectModuleMigrations(p.database, DEV_INTELLIGENCE_MODULE, broken);
-    expect(state.applied).not.toContain(3);
-    expect(state.pending).toEqual([3]);
+    expect(state.applied).not.toContain(4);
+    expect(state.pending).toEqual([4]);
     // The table created before the failing statement was rolled back with it.
     const half = p.db.get(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'dev_half_done'`);
     expect(half).toBeUndefined();

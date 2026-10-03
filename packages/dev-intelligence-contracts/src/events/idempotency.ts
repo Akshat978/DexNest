@@ -48,6 +48,17 @@ export function fingerprintCommitObserved(
   return fingerprintFromParts('dev.commit.observed', repositoryId, commitSha);
 }
 
+/** The same reflog entry (ref, commit, time) is one push or pull, however often it is read. */
+export function fingerprintRefTransfer(
+  type: 'dev.push.observed' | 'dev.pull.observed',
+  repositoryId: string,
+  ref: string,
+  sha: string,
+  at: string,
+): string {
+  return fingerprintFromParts(type, repositoryId, ref, sha, at);
+}
+
 /** Snapshot events keyed by content fingerprint when available, else head+branch+wt summary. */
 export function fingerprintRepoSnapshot(
   repositoryId: string,

@@ -8,6 +8,7 @@ import {
   changeKind,
   changeTitle,
   continuations,
+  emptyWatchedFolders,
   lifecycleTone,
   parseRepoState,
   projectIdForPath,
@@ -16,6 +17,8 @@ import {
   repoStateBadge,
   repoStateLine,
   sectionItems,
+  sectionOmitted,
+  sectionTotal,
   settingsWithFolders,
   setupFolders,
   todayStats,
@@ -94,6 +97,8 @@ test("continuations keep the engine's ranking and carry names and folders", () =
 
 test("a change's kind comes from its id; an issue's title loses its bracket", () => {
   assert.equal(changeKind(item("changed:commit:1", "Changed")), "commit");
+  assert.equal(changeKind(item("changed:push:1", "Changed")), "push");
+  assert.equal(changeKind(item("changed:pull:1", "Changed")), "pull");
   assert.equal(changeKind(item("changed:branch:1", "Changed")), "branch");
   assert.equal(changeKind(item("changed:todo-new:1", "Changed")), "todo-new");
   assert.equal(changeKind(item("changed:todo-resolved:1", "Changed")), "todo-resolved");
@@ -135,6 +140,31 @@ test("the numbers: resolved issues and overflow lines are not counted", () => {
   });
   assert.deepEqual(todayStats(r, status), { repositories: 3, changes: 2, attention: 2, newIssues: 1, uncommitted: 1, clean: 1 });
   assert.equal(todayStats(r, null).repositories, 2, "without a status, the repositories the report could read");
+});
+
+test("a capped section: the overflow line is a count, not a row, and the total includes it", () => {
+  const shown = Array.from({ length: 50 }, (_, i) => item(`changed:commit:${i}`, "Changed"));
+  const capped = report({ Changed: [...shown, item("changed:overflow", "Changed", { title: "37 more not shown" })] });
+  assert.equal(sectionItems(capped, "Changed").length, 50, "the overflow line is not an item");
+  assert.equal(sectionOmitted(capped, "Changed"), 37);
+  assert.equal(sectionTotal(capped, "Changed"), 87);
+  assert.equal(todayStats(capped, status).changes, 87, "the tile and the heading show the same, real number");
+  // The wording older reports used.
+  assert.equal(sectionOmitted(report({ Changed: [item("changed:overflow", "Changed", { title: "4 more item(s) omitted" })] }), "Changed"), 4);
+  assert.equal(sectionOmitted(report({ Changed: shown }), "Changed"), 0);
+  assert.equal(sectionTotal(report({ Changed: [item("changed:no-activity", "Changed")] }), "Changed"), 0);
+});
+
+test("a watched folder that yielded no repository is named", () => {
+  const repos = [repo("a", "D:\\code\\zephyr"), repo("b", "E:\\work\\portal")];
+  const watched = {
+    roots: [{ path: "D:\\code", domain: "windows" as const }, { path: "F:\\empty", domain: "windows" as const }],
+    // Found whatever the slashes or case; a folder merely sharing a prefix ("D:\code" vs "D:\codex") is not a match.
+    manualRepositories: [{ path: "e:/work/portal/", domain: "windows" as const }, { path: "D:\\codex", domain: "windows" as const }]
+  };
+  assert.deepEqual(emptyWatchedFolders(watched, repos), ["F:\\empty", "D:\\codex"]);
+  assert.deepEqual(emptyWatchedFolders(null, repos), []);
+  assert.deepEqual(emptyWatchedFolders({ roots: [], manualRepositories: [] }, []), []);
 });
 
 test("times are shown in the report's own timezone", () => {
