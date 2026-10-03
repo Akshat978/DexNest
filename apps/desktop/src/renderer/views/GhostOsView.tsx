@@ -1,41 +1,68 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { EntityDetail, EntityType, GhostOsSettings, GhostOsStatus, Observation, Parsed, SearchHit, TimelineItem } from "@dexnest/ghost-os";
-import { Ghost } from "lucide-react";
-import { accentStyle, Button, ConfirmDialog, EmptyNote, EmptyState, ErrorState, InlineError, LoadingState, Notice, PageHeader, Select, TabPanel, Tabs, TextArea, TextInput } from "../components/ui/kit";
+import { BookOpen, Brain, CalendarDays, Eye, FileText, FolderGit2, Ghost, GitFork, MapPin, MessageSquare, Network, Plug, Repeat, Sparkles, Unlink, User, Users } from "lucide-react";
+import { Button, ConfirmDialog, EmptyNote, EmptyState, ErrorState, InlineError, LoadingState, Notice, PageHeader, Select, StatGrid, StatTile, TabPanel, Tabs, TextArea, TextInput, accentStyle } from "../components/ui/kit";
 import {
-  actionMessage,
-  confirmed,
   EMPTY_ENTITY_FORM,
   ENTITY_TYPE_LIST,
+  type EntityForm,
+  type PickerOption,
+  RELATION_TYPE_LIST,
+  TABS,
+  TAB_LABELS,
+  TYPE_LABELS,
+  type Tab,
+  actionMessage,
+  confirmed,
+  dayHeading,
   entityFromForm,
   evidenceLabel,
   fieldsFor,
   formFromDetail,
+  groupByDay,
+  originLabel,
   pickerKey,
   pickerMessage,
   pickerOptionId,
   pickerState,
-  RELATION_TYPE_LIST,
   relationTypeFromText,
   relationTypeText,
   shortDate,
   shortDateTime,
-  originLabel,
   sourceLabel,
-  TAB_LABELS,
-  TABS,
+  sourcesOn,
   timelineKind,
   timelineLabel,
-  TYPE_LABELS,
   viewState,
-  whenLabel,
-  type EntityForm,
-  type PickerOption,
-  type Tab
+  whenLabel
 } from "./ghostOsModel";
 import "./GhostOs.css";
 
 /** The preload methods this view uses. */
+/** Each kind of entry has its own mark, everywhere it appears. */
+const TYPE_ICONS: Record<EntityType, React.ComponentType<{ className?: string }>> = {
+  person: User,
+  project: FolderGit2,
+  skill: Sparkles,
+  knowledge: BookOpen,
+  memory: Brain,
+  event: CalendarDays,
+  habit: Repeat,
+  decision: GitFork,
+  file: FileText,
+  conversation: MessageSquare,
+  place: MapPin
+};
+
+function TypeIcon({ type, kind = "entity" }: { type: EntityType; kind?: "entity" | "observation" | "relation" }) {
+  const Icon = kind === "observation" ? Eye : kind === "relation" ? Unlink : TYPE_ICONS[type];
+  return (
+    <span className="ghost-type-icon" aria-hidden="true">
+      <Icon />
+    </span>
+  );
+}
+
 export interface GhostOsBridge {
   ghostOsStatus(): Promise<GhostOsStatus>;
   ghostOsTimeline(query?: unknown): Promise<Parsed<TimelineItem[]>>;
@@ -52,6 +79,8 @@ export interface GhostOsViewProps {
   /** Tests only: start from a known state instead of loading. */
   initial?: {
     status: GhostOsStatus | null;
+    /** YYYY-MM-DD, for the day headings in tests. */
+    today?: string;
     items?: TimelineItem[];
     detail?: EntityDetail | null;
     results?: SearchHit[] | null;
@@ -199,6 +228,7 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
   }
 
   const state = viewState({ loading, error, status });
+  const today = initial?.today ?? new Date().toISOString().slice(0, 10);
   const di = status?.adapters.find((a) => a.id === "developer_intelligence");
   const anySourceOn = status?.adapters.some((a) => a.enabled) ?? false;
 
@@ -269,6 +299,20 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
 
       {(state.kind === "ready" || state.kind === "empty") && status && (
         <>
+          {state.kind === "ready" && (
+            <StatGrid columns={4}>
+              <StatTile label="Entries" value={status.counts.entity.toLocaleString("en")} icon={<Users />} hint="people, projects, memories…" />
+              <StatTile label="Connections" value={status.counts.relation.toLocaleString("en")} icon={<Network />} tone="info" />
+              <StatTile label="Observations" value={status.counts.observation.toLocaleString("en")} icon={<Eye />} tone="success" />
+              <StatTile
+                label="Sources on"
+                value={`${sourcesOn(status).on} of ${sourcesOn(status).installed}`}
+                icon={<Plug />}
+                tone="warning"
+                hint={sourcesOn(status).on === 0 ? "only what you enter" : "synced locally"}
+              />
+            </StatGrid>
+          )}
           <Tabs label="GhostOS sections" idPrefix="ghost" value={tab} onChange={setTab} tabs={TABS.map((t) => ({ id: t, label: TAB_LABELS[t] }))} />
 
           <TabPanel idPrefix="ghost" id={tab}>
@@ -285,15 +329,11 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
                     <span id="ghost-filter-label" className="ghost-meta">Show types{types.length ? "" : " (all)"}</span>
                     {ENTITY_TYPE_LIST.map((t) => (
                       <button key={t} type="button" className="ghost-chip" aria-pressed={types.includes(t)} onClick={() => void toggleType(t)}>
+                        <TypeIcon type={t} />
                         {TYPE_LABELS[t]}
                       </button>
                     ))}
                   </div>
-                  {status.counts.entity > 0 && (
-                    <p className="ghost-meta">
-                      <span className="technical">{status.counts.entity.toLocaleString("en")}</span> entries · <span className="technical">{status.counts.relation.toLocaleString("en")}</span> connections · <span className="technical">{status.counts.observation.toLocaleString("en")}</span> observations
-                    </p>
-                  )}
 
                   {results ? (
                     <ul className="ghost-list" aria-label="Search results">
@@ -301,8 +341,11 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
                       {results.map((hit) => (
                         <li key={hit.id}>
                           <button type="button" className="ghost-item" aria-current={detail?.entity.id === hit.id ? "true" : undefined} onClick={() => void openEntity(hit.id)}>
-                            <span>{hit.title}</span>
-                            <span className="ghost-meta">{TYPE_LABELS[hit.type]} · <time className="technical" dateTime={hit.timelineAt}>{shortDate(hit.timelineAt)}</time></span>
+                            <TypeIcon type={hit.type} />
+                            <span className="ghost-item__text">
+                              <span>{hit.title}</span>
+                              <span className="ghost-meta">{TYPE_LABELS[hit.type]} · <time className="technical" dateTime={hit.timelineAt}>{shortDate(hit.timelineAt)}</time></span>
+                            </span>
                           </button>
                         </li>
                       ))}
@@ -310,20 +353,28 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
                   ) : (
                     <ol className="ghost-list" aria-label="Timeline, newest first">
                       {items.length === 0 && <li className="ghost-hint">Nothing on the timeline{types.length ? " for these types" : ""} yet.</li>}
-                      {items.map((item) => (
-                        <li key={`${item.kind}:${item.id}`}>
-                          <button
-                            type="button"
-                            className={detail?.entity.id === item.entityId && selectedKey !== `${item.kind}:${item.id}` ? "ghost-item ghost-item--related" : "ghost-item"}
-                            aria-current={selectedKey === `${item.kind}:${item.id}` && detail?.entity.id === item.entityId ? "true" : undefined}
-                            onClick={() => { setSelectedKey(`${item.kind}:${item.id}`); void openEntity(item.entityId); }}
-                          >
-                            <span>{timelineLabel(item)}</span>
-                            <span className="ghost-meta">
-                              {timelineKind(item)} · <time className="technical" dateTime={item.at}>{shortDate(item.at)}</time> · {originLabel(item.origin, item.confidence)}
-                            </span>
-                          </button>
-                        </li>
+                      {groupByDay(items).map((group) => (
+                        <React.Fragment key={group.day}>
+                          <li className="ghost-day" aria-hidden="true">{dayHeading(group.day, today)}</li>
+                          {group.items.map((item) => (
+                            <li key={`${item.kind}:${item.id}`}>
+                              <button
+                                type="button"
+                                className={detail?.entity.id === item.entityId && selectedKey !== `${item.kind}:${item.id}` ? "ghost-item ghost-item--related" : "ghost-item"}
+                                aria-current={selectedKey === `${item.kind}:${item.id}` && detail?.entity.id === item.entityId ? "true" : undefined}
+                                onClick={() => { setSelectedKey(`${item.kind}:${item.id}`); void openEntity(item.entityId); }}
+                              >
+                                <TypeIcon type={item.entityType} kind={item.kind} />
+                                <span className="ghost-item__text">
+                                  <span>{timelineLabel(item)}</span>
+                                  <span className="ghost-meta">
+                                    {timelineKind(item)} · <time className="technical" dateTime={item.at}>{shortDate(item.at)}</time> · {originLabel(item.origin, item.confidence)}
+                                  </span>
+                                </span>
+                              </button>
+                            </li>
+                          ))}
+                        </React.Fragment>
                       ))}
                     </ol>
                   )}
@@ -591,7 +642,8 @@ function EntityDetailPanel(props: {
   return (
     <article className="ghost-card ghost-detail" aria-labelledby="ghost-detail-title">
       <div className="ghost-detail-head">
-        <div>
+        <TypeIcon type={entity.type} />
+        <div className="ghost-detail-title">
           <p className="ghost-meta">{TYPE_LABELS[entity.type]}</p>
           <h3 id="ghost-detail-title">{entity.title}</h3>
         </div>

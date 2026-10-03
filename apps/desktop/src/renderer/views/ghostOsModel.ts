@@ -317,3 +317,35 @@ export function pickerKey(key: string, active: number, count: number): PickerKey
 }
 
 export const pickerOptionId = (id: string) => `ghost-pick-${id}`;
+
+// --- Presentation (docs/DESIGN_LANGUAGE.md, GhostOS) ---------------------------------
+
+export interface TimelineGroup<T extends Pick<TimelineItem, "at">> {
+  /** YYYY-MM-DD, as shortDate shows it. */
+  day: string;
+  items: T[];
+}
+
+/** Timeline rows under a heading per day, in the order they came (newest first). */
+export function groupByDay<T extends Pick<TimelineItem, "at">>(items: readonly T[]): TimelineGroup<T>[] {
+  const groups: TimelineGroup<T>[] = [];
+  for (const item of items) {
+    const day = shortDate(item.at);
+    const last = groups[groups.length - 1];
+    if (last && last.day === day) last.items.push(item);
+    else groups.push({ day, items: [item] });
+  }
+  return groups;
+}
+
+/** "Today", "Yesterday", or the date. `today` is YYYY-MM-DD in the same terms as shortDate. */
+export function dayHeading(day: string, today: string): string {
+  if (day === today) return "Today";
+  const yesterday = new Date(Date.parse(`${today}T12:00:00.000Z`) - 86_400_000).toISOString().slice(0, 10);
+  return day === yesterday ? "Yesterday" : day;
+}
+
+/** How many sources are on, for the stat tile. */
+export function sourcesOn(status: Pick<GhostOsStatus, "adapters">): { on: number; installed: number } {
+  return { on: status.adapters.filter((a) => a.enabled).length, installed: status.adapters.filter((a) => a.installed).length };
+}

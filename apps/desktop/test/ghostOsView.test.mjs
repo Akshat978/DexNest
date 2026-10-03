@@ -114,7 +114,9 @@ test("timeline: filterable by type, searchable, each row says where it came from
   const html = render({ initial: { status: full, items } });
   assert.match(html, /<div class="ghost-filter" role="group" aria-labelledby="ghost-filter-label"><span id="ghost-filter-label" class="ghost-meta">Show types \(all\)<\/span>/);
   assert.equal((html.match(/class="ghost-chip" aria-pressed="false"/g) ?? []).length, 11);
-  assert.match(html, /<span class="technical">3<\/span> entries · <span class="technical">2<\/span> connections · <span class="technical">5<\/span> observations/);
+  // The counts live in the stat tiles above the tabs, once.
+  assert.match(html, /kit-stat__label">Entries<\/p><\/div><p class="kit-stat__value">3</);
+  assert.doesNotMatch(html, /<\/span> entries · <span/, "not repeated above the timeline");
   assert.match(html, /<form class="ghost-search" role="search" aria-label="Search GhostOS">/);
   assert.match(html, /<label for="ghost-search-input">/);
   assert.match(html, /Zephyr app: 2 commits observed/);
@@ -132,7 +134,8 @@ test("empty: the first steps are buttons in the empty state", () => {
 
 test("entity detail: the entry's own actions sit in its header, next to its title", () => {
   const html = render({ initial: { status: full, items, detail } });
-  assert.match(html, /<div class="ghost-detail-head"><div><p class="ghost-meta">Project<\/p><h3 id="ghost-detail-title">Zephyr app<\/h3><\/div><div class="button-row"><button type="button" class="kit-button kit-button--ghost kit-button--sm" aria-label="Forget Zephyr app">Forget…<\/button><\/div><\/div>/);
+  // The type's icon, then the type and title, then the entry's own actions.
+  assert.match(html, /<div class="ghost-detail-head"><span class="ghost-type-icon" aria-hidden="true"><svg[^>]*lucide-folder-git[\s\S]*?<\/svg><\/span><div class="ghost-detail-title"><p class="ghost-meta">Project<\/p><h3 id="ghost-detail-title">Zephyr app<\/h3><\/div><div class="button-row"><button type="button" class="kit-button kit-button--ghost kit-button--sm" aria-label="Forget Zephyr app">Forget…<\/button><\/div><\/div>/);
   // The connection form starts from words, not a stored id.
   assert.match(html, /<input class="kit-input" id="ghost-rel-type" list="ghost-rel-types" value="related to"\/>/);
   assert.match(html, /<option value="worked on"><\/option>/);
@@ -290,3 +293,25 @@ test("the shell routes to it: sidebar entry, icon, action", () => {
 function emptyForm() {
   return { id: null, type: "person", title: "", notes: "", tags: "", when: "", endedAt: "", text: "", choice: "", alternatives: "", rationale: "", cadence: "weekly", path: "", label: "", participants: "" };
 }
+
+test("timeline: numbers first, rows grouped under day headings, each row marked with its kind's icon", () => {
+  const html = render({ initial: { status: full, items, today: "2026-06-01" } });
+  assert.match(html, /kit-stat__label">Entries<\/p><\/div><p class="kit-stat__value">3</);
+  assert.match(html, /kit-stat__label">Connections<\/p><\/div><p class="kit-stat__value">2</);
+  assert.match(html, /kit-stat__label">Observations<\/p><\/div><p class="kit-stat__value">5</);
+  assert.match(html, /kit-stat__label">Sources on</);
+  // Day headings: today, and a dated one for older rows. Hidden from screen readers - every row reads its own date.
+  assert.match(html, /<li class="ghost-day" aria-hidden="true">Today<\/li>/);
+  assert.match(html, /<li class="ghost-day" aria-hidden="true">2026-05-01<\/li>/);
+  // Icons: an observation, an ended connection, a person.
+  assert.match(html, /<span class="ghost-type-icon" aria-hidden="true"><svg[^>]*lucide-eye/);
+  assert.match(html, /<span class="ghost-type-icon" aria-hidden="true"><svg[^>]*lucide-unlink/);
+  assert.match(html, /<span class="ghost-type-icon" aria-hidden="true"><svg[^>]*lucide-user"/);
+  // Filter chips carry the same icons.
+  assert.match(html, /class="ghost-chip" aria-pressed="false"><span class="ghost-type-icon" aria-hidden="true"><svg[^>]*lucide-map-pin/);
+});
+
+test("empty: no stat tiles while there is nothing to count", () => {
+  const html = render({ initial: { status: empty } });
+  assert.doesNotMatch(html, /kit-stat/);
+});

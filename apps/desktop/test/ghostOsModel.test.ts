@@ -149,3 +149,15 @@ test("relation types read as words and are stored as ids, round trip for every b
   assert.equal(relationTypeFromText("part-of"), "part_of");
   for (const t of RELATION_TYPE_LIST) assert.equal(relationTypeFromText(relationTypeText(t)), t);
 });
+
+test("timeline rows group by day in their own order; headings say Today and Yesterday", async () => {
+  const { groupByDay, dayHeading, sourcesOn } = await import("../src/renderer/views/ghostOsModel.ts");
+  const rows = [{ at: "2026-06-03T09:00:00.000Z", id: "a" }, { at: "2026-06-03T01:00:00.000Z", id: "b" }, { at: "2026-06-01T09:00:00.000Z", id: "c" }];
+  assert.deepEqual(groupByDay(rows).map((g) => [g.day, g.items.map((i) => i.id)]), [["2026-06-03", ["a", "b"]], ["2026-06-01", ["c"]]]);
+  assert.deepEqual(groupByDay([]), []);
+  assert.equal(dayHeading("2026-06-03", "2026-06-03"), "Today");
+  assert.equal(dayHeading("2026-06-02", "2026-06-03"), "Yesterday");
+  assert.equal(dayHeading("2026-02-28", "2026-03-01"), "Yesterday", "across a month end");
+  assert.equal(dayHeading("2026-05-30", "2026-06-03"), "2026-05-30");
+  assert.deepEqual(sourcesOn({ adapters: [{ enabled: true, installed: true }, { enabled: false, installed: true }, { enabled: false, installed: false }] } as never), { on: 1, installed: 2 });
+});
