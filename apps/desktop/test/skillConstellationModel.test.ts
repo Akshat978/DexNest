@@ -130,16 +130,47 @@ test("a hidden star says so in its accessible name; counts read as words", () =>
   assert.equal(countOf(3, "kind", "kinds"), "3 kinds");
 });
 
-test("labels: two close stars never write their names over each other; the upper one's label goes above it", () => {
-  // Next.js and React as laid out on the seeded data: 59 units apart, side by side.
+test("labels: two close stars never write their names over each other, or over each other's star", () => {
+  // Next.js and React as laid out on the seeded data, side by side. Below its
+  // star, "Next.js" would run across the React star, so it goes above, and
+  // React keeps the default.
   const sides = labelSides([
     { id: "react", name: "React", x: 740, y: 609, r: 9 },
     { id: "next", name: "Next.js", x: 706, y: 603, r: 9 }
   ]);
-  assert.equal(sides.get("next"), "below", "placed first (higher), keeps the default");
-  assert.equal(sides.get("react"), "above");
+  assert.equal(sides.get("next"), "above");
+  assert.equal(sides.get("react"), "below");
   assert.equal(labelOffset(9, "below"), 27);
   assert.equal(labelOffset(9, "above"), -19);
+});
+
+test("labels: three stacked stars use the sides too, and every placement clears the others", async () => {
+  const { labelPlacement } = await import("../src/renderer/views/skillConstellationModel.ts");
+  // PostgreSQL, Python and Go as in the harness: a diagonal stack ~40 units apart.
+  const stars = [
+    { id: "pg", name: "PostgreSQL", x: 922, y: 660, r: 9 },
+    { id: "py", name: "Python", x: 897, y: 693, r: 9 },
+    { id: "go", name: "Go", x: 871, y: 725, r: 14 }
+  ];
+  const sides = labelSides(stars);
+  assert.equal(new Set(sides.values()).size, 3, "no two labels share a side here");
+  // Each label's box clears every other star and every other label.
+  const box = (s: (typeof stars)[number]) => {
+    const p = labelPlacement(s.r, sides.get(s.id)!);
+    const w = s.name.length * 12;
+    const left = p.anchor === "middle" ? s.x + p.dx - w / 2 : p.anchor === "start" ? s.x + p.dx : s.x + p.dx - w;
+    return { left, right: left + w, top: s.y + p.dy - 20, bottom: s.y + p.dy + 6 };
+  };
+  const hit = (a: ReturnType<typeof box>, b: { left: number; right: number; top: number; bottom: number }) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+  for (const a of stars) {
+    for (const b of stars) {
+      if (a === b) continue;
+      assert.equal(hit(box(a), { left: b.x - b.r, right: b.x + b.r, top: b.y - b.r, bottom: b.y + b.r }), false, `${a.name}'s label clears ${b.name}'s star`);
+      assert.equal(hit(box(a), box(b)), false, `${a.name} and ${b.name} labels don't overlap`);
+    }
+  }
+  assert.deepEqual(labelPlacement(10, "right"), { dx: 18, dy: 7, anchor: "start" });
+  assert.deepEqual(labelPlacement(10, "left", 0.5), { dx: -14, dy: 3.5, anchor: "end" });
 });
 
 test("labels: stars far apart keep every label below; the result does not depend on input order", () => {
@@ -154,4 +185,42 @@ test("labels: stars far apart keep every label below; the result does not depend
     { id: "y", name: "Vite", x: 340, y: 505, r: 8 }
   ];
   assert.deepEqual(Object.fromEntries(labelSides(close)), Object.fromEntries(labelSides([...close].reverse())));
+});
+
+test("the sky fits its stars: padded, at least a minimum size, always 16:10", async () => {
+  const { fitViewBox, viewBoxString, SKY_ASPECT } = await import("../src/renderer/views/skillConstellationModel.ts");
+  const box = fitViewBox([{ x: 300, y: 200 }, { x: 500, y: 500 }]);
+  assert.ok(Math.abs(box.width / box.height - SKY_ASPECT) < 0.01, "16:10");
+  assert.ok(box.x <= 300 - 90 && box.x + box.width >= 500 + 90, "every star with room for its label, across");
+  assert.ok(box.y <= 200 - 90 && box.y + box.height >= 500 + 90, "and down");
+  const tight = fitViewBox([{ x: 500, y: 500 }, { x: 510, y: 505 }]);
+  assert.ok(tight.width >= 420, "two close stars don't become giants");
+  assert.equal(viewBoxString(fitViewBox([])), "0 0 1000 625");
+});
+
+test("glow follows recency; dust is deterministic and stays inside the sky", async () => {
+  const { starGlow, starDust } = await import("../src/renderer/views/skillConstellationModel.ts");
+  assert.equal(starGlow(0), 0.12);
+  assert.equal(starGlow(1), 0.62);
+  assert.equal(starGlow(Number.NaN), 0.12);
+  const box = { x: -100, y: 50, width: 800, height: 500 };
+  const a = starDust(box, 40);
+  assert.deepEqual(a, starDust(box, 40), "the same sky every time");
+  assert.equal(a.length, 40);
+  assert.ok(a.every((d) => d.x >= box.x && d.x <= box.x + box.width && d.y >= box.y && d.y <= box.y + box.height));
+  assert.ok(a.every((d) => d.o > 0 && d.o < 0.31), "faint");
+});
+
+test("stats and the brightest stars", async () => {
+  const { skyStats, brightest } = await import("../src/renderer/views/skillConstellationModel.ts");
+  const sk = (id: string, score: number, last: string, category = "language") =>
+    ({ id, name: id, category, strength: { score }, lastEvidenceAt: last }) as never;
+  const skills = [sk("Go", 0.3, "2026-01-01"), sk("TypeScript", 0.9, "2026-03-01"), sk("React", 0.5, "2026-06-01", "framework")];
+  const stats = skyStats(skills);
+  assert.equal(stats.count, 3);
+  assert.equal((stats.strongest as unknown as { id: string }).id, "TypeScript");
+  assert.equal((stats.freshest as unknown as { id: string }).id, "React");
+  assert.equal(stats.languages, 2);
+  assert.deepEqual(brightest(skills, 2).map((s: { id: string }) => s.id), ["TypeScript", "React"]);
+  assert.deepEqual(skyStats([]), { count: 0, strongest: null, freshest: null, languages: 0 });
 });

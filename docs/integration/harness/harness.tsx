@@ -192,7 +192,7 @@ function rpgBridge(): Record<string, AnyFn> {
 
 const skillNames = ["TypeScript", "React", "Go", "SQL", "Docker", "Rust", "Python", "CSS", "Vite", "Node.js", "PostgreSQL", "Electron", "Tailwind", "GraphQL", "Kubernetes", "Bash"];
 const skill = (i: number, n: number) => ({
-  id: `s${i}`, name: n > skillNames.length ? `${skillNames[i % skillNames.length]} ${Math.floor(i / skillNames.length) || ""}`.trim() : skillNames[i], category: ["language", "framework", "tool", "platform"][i % 4],
+  id: `s${i}`, name: n > skillNames.length ? `${skillNames[i % skillNames.length]} ${Math.floor(i / skillNames.length) || ""}`.trim() : skillNames[i], category: ["language", "framework", "library", "tooling"][i % 4],
   evidenceCount: 30 - (i % 30), repositoryCount: 1 + (i % 6), evidenceKinds: 1 + (i % 4), firstEvidenceAt: day(400 - i), lastEvidenceAt: day(i * 3), lastActivityAt: null,
   strength: { volume: 0.2, recency: 0.8 - (i % 8) / 10, variety: 0.4, score: Math.max(0.05, 0.9 - (i % 18) / 20) }, hidden: i === 5
 });

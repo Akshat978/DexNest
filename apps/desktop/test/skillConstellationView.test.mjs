@@ -99,7 +99,7 @@ test("off: explains it reads only Developer Intelligence, and offers to turn on 
   // While it is off, the one-off build says what it does.
   assert.match(html, />Build once</);
   assert.doesNotMatch(html, />Rebuild</);
-  assert.doesNotMatch(html, /<svg viewBox="0 0 1000 1000"/, "no constellation drawn");
+  assert.doesNotMatch(html, /class="skill-sky"/, "no constellation drawn");
 });
 
 test("labels: only the fifteen strongest stars are written, plus the selected one; every star keeps its accessible name", () => {
@@ -118,12 +118,23 @@ test("empty: says why there is nothing and what to do", () => {
   const html = render({ initial: { snapshot: { ...ready, skills: [], layout: [], links: [] } } });
   assert.match(html, /No evidence yet/);
   assert.match(html, /scan your repositories in Developer Intelligence/);
-  assert.doesNotMatch(html, /<svg viewBox="0 0 1000 1000"/, "no constellation drawn");
+  assert.doesNotMatch(html, /class="skill-sky"/, "no constellation drawn");
 });
 
 test("ready: stars are labelled buttons with one tab stop; hidden skills are not drawn", () => {
   const html = render({ initial: { snapshot: ready } });
-  assert.match(html, /<svg viewBox="0 0 1000 1000" role="group" aria-label="Skill constellation\. Use the arrow keys/);
+  // The view fits the stars (300,200)-(700,700 hidden) -> visible (300,200)-(500,500), padded and widened to 16:10.
+  assert.match(html, /<svg viewBox="[-\d. ]+" preserveAspectRatio="xMidYMid meet" role="group" aria-label="Skill constellation\. Use the arrow keys/);
+  assert.doesNotMatch(html, /viewBox="0 0 1000 1000"/, "the sky is fitted to its stars, not the whole layout");
+  // Numbers above the sky, from the visible skills.
+  assert.match(html, /kit-stat__label">Skills<\/p><\/div><p class="kit-stat__value">2</);
+  assert.match(html, /kit-stat__label">Strongest<\/p><\/div><p class="kit-stat__value">TypeScript</);
+  // Stars glow by recency; the dust is decoration only.
+  assert.match(html, /class="skill-star__glow" r="[\d.]+" fill-opacity="0.52"/);
+  assert.match(html, /<g class="skill-dust" aria-hidden="true">/);
+  // With nothing selected, the brightest stars are one click away.
+  assert.match(html, /Brightest stars/);
+  assert.match(html, /<button type="button" class="kit-row kit-row--action"[^>]*>(?:<[^>]+>)*<\/span><span class="kit-row__text"><span class="kit-row__title">TypeScript</)
   assert.equal([...html.matchAll(/<g class="skill-star[" ]/g)].length, 2, "two visible stars");
   assert.doesNotMatch(html, /aria-label="Go,/, "a hidden skill is not drawn");
   assert.equal(count(html, 'tabindex="0"'), 1, "one star in the tab order (roving)");
@@ -144,13 +155,15 @@ test("a selected star shows why: repositories, files, dates, the numbers behind 
   assert.match(html, /aria-label="TypeScript[^"]*" aria-pressed="true"/);
   assert.match(html, /aria-label="React[^"]*" aria-pressed="false"/);
   assert.match(html, /<h3 id="skill-panel-title">TypeScript<\/h3>/);
+  assert.match(html, /role="img" aria-label="TypeScript: strength 70%"/, "strength as a ring a screen reader can read");
   assert.match(html, /aria-label="Evidence in app"/);
   assert.match(html, /aria-label="Evidence in api"/);
   assert.match(html, /src\/main\.ts/);
   assert.match(html, /datetime="2026-04-02T00:00:00.000Z"/i);
   assert.match(html, /<q class="skill-evidence__todo">TODO: tidy the router<\/q>/);
   assert.match(html, /abcdef1234/, "a commit shows its sha, not a subject");
-  assert.match(html, /Variety<\/dt><dd class="technical">45% · 2 repositories, 2 kinds/);
+  assert.match(html, /kit-meter__label">Variety<\/span><span class="kit-meter__value">45% · 2 repositories, 2 kinds</);
+  assert.match(html, /kit-meter__label">Recency<\/span><span class="kit-meter__value">80% · last 2026-05-01</);
   assert.match(html, /aria-label="Close evidence for TypeScript"/);
 });
 

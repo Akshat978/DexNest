@@ -175,35 +175,167 @@ export interface LabelStar {
   r: number;
 }
 
-/** The label's box for a side: below the star (the default) or above it. */
-function labelBox(star: LabelStar, side: "above" | "below") {
-  const half = (star.name.length * LABEL_CHAR_WIDTH) / 2;
-  const baseline = side === "below" ? star.y + star.r + 18 : star.y - star.r - 10;
-  return { left: star.x - half - 4, right: star.x + half + 4, top: baseline - 20, bottom: baseline + 6 };
+export type LabelSide = "below" | "above" | "right" | "left";
+
+/** Where a label sits relative to its star's centre: baseline offset, sideways offset, and anchor. */
+export function labelPlacement(r: number, side: LabelSide, scale = 1): { dx: number; dy: number; anchor: "middle" | "start" | "end" } {
+  switch (side) {
+    case "below":
+      return { dx: 0, dy: r + 18 * scale, anchor: "middle" };
+    case "above":
+      return { dx: 0, dy: -(r + 10 * scale), anchor: "middle" };
+    case "right":
+      return { dx: r + 8 * scale, dy: 7 * scale, anchor: "start" };
+    case "left":
+      return { dx: -(r + 8 * scale), dy: 7 * scale, anchor: "end" };
+  }
 }
 
-/** The label's baseline, relative to the star's centre. */
-export const labelOffset = (r: number, side: "above" | "below"): number => (side === "below" ? r + 18 : -(r + 10));
+/** The label's baseline, relative to the star's centre (below or above). */
+export const labelOffset = (r: number, side: "above" | "below", scale = 1): number => labelPlacement(r, side, scale).dy;
 
 /**
- * Which side of its star each label goes. Below by default; a label that
- * would overlap one already placed goes above instead, so two close stars
- * ("Next.js" and "React") never write their names over each other. Stars
- * are placed top to bottom, left to right, so the result is deterministic.
+ * The label's box for a side. `scale` is the sky's zoom (see skyScale):
+ * labels shrink with it so they keep one size on screen however tightly the
+ * view is fitted.
  */
-export function labelSides(stars: readonly LabelStar[]): Map<string, "above" | "below"> {
-  const placed: Array<ReturnType<typeof labelBox>> = [];
-  const overlaps = (box: ReturnType<typeof labelBox>) => placed.some((p) => box.left < p.right && p.left < box.right && box.top < p.bottom && p.top < box.bottom);
-  const sides = new Map<string, "above" | "below">();
+function labelBox(star: LabelStar, side: LabelSide, scale = 1) {
+  const width = star.name.length * LABEL_CHAR_WIDTH * scale;
+  const { dx, dy, anchor } = labelPlacement(star.r, side, scale);
+  const x = star.x + dx;
+  const left = anchor === "middle" ? x - width / 2 : anchor === "start" ? x : x - width;
+  const baseline = star.y + dy;
+  return { left: left - 4 * scale, right: left + width + 4 * scale, top: baseline - 20 * scale, bottom: baseline + 6 * scale };
+}
+
+/**
+ * Which side of its star each label goes: below by default, then above,
+ * right or left - the first that overlaps neither a label already placed nor
+ * another star. Two or three close stars ("PostgreSQL", "Python", "Go") never
+ * write their names over each other or over each other's stars. Stars are
+ * placed top to bottom, left to right, so the result is deterministic.
+ */
+export function labelSides(stars: readonly LabelStar[], scale = 1, obstacles: readonly LabelStar[] = stars): Map<string, LabelSide> {
+  type Box = ReturnType<typeof labelBox>;
+  const placed: Box[] = [];
+  const hit = (a: Box, b: Box) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+  const starBoxes = obstacles.map((o) => ({ id: o.id, box: { left: o.x - o.r, right: o.x + o.r, top: o.y - o.r, bottom: o.y + o.r } }));
+  const clear = (star: LabelStar, box: Box) => !placed.some((p) => hit(box, p)) && !starBoxes.some((o) => o.id !== star.id && hit(box, o.box));
+  const sides = new Map<string, LabelSide>();
   for (const star of [...stars].sort((a, b) => a.y - b.y || a.x - b.x || a.id.localeCompare(b.id))) {
-    const below = labelBox(star, "below");
-    const above = labelBox(star, "above");
-    const side = overlaps(below) && !overlaps(above) ? "above" : "below";
+    const order: LabelSide[] = ["below", "above", "right", "left"];
+    const side = order.find((s) => clear(star, labelBox(star, s, scale))) ?? "below";
     sides.set(star.id, side);
-    placed.push(side === "below" ? below : above);
+    placed.push(labelBox(star, side, scale));
   }
   return sides;
 }
 
 /** "1 repository", "3 repositories". */
 export const countOf = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
+
+// --- The night sky (docs/DESIGN_LANGUAGE.md, Skill Constellation) ------------------------------
+
+export interface ViewBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** The sky's shape: wider than tall, like the panel it fills. */
+export const SKY_ASPECT = 16 / 10;
+
+/**
+ * The part of the 1000x1000 layout the stars actually use, padded for labels
+ * and widened to the sky's aspect, so a constellation fills its frame instead
+ * of sitting small in one corner. Never zooms past `minSize`, so two close
+ * stars don't become two giant ones.
+ */
+export function fitViewBox(points: readonly Pick<SkillLayoutPoint, "x" | "y">[], pad = 90, minSize = 420): ViewBox {
+  if (points.length === 0) return { x: 0, y: 0, width: 1000, height: 1000 / SKY_ASPECT };
+  const xs = points.map((p) => p.x);
+  const ys = points.map((p) => p.y);
+  let minX = Math.min(...xs) - pad;
+  let maxX = Math.max(...xs) + pad;
+  let minY = Math.min(...ys) - pad;
+  let maxY = Math.max(...ys) + pad;
+  // At least minSize tall, and the sky's aspect wide.
+  let height = Math.max(maxY - minY, minSize / SKY_ASPECT);
+  let width = Math.max(maxX - minX, height * SKY_ASPECT, minSize);
+  height = Math.max(height, width / SKY_ASPECT);
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  minX = cx - width / 2;
+  minY = cy - height / 2;
+  const round = (n: number) => Math.round(n * 10) / 10;
+  return { x: round(minX), y: round(minY), width: round(width), height: round(height) };
+}
+
+export const viewBoxString = (box: ViewBox): string => `${box.x} ${box.y} ${box.width} ${box.height}`;
+
+/** How brightly a star glows: recent evidence glows, old evidence is a dim point. */
+export function starGlow(recency: number): number {
+  const r = Number.isFinite(recency) ? Math.min(Math.max(recency, 0), 1) : 0;
+  return Math.round((0.12 + r * 0.5) * 100) / 100;
+}
+
+/**
+ * Faint background stars, for depth. Deterministic (the same box always gets
+ * the same dust) and drawn once - the sky never twinkles, so an open
+ * constellation costs no CPU.
+ */
+export function starDust(box: ViewBox, count = 70, seed = 7): { x: number; y: number; r: number; o: number }[] {
+  let state = seed >>> 0 || 1;
+  const next = () => {
+    // xorshift32: small, fast, deterministic.
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    return ((state >>> 0) % 10000) / 10000;
+  };
+  return Array.from({ length: count }, () => ({
+    x: Math.round((box.x + next() * box.width) * 10) / 10,
+    y: Math.round((box.y + next() * box.height) * 10) / 10,
+    r: Math.round((0.8 + next() * 1.6) * 10) / 10,
+    o: Math.round((0.08 + next() * 0.22) * 100) / 100
+  }));
+}
+
+/** The brightest stars, strongest first: what to look at when nothing is selected. */
+export function brightest(skills: readonly ConstellationSkill[], n = 5): ConstellationSkill[] {
+  return [...skills].sort((a, b) => b.strength.score - a.strength.score || a.name.localeCompare(b.name)).slice(0, n);
+}
+
+export interface SkyStats {
+  count: number;
+  strongest: ConstellationSkill | null;
+  freshest: ConstellationSkill | null;
+  languages: number;
+}
+
+/** The numbers above the sky. */
+export function skyStats(skills: readonly ConstellationSkill[]): SkyStats {
+  const freshest = [...skills].sort((a, b) => b.lastEvidenceAt.localeCompare(a.lastEvidenceAt) || a.name.localeCompare(b.name))[0] ?? null;
+  return {
+    count: skills.length,
+    strongest: brightest(skills, 1)[0] ?? null,
+    freshest,
+    languages: skills.filter((s) => s.category === "language").length
+  };
+}
+
+/**
+ * How far the fitted sky is zoomed in, as a factor for drawing sizes. The
+ * layout is 1000 units across; a sky fitted to 600 of them is zoomed 1.67x,
+ * so stars and labels are drawn at 0.6 to stay the size they were. Never
+ * below 0.45, so a tight cluster stays legible.
+ */
+export function skyScale(box: Pick<ViewBox, "width">): number {
+  return Math.round(Math.max(0.45, Math.min(1, box.width / 1000)) * 1000) / 1000;
+}
+
+/** A category's label; one the view doesn't know shows as itself. */
+export function categoryLabel(category: string): string {
+  return (CATEGORY_LABELS as Record<string, string>)[category] ?? category;
+}

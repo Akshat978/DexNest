@@ -1,7 +1,8 @@
-/* Skill Constellation. DexNest design tokens only - no literal colours. The
-   module uses the Dev accent (--accent-skills); fonts are --font-ui and, for
-   paths, dates and numbers, --font-tech. Nothing animates: an open
-   constellation costs no CPU. */
+/* Skill Constellation: a night sky (docs/DESIGN_LANGUAGE.md). Design tokens
+   only - no literal colours. The accent is --accent-skills (starlight); fonts
+   are --font-ui and, for paths, dates and numbers, --font-tech. Nothing
+   animates while idle: the sky is drawn once and never twinkles, so an open
+   constellation costs no CPU. Hover and focus change a star; that's all. */
 
 .skill-constellation {
   font-family: var(--font-ui);
@@ -17,6 +18,7 @@
   align-items: baseline;
   gap: var(--space-2) var(--space-4);
   color: var(--text-muted);
+  font-size: 0.875rem;
 }
 
 .skill-status p {
@@ -28,42 +30,59 @@
 }
 
 .skill-hint,
-.skill-caption,
-.skill-panel__category {
+.skill-caption {
+  margin: 0;
   color: var(--text-muted);
-  font-size: 0.85rem;
+  font-size: 0.8125rem;
 }
 
 .skill-layout {
   display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(16rem, 2fr);
-  gap: var(--space-4);
+  grid-template-columns: minmax(0, 2fr) minmax(18rem, 1fr);
+  gap: var(--space-5);
   align-items: start;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1100px) {
   .skill-layout {
     grid-template-columns: minmax(0, 1fr);
   }
 }
 
+/* --- The sky ---------------------------------------------------------------------- */
 .skill-sky {
+  position: relative;
+  display: grid;
+  gap: var(--space-3);
   margin: 0;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  overflow: hidden;
   padding: var(--space-3);
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--accent-skills) 18%, var(--border));
+  background:
+    radial-gradient(ellipse 70% 60% at 55% 45%, color-mix(in srgb, var(--accent-skills) 9%, transparent), transparent 70%),
+    radial-gradient(ellipse 40% 35% at 20% 80%, color-mix(in srgb, var(--accent-search) 6%, transparent), transparent 70%),
+    linear-gradient(180deg, var(--surface) 0%, var(--bg) 100%);
 }
 
 .skill-sky svg {
   display: block;
   width: 100%;
   height: auto;
+  aspect-ratio: 16 / 10;
+}
+
+.skill-caption {
+  padding: 0 var(--space-2) var(--space-1);
+}
+
+.skill-dust circle {
+  fill: var(--text);
 }
 
 .skill-link {
-  stroke: var(--text-muted);
-  stroke-width: 1.5;
+  stroke: var(--accent-skills);
+  stroke-width: inherit;
 }
 
 .skill-link--curated {
@@ -75,18 +94,34 @@
   outline: none;
 }
 
-.skill-star__core {
+.skill-star__glow {
   fill: var(--accent-skills);
+  filter: blur(6px);
+  transition: fill-opacity 0.2s ease;
+}
+
+.skill-star__core {
+  fill: color-mix(in srgb, var(--accent-skills) 70%, var(--text));
+  transition: fill 0.2s ease;
 }
 
 .skill-star__halo {
   fill: none;
   stroke: transparent;
   stroke-width: 2;
+  transition: stroke 0.2s ease;
+}
+
+.skill-star:hover .skill-star__core {
+  fill: var(--text);
 }
 
 .skill-star:hover .skill-star__halo {
-  stroke: var(--border);
+  stroke: color-mix(in srgb, var(--accent-skills) 45%, transparent);
+}
+
+.skill-star:hover .skill-star__glow {
+  fill-opacity: 0.75;
 }
 
 .skill-star:focus-visible .skill-star__halo {
@@ -94,13 +129,25 @@
   stroke-width: 3;
 }
 
+.skill-star--selected .skill-star__core {
+  fill: var(--text);
+}
+
 .skill-star--selected .skill-star__halo {
   stroke: var(--accent-skills);
   stroke-width: 3;
 }
 
+.skill-star--selected .skill-star__glow {
+  fill-opacity: 0.8;
+}
+
 .skill-star--hidden .skill-star__core {
   fill: var(--text-disabled);
+}
+
+.skill-star--hidden .skill-star__glow {
+  fill-opacity: 0;
 }
 
 .skill-star__label {
@@ -108,81 +155,128 @@
   font-family: var(--font-ui);
   font-size: 22px;
   pointer-events: none;
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 6px;
+  stroke-linejoin: round;
 }
 
+/* --- Side panel ------------------------------------------------------------------- */
 .skill-panel {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: var(--space-4);
   display: grid;
-  gap: var(--space-3);
-  max-height: 44rem;
+  align-content: start;
+  gap: var(--space-4);
+  max-height: 46rem;
   overflow-y: auto;
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, var(--surface-2));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--surface-2) 85%, transparent) 0%, color-mix(in srgb, var(--surface) 90%, transparent) 100%);
 }
 
-.skill-panel--hint {
+.skill-panel__eyebrow {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   color: var(--text-muted);
+}
+
+.skill-rows {
+  display: grid;
+  gap: var(--space-2);
 }
 
 .skill-panel__head {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-3);
 }
 
-.skill-panel__head h3,
+.skill-panel__title {
+  display: grid;
+  flex: 1;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.skill-panel__title h3 {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
 .skill-panel__category {
   margin: 0;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
 }
 
 .skill-strength {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-2) var(--space-4);
-  margin: 0;
-}
-
-.skill-strength dt {
-  color: var(--text-muted);
-  font-size: 0.8rem;
-}
-
-.skill-strength dd {
-  margin: 0;
+  gap: var(--space-3);
 }
 
 .skill-history {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.skill-history p {
   margin: 0;
   color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.skill-repo {
+  display: grid;
+  gap: var(--space-2);
 }
 
 .skill-repo h4 {
-  margin: 0 0 var(--space-2);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text);
 }
 
 .skill-repo__dates {
   color: var(--text-muted);
   font-weight: normal;
-  font-size: 0.8rem;
+  font-size: 0.75rem;
 }
 
 .skill-repo ul {
-  list-style: none;
-  margin: 0;
-  padding: 0;
   display: grid;
   gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
 .skill-evidence {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: var(--space-1) var(--space-3);
-  padding: var(--space-2);
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: color-mix(in srgb, var(--surface-2) 70%, transparent);
+  font-size: 0.8125rem;
+}
+
+.skill-evidence time {
+  color: var(--text-muted);
+  font-size: 0.75rem;
 }
 
 .skill-evidence__kind {
@@ -195,17 +289,30 @@
   grid-column: 1 / -1;
   overflow-wrap: anywhere;
   color: var(--text-muted);
-  font-size: 0.85rem;
+  font-size: 0.75rem;
 }
 
 .skill-link-button {
   justify-self: start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-skills);
+  font: inherit;
+  font-size: 0.8125rem;
+  cursor: pointer;
 }
 
+.skill-link-button:hover {
+  text-decoration: underline;
+}
+
+/* --- Settings ------------------------------------------------------------------------ */
 .skill-settings {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, var(--surface-2));
+  background: color-mix(in srgb, var(--surface-2) 50%, transparent);
 }
 
 .skill-settings form {
@@ -230,11 +337,10 @@
   outline-offset: 2px;
 }
 
-/* One measure per row in the narrow evidence panel: values never break mid-date. */
-.skill-strength {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.skill-strength dd {
-  white-space: nowrap;
+@media (prefers-reduced-motion: reduce) {
+  .skill-star__glow,
+  .skill-star__core,
+  .skill-star__halo {
+    transition: none;
+  }
 }

@@ -6,8 +6,27 @@ import type {
   SkillConstellationSettings,
   SkillStrengthSnapshot
 } from "@dexnest/skill-constellation";
-import { Stars } from "lucide-react";
-import { accentStyle, Button, EmptyNote, EmptyState, ErrorState, Field, InlineError, LoadingState, Notice, PageHeader, TextInput } from "../components/ui/kit";
+import { Clock, Code2, Sparkles, Star, Stars } from "lucide-react";
+import {
+  accentStyle,
+  Badge,
+  Button,
+  EmptyNote,
+  EmptyState,
+  ErrorState,
+  Field,
+  InlineError,
+  ListRow,
+  LoadingState,
+  Meter,
+  Notice,
+  PageHeader,
+  Ring,
+  Sparkline,
+  StatGrid,
+  StatTile,
+  TextInput
+} from "../components/ui/kit";
 import {
   CATEGORY_LABELS,
   EVIDENCE_LABELS,
@@ -19,10 +38,18 @@ import {
   shortDate,
   starLabel,
   labelledIds,
-  labelOffset,
+  labelPlacement,
   labelSides,
   countOf,
+  brightest,
+  fitViewBox,
+  categoryLabel,
+  skyScale,
+  skyStats,
+  starDust,
+  starGlow,
   starRadius,
+  viewBoxString,
   viewState,
   visibleSkills
 } from "./skillConstellationModel";
@@ -105,12 +132,18 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
   const selected = snapshot?.skills.find((s) => s.id === selectedId) ?? null;
   const rovingId = focusedId && shownIds.has(focusedId) ? focusedId : points[0]?.skillId ?? null;
   const labelled = labelledIds(skills, [hoveredId, focusedId, selectedId]);
-  const sides = labelSides(
-    points.flatMap((p) => {
-      const skill = skills.find((s) => s.id === p.skillId);
-      return skill && labelled.has(skill.id) ? [{ id: skill.id, name: skill.name, x: p.x, y: p.y, r: starRadius(skill.strength.score) }] : [];
-    })
-  );
+  const box = useMemo(() => fitViewBox(points), [points]);
+  const scale = skyScale(box);
+  const radius = (score: number) => Math.round(starRadius(score) * scale * 10) / 10;
+  const drawn = points.flatMap((p) => {
+    const skill = skills.find((s) => s.id === p.skillId);
+    return skill ? [{ id: skill.id, name: skill.name, x: p.x, y: p.y, r: radius(skill.strength.score) }] : [];
+  });
+  // Labels avoid each other and every drawn star, not just the labelled ones.
+  const sides = labelSides(drawn.filter((d) => labelled.has(d.id)), scale, drawn);
+
+  const dust = useMemo(() => starDust(box), [box]);
+  const stats = useMemo(() => skyStats(skills), [skills]);
 
   function focusStar(id: string | null) {
     if (!id) return;
@@ -183,14 +216,26 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
       {state.kind === "ready" && (
         <>
           <StatusLine snapshot={state.snapshot} showHidden={showHidden} onToggleHidden={() => setShowHidden((v) => !v)} />
+          <StatGrid columns={4}>
+            <StatTile label="Skills" value={String(stats.count)} icon={<Stars />} hint={`${stats.languages} language${stats.languages === 1 ? "" : "s"}`} />
+            <StatTile label="Strongest" value={stats.strongest?.name ?? "—"} icon={<Star />} tone="warning" hint={stats.strongest ? `strength ${percent(stats.strongest.strength.score)}` : undefined} />
+            <StatTile label="Freshest" value={stats.freshest?.name ?? "—"} icon={<Clock />} tone="success" hint={stats.freshest ? `last ${shortDate(stats.freshest.lastEvidenceAt)}` : undefined} />
+            <StatTile label="Evidence" value={String(skills.reduce((n, s) => n + s.evidenceCount, 0))} icon={<Code2 />} tone="info" hint="facts behind the stars" />
+          </StatGrid>
           <div className="skill-layout">
             <figure className="skill-sky">
               <svg
-                viewBox="0 0 1000 1000"
+                viewBox={viewBoxString(box)}
+                preserveAspectRatio="xMidYMid meet"
                 role="group"
                 aria-label="Skill constellation. Use the arrow keys to move between stars, Enter to show a star's evidence, Escape to close it."
               >
-                <g className="skill-links" aria-hidden="true">
+                <g className="skill-dust" aria-hidden="true">
+                  {dust.map((d, i) => (
+                    <circle key={i} cx={d.x} cy={d.y} r={d.r} fillOpacity={d.o} />
+                  ))}
+                </g>
+                <g className="skill-links" aria-hidden="true" style={{ strokeWidth: 1.2 * scale }}>
                   {state.snapshot.links
                     .filter((l) => shownIds.has(l.a) && shownIds.has(l.b))
                     .map((link) => {
@@ -213,7 +258,7 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
                 {points.map((point) => {
                   const skill = skills.find((s) => s.id === point.skillId);
                   if (!skill) return null;
-                  const r = starRadius(skill.strength.score);
+                  const r = radius(skill.strength.score);
                   return (
                     <g
                       key={skill.id}
@@ -236,9 +281,20 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
                       onMouseLeave={() => setHoveredId((current) => (current === skill.id ? null : current))}
                       onKeyDown={(event) => onStarKey(event, skill.id)}
                     >
-                      <circle className="skill-star__halo" r={r + 6} />
+                      <circle className="skill-star__glow" r={r * 2.6} fillOpacity={starGlow(skill.strength.recency)} />
+                      <circle className="skill-star__halo" r={r + 6 * scale} />
                       <circle className="skill-star__core" r={r} />
-                      {labelled.has(skill.id) && <text className="skill-star__label" y={labelOffset(r, sides.get(skill.id) ?? "below")} textAnchor="middle">{skill.name}</text>}
+                      {labelled.has(skill.id) && (
+                        <text
+                          className="skill-star__label"
+                          x={labelPlacement(r, sides.get(skill.id) ?? "below", scale).dx}
+                          y={labelPlacement(r, sides.get(skill.id) ?? "below", scale).dy}
+                          textAnchor={labelPlacement(r, sides.get(skill.id) ?? "below", scale).anchor}
+                          style={{ fontSize: 22 * scale, strokeWidth: 6 * scale }}
+                        >
+                          {skill.name}
+                        </text>
+                      )}
                     </g>
                   );
                 })}
@@ -265,8 +321,24 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
                 }}
               />
             ) : (
-              <aside className="skill-panel skill-panel--hint">
-                <p>Select a star to see why it is there: the repositories, files and dates behind it.</p>
+              <aside className="skill-panel skill-panel--hint" aria-labelledby="skill-brightest-title">
+                <h3 id="skill-brightest-title" className="skill-panel__eyebrow">Brightest stars</h3>
+                <div className="skill-rows">
+                  {brightest(skills).map((s) => (
+                    <ListRow
+                      key={s.id}
+                      icon={<Sparkles />}
+                      title={s.name}
+                      meta={`${categoryLabel(s.category)} · ${countOf(s.repositoryCount, "repository", "repositories")}`}
+                      trailing={percent(s.strength.score)}
+                      onClick={() => {
+                        setFocusedId(s.id);
+                        setSelectedId(s.id);
+                      }}
+                    />
+                  ))}
+                </div>
+                <p className="skill-hint">Select a star to see why it is there: the repositories, files and dates behind it.</p>
               </aside>
             )}
           </div>
@@ -349,23 +421,28 @@ function EvidencePanel({
       }}
     >
       <div className="skill-panel__head">
-        <h3 id="skill-panel-title">{skill.name}</h3>
+        <Ring value={s.score} max={1} size={84} stroke={7} center={percent(s.score)} caption="strength" label={`${skill.name}: strength ${percent(s.score)}`} />
+        <div className="skill-panel__title">
+          <h3 id="skill-panel-title">{skill.name}</h3>
+          <p className="skill-panel__category">
+            <Badge tone="accent">{categoryLabel(skill.category)}</Badge>
+            {skill.hidden ? " hidden" : ""}
+          </p>
+        </div>
         <Button variant="ghost" size="sm" onClick={onClose} aria-label={`Close evidence for ${skill.name}`}>Close</Button>
       </div>
-      <p className="skill-panel__category">{CATEGORY_LABELS[skill.category]}{skill.hidden ? " · hidden" : ""}</p>
 
-      <dl className="skill-strength">
-        <div><dt>Strength</dt><dd className="technical">{percent(s.score)}</dd></div>
-        <div><dt>Volume</dt><dd className="technical">{percent(s.volume)} · {skill.evidenceCount} evidence</dd></div>
-        <div><dt>Recency</dt><dd className="technical">{percent(s.recency)} · last {shortDate(skill.lastEvidenceAt)}</dd></div>
-        <div><dt>Variety</dt><dd className="technical">{percent(s.variety)} · {countOf(skill.repositoryCount, "repository", "repositories")}, {countOf(skill.evidenceKinds, "kind", "kinds")}</dd></div>
-      </dl>
+      <div className="skill-strength">
+        <Meter label="Volume" value={s.volume} max={1} display={`${percent(s.volume)} · ${skill.evidenceCount} evidence`} />
+        <Meter label="Recency" value={s.recency} max={1} display={`${percent(s.recency)} · last ${shortDate(skill.lastEvidenceAt)}`} tone="success" />
+        <Meter label="Variety" value={s.variety} max={1} display={`${percent(s.variety)} · ${countOf(skill.repositoryCount, "repository", "repositories")}, ${countOf(skill.evidenceKinds, "kind", "kinds")}`} tone="info" />
+      </div>
 
       {history.length > 1 && (
-        <p className="skill-history">
-          Over the last {history.length} builds:{" "}
-          <span className="technical">{[...history].reverse().map((h) => percent(h.score)).join(" → ")}</span>
-        </p>
+        <div className="skill-history">
+          <p>Strength over the last {history.length} builds <span className="technical">{[...history].reverse().map((h) => percent(h.score)).join(" → ")}</span></p>
+          <Sparkline values={[...history].reverse().map((h) => h.score)} height={36} fill label={`${skill.name}'s strength over the last ${history.length} builds`} />
+        </div>
       )}
 
       {error && <InlineError>Could not load the evidence: {error}</InlineError>}
