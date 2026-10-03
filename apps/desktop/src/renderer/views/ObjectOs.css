@@ -353,3 +353,189 @@ button.objectos-item:hover {
 .objectos-table button {
   white-space: nowrap;
 }
+
+/* ===================================================================================
+   Visual layer: your things, like a well-kept garage (docs/DESIGN_LANGUAGE.md).
+   Coral accent; cards on the kit's surfaces; every row carries its category's
+   or its urgency's mark. Still nothing animates (ObjectOS's own rule).
+   =================================================================================== */
+
+.objectos-hint,
+.objectos-meta {
+  font-size: 0.8125rem;
+}
+
+.objectos-layout {
+  gap: var(--space-5);
+}
+
+.objectos-list {
+  gap: var(--space-2);
+}
+
+/* The mark of a category, or of what needs attention. */
+.objectos-icon {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--accent-object) 25%, transparent);
+  background: color-mix(in srgb, var(--accent-object) 10%, transparent);
+  color: var(--accent-object);
+}
+
+.objectos-icon svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+/* Rows: icon tile, then the name over a quiet line. */
+.objectos-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-color: color-mix(in srgb, var(--border) 80%, var(--surface-2));
+  background: color-mix(in srgb, var(--surface-2) 70%, transparent);
+}
+
+button.objectos-item {
+  cursor: pointer;
+}
+
+button.objectos-item:hover {
+  border-color: color-mix(in srgb, var(--accent-object) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent-object) 5%, var(--surface-2));
+}
+
+.objectos-item[aria-current="true"] {
+  border-color: color-mix(in srgb, var(--accent-object) 60%, var(--border));
+  background: color-mix(in srgb, var(--accent-object) 9%, var(--surface-2));
+}
+
+.objectos-item__text {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+}
+
+.objectos-item__text > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+/* Urgency: the mark takes the meaning colour, and a rail on the left. */
+.objectos-item.objectos-tone-bad,
+.objectos-item.objectos-tone-warn {
+  border-left: 1px solid color-mix(in srgb, var(--border) 80%, var(--surface-2));
+  box-shadow: inset 3px 0 0 var(--warning);
+}
+
+.objectos-item.objectos-tone-bad {
+  box-shadow: inset 3px 0 0 var(--error);
+}
+
+.objectos-tone-warn .objectos-icon {
+  border-color: color-mix(in srgb, var(--warning) 30%, transparent);
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+  color: var(--warning);
+}
+
+.objectos-tone-bad .objectos-icon {
+  border-color: color-mix(in srgb, var(--error) 30%, transparent);
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+  color: var(--error);
+}
+
+/* Cards on the kit's surfaces; their headings read like the kit's section titles. */
+.objectos-card {
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  border-color: color-mix(in srgb, var(--border) 80%, var(--surface-2));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--surface-2) 85%, transparent) 0%, color-mix(in srgb, var(--surface) 90%, transparent) 100%);
+}
+
+.objectos-card h3 {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* The object itself: a framed panel with its mark beside its name. */
+.objectos-detail {
+  gap: var(--space-4);
+  padding: var(--space-5);
+  border: 1px solid color-mix(in srgb, var(--accent-object) 30%, var(--border));
+  border-radius: var(--radius-lg);
+  background:
+    radial-gradient(ellipse 60% 40% at 100% 0%, color-mix(in srgb, var(--accent-object) 8%, transparent), transparent 70%),
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-2) 85%, transparent) 0%, color-mix(in srgb, var(--surface) 90%, transparent) 100%);
+}
+
+.objectos-detail-head {
+  align-items: center;
+}
+
+.objectos-detail-head > .objectos-icon {
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: var(--radius-lg);
+}
+
+.objectos-detail-head > .objectos-icon svg {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.objectos-detail-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.objectos-detail-head h3 {
+  overflow-wrap: anywhere;
+  font-size: 1.375rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.objectos-facts {
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface-2) 70%, transparent);
+}
+
+.objectos-photo {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+}
+
+/* Inside the object: small-caps section headings, facts a size down. */
+.objectos-stack h4,
+.objectos-panel h4 {
+  margin: 0 0 var(--space-2);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.objectos-facts {
+  font-size: 0.875rem;
+}
+
+.objectos-notes {
+  font-size: 0.875rem;
+  line-height: 1.55;
+}

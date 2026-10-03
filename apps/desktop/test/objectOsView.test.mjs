@@ -376,3 +376,24 @@ test("the view imports only types from the package, so the renderer never bundle
     for (const [line] of text.matchAll(/^import[^;]*"@dexnest\/object-os";/gms)) assert.match(line, /^import type /, `${f}: ${line}`);
   }
 });
+
+test("numbers first: objects, maintenance due, warranties ending, low stock - and none while empty", () => {
+  const html = render({ initial: ready });
+  assert.match(html, /kit-stat__label">Objects<\/p><\/div><p class="kit-stat__value">/);
+  assert.match(html, /kit-stat__label">Maintenance due<\/p><\/div><p class="kit-stat__value">1<\/p><p class="kit-stat__foot"><span class="kit-stat__hint">1 overdue</);
+  assert.match(html, /kit-stat__label">Warranties ending<\/p><\/div><p class="kit-stat__value">1</);
+  assert.match(html, /--kit-tone:var\(--warning\)[^>]*>(?:(?!kit-stat").)*Low on stock/s, "low stock is a warning, not good news");
+  assert.doesNotMatch(render({ initial: { status: status(0) } }), /kit-stat/);
+});
+
+test("every row carries a mark: the category on objects, the urgency on attention", () => {
+  const html = render({ initial: { ...ready, detail } });
+  const list = section(html, "Objects");
+  assert.match(list, /<span class="objectos-icon" aria-hidden="true"><svg[^>]*lucide-printer/);
+  const att = section(html, "Needs attention");
+  assert.match(att, /objectos-tone-bad"><span class="objectos-icon" aria-hidden="true"><svg[^>]*lucide-(?:triangle-alert|alert-triangle)/);
+  assert.match(att, /<svg[^>]*lucide-shield-alert/);
+  assert.match(att, /<svg[^>]*lucide-package-minus/);
+  // The object's own mark sits in its header, before its name.
+  assert.match(html, /<div class="objectos-detail-head"><span class="objectos-icon" aria-hidden="true"><svg[^>]*lucide-printer[\s\S]*?<\/svg><\/span><div class="objectos-detail-title"><h3 id="objectos-detail-title">Workshop printer<\/h3>/);
+});

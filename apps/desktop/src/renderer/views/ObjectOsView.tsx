@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useState } from "react";
 import type {
+  AttentionItem,
   AttentionView,
+  Category,
   ObjectDetail,
   ObjectOsStatus,
   ObjectRecord,
@@ -9,8 +11,8 @@ import type {
   SettingsSnapshot,
   TimelineItem
 } from "@dexnest/object-os";
-import { Package } from "lucide-react";
-import { accentStyle, Badge, Button, ConfirmDialog, EmptyNote, EmptyState, ErrorState, Field, InlineError, LoadingState, Notice, PageHeader, Select, TabPanel, Tabs, TextArea, TextInput } from "../components/ui/kit";
+import { AlertTriangle, Boxes, Car, Clock, Cpu, Package, PackageMinus, Printer, Refrigerator, ShieldAlert, Wrench } from "lucide-react";
+import { Badge, Button, ConfirmDialog, EmptyNote, EmptyState, ErrorState, Field, InlineError, LoadingState, Notice, PageHeader, Select, StatGrid, StatTile, TabPanel, Tabs, TextArea, TextInput, accentStyle } from "../components/ui/kit";
 import {
   deleteObjectConfirm,
   actionMessage,
@@ -104,6 +106,35 @@ type Run = (actionId: string, params?: Record<string, unknown>) => Promise<boole
 type Ask = (confirm: Confirm) => void;
 
 const HISTORY_PAGE = 50;
+
+/** Each category's mark, on list rows and the detail header. */
+const CATEGORY_ICONS: Record<Category, React.ComponentType<{ className?: string }>> = {
+  printer: Printer,
+  computer: Cpu,
+  appliance: Refrigerator,
+  tool: Wrench,
+  vehicle: Car,
+  other: Package
+};
+
+function CategoryIcon({ category }: { category: Category }) {
+  const Icon = CATEGORY_ICONS[category] ?? Package;
+  return (
+    <span className="objectos-icon" aria-hidden="true">
+      <Icon />
+    </span>
+  );
+}
+
+/** What kind of attention an item needs, as a mark. */
+function AttentionIcon({ item }: { item: AttentionItem }) {
+  const Icon = item.kind === "maintenance" ? (item.status.state === "overdue" ? AlertTriangle : Clock) : item.kind === "warranty" ? ShieldAlert : PackageMinus;
+  return (
+    <span className="objectos-icon" aria-hidden="true">
+      <Icon />
+    </span>
+  );
+}
 /** A schedule's due state as a badge; the words say it too, never colour alone. */
 const DUE_BADGE = { bad: "error", warn: "warning", ok: "success", quiet: "neutral" } as const;
 /** How many "needs attention" items show before "Show all". */
@@ -334,6 +365,21 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
         </ConfirmDialog>
       )}
 
+      {state.kind === "ready" && status && (
+        <StatGrid columns={4}>
+          <StatTile label="Objects" value={status.objects.toLocaleString("en")} icon={<Boxes />} hint={`${locations.length} location${locations.length === 1 ? "" : "s"}`} />
+          <StatTile
+            label="Maintenance due"
+            value={String((attention?.summary.counts.overdue ?? 0) + (attention?.summary.counts.dueSoon ?? 0))}
+            icon={<Wrench />}
+            tone={(attention?.summary.counts.overdue ?? 0) > 0 ? "error" : "warning"}
+            hint={(attention?.summary.counts.overdue ?? 0) > 0 ? `${attention?.summary.counts.overdue} overdue` : "none overdue"}
+          />
+          <StatTile label="Warranties ending" value={String(attention?.summary.counts.warrantyEnding ?? 0)} icon={<ShieldAlert />} tone="info" hint="in the next 30 days" />
+          <StatTile label="Low on stock" value={String(attention?.summary.counts.lowStock ?? 0)} icon={<PackageMinus />} tone="warning" hint="parts to restock" />
+        </StatGrid>
+      )}
+
       {(state.kind === "ready" || state.kind === "empty") && status && (
         <div className="objectos-layout">
           {state.kind === "ready" && (
@@ -350,13 +396,19 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
                           <li key={i}>
                             {line.objectId ? (
                               <button type="button" className={`objectos-item objectos-tone-${line.tone}`} onClick={() => showObject(line.objectId as string)}>
-                                <span>{line.title}</span>
-                                <span className="objectos-meta">{line.detail}</span>
+                                <AttentionIcon item={item} />
+                                <span className="objectos-item__text">
+                                  <span>{line.title}</span>
+                                  <span className="objectos-meta">{line.detail}</span>
+                                </span>
                               </button>
                             ) : (
                               <p className={`objectos-item objectos-tone-${line.tone}`}>
-                                <span>{line.title}</span>
-                                <span className="objectos-meta">{line.detail}</span>
+                                <AttentionIcon item={item} />
+                                <span className="objectos-item__text">
+                                  <span>{line.title}</span>
+                                  <span className="objectos-meta">{line.detail}</span>
+                                </span>
                               </p>
                             )}
                           </li>
@@ -412,9 +464,12 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
                 {objects.map((o) => (
                   <li key={o.id}>
                     <button type="button" className="objectos-item" aria-current={detail?.object.id === o.id ? "true" : undefined} onClick={() => showObject(o.id)}>
-                      <span>{o.name}</span>
-                      <span className="objectos-meta">
-                        <Id id={o.id} /> · {CATEGORY_LABELS[o.category]} · {STATUS_LABELS[o.status]}{o.location ? ` · ${o.location}` : ""}
+                      <CategoryIcon category={o.category} />
+                      <span className="objectos-item__text">
+                        <span>{o.name}</span>
+                        <span className="objectos-meta">
+                          <Id id={o.id} /> · {CATEGORY_LABELS[o.category]} · {STATUS_LABELS[o.status]}{o.location ? ` · ${o.location}` : ""}
+                        </span>
                       </span>
                     </button>
                   </li>
@@ -442,7 +497,8 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
             ) : detail ? (
               <section className="objectos-detail" aria-labelledby="objectos-detail-title">
                 <div className="objectos-detail-head">
-                  <div>
+                  <CategoryIcon category={detail.object.category} />
+                  <div className="objectos-detail-title">
                     <h3 id="objectos-detail-title">{detail.object.name}</h3>
                     <p className="objectos-meta">
                       <Id id={detail.object.id} /> · {CATEGORY_LABELS[detail.object.category]} · {STATUS_LABELS[detail.object.status]}
