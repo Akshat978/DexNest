@@ -20,7 +20,7 @@ import {
   HardDriveDownload, Stethoscope,
   Play, Pause, Square, Smile, Cake, AlertCircle,
   TrendingDown, Repeat, Receipt, CreditCard, Banknote,
-  Target, EyeOff, FlaskConical,
+  Target, EyeOff, Eye, ChevronUp, FlaskConical,
   Pin, WifiOff, Lightbulb, Power, Sun, CloudSun, Snowflake, Flame,
   Palette, Keyboard, AudioLines, User, Calculator, Timer, Globe2, Newspaper, type LucideIcon
 } from "lucide-react";
@@ -34,6 +34,7 @@ import { InlineLoadingState } from "./components/ui/ModuleLoading";
 import { accentStyle, ErrorState, LoadingState, PageHeader as KitPageHeader, Segmented } from "./components/ui/kit";
 import { previewForUi, formatBytes, formatDate, formatDuration } from "./lib/format";
 import { accentTint, MODULE_META, SIDEBAR_VIEWS, SIDEBAR_HIDDEN_VIEWS, type ViewId } from "./lib/moduleMeta";
+import { arrangeSidebar, canHide, EMPTY_SIDEBAR_PREFS, moveSidebarView, normalizeSidebarPrefs, setSidebarHidden, type SidebarPrefs } from "./lib/sidebarLayout";
 import { getPerfStats, subscribePerf, recordModuleSwitch, recordModuleDataLoaded } from "./lib/perf";
 import {
   emptyCommandStats, defaultPerformanceModeSettings, defaultPerformanceModeState, defaultExternalDevicesState,
@@ -58,7 +59,9 @@ import { AutopilotView } from "./views/AutopilotView";
 import { SkillConstellationView, type SkillConstellationBridge } from "./views/SkillConstellationView";
 import { RealityRpgView, type RealityRpgBridge } from "./views/RealityRpgView";
 import { TodayView, type TodayBridge } from "./views/TodayView";
-import { bellBadge, needsYou } from "./views/todayDayModel";
+import { bellBadge, dayRows, needsYou } from "./views/todayDayModel";
+import { ModuleSettings } from "./views/ModuleSettings";
+import type { ActivityRow } from "./lib/activityLabels";
 import { GhostOsView, type GhostOsBridge } from "./views/GhostOsView";
 import { ObjectOsView, type ObjectOsBridge } from "./views/ObjectOsView";
 import { ProjectsView } from "./views/projects/ProjectsView";
@@ -2068,6 +2071,8 @@ export interface DexNestBridge extends SkillConstellationBridge, RealityRpgBridg
   listCommandResults: () => Promise<Record<string, ProjectCommandResult>>;
   clearCommandResult: (actionId: string) => Promise<void>;
   listPinnedActions: () => Promise<string[]>;
+  getSidebarPrefs: () => Promise<unknown>;
+  saveSidebarPrefs: (prefs: { order: string[]; hidden: string[] }) => Promise<unknown>;
   savePinnedActions: (actionIds: string[]) => Promise<string[]>;
   getPins: () => Promise<{ pins: DexNestPin[]; pinsPath: string }>;
   getDemoState: () => Promise<{ seededAt: string | null; moduleCount: number; defaultOptions: DemoSeedOptions }>;
@@ -2161,6 +2166,7 @@ export interface DexNestBridge extends SkillConstellationBridge, RealityRpgBridg
   saveProject: (payload: unknown) => Promise<DexNestProject>;
   deleteProject: (projectId: string) => Promise<void>;
   listEvents: () => Promise<EventEntry[]>;
+  listActivity: (query: { stream?: string; limit?: number }) => Promise<ActivityRow[]>;
   runAction: (payload: { actionId: string; source?: string; params?: unknown }) => Promise<{
     ok: boolean;
     error?: string;
@@ -5631,6 +5637,21 @@ function DexNestApp() {
     }
   }
 
+  // The sidebar as the owner arranged it. Saved as soon as it changes.
+  const [sidebarPrefs, setSidebarPrefs] = useState<SidebarPrefs>(EMPTY_SIDEBAR_PREFS);
+  const [showHiddenViews, setShowHiddenViews] = useState(false);
+  useEffect(() => {
+    let live = true;
+    getBridge().getSidebarPrefs?.().then((raw) => { if (live) setSidebarPrefs(normalizeSidebarPrefs(raw)); }).catch(() => undefined);
+    return () => { live = false; };
+  }, []);
+  function arrangeSidebarTo(next: SidebarPrefs): void {
+    setSidebarPrefs(next);
+    void getBridge().saveSidebarPrefs?.(next).catch(() => undefined);
+  }
+  const railViews = views.filter((view) => !SIDEBAR_HIDDEN_VIEWS.includes(view.id));
+  const rail = arrangeSidebar(railViews, sidebarPrefs);
+
   // How many things need the owner, for the bell: reminders due, ObjectOS, Autopilot.
   // Read when the view changes, not on a timer: the bell costs nothing while nothing happens.
   const [needsCount, setNeedsCount] = useState(0);
@@ -6043,28 +6064,60 @@ function DexNestApp() {
         </div>
 
         <nav className="sidebar-scroll flex-1 space-y-0.5 overflow-y-auto px-2.5 py-3">
-          {views.filter((view) => !SIDEBAR_HIDDEN_VIEWS.includes(view.id)).map((view) => {
+          {rail.shown.map((view, index) => {
             const meta = MODULE_META[view.id] ?? { icon: Command, accent: "#22D3EE" };
             const Icon = meta.icon;
             const active = activeView === view.id;
             return (
-              <button
-                key={view.id}
-                type="button"
-                title={view.label}
-                data-testid={`nav-${view.id}`}
-                onClick={() => void navigate(view.id)}
-                className={`group relative flex w-full items-center gap-3 rounded-lg border px-2.5 py-2 text-sm outline-none transition-colors ${sidebarCollapsed ? "justify-center" : ""} ${active ? "border-transparent text-[#F5F5F5]" : "border-transparent text-[#A3A3A3] hover:bg-[#0d0d0d] hover:text-[#F5F5F5]"}`}
-                style={active ? { background: accentTint(meta.accent, 7), borderColor: accentTint(meta.accent, 15), boxShadow: `inset 0 0 18px ${accentTint(meta.accent, 6)}` } : undefined}
-              >
-                {active && (
-                  <span className="absolute -left-px top-1/2 h-5 w-[2.5px] -translate-y-1/2 rounded-r-full" style={{ background: meta.accent, boxShadow: `0 0 8px ${meta.accent}` }} />
+              <div key={view.id} className="sidebar-row">
+                <button
+                  type="button"
+                  title={view.label}
+                  data-testid={`nav-${view.id}`}
+                  onClick={() => void navigate(view.id)}
+                  className={`group relative flex w-full items-center gap-3 rounded-lg border px-2.5 py-2 text-sm outline-none transition-colors ${sidebarCollapsed ? "justify-center" : ""} ${active ? "border-transparent text-[#F5F5F5]" : "border-transparent text-[#A3A3A3] hover:bg-[#0f0f0f] hover:text-[#F5F5F5]"}`}
+                  style={active ? { background: accentTint(meta.accent, 7), borderColor: accentTint(meta.accent, 15), boxShadow: `inset 0 0 18px ${accentTint(meta.accent, 6)}` } : undefined}
+                >
+                  {active && (
+                    <span className="absolute -left-px top-1/2 h-5 w-[2.5px] -translate-y-1/2 rounded-r-full" style={{ background: meta.accent, boxShadow: `0 0 8px ${meta.accent}` }} />
+                  )}
+                  <Icon className="h-[18px] w-[18px] shrink-0" style={{ color: meta.accent, opacity: active ? 1 : 0.68 }} />
+                  {!sidebarCollapsed && <span className="truncate font-medium">{view.label}</span>}
+                </button>
+                {!sidebarCollapsed && (
+                  <span className="sidebar-row__tools">
+                    <button type="button" aria-label={`Move ${view.label} up`} title="Move up" disabled={index === 0} onClick={() => arrangeSidebarTo(moveSidebarView(railViews, sidebarPrefs, view.id, -1))}><ChevronUp /></button>
+                    <button type="button" aria-label={`Move ${view.label} down`} title="Move down" disabled={index === rail.shown.length - 1} onClick={() => arrangeSidebarTo(moveSidebarView(railViews, sidebarPrefs, view.id, 1))}><ChevronDown /></button>
+                    {canHide(view.id) && (
+                      <button type="button" aria-label={`Hide ${view.label}`} title="Hide from the sidebar" onClick={() => arrangeSidebarTo(setSidebarHidden(sidebarPrefs, view.id, true))}><EyeOff /></button>
+                    )}
+                  </span>
                 )}
-                <Icon className="h-[18px] w-[18px] shrink-0" style={{ color: meta.accent, opacity: active ? 1 : 0.68 }} />
-                {!sidebarCollapsed && <span className="truncate font-medium">{view.label}</span>}
-              </button>
+              </div>
             );
           })}
+          {rail.hidden.length > 0 && !sidebarCollapsed && (
+            <div className="sidebar-hidden">
+              <button type="button" className="sidebar-hidden__toggle" aria-expanded={showHiddenViews} onClick={() => setShowHiddenViews((v) => !v)}>
+                Hidden <span className="font-mono">{rail.hidden.length}</span>
+              </button>
+              {showHiddenViews && rail.hidden.map((view) => {
+                const meta = MODULE_META[view.id] ?? { icon: Command, accent: "#22D3EE" };
+                const Icon = meta.icon;
+                return (
+                  <div key={view.id} className="sidebar-row sidebar-row--hidden">
+                    <button type="button" title={view.label} data-testid={`nav-${view.id}`} onClick={() => void navigate(view.id)} className="flex w-full items-center gap-3 rounded-lg px-2.5 py-1.5 text-sm text-[#737373] hover:bg-[#0f0f0f] hover:text-[#F5F5F5]">
+                      <Icon className="h-4 w-4 shrink-0" style={{ color: meta.accent, opacity: 0.5 }} />
+                      <span className="truncate">{view.label}</span>
+                    </button>
+                    <span className="sidebar-row__tools sidebar-row__tools--always">
+                      <button type="button" aria-label={`Show ${view.label} in the sidebar`} title="Show in the sidebar" onClick={() => arrangeSidebarTo(setSidebarHidden(sidebarPrefs, view.id, false))}><Eye /></button>
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </nav>
 
         <div className="border-t border-[#161616] pb-3">
@@ -6443,7 +6496,7 @@ function DexNestApp() {
           {activeView === "health" && (
             <AppHealthView healthState={appHealthState ? addVoiceValidationHealth(appHealthState, actions, voiceWorkflowSettings) : appHealthState} onRunChecks={async () => { const r = await runUiAction("system.health.run_checks", "module_ui", {}) as { health?: AppHealthState }; const health = r?.health ?? await getBridge().getAppHealth(); setAppHealthState(addVoiceValidationHealth(health, actions, voiceWorkflowSettings)); }} onAction={runUiAction} />
           )}
-          {activeView === "audit" && <AuditView events={events} onRefresh={handleAction} refreshEvents={refreshEvents} />}
+          {activeView === "audit" && <AuditView bridge={getBridge()} onRefresh={handleAction} />}
           {activeView === "today" && <TodayView bridge={getBridge()} onAction={(actionId, params) => runUiAction(actionId, "module_ui", params ?? {})} />}
           {activeView === "autopilot" && <AutopilotView />}
           {activeView === "skills" && <SkillConstellationView bridge={getBridge()} onAction={(actionId) => runUiAction(actionId, "module_ui", {})} />}
@@ -7717,6 +7770,31 @@ function AskDexNest({
   );
 }
 
+/** Command home's day: the shared agenda's events and blocks, in the order the day runs. */
+function CommandDay({ refreshKey }: { refreshKey: string }) {
+  const [agenda, setAgenda] = useState<Parameters<typeof dayRows>[0]>(null);
+  useEffect(() => {
+    let live = true;
+    getBridge().getTodayAgenda?.().then((next) => { if (live) setAgenda(next); }).catch(() => undefined);
+    return () => { live = false; };
+  }, [refreshKey]);
+  const rows = dayRows(agenda);
+  if (rows.length === 0) return <p className="text-xs text-[#525252]">Nothing planned today.</p>;
+  return (
+    <div className="space-y-0.5">
+      {rows.slice(0, 7).map((row) => (
+        <div key={row.id} className="flex items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-[#0d0d0d]">
+          <span className="w-24 shrink-0 font-mono text-xs text-[#A3A3A3]">{row.time}</span>
+          <span className="h-7 w-px bg-[#14B8A655]" />
+          <span className={`flex-1 truncate text-sm ${row.done ? "text-[#737373] line-through" : "text-[#F5F5F5]"}`}>{row.title}</span>
+          <span className="rounded-full border border-[#14B8A633] bg-[#14B8A610] px-2 py-0.5 text-[10px] font-medium text-[#14B8A6]">{row.meta}</span>
+        </div>
+      ))}
+      {rows.length > 7 && <p className="px-2 text-xs text-[#525252]">and {rows.length - 7} more</p>}
+    </div>
+  );
+}
+
 function CommandView({
   userName,
   appInfo,
@@ -8041,8 +8119,9 @@ function CommandView({
                   <div className="flex h-8 w-8 items-center justify-center rounded-lg" style={{ background: accentTint(meta.accent, 9), color: meta.accent }}>
                     <Icon className="h-4 w-4" />
                   </div>
-                  <div>
-                    <p className="truncate text-sm font-medium text-[#F5F5F5]">{action.title}</p>
+                  <div className="min-w-0">
+                    {/* Two lines, then cut: "Open Skill Constellation" used to end at "Open Skill C…". The whole title is in the tooltip. */}
+                    <p className="quick-action-title text-sm font-medium text-[#F5F5F5]" title={action.title}>{action.title}</p>
                     <p className="truncate text-xs text-[#525252]">{viewFromAction(action) ? "Open" : action.module}</p>
                   </div>
                 </button>
@@ -8112,20 +8191,8 @@ function CommandView({
           {/* Today */}
           <GlassCard hover={false}>
             <SectionTitle action={<button type="button" onClick={() => onNavigate("calendar")} className="flex items-center gap-0.5 text-[10px] text-[#525252] hover:text-[#A3A3A3]">open calendar <ChevronRight className="h-3 w-3" /></button>}>Today</SectionTitle>
-            {calendarState.todayEvents.length === 0 ? (
-              <p className="text-xs text-[#525252]">No Calendar events today.</p>
-            ) : (
-              <div className="space-y-0.5">
-                {calendarState.todayEvents.slice(0, 6).map((event) => (
-                  <div key={event.id} className="flex items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-[#0d0d0d]">
-                    <span className="w-12 font-mono text-xs text-[#A3A3A3]">{event.allDay ? "all-day" : event.startTime || "—"}</span>
-                    <span className="h-7 w-px bg-[#14B8A655]" />
-                    <span className="flex-1 truncate text-sm text-[#F5F5F5]">{event.title}</span>
-                    <span className="rounded-full border border-[#14B8A633] bg-[#14B8A610] px-2 py-0.5 text-[10px] font-medium text-[#14B8A6]">{event.reminderLevel}</span>
-                  </div>
-                ))}
-              </div>
-            )}
+            {/* The same agenda Today and the phone show: calendar events and timetable blocks in one list. */}
+            <CommandDay refreshKey={`${calendarState.todayEvents.length}:${timetableState.currentBlock?.id ?? ""}`} />
           </GlassCard>
 
           <GlassCard accent={timetableAccent} hover={false}>
@@ -12988,6 +13055,8 @@ function FinanceView({
   const spendDeltaPct = period.comparable && periodSummary.previousTotal > 0
     ? Math.round(((periodSummary.total - periodSummary.previousTotal) / periodSummary.previousTotal) * 100)
     : null;
+  // "3399% vs prev" says nothing: the earlier period was nearly empty. Past ten times, say so in words.
+  const spendDeltaText = (delta: number): string => (Math.abs(delta) > 999 ? (delta > 0 ? "far more than prev" : "far less than prev") : `${Math.abs(delta)}% vs prev`);
   const [customStart, setCustomStart] = useState(period.customStart);
   const [customEnd, setCustomEnd] = useState(period.customEnd);
   useEffect(() => { setCustomStart(period.customStart); setCustomEnd(period.customEnd); }, [period.customStart, period.customEnd, financeState.activeProfileId]);
@@ -13096,7 +13165,7 @@ function FinanceView({
                 <p className="text-[10px] uppercase tracking-wider text-[#525252]">{s.label}</p>
                 <p className="font-mono text-lg font-semibold text-[#F5F5F5]">{s.value}</p>
                 {s.delta !== null && s.delta !== undefined && (
-                  <p className={`font-mono text-[10px] ${s.delta > 0 ? "text-[#EF4444]" : s.delta < 0 ? "text-[#22C55E]" : "text-[#525252]"}`}>{s.delta > 0 ? "▲" : s.delta < 0 ? "▼" : "•"} {Math.abs(s.delta)}% vs prev</p>
+                  <p className={`font-mono text-[10px] ${s.delta > 0 ? "text-[#EF4444]" : s.delta < 0 ? "text-[#22C55E]" : "text-[#525252]"}`}>{s.delta > 0 ? "▲" : s.delta < 0 ? "▼" : "•"} {spendDeltaText(s.delta)}</p>
                 )}
               </div>
             </GlassCard>
@@ -14813,6 +14882,7 @@ function SettingsView({
     { id: "performance", label: "Performance Mode", icon: Cpu, accent: "#F59E0B" },
     { id: "startup", label: "Startup & Tray", icon: Power, accent: "#A855F7" },
     { id: "nudges", label: "Reminders & Nudges", icon: Bell, accent: "#14B8A6" },
+    { id: "modules", label: "Modules", icon: LayoutGrid, accent: "var(--accent-skills)" },
     { id: "weather", label: "Weather", icon: CloudSun, accent: "var(--accent-weather)" },
     { id: "news", label: "News", icon: Newspaper, accent: "var(--accent-news)" },
     { id: "tools", label: "Tools & Dependencies", icon: Wrench, accent: "#F97316" },
@@ -17152,6 +17222,9 @@ function SettingsView({
             </div>
           )}
 
+          {settingsSection === "modules" && (
+            <ModuleSettings bridge={getBridge()} onAction={(actionId) => onAction(actionId, "module_ui", {})} />
+          )}
           {settingsSection === "data" && (
             <div className="space-y-4">
               <DataManagementSection onAction={onAction} onRefresh={onRefresh} />

@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld("dexNest", {
   listCommandResults: () => ipcRenderer.invoke("dexnest:list-command-results"),
   clearCommandResult: (actionId: string) => ipcRenderer.invoke("dexnest:clear-command-result", actionId),
   listPinnedActions: () => ipcRenderer.invoke("dexnest:list-pinned-actions"),
+  getSidebarPrefs: () => ipcRenderer.invoke("dexnest:get-sidebar-prefs"),
+  saveSidebarPrefs: (prefs: { order: string[]; hidden: string[] }) => ipcRenderer.invoke("dexnest:save-sidebar-prefs", prefs),
   savePinnedActions: (actionIds: string[]) => ipcRenderer.invoke("dexnest:save-pinned-actions", actionIds),
   getPins: () => ipcRenderer.invoke("dexnest:get-pins"),
   getDemoState: () => ipcRenderer.invoke("dexnest:get-demo-state"),
@@ -117,6 +119,7 @@ contextBridge.exposeInMainWorld("dexNest", {
   saveProject: (payload: unknown) => ipcRenderer.invoke("dexnest:save-project", payload),
   deleteProject: (projectId: string) => ipcRenderer.invoke("dexnest:delete-project", projectId),
   listEvents: () => ipcRenderer.invoke("dexnest:list-events"),
+  listActivity: (query: { stream?: string; limit?: number }) => ipcRenderer.invoke("dexnest:list-activity", query),
   runAction: (payload: { actionId: string; source?: string; params?: unknown }) =>
     ipcRenderer.invoke("dexnest:run-action", payload),
   logActionResult: (payload: {

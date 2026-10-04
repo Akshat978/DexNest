@@ -367,7 +367,23 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
         </>
       )}
 
-      {(state.kind === "ready" || state.kind === "empty" || state.kind === "off") && <SettingsPanel bridge={bridge} onSaved={load} />}
+      {(state.kind === "ready" || state.kind === "empty" || state.kind === "off") && (
+        <p className="skill-hint skill-settings-link">
+          Which commits count as yours, and which libraries are included, are in{" "}
+          <button
+            type="button"
+            className="skill-link-button"
+            onClick={() => {
+              // Settings opens on the section asked for here.
+              try { sessionStorage.setItem("dexnest:settingsSection", "modules"); } catch { /* opens on its first section */ }
+              void onAction("settings.open");
+            }}
+          >
+            Settings → Modules
+          </button>
+          .
+        </p>
+      )}
     </section>
   );
 }
@@ -389,7 +405,7 @@ function StatusLine({ snapshot, showHidden, onToggleHidden }: { snapshot: Conste
         </p>
       )}
       {snapshot.countsAllCommits && (
-        <p className="skill-hint">Every commit counts, because no commit emails are set. Add yours below to count only your own.</p>
+        <p className="skill-hint">Every commit counts, because no commit emails are set. Add yours in Settings → Modules to count only your own.</p>
       )}
       {hiddenCount > 0 && (
         <button type="button" className="skill-link-button" aria-pressed={showHidden} onClick={onToggleHidden}>
@@ -543,102 +559,6 @@ function StrengthHelp() {
       {STRENGTH_HELP.map((line) => (
         <p key={line}>{line}</p>
       ))}
-    </details>
-  );
-}
-
-function SettingsPanel({ bridge, onSaved }: { bridge: SkillConstellationBridge; onSaved(): Promise<void> }) {
-  const [settings, setSettings] = useState<SkillConstellationSettings | null>(null);
-  const [emails, setEmails] = useState("");
-  const [authors, setAuthors] = useState<{ email: string; commits: number }[]>([]);
-  const [status, setStatus] = useState<string | null>(null);
-
-  useEffect(() => {
-    let live = true;
-    bridge
-      .skillConstellationSettings()
-      .then((s) => {
-        if (!live) return;
-        setSettings(s);
-        setEmails(s.myEmails.join(", "));
-      })
-      .catch(() => undefined);
-    bridge
-      .skillConstellationCommitAuthors?.()
-      .then((found) => {
-        if (live) setAuthors(found);
-      })
-      .catch(() => undefined);
-    return () => {
-      live = false;
-    };
-  }, [bridge]);
-
-  if (!settings) return null;
-
-  const typed = new Set(emails.toLowerCase().split(/[,\s]+/).filter(Boolean));
-  const suggestions = authors.filter((a) => !typed.has(a.email));
-
-  async function save(next: SkillConstellationSettings) {
-    try {
-      const saved = await bridge.skillConstellationUpdateSettings(next);
-      setSettings(saved);
-      setEmails(saved.myEmails.join(", "));
-      setStatus("Saved. Rebuild to apply.");
-      await onSaved();
-    } catch (e) {
-      setStatus(`Could not save: ${message(e)}`);
-    }
-  }
-
-  return (
-    <details className="skill-settings">
-      <summary>Settings</summary>
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          void save({ ...settings, myEmails: emails.split(/[,\s]+/).filter(Boolean) });
-        }}
-      >
-        <Field label="My commit emails">
-          <TextInput
-            type="text"
-            className="technical"
-            value={emails}
-            placeholder="you@example.com"
-            onChange={(event) => setEmails(event.target.value)}
-          />
-        </Field>
-        {suggestions.length > 0 && (
-          <div className="skill-authors" role="group" aria-label="Emails on the commits already scanned">
-            <span className="skill-hint">On your scanned commits:</span>
-            {suggestions.map((author) => (
-              <button
-                key={author.email}
-                type="button"
-                className="skill-link-button technical"
-                title={`Add ${author.email}`}
-                onClick={() => setEmails([...typed, author.email].join(", "))}
-              >
-                {author.email} ({countOf(author.commits, "commit", "commits")})
-              </button>
-            ))}
-          </div>
-        )}
-        <p className="skill-hint">Only commits by these authors count. Pick yours above, then save. Commits recorded before authors were tracked still count.</p>
-        <label className="skill-check">
-          <input
-            type="checkbox"
-            checked={settings.includeUnmappedLibraries}
-            onChange={(event) => void save({ ...settings, includeUnmappedLibraries: event.target.checked })}
-          />
-          Include libraries that are not in the curated list
-        </label>
-        <div className="button-row">
-          <Button type="submit">Save emails</Button>
-        </div>
-        {status && <p role="status" className="skill-hint">{status}</p>}
-      </form>
     </details>
   );
 }

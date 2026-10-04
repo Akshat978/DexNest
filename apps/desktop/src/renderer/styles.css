@@ -3453,3 +3453,170 @@ kbd {
   font-size: 0.75rem;
   cursor: pointer;
 }
+
+/* --- Sidebar: move and hide, on the row itself ------------------------------------------ */
+.sidebar-row {
+  position: relative;
+}
+
+.sidebar-row__tools {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  display: none;
+  align-items: center;
+  gap: 1px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  transform: translateY(-50%);
+}
+
+.sidebar-row:hover .sidebar-row__tools,
+.sidebar-row:focus-within .sidebar-row__tools,
+.sidebar-row__tools--always {
+  display: flex;
+}
+
+.sidebar-row__tools button {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.sidebar-row__tools button svg {
+  width: 13px;
+  height: 13px;
+}
+
+.sidebar-row__tools button:hover:not(:disabled),
+.sidebar-row__tools button:focus-visible {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.sidebar-row__tools button:focus-visible {
+  outline: 2px solid var(--accent-command);
+  outline-offset: 1px;
+}
+
+.sidebar-row__tools button:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.sidebar-hidden {
+  margin-top: var(--space-3);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+
+.sidebar-hidden__toggle {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 0;
+  padding: 6px 10px;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.sidebar-hidden__toggle:hover {
+  color: var(--text);
+}
+
+/* --- Settings → Modules ------------------------------------------------------------------ */
+.modset {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.modset-form {
+  display: grid;
+  gap: var(--space-3);
+  max-width: 40rem;
+}
+
+.modset-hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+.modset-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text);
+  font-size: 0.875rem;
+}
+
+.modset-picks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+}
+
+.modset-pick {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-skills);
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.modset-pick:hover {
+  text-decoration: underline;
+}
+
+/* --- Activity log: which stream to show --------------------------------------------------- */
+.audit-streams {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.audit-stream {
+  min-height: 0;
+  padding: var(--space-1) var(--space-3);
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.audit-stream:hover,
+.audit-stream[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent-command) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent-command) 10%, transparent);
+  color: var(--text);
+}
+
+/* Command: a quick action's title wraps to two lines before it is cut. */
+.quick-action-title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  line-height: 1.25;
+}

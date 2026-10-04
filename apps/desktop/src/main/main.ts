@@ -184,6 +184,8 @@ const keyboardShortcutsPath = join(settingsRoot, "keyboard-shortcuts.json");
 const streamDeckSettingsPath = join(settingsRoot, "stream-deck-settings.json");
 const commandResultsPath = join(settingsRoot, "project-command-results.json");
 const pinnedActionsPath = join(settingsRoot, "pinned-actions.json");
+// The sidebar as the owner arranged it: order and what is hidden.
+const sidebarPrefsPath = join(settingsRoot, "sidebar.json");
 const clipboardHistoryPath = join(settingsRoot, "clipboard-history.json");
 const clipboardSnippetsPath = join(settingsRoot, "clipboard-snippets.json");
 const clipboardSettingsPath = join(settingsRoot, "clipboard-settings.json");
@@ -3260,7 +3262,43 @@ interface DataManagementCategory {
   sensitive: boolean;
   recordFiles: string[];
   fileRoots: string[];
+  /**
+   * For modules that keep their records in the shared database: the prefixes
+   * of their tables. Clearing empties those tables and leaves the tables
+   * themselves, so the module starts again from nothing.
+   */
+  tablePrefixes?: string[];
   special?: "audit" | "appHealth" | "secureVault" | "credentials";
+}
+
+/** The tables a module owns, by prefix. Names come from the database, never from input. */
+function moduleTables(prefixes: readonly string[]): string[] {
+  const db = localDb.getSqlDatabase();
+  const names = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all<{ name: string }>().map((row) => row.name);
+  return names.filter((name) => /^[a-z][a-z0-9_]*$/.test(name) && prefixes.some((prefix) => /^[a-z]+_$/.test(prefix) && name.startsWith(prefix)));
+}
+
+function countModuleRows(prefixes: readonly string[]): number {
+  const db = localDb.getSqlDatabase();
+  return moduleTables(prefixes).reduce((sum, table) => sum + Number(db.prepare(`SELECT count(*) AS n FROM ${table}`).get<{ n: number }>()?.n ?? 0), 0);
+}
+
+/** Empties a module's tables in one transaction: all of them, or none. */
+function clearModuleRows(prefixes: readonly string[]): number {
+  const db = localDb.getSqlDatabase();
+  const tables = moduleTables(prefixes);
+  let cleared = 0;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    // Rows point at each other; the order they go in does not matter once the check waits for the end.
+    db.exec("PRAGMA defer_foreign_keys = ON");
+    for (const table of tables) cleared += Number(db.prepare(`DELETE FROM ${table}`).run([]).changes ?? 0);
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+  return cleared;
 }
 
 function dataManagementCatalog(): DataManagementCategory[] {
@@ -3273,7 +3311,10 @@ function dataManagementCatalog(): DataManagementCategory[] {
     { id: "calendar", label: "Calendar", description: "Calendar events and reminders/nudges. Keeps reminder settings.", sensitive: false, recordFiles: [calendarEventsPath, nudgesPath], fileRoots: [] },
     { id: "capture", label: "Capture", description: "Capture items and managed capture files.", sensitive: true, recordFiles: [captureItemsPath], fileRoots: [capturesRoot] },
     { id: "finance", label: "Finance", description: "Transactions, recurring items, profiles, and managed receipt files. Keeps Finance settings.", sensitive: true, recordFiles: [financeTransactionsPath, financeRecurringPath, financeProfilesPath], fileRoots: [receiptsRoot] },
-    { id: "dev", label: "Dev projects/history/profiles", description: "Dev projects, command run history, and pinned actions.", sensitive: false, recordFiles: [projectsConfigPath, commandResultsPath, pinnedActionsPath], fileRoots: [] },
+    { id: "dev", label: "Command history and pinned actions", description: "Project command run history, pinned actions, and the old projects file from before Projects kept its own list.", sensitive: false, recordFiles: [projectsConfigPath, commandResultsPath, pinnedActionsPath], fileRoots: [] },
+    { id: "scan", label: "Repository scan and Standups", description: "What the scan recorded about your repositories (commits seen, TODOs, technologies) and every Standup. Your repositories themselves are not touched; the next scan reads them again.", sensitive: false, recordFiles: [], fileRoots: [], tablePrefixes: ["dev_", "standup_"] },
+    { id: "skills", label: "Skills", description: "The constellation, its evidence and its strength history. Rebuilt from the repository scan the next time you press Rebuild. Keeps Skills settings.", sensitive: false, recordFiles: [], fileRoots: [], tablePrefixes: ["skill_"] },
+    { id: "rpg", label: "Reality RPG", description: "XP, level, rules, quests and achievements. The game starts again from nothing.", sensitive: false, recordFiles: [], fileRoots: [], tablePrefixes: ["rpg_"] },
     { id: "deck", label: "Deck routines/export status", description: "Deck routines and export status records.", sensitive: false, recordFiles: [routinesPath], fileRoots: [] },
     { id: "timetable", label: "Timetable", description: "Timetable blocks, weekly status, and templates. Defaults are recreated after deletion.", sensitive: false, recordFiles: [timetablePath], fileRoots: [] },
     { id: "utilities", label: "Utilities history/timers/world clocks", description: "Utilities recent results, timers, stopwatch, and world clocks. Default Utilities settings are recreated after deletion.", sensitive: false, recordFiles: [utilitiesPath], fileRoots: [] },
@@ -3370,7 +3411,7 @@ function loadDataManagementStatus(): DataManagementStatus {
 function dataManagementState() {
   return {
     categories: dataManagementCatalog().map((category) => {
-      const records = category.special === "audit" ? localDb.countEvents() : category.recordFiles.reduce((sum, file) => sum + countRecordEntries(file), 0);
+      const records = category.special === "audit" ? localDb.countEvents() : category.recordFiles.reduce((sum, file) => sum + countRecordEntries(file), 0) + (category.tablePrefixes ? countModuleRows(category.tablePrefixes) : 0);
       const files = category.fileRoots.reduce((sum, root) => sum + countDirFiles(root), 0);
       return {
         id: category.id,
@@ -3390,7 +3431,7 @@ function previewDataDeletion(categoryIds: string[]) {
   const catalog = dataManagementCatalog();
   const selected = catalog.filter((category) => categoryIds.includes(category.id));
   const items = selected.map((category) => {
-    const records = category.special === "audit" ? localDb.countEvents() : category.recordFiles.reduce((sum, file) => sum + countRecordEntries(file), 0);
+    const records = category.special === "audit" ? localDb.countEvents() : category.recordFiles.reduce((sum, file) => sum + countRecordEntries(file), 0) + (category.tablePrefixes ? countModuleRows(category.tablePrefixes) : 0);
     const files = category.fileRoots.reduce((sum, root) => sum + countDirFiles(root), 0);
     return {
       id: category.id,
@@ -3449,6 +3490,7 @@ function executeDataDeletion(categoryIds: string[], source: DexNestActionTrigger
         for (const root of category.fileRoots) {
           filesDeleted += emptyManagedDir(root);
         }
+        if (category.tablePrefixes) recordsCleared += clearModuleRows(category.tablePrefixes);
       }
 
       if (category.special === "secureVault") {
@@ -22778,6 +22820,13 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle("dexnest:list-pinned-actions", () => loadPinnedActions());
+  ipcMain.handle("dexnest:get-sidebar-prefs", () => readJsonFile<unknown>(sidebarPrefsPath, {}));
+  ipcMain.handle("dexnest:save-sidebar-prefs", (_event, prefs: unknown) => {
+    // Two short lists of module ids; anything else is dropped before it is written.
+    const ids = (value: unknown) => (Array.isArray(value) ? value.filter((id): id is string => typeof id === "string" && /^[a-z][a-z0-9_-]{0,39}$/.test(id)).slice(0, 100) : []);
+    const input = typeof prefs === "object" && prefs !== null ? prefs as { order?: unknown; hidden?: unknown } : {};
+    return writeJsonFile(sidebarPrefsPath, { order: ids(input.order), hidden: ids(input.hidden) });
+  });
 
   ipcMain.handle("dexnest:save-pinned-actions", (_event, actionIds: string[]) => savePinnedActions(actionIds));
 
@@ -23212,6 +23261,29 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle("dexnest:list-events", () => localDb.listRecentEvents(25));
+  // The activity log: every stream, newest first. The envelope of each event,
+  // and for an action's own row the short fields it wrote (which action, how it
+  // went, its fixed summary line). No other payload leaves the main process.
+  ipcMain.handle("dexnest:list-activity", (_event, query: unknown) => {
+    const input = typeof query === "object" && query !== null ? query as { stream?: unknown; limit?: unknown } : {};
+    const stream = typeof input.stream === "string" && /^[a-z_]{1,20}$/.test(input.stream) ? input.stream : undefined;
+    const limit = typeof input.limit === "number" && Number.isFinite(input.limit) ? Math.max(1, Math.min(Math.floor(input.limit), 1000)) : 300;
+    const text = (value: unknown) => (typeof value === "string" && value.length > 0 ? value.slice(0, 300) : null);
+    return localDb.getEventLog().query({ ...(stream ? { stream } : {}), orderBy: "recorded", order: "desc", limit }).map((event) => {
+      const payload = event.stream === "audit" && typeof event.payload === "object" && event.payload !== null ? event.payload as Record<string, unknown> : {};
+      return {
+        id: event.id,
+        at: event.recordedAt,
+        stream: event.stream,
+        type: event.type,
+        module: event.module ?? text(payload.module),
+        actionId: text(payload.actionId),
+        status: text(payload.status),
+        source: text(payload.source) ?? event.source,
+        summary: text(payload.summary)
+      };
+    });
+  });
 
   ipcMain.handle(
     "dexnest:run-action",

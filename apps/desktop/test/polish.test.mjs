@@ -38,7 +38,7 @@ test("P6: Audit's columns fit the content area at 1280, and action ids break onl
   assert.match(rule(styles, ".audit-list .event-row p"), /overflow-wrap: break-word;/);
   const view = readFileSync(join(renderer, "views/AuditView.tsx"), "utf8");
   assert.match(view, /<div className="event-list audit-list">/);
-  assert.match(view, /idParts\(event\.actionId\)\.map\(\(part, i\) => \(\s*<React\.Fragment key=\{i\}>\s*\{i > 0 && <wbr \/>\}/);
+  assert.match(view, /idParts\(event\.what\)\.map\(\(part, i\) => \(\s*<React\.Fragment key=\{i\}>\s*\{i > 0 && <wbr \/>\}/);
 });
 
 test("P8: Utilities' date fields keep a modest width at 1920 instead of stretching", () => {
