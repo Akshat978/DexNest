@@ -309,6 +309,7 @@ test("messages: correct plurals, no zero counts (Integration QA F15)", async () 
   assert.equal(sourceOffMessage({ entity: 0, relation: 0, observation: 0 }), "Source turned off. It had added nothing.");
   assert.equal(sourceOffMessage({ entity: 3, relation: 0, observation: 5 }), "Source turned off. Removed 3 entries and 5 observations.");
   assert.equal(sourceOffMessage({ entity: 1, relation: 2, observation: 1 }), "Source turned off. Removed 1 entry, 2 connections and 1 observation.");
-  assert.equal(forgottenMessage(0), "Forgotten.");
-  assert.equal(forgottenMessage(3), "Forgotten, with 3 dependent records.");
+  assert.equal(forgottenMessage(0), "Deleted.");
+  assert.equal(forgottenMessage(1), "Deleted, with 1 thing that depended on it.");
+  assert.equal(forgottenMessage(3), "Deleted, with 3 things that depended on it.");
 });

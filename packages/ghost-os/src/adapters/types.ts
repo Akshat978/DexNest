@@ -20,6 +20,8 @@ export interface AdapterContext {
   /** Read-only views of what GhostOS holds, for merging. */
   getObservation(id: string): Observation | undefined;
   entityExists(id: string): boolean;
+  /** When an entry GhostOS holds began, if it says; for keeping the earliest date seen. */
+  entityStartedAt?(id: string): string | null;
 }
 
 export interface AdapterContribution {

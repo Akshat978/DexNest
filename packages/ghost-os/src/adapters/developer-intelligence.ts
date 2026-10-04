@@ -11,11 +11,13 @@
 import {
   buildDiSnapshot,
   commitActivity,
+  datedByFirstCommit,
   dayObservation,
   dayObservationIdFor,
   DI_SOURCE_ID,
   groupCommitDays,
   type DiRepository,
+  type DiSkill,
   type DiTechnology,
 } from '../domain/developer-intelligence.ts';
 import { DI_EVENT_READ, type CommitSample } from '../domain/privacy.ts';
@@ -27,6 +29,12 @@ export interface DiReader {
   listRepositories(): Promise<readonly DiRepository[]>;
   /** Observed technology facts of one repository. */
   listTechnologies(repositoryId: string): Promise<readonly DiTechnology[]>;
+  /**
+   * The skills Skills holds, so GhostOS lists the same ones. `null` when
+   * Skills has never been built. A host that leaves this out gets skills
+   * derived from the technology facts instead.
+   */
+  listSkills?(): Promise<readonly DiSkill[] | null>;
 }
 
 export interface DeveloperIntelligenceAdapterOptions {
@@ -68,8 +76,14 @@ export function createDeveloperIntelligenceAdapter(options: DeveloperIntelligenc
       // Ask for technologies only of repositories GhostOS may know about.
       const allowed = repositories.filter((r) => r.roots.length > 0 && !r.roots.some((root) => options.isSensitive(root.path)));
       const technologies: DiTechnology[] = [];
-      for (const repo of allowed) technologies.push(...(await options.reader.listTechnologies(repo.id)));
-      const snapshot = buildDiSnapshot(allowed, technologies, { now: ctx.now, isSensitive: options.isSensitive });
+      const fromSkills = options.reader.listSkills ? await options.reader.listSkills() : undefined;
+      // With skills taken from Skills, the technology facts are not needed, so they are not asked for.
+      if (fromSkills === undefined) for (const repo of allowed) technologies.push(...(await options.reader.listTechnologies(repo.id)));
+      const snapshot = buildDiSnapshot(allowed, technologies, {
+        now: ctx.now,
+        isSensitive: options.isSensitive,
+        ...(fromSkills !== undefined ? { skills: fromSkills } : {}),
+      });
       const skipped = repositories.length - allowed.length + snapshot.skippedRepositories;
 
       // Commits since the cursor. If the log's seqs went backwards (pruned and reused), start over:
@@ -85,9 +99,11 @@ export function createDeveloperIntelligenceAdapter(options: DeveloperIntelligenc
       const groups = groupCommitDays([...earlier, ...recent.commits], snapshot.projects, ctx.timeZone);
       const observations = [...groups.values()].map((g) => dayObservation(g, ctx.getObservation(dayObservationIdFor(g.repositoryId, g.day)), ctx.now));
 
+      const dated = datedByFirstCommit(snapshot, [...earlier, ...recent.commits], (projectId) => ctx.entityStartedAt?.(projectId) ?? null);
+
       return {
-        entities: snapshot.entities,
-        relations: snapshot.relations,
+        entities: dated.entities,
+        relations: dated.relations,
         observations,
         cursor: String(recent.lastSeq ?? from),
         skipped,

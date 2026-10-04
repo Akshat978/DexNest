@@ -19,6 +19,7 @@ import { createDeveloperIntelligenceAdapter, type DiReader } from '../adapters/d
 import { createAllowedEventReader } from '../adapters/event-reader.ts';
 import type { SourceAdapter } from '../adapters/types.ts';
 import { AUDIT_SUMMARIES, GHOST_EVENT_STREAM, GHOST_MODULE_ID, type RowCounts } from '../domain/events.ts';
+import { projectIdFor } from '../domain/developer-intelligence.ts';
 import { eventCutoff, RETENTION } from '../domain/retention.ts';
 import { parseExport, type GhostExport } from '../domain/export.ts';
 import { isRowId, newRowId } from '../domain/ids.ts';
@@ -60,6 +61,8 @@ export interface EntityDetail {
   observations: Observation[];
   /** What a derived entity was derived from. */
   derivedFrom: RowRef[];
+  /** The project name for each repository the evidence here points at, so evidence reads in names, not ids. */
+  repositoryNames: Record<string, string>;
 }
 
 export interface GhostOsStatus {
@@ -393,7 +396,16 @@ export function createGhostOsModule(options: GhostOsModuleOptions): GhostOsModul
       const other = store.getEntity(direction === 'out' ? relation.toId : relation.fromId);
       return { relation, direction, other: other ? { id: other.id, type: other.type, title: other.title } : null };
     });
-    return { ok: true, value: { entity, relations, observations: store.observationsOf(id), derivedFrom: store.derivationsOf({ kind: 'entity', id }) } };
+    const observations = store.observationsOf(id);
+    const repositoryNames: Record<string, string> = {};
+    for (const provenance of [entity.provenance, ...relations.map((r) => r.relation.provenance), ...observations.map((o) => o.provenance)]) {
+      for (const evidence of provenance.evidence) {
+        if (!('repositoryId' in evidence) || evidence.repositoryId in repositoryNames) continue;
+        const project = store.getEntity(projectIdFor(evidence.repositoryId));
+        if (project) repositoryNames[evidence.repositoryId] = project.title;
+      }
+    }
+    return { ok: true, value: { entity, relations, observations, derivedFrom: store.derivationsOf({ kind: 'entity', id }), repositoryNames } };
   }
 
   return {

@@ -56,16 +56,16 @@ describe('Developer Intelligence sync', () => {
     expect(w.store.getEntity(projectIdFor('repo-app'))).toMatchObject({ type: 'project', title: 'app', provenance: { origin: 'adapter', confidence: 1, evidence: [{ kind: 'repository', repositoryId: 'repo-app' }] } });
     expect(w.store.getEntity(projectIdFor('repo-cli'))?.title).toBe('cli');
 
-    // One TypeScript skill across both repositories; the manifest makes it 0.9, the extension-only repo's relation 0.7.
+    // One TypeScript skill across both repositories. That a repository holds it is a fact, however it was seen.
     const ts = w.store.getEntity(skillIdFor('typescript'));
-    expect(ts).toMatchObject({ type: 'skill', title: 'TypeScript', provenance: { confidence: 0.9 } });
+    expect(ts).toMatchObject({ type: 'skill', title: 'TypeScript', provenance: { confidence: 1 } });
     expect(ts?.provenance.evidence.length).toBe(2);
     const rels = w.store.relationsOf(skillIdFor('typescript'));
     expect(rels.map((r) => [r.fromId, r.type, r.provenance.confidence]).sort()).toEqual([
-      [projectIdFor('repo-app'), 'uses', 0.9],
-      [projectIdFor('repo-cli'), 'uses', 0.7],
+      [projectIdFor('repo-app'), 'uses', 1],
+      [projectIdFor('repo-cli'), 'uses', 1],
     ]);
-    expect(w.store.getEntity(skillIdFor('rust'))?.provenance.confidence).toBe(0.7);
+    expect(w.store.getEntity(skillIdFor('rust'))?.provenance.confidence).toBe(1);
     expect(w.store.getEntity(skillIdFor('pnpm'))).toBeDefined();
     // Libraries and removed facts are not skills.
     expect(w.store.getEntity(skillIdFor('react'))).toBeUndefined();
@@ -74,6 +74,69 @@ describe('Developer Intelligence sync', () => {
     const day = w.store.getObservation(dayObservationIdFor('repo-app', '2026-06-01'));
     expect(day).toMatchObject({ entityId: projectIdFor('repo-app'), statement: '2 commits observed', observedAt: '2026-06-01T15:00:00.000Z', provenance: { confidence: 0.6 } });
     expect(day?.provenance.evidence.map((e) => (e.kind === 'commit' ? e.sha : ''))).toEqual(['aaaaaaa', 'bbbbbbb']);
+  });
+
+  it('a project is dated by its first commit, not by the day a scan found it', async () => {
+    const w = seeded();
+    w.engine.enable('developer_intelligence');
+    await w.sync();
+    // Discovered by a scan on 1 January; the first commit recorded is 1 June.
+    expect(w.store.getEntity(projectIdFor('repo-app'))).toMatchObject({ startedAt: '2026-06-01T09:00:00.000Z' });
+    expect(w.store.getEntity(projectIdFor('repo-cli'))).toMatchObject({ startedAt: '2026-06-02T11:00:00.000Z' });
+    expect(w.store.relationsOf(skillIdFor('rust'))[0]).toMatchObject({ validFrom: '2026-01-02T00:00:00.000Z' });
+
+    // An older commit turns up later (the scanner reading the whole history): the start moves back, never forward.
+    w.commit('repo-app', 'eeeeeee', '2024-03-05T08:00:00.000Z');
+    w.commit('repo-app', 'fffffff', '2026-06-20T08:00:00.000Z');
+    await w.sync();
+    expect(w.store.getEntity(projectIdFor('repo-app'))).toMatchObject({ startedAt: '2024-03-05T08:00:00.000Z' });
+    await w.sync();
+    expect(w.store.getEntity(projectIdFor('repo-app'))).toMatchObject({ startedAt: '2024-03-05T08:00:00.000Z' });
+    const timeline = w.store.timeline({ types: ['project'], origins: [], observations: false, limit: 10 } as never);
+    expect(timeline.find((item) => item.id === projectIdFor('repo-app'))?.at).toBe('2024-03-05T08:00:00.000Z');
+  });
+
+  it('skills are the ones Skills holds: the same list, no second derivation', async () => {
+    const w = seeded();
+    w.skills.list = [
+      { key: 'typescript', name: 'TypeScript', repositoryIds: ['repo-app', 'repo-cli'], startedAt: '2025-11-03T00:00:00.000Z' },
+      // A library: the old derivation left libraries out, so the two screens disagreed.
+      { key: 'react', name: 'React', repositoryIds: ['repo-app'], startedAt: null },
+      // Evidenced only in a repository GhostOS does not know: not a skill here.
+      { key: 'kotlin', name: 'Kotlin', repositoryIds: ['repo-elsewhere'], startedAt: null },
+    ];
+    w.engine.enable('developer_intelligence');
+    const out = await w.sync();
+    expect(out.status).toBe('completed');
+    expect(w.techRequests, 'the technology facts are not read at all').toEqual([]);
+
+    const skills = w.store.listEntities({ type: 'skill' }).map((e) => e.title).sort();
+    expect(skills).toEqual(['React', 'TypeScript']);
+    expect(w.store.getEntity(skillIdFor('pnpm')), 'not in Skills, so not here').toBeUndefined();
+    const ts = w.store.getEntity(skillIdFor('typescript'));
+    expect(ts).toMatchObject({
+      startedAt: '2025-11-03T00:00:00.000Z',
+      provenance: { confidence: 1, sourceRef: 'skill:typescript', evidence: [{ kind: 'repository', repositoryId: 'repo-app' }, { kind: 'repository', repositoryId: 'repo-cli' }] },
+    });
+    expect(w.store.relationsOf(skillIdFor('typescript')).map((r) => [r.fromId, r.type, r.validFrom]).sort()).toEqual([
+      [projectIdFor('repo-app'), 'uses', '2026-06-01T09:00:00.000Z'],
+      [projectIdFor('repo-cli'), 'uses', '2026-06-02T11:00:00.000Z'],
+    ]);
+
+    // Hidden or dropped in Skills: gone here on the next sync.
+    w.skills.list = w.skills.list.filter((s) => s.key !== 'react');
+    await w.sync();
+    expect(w.store.getEntity(skillIdFor('react'))).toBeUndefined();
+    expect(w.store.getEntity(projectIdFor('repo-app')), 'the project stays').toBeDefined();
+  });
+
+  it('until Skills has been built there are no skills here, and projects and commits still arrive', async () => {
+    const w = seeded();
+    w.skills.list = null;
+    w.engine.enable('developer_intelligence');
+    const out = await w.sync();
+    expect(out.added).toEqual({ entity: 2, relation: 0, observation: 3 });
+    expect(w.store.listEntities({ type: 'skill' })).toEqual([]);
   });
 
   it('the same occurrence twice does the work once', async () => {

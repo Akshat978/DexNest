@@ -50,7 +50,7 @@ test("every form shape is one the module accepts", () => {
 
 test("an edit round-trips through the form", () => {
   const entity = { id: "ent_00000001", type: "decision" as const, title: "Move", notes: "n", tags: ["x"], details: { decidedAt: "2026-05-01T00:00:00.000Z", choice: "go", alternatives: ["stay"], rationale: "why", outcome: null, outcomeAt: null, reviewAt: null }, occurredAt: "2026-05-01T00:00:00.000Z", startedAt: null, endedAt: null, provenance: { origin: "manual" as const, sourceId: null, sourceRef: null, evidence: [{ kind: "manual" as const }], confidence: 1 }, createdAt: NOW, updatedAt: NOW };
-  const form = formFromDetail({ entity, relations: [], observations: [], derivedFrom: [] });
+  const form = formFromDetail({ entity, relations: [], observations: [], derivedFrom: [], repositoryNames: {} });
   assert.equal(form.id, entity.id);
   assert.equal(form.when, "2026-05-01");
   assert.deepEqual(entityFromForm(form), { id: entity.id, type: "decision", title: "Move", notes: "n", tags: ["x"], details: { decidedAt: "2026-05-01T00:00:00.000Z", choice: "go", alternatives: ["stay"], rationale: "why" } });
@@ -65,11 +65,70 @@ test("each type shows only its own fields", () => {
 test("every fact says where it came from and how sure", () => {
   assert.equal(sourceLabel({ origin: "manual", sourceId: null, confidence: 1 }), "Entered by you");
   assert.equal(sourceLabel({ origin: "manual", sourceId: null, confidence: 0.5 }), "Entered by you · you said 50% sure");
-  assert.equal(sourceLabel({ origin: "adapter", sourceId: "adapter:developer_intelligence", confidence: 0.6 }), "From Repository scan · 60% sure");
-  assert.equal(sourceLabel({ origin: "derived", sourceId: "detector:time_of_day", confidence: 0.95 }), "Derived by GhostOS habit detection (time of day) · 95% sure");
-  assert.equal(originLabel("adapter", 0.9), "from a source, 90% sure");
-  assert.equal(evidenceLabel({ kind: "commit", repositoryId: "repo", sha: "abcdef1234", at: NOW }), "Commit abcdef1 in repo at 30 Jun 2026, 12:00");
-  assert.equal(evidenceLabel({ kind: "technology", factId: "f", repositoryId: "repo", evidencePath: "package.json", evidenceKind: "package.json" }), "Technology fact in repo: package.json (package.json)");
+  // The source is named, and a fact read straight from a repository says nothing about sureness.
+  assert.equal(sourceLabel({ origin: "adapter", sourceId: "adapter:developer_intelligence", confidence: 1 }), "From your repositories");
+  assert.equal(sourceLabel({ origin: "adapter", sourceId: "adapter:developer_intelligence", confidence: 0.6 }), "From your repositories · likely (60% sure)");
+  assert.equal(sourceLabel({ origin: "derived", sourceId: "detector:time_of_day", confidence: 0.95 }), "Worked out from your commit times · very likely (95% sure)");
+  assert.equal(sourceLabel({ origin: "adapter", sourceId: "adapter:something_new", confidence: 0.3 }), "From another source · a guess (30% sure)");
+  assert.equal(originLabel("adapter", 1), "from your repositories");
+  assert.equal(originLabel("adapter", 0.6), "from your repositories, likely (60% sure)");
+  assert.equal(originLabel("derived", 0.95), "worked out from your commits, very likely (95% sure)");
+  assert.equal(originLabel("manual", 1), "entered by you");
+});
+
+test("less than certain says why, when there is one reason", async () => {
+  const { surenessReason } = await import("../src/renderer/views/ghostOsModel.ts");
+  const commit = { kind: "commit" as const, repositoryId: "repo", sha: "abcdef1234", at: NOW };
+  assert.match(surenessReason({ origin: "adapter", confidence: 0.6, evidence: [commit] }) ?? "", /^Commits in a repository are counted whoever wrote them/);
+  assert.match(surenessReason({ origin: "derived", confidence: 0.75, evidence: [{ kind: "observation", observationId: "obs_1" }] }) ?? "", /more weeks of the same pattern/);
+  assert.equal(surenessReason({ origin: "adapter", confidence: 1, evidence: [commit] }), null);
+  assert.equal(surenessReason({ origin: "manual", confidence: 0.5, evidence: [{ kind: "manual" }] }), null);
+});
+
+test("evidence reads in project names and plain words, never ids", () => {
+  const names = { repo_b2a5: "door-crew-website" };
+  const tech = (evidencePath: string, evidenceKind: string) => ({ kind: "technology" as const, factId: "f", repositoryId: "repo_b2a5", evidencePath, evidenceKind });
+  assert.equal(evidenceLabel(tech("package.json", "package.json#packageManager"), names), "Listed as the package manager in door-crew-website's package.json");
+  assert.equal(evidenceLabel(tech("apps/web/package.json", "package.json#dependencies"), names), "Listed as a dependency in door-crew-website's package.json");
+  assert.equal(evidenceLabel(tech("apps/web/package.json", "package.json#devDependencies"), names), "Listed as a dependency in door-crew-website's package.json");
+  assert.equal(evidenceLabel(tech("src/main.ts", "file-extension"), names), "door-crew-website has files in this language (such as src/main.ts)");
+  assert.equal(evidenceLabel(tech("go.mod", "go.mod"), names), "Named in door-crew-website's go.mod");
+  assert.equal(evidenceLabel({ kind: "commit", repositoryId: "repo_b2a5", sha: "abcdef1234", at: NOW }, names), "Commit abcdef1 in door-crew-website, 30 Jun 2026, 12:00");
+  assert.equal(evidenceLabel({ kind: "repository", repositoryId: "repo_b2a5" }, names), "Used in door-crew-website");
+  assert.equal(evidenceLabel({ kind: "repository", repositoryId: "repo_b2a5" }, names, "project"), "A repository found by the repository scan");
+  assert.equal(evidenceLabel({ kind: "observation", observationId: "obs_1" }, names), "A day of commits it was worked out from");
+  // A repository GhostOS no longer holds has no name to give; its id is still not shown.
+  assert.equal(evidenceLabel({ kind: "repository", repositoryId: "repo_gone" }, names), "Used in a repository GhostOS no longer holds");
+  for (const line of [evidenceLabel(tech("package.json", "package.json"), names), evidenceLabel({ kind: "commit", repositoryId: "repo_b2a5", sha: "abcdef1234", at: NOW }, {})]) assert.doesNotMatch(line, /repo_b2a5/);
+});
+
+test("a connection reads from the entry that is open, and says when it is still going", async () => {
+  const { connectionPhrase, relationDates, spanLabel } = await import("../src/renderer/views/ghostOsModel.ts");
+  // On DeskNest: "Uses pnpm". On pnpm: "Used by DeskNest" - not "<- uses DeskNest".
+  assert.equal(connectionPhrase("uses", "out"), "Uses");
+  assert.equal(connectionPhrase("uses", "in"), "Used by");
+  assert.equal(connectionPhrase("worked_on", "out"), "Worked on");
+  assert.equal(connectionPhrase("worked_on", "in"), "Worked on by");
+  assert.equal(connectionPhrase("part_of", "in"), "Includes");
+  assert.equal(connectionPhrase("mentored", "in"), "On the other end of “mentored” from");
+
+  assert.equal(spanLabel("2025-10-03T00:00:00.000Z", null), "since 3 Oct 2025 · ongoing");
+  assert.equal(spanLabel("2025-10-03T00:00:00.000Z", "2026-03-01T00:00:00.000Z"), "3 Oct 2025 – 1 Mar 2026");
+  assert.equal(spanLabel(null, "2026-03-01T00:00:00.000Z"), "until 1 Mar 2026");
+  assert.equal(spanLabel(null, null), null);
+
+  assert.deepEqual(relationDates("2025-10-03", "2026-03-01", true), { validFrom: "2025-10-03T00:00:00.000Z" }, "ongoing: no end is saved, whatever the field holds");
+  assert.deepEqual(relationDates("2025-10-03", "2026-03-01", false), { validFrom: "2025-10-03T00:00:00.000Z", validTo: "2026-03-01T00:00:00.000Z" });
+  assert.deepEqual(relationDates("", "", true), {});
+});
+
+test("Present / ongoing: an entry that has not ended saves no end date", () => {
+  const base = { ...EMPTY_ENTITY_FORM, title: "Day job", type: "project" as const, when: "2024-01-08", endedAt: "2026-01-01" };
+  assert.equal(EMPTY_ENTITY_FORM.ongoing, true, "ongoing unless the owner says it ended");
+  assert.deepEqual(entityFromForm({ ...base, ongoing: true }), { type: "project", title: "Day job", notes: "", tags: [], startedAt: "2024-01-08T00:00:00.000Z", endedAt: undefined });
+  assert.deepEqual(entityFromForm({ ...base, ongoing: false }), { type: "project", title: "Day job", notes: "", tags: [], startedAt: "2024-01-08T00:00:00.000Z", endedAt: "2026-01-01T00:00:00.000Z" });
+  const event = entityFromForm({ ...base, type: "event", ongoing: true }) as { details: { endedAt?: string } };
+  assert.equal(event.details.endedAt, undefined);
 });
 
 test("states, tabs and messages", () => {
@@ -90,7 +149,7 @@ test("states, tabs and messages", () => {
 });
 
 test("an ended connection reads as history on the timeline", () => {
-  const item = { kind: "relation" as const, id: "rel_00000001", at: NOW, entityId: "ent_00000001", entityType: "project" as const, title: "cli", statement: "uses TypeScript", origin: "adapter" as const, confidence: 0.9 };
+  const item = { kind: "relation" as const, id: "rel_00000001", at: NOW, entityId: "ent_00000001", entityType: "project" as const, title: "cli", statement: "uses TypeScript", origin: "adapter" as const, confidence: 0.9, ongoing: false };
   assert.equal(timelineLabel(item), "cli stopped: uses TypeScript");
   assert.equal(timelineKind(item), "Connection ended");
   assert.equal(timelineKind({ ...item, kind: "entity" }), "Project");

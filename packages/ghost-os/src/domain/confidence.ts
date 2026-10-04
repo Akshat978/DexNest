@@ -9,10 +9,17 @@ export const CONFIDENCE = {
   manual: 1,
   /** A project from a Developer Intelligence repository record. */
   repositoryProject: 1,
-  /** project -uses-> skill from a manifest (package.json, go.mod, ...). */
-  technologyManifest: 0.9,
-  /** project -uses-> skill from file extensions only. */
-  technologyExtension: 0.7,
+  /**
+   * project -uses-> skill. That a manifest names it, or that files in the
+   * language are in the repository, is a fact read from the repository, not
+   * a guess: both are certain. (They were 0.9 and 0.7, which made GhostOS
+   * "surer" of a package manager than of the language the project is
+   * written in.)
+   */
+  technologyManifest: 1,
+  technologyExtension: 1,
+  /** A skill, and project -uses-> skill, taken from Skills. */
+  skillFromConstellation: 1,
   /**
    * "Commits observed in a repository on a day": a commit in a repository
    * that uses X, not proof the commit touched X, and on `main` DI does not

@@ -86,9 +86,10 @@ describe('ids', () => {
 });
 
 describe('confidence rules', () => {
-  it('file extensions are weaker evidence than manifests', () => {
-    expect(technologyConfidence('file-extension')).toBe(0.7);
-    expect(technologyConfidence('package.json')).toBe(0.9);
+  it('what a repository holds is a fact, however it was seen: a manifest line and a file extension are equally sure', () => {
+    // They were 0.9 and 0.7, which made GhostOS surer of pnpm than of TypeScript.
+    expect(technologyConfidence('file-extension')).toBe(1);
+    expect(technologyConfidence('package.json')).toBe(1);
   });
 
   it('languages, runtimes and tooling become skills; libraries do not', () => {

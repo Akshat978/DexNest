@@ -168,6 +168,7 @@ export function createGhostEngine(options: GhostEngineOptions): GhostEngine {
         cursor: store.getAdapter(adapterId).cursor,
         getObservation: (id) => store.getObservation(id),
         entityExists: (id) => store.getEntity(id) !== undefined,
+        entityStartedAt: (id) => store.getEntity(id)?.startedAt ?? null,
       });
 
       return store.transaction(() => {

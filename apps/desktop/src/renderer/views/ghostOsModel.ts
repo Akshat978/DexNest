@@ -63,41 +63,99 @@ export function viewState(input: { loading: boolean; error: string | null; statu
 }
 
 const SOURCE_NAMES: Record<string, string> = {
-  "adapter:developer_intelligence": "Repository scan",
-  "detector:time_of_day": "GhostOS habit detection (time of day)",
-  "detector:weekly_rhythm": "GhostOS habit detection (weekly rhythm)"
+  "adapter:developer_intelligence": "your repositories",
+  "detector:time_of_day": "your commit times",
+  "detector:weekly_rhythm": "your commit days"
 };
 
 export function percent(confidence: number): string {
   return `${Math.round(confidence * 100)}%`;
 }
 
+/**
+ * How sure, in a word. A fact read straight from a repository is certain and
+ * says nothing; anything less says how much less, and why when there is one
+ * reason (a day's commits in a repository may include other people's).
+ */
+export function sureness(confidence: number): string | null {
+  if (confidence >= 0.99) return null;
+  const word = confidence >= 0.8 ? "very likely" : confidence >= 0.5 ? "likely" : "a guess";
+  return `${word} (${percent(confidence)} sure)`;
+}
+
+/** Why a fact is less than certain, when the evidence says. */
+export function surenessReason(p: Pick<Provenance, "origin" | "confidence" | "evidence">): string | null {
+  if (p.confidence >= 0.99) return null;
+  if (p.origin === "adapter" && p.evidence.some((e) => e.kind === "commit")) return "Commits in a repository are counted whoever wrote them, so some may not be yours.";
+  if (p.origin === "derived") return "Worked out from a pattern in your commits; more weeks of the same pattern make it surer.";
+  return null;
+}
+
 /** Where a fact came from and how sure GhostOS is - shown with every fact. */
 export function sourceLabel(p: Pick<Provenance, "origin" | "sourceId" | "confidence">): string {
   if (p.origin === "manual") return p.confidence < 1 ? `Entered by you · you said ${percent(p.confidence)} sure` : "Entered by you";
-  const name = (p.sourceId && SOURCE_NAMES[p.sourceId]) ?? p.sourceId ?? "an unknown source";
-  return `${p.origin === "derived" ? "Derived by" : "From"} ${name} · ${percent(p.confidence)} sure`;
+  const name = (p.sourceId && SOURCE_NAMES[p.sourceId]) ?? "another source";
+  const sure = sureness(p.confidence);
+  return `${p.origin === "derived" ? "Worked out from" : "From"} ${name}${sure ? ` · ${sure}` : ""}`;
 }
 
 /** A timeline row's short provenance: the detail view shows the full source and evidence. */
 export function originLabel(origin: Provenance["origin"], confidence: number): string {
   if (origin === "manual") return "entered by you";
-  return `${origin === "derived" ? "derived" : "from a source"}, ${percent(confidence)} sure`;
+  const sure = sureness(confidence);
+  return `${origin === "derived" ? "worked out from your commits" : "from your repositories"}${sure ? `, ${sure}` : ""}`;
 }
 
-export function evidenceLabel(e: Evidence): string {
+/**
+ * One piece of evidence in plain words, with the project's name where the
+ * record only holds its id. `names` is the detail's repositoryNames.
+ */
+export function evidenceLabel(e: Evidence, names: Record<string, string> = {}, subject: "project" | "other" = "other"): string {
+  const project = (repositoryId: string) => names[repositoryId] ?? "a repository GhostOS no longer holds";
   switch (e.kind) {
     case "manual":
       return "Entered by you";
     case "repository":
-      return `Repository record ${e.repositoryId}`;
-    case "technology":
-      return `Technology fact in ${e.repositoryId}: ${e.evidencePath} (${e.evidenceKind})`;
+      return subject === "project" ? "A repository found by the repository scan" : `Used in ${project(e.repositoryId)}`;
+    case "technology": {
+      const file = e.evidencePath.split("/").pop() || e.evidencePath;
+      if (e.evidenceKind === "file-extension") return `${project(e.repositoryId)} has files in this language (such as ${e.evidencePath})`;
+      if (/#packageManager$/.test(e.evidenceKind)) return `Listed as the package manager in ${project(e.repositoryId)}'s ${file}`;
+      if (/#(dev|peer|optional)?[dD]ependencies$/.test(e.evidenceKind)) return `Listed as a dependency in ${project(e.repositoryId)}'s ${file}`;
+      return `Named in ${project(e.repositoryId)}'s ${file}`;
+    }
     case "commit":
-      return `Commit ${e.sha.slice(0, 7)} in ${e.repositoryId} at ${shortDateTime(e.at)}`;
+      return `Commit ${e.sha.slice(0, 7)} in ${project(e.repositoryId)}, ${shortDateTime(e.at)}`;
     case "observation":
-      return `Observation ${e.observationId}`;
+      return "A day of commits it was worked out from";
   }
+}
+
+/** A connection as read from the entry that is open: "Uses TypeScript", and from the other side "Used by DeskNest". */
+const INCOMING: Record<string, string> = {
+  uses: "Used by",
+  worked_on: "Worked on by",
+  about: "The subject of",
+  involves: "Involved in",
+  at: "The place of",
+  part_of: "Includes",
+  related_to: "Related to",
+  learned_from: "Taught",
+  led_to: "Came from"
+};
+
+export function connectionPhrase(type: string, direction: "out" | "in"): string {
+  const words = relationTypeText(type);
+  if (direction === "out") return words.charAt(0).toUpperCase() + words.slice(1);
+  return INCOMING[type] ?? `On the other end of “${words}” from`;
+}
+
+/** "from 3 Oct 2026 · ongoing", "3 Oct 2025 – 1 Mar 2026", or nothing when undated. */
+export function spanLabel(from: string | null, to: string | null): string | null {
+  if (from && to) return `${shortDate(from)} – ${shortDate(to)}`;
+  if (from) return `since ${shortDate(from)} · ongoing`;
+  if (to) return `until ${shortDate(to)}`;
+  return null;
 }
 
 /** A date as every screen writes it: "3 Oct 2026". */
@@ -133,6 +191,8 @@ export interface EntityForm {
   /** Point-in-time (memory, event, decision) or start date, as YYYY-MM-DD or a datetime-local value. */
   when: string;
   endedAt: string;
+  /** Still going: no end date is saved, whatever the field holds. */
+  ongoing: boolean;
   text: string;
   choice: string;
   alternatives: string;
@@ -144,7 +204,7 @@ export interface EntityForm {
 }
 
 export const EMPTY_ENTITY_FORM: EntityForm = {
-  id: null, type: "person", title: "", notes: "", tags: "", when: "", endedAt: "", text: "", choice: "", alternatives: "",
+  id: null, type: "person", title: "", notes: "", tags: "", when: "", endedAt: "", ongoing: true, text: "", choice: "", alternatives: "",
   rationale: "", cadence: "weekly", path: "", label: "", participants: ""
 };
 
@@ -168,7 +228,7 @@ export function entityFromForm(f: EntityForm): Record<string, unknown> {
     case "memory":
       return { ...base, details: { text: f.text, occurredAt: toIso(f.when) } };
     case "event":
-      return { ...base, details: { occurredAt: toIso(f.when), endedAt: toIso(f.endedAt) } };
+      return { ...base, details: { occurredAt: toIso(f.when), endedAt: f.ongoing ? undefined : toIso(f.endedAt) } };
     case "decision":
       return { ...base, details: { decidedAt: toIso(f.when), choice: f.choice, alternatives: lines(f.alternatives), rationale: f.rationale } };
     case "habit":
@@ -178,8 +238,15 @@ export function entityFromForm(f: EntityForm): Record<string, unknown> {
     case "conversation":
       return { ...base, details: { text: f.text, participants: commaList(f.participants) } };
     default:
-      return { ...base, startedAt: toIso(f.when), endedAt: toIso(f.endedAt) };
+      return { ...base, startedAt: toIso(f.when), endedAt: f.ongoing ? undefined : toIso(f.endedAt) };
   }
+}
+
+/** The ghost_os.relation.save dates: a start, and an end unless it is still going. */
+export function relationDates(from: string, until: string, ongoing: boolean): { validFrom?: string; validTo?: string } {
+  const validFrom = toIso(from);
+  const validTo = ongoing ? undefined : toIso(until);
+  return { ...(validFrom ? { validFrom } : {}), ...(validTo ? { validTo } : {}) };
 }
 
 /** The form to edit an entry the owner made. */
@@ -196,6 +263,7 @@ export function formFromDetail(detail: EntityDetail): EntityForm {
     tags: e.tags.join(", "),
     when: str(d.occurredAt ?? d.decidedAt ?? e.startedAt).slice(0, 10),
     endedAt: str(d.endedAt ?? e.endedAt).slice(0, 10),
+    ongoing: !str(d.endedAt ?? e.endedAt),
     text: str(d.text),
     choice: str(d.choice),
     alternatives: Array.isArray(d.alternatives) ? d.alternatives.join("\n") : "",

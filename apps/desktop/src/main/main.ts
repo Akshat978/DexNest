@@ -459,6 +459,8 @@ function startGhostOsHost(): void {
       otherDataRoots: [CANONICAL_DATA_ROOT, resolve(repoRoot, "local-data")],
       scheduler: hostScheduler,
       developerIntelligence: devIntelligenceHost?.module.persistence ?? null,
+      // Skills come from Skills, so the two screens list the same ones.
+      skills: () => skillConstellationHost?.module ?? null,
       ipcMain,
       getWindow: () => mainWindow,
       dialogs: {

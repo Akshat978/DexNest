@@ -178,8 +178,10 @@ becomes its own table (`ghost_palace_*`) without touching these.
 - Manual entries: `origin = manual`, confidence 1.0, evidence `[{ kind:
   "manual" }]` ("entered by me").
 - Adapter facts: confidence set by the adapter's documented rules, e.g. DI:
-  project from a repository record 1.0; `project -uses-> skill` from a
-  technology fact 0.9 (a manifest) or 0.7 (file extension only); "used X in
+  project from a repository record 1.0; `project -uses-> skill` 1.0, however
+  the repository was seen to hold it (it was 0.9 from a manifest and 0.7 from
+  file extensions, which ranked a package manager above the language; and
+  skills now come from Skills, see docs/fixes/phase-7-ghostos.md); "used X in
   repo Y on day Z" from commits that day 0.6 (a commit in a repo that uses X,
   not proof the commit touched X).
 - Detected habits: confidence = the share of qualifying days (section 9),

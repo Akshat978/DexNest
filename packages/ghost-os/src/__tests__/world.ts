@@ -11,6 +11,7 @@ import {
   createGhostEngine,
   openGhostStore,
   type DiRepository,
+  type DiSkill,
   type DiTechnology,
   type GhostEngine,
   type GhostStore,
@@ -26,6 +27,8 @@ export interface World {
   clock: { now: string };
   repos: DiRepository[];
   techs: DiTechnology[];
+  /** What Skills holds. Undefined: the host passes no skill list. Null: Skills has never been built. */
+  skills: { list: DiSkill[] | null | undefined };
   failReads: { on: boolean };
   /** Runs `hook` once, the next time DI is read (inside collect, before any write). */
   duringNextRead: { hook: (() => void) | null };
@@ -66,6 +69,7 @@ export function createWorld(options: { isSensitive?: (path: string) => boolean; 
   const clock = { now: '2026-06-30T12:00:00.000Z' };
   const repos: DiRepository[] = [];
   const techs: DiTechnology[] = [];
+  const skills: World['skills'] = { list: undefined };
   const failReads = { on: false };
   const duringNextRead: World['duringNextRead'] = { hook: null };
 
@@ -88,6 +92,10 @@ export function createWorld(options: { isSensitive?: (path: string) => boolean; 
         techRequests.push(repositoryId);
         return techs.filter((t) => t.repositoryId === repositoryId);
       },
+      // Present only when a test sets a list, as a host without Skills would leave it out.
+      get listSkills() {
+        return skills.list === undefined ? undefined : async () => skills.list as DiSkill[] | null;
+      },
     },
     events: createAllowedEventReader(spyLog),
     isSensitive: options.isSensitive ?? (() => false),
@@ -105,6 +113,7 @@ export function createWorld(options: { isSensitive?: (path: string) => boolean; 
     clock,
     repos,
     techs,
+    skills,
     failReads,
     duringNextRead,
     commit(repositoryId, sha, at, extra = {}) {

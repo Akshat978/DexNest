@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { EntityDetail, EntityType, GhostOsSettings, GhostOsStatus, Observation, Parsed, SearchHit, TimelineItem } from "@dexnest/ghost-os";
-import { BookOpen, Brain, CalendarDays, Eye, FileText, FolderGit2, Ghost, GitFork, MapPin, MessageSquare, Network, Plug, Repeat, Sparkles, Unlink, User, Users } from "lucide-react";
+import { BookOpen, Brain, CalendarDays, Eye, FileText, FolderGit2, Ghost, GitFork, MapPin, MessageSquare, Network, Plug, Repeat, Sparkles, Trash2, Unlink, User, Users } from "lucide-react";
 import { Button, ConfirmDialog, EmptyNote, EmptyState, ErrorState, InlineError, LoadingState, Notice, PageHeader, Select, StatGrid, StatTile, TabPanel, Tabs, TextArea, TextInput, accentStyle } from "../components/ui/kit";
 import {
   EMPTY_ENTITY_FORM,
@@ -14,6 +14,7 @@ import {
   type Tab,
   actionMessage,
   confirmed,
+  connectionPhrase,
   dayHeading,
   entityFromForm,
   evidenceLabel,
@@ -25,8 +26,11 @@ import {
   pickerMessage,
   pickerOptionId,
   pickerState,
+  relationDates,
   relationTypeFromText,
   relationTypeText,
+  spanLabel,
+  surenessReason,
   shortDate,
   shortDateTime,
   sourceLabel,
@@ -153,6 +157,13 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
     if (initial === undefined) void load();
   }, []);
 
+  // "Saved." has said what it had to after a few seconds; an error stays until something else happens.
+  useEffect(() => {
+    if (!notice?.ok || initial !== undefined) return;
+    const timer = setTimeout(() => setNotice((current) => (current === notice ? null : current)), 5000);
+    return () => clearTimeout(timer);
+  }, [notice, initial]);
+
   const openEntity = useCallback(
     async (id: string) => {
       try {
@@ -217,6 +228,11 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
     }
   }
 
+  /** From the empty screen: one button turns the source on and reads it. */
+  async function connectRepositories() {
+    if (await run("ghost_os.adapter.enable", { adapterId: "developer_intelligence" })) await run("ghost_os.adapter.sync");
+  }
+
   async function forget() {
     if (!confirmForget) return;
     const target = confirmForget;
@@ -242,7 +258,7 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
         icon={<Ghost />}
         title="GhostOS"
         titleId="ghost-title"
-        subtitle="Your life, as evidence"
+        subtitle="Who, what and when: your projects, people, decisions and habits on one timeline"
         actions={state.kind === "ready" || state.kind === "empty" ? (
           anySourceOn ? <Button disabled={busy} onClick={() => void run("ghost_os.adapter.sync")}>Sync now</Button> : undefined
         ) : undefined}
@@ -259,27 +275,37 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
           title="Nothing in GhostOS yet"
           actions={
             <>
-              <Button variant="primary" onClick={() => setTab("add")}>Add an entry</Button>
-              <Button onClick={() => setTab("sources")}>Open Sources</Button>
+              {di?.installed && !di.enabled && (
+                <Button variant="primary" disabled={busy} onClick={() => void connectRepositories()}>Connect your repositories</Button>
+              )}
+              <Button variant={di?.installed && !di.enabled ? "secondary" : "primary"} onClick={() => setTab("add")}>Add an entry</Button>
             </>
           }
         >
-          <p>GhostOS keeps a local model of you: people, projects, skills, memories, decisions and habits, and how they connect over time. Every fact says where it came from and how sure it is.</p>
-          <p>Add something yourself, or connect your repositories under Sources. GhostOS never reads your vault, finance, journal, clipboard, captures or chat histories, and nothing leaves this computer.</p>
+          <p>GhostOS answers questions like “when did I start that project?”, “what did I decide about the database, and why?”, “who was I working with last spring?” and “what do I usually work on at night?”.</p>
+          <p>It does that from a timeline of your projects, people, decisions, memories and habits, each saying where it came from.</p>
+          <p>
+            {di?.installed && !di.enabled
+              ? "Your repositories are already being scanned. Connect them and your projects, skills and commit days appear here; or add something yourself."
+              : di?.enabled
+                ? "Your repositories are connected. Press Sync now to read them, or add something yourself."
+                : "Add something yourself. To bring in your projects and commits, turn on the repository scan from Today first."}{" "}
+            GhostOS never reads your vault, finance, journal, clipboard, captures or chat histories, and nothing leaves this computer.
+          </p>
         </EmptyState>
       )}
 
       {confirmForget && (
         <ConfirmDialog
-          title={`Forget this ${FORGET_NOUN[confirmForget.kind]}?`}
-          confirmLabel="Forget"
+          title={`Delete this ${FORGET_NOUN[confirmForget.kind]}?`}
+          confirmLabel="Delete"
           busy={busy}
           error={refusal}
           accent="ghost"
           onConfirm={() => void forget()}
           onCancel={() => { setConfirmForget(null); setNotice(null); }}
         >
-          GhostOS also forgets everything it derived from it. This cannot be undone, and a source cannot bring it back.
+          GhostOS also deletes everything it worked out from it. This cannot be undone, and it stays deleted: syncing your repositories will not bring it back.
         </ConfirmDialog>
       )}
 
@@ -303,7 +329,7 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
             <StatGrid columns={4}>
               <StatTile label="Entries" value={status.counts.entity.toLocaleString("en")} icon={<Users />} hint="people, projects, memories…" />
               <StatTile label="Connections" value={status.counts.relation.toLocaleString("en")} icon={<Network />} tone="info" />
-              <StatTile label="Observations" value={status.counts.observation.toLocaleString("en")} icon={<Eye />} tone="success" />
+              <StatTile label="Observations" value={status.counts.observation.toLocaleString("en")} icon={<Eye />} tone="success" hint="dated notes and commit days" />
               <StatTile
                 label="Sources on"
                 value={`${sourcesOn(status).on} of ${sourcesOn(status).installed}`}
@@ -316,7 +342,7 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
           <Tabs label="GhostOS sections" idPrefix="ghost" value={tab} onChange={setTab} tabs={TABS.map((t) => ({ id: t, label: TAB_LABELS[t] }))} />
 
           <TabPanel idPrefix="ghost" id={tab}>
-            {tab === "timeline" && (
+            {tab === "timeline" && state.kind === "ready" && (
               <div className="ghost-timeline-layout">
                 <div className="ghost-column">
                   <form className="ghost-search" role="search" aria-label="Search GhostOS" onSubmit={(e) => void search(e)}>
@@ -357,7 +383,7 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
                         <React.Fragment key={group.day}>
                           <li className="ghost-day" aria-hidden="true">{dayHeading(group.day, today)}</li>
                           {group.items.map((item) => (
-                            <li key={`${item.kind}:${item.id}`}>
+                            <li key={`${item.kind}:${item.id}`} className="ghost-timeline-row">
                               <button
                                 type="button"
                                 className={detail?.entity.id === item.entityId && selectedKey !== `${item.kind}:${item.id}` ? "ghost-item ghost-item--related" : "ghost-item"}
@@ -368,9 +394,19 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
                                 <span className="ghost-item__text">
                                   <span>{timelineLabel(item)}</span>
                                   <span className="ghost-meta">
-                                    {timelineKind(item)} · <time className="technical" dateTime={item.at}>{shortDate(item.at)}</time> · {originLabel(item.origin, item.confidence)}
+                                    {timelineKind(item)} · {item.ongoing ? "since " : ""}<time className="technical" dateTime={item.at}>{shortDate(item.at)}</time>{item.ongoing ? " · ongoing" : ""} · {originLabel(item.origin, item.confidence)}
                                   </span>
                                 </span>
+                              </button>
+                              <button
+                                type="button"
+                                className="ghost-row-delete"
+                                disabled={busy}
+                                aria-label={`Delete ${timelineLabel(item)}`}
+                                title="Delete"
+                                onClick={() => { setNotice(null); setConfirmForget({ kind: item.kind, id: item.id }); }}
+                              >
+                                <Trash2 aria-hidden="true" />
                               </button>
                             </li>
                           ))}
@@ -406,10 +442,10 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
             {tab === "sources" && (
               <div className="ghost-sources">
                 <section className="ghost-card" aria-labelledby="ghost-di-title">
-                  <h3 id="ghost-di-title">Repository scan</h3>
-                  <p>When on, GhostOS reads the repository scan's repository and technology records and its commit events: repositories become projects, languages and tools become skills, and commits become one observation per repository per day. It never reads commit messages, other event types, or any file.</p>
+                  <h3 id="ghost-di-title">Your repositories</h3>
+                  <p>When connected, GhostOS reads what the repository scan and Skills already hold: each repository becomes a project named as in Projects, the skills are the ones on the Skills screen, and commits become one observation per repository per day. It never reads commit messages, other event types, or any file.</p>
                   {!di?.installed ? (
-                    <p className="ghost-hint">The repository scan is not running, so there is nothing to turn on.</p>
+                    <p className="ghost-hint">The repository scan is not running, so there is nothing to connect. Turn it on from Today.</p>
                   ) : di.enabled ? (
                     <>
                       <p className="ghost-meta">
@@ -422,11 +458,11 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
                           Turn off and remove what it added
                         </Button>
                       </div>
-                      <p id="ghost-di-off-note" className="ghost-hint">Turning it off deletes everything it contributed, including detected habits. Things you forgot stay forgotten.</p>
+                      <p id="ghost-di-off-note" className="ghost-hint">Turning it off deletes everything it added, including detected habits. Things you deleted stay deleted.</p>
                     </>
                   ) : (
                     <div className="button-row">
-                      <Button variant="primary" disabled={busy} onClick={() => void run("ghost_os.adapter.enable", { adapterId: "developer_intelligence" })}>Turn on</Button>
+                      <Button variant="primary" disabled={busy} onClick={() => void connectRepositories()}>Connect your repositories</Button>
                     </div>
                   )}
                   {status.lastError && <InlineError>Last sync failed: {status.lastError}</InlineError>}
@@ -451,19 +487,24 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
 
 const FORGET_NOUN = { entity: "entry", relation: "connection", observation: "observation" } as const;
 
-function SourceLine({ provenance }: { provenance: EntityDetail["entity"]["provenance"] }) {
+function SourceLine({ provenance, names, subject = "other" }: { provenance: EntityDetail["entity"]["provenance"]; names: Record<string, string> | undefined; subject?: "project" | "other" }) {
+  const reason = surenessReason(provenance);
   return (
     <div className="ghost-source">
       <p className="ghost-meta">{sourceLabel(provenance)}</p>
+      {reason && <p className="ghost-hint">{reason}</p>}
       {provenance.origin !== "manual" && (
         <ul className="ghost-evidence" aria-label="Evidence">
-          {provenance.evidence.slice(0, 20).map((e, i) => <li key={i} className="technical">{evidenceLabel(e)}</li>)}
-          {provenance.evidence.length > 20 && <li className="ghost-hint">and {provenance.evidence.length - 20} more</li>}
+          {provenance.evidence.slice(0, EVIDENCE_SHOWN).map((e, i) => <li key={i}>{evidenceLabel(e, names, subject)}</li>)}
+          {provenance.evidence.length > EVIDENCE_SHOWN && <li className="ghost-hint">and {provenance.evidence.length - EVIDENCE_SHOWN} more</li>}
         </ul>
       )}
     </div>
   );
 }
+
+/** Evidence lines shown before "and N more". */
+const EVIDENCE_SHOWN = 6;
 
 /** Tests only: pin the connection picker's state. */
 interface PickerInitial {
@@ -617,7 +658,12 @@ function EntityDetailPanel(props: {
   const [statement, setStatement] = useState("");
   const [relType, setRelType] = useState(relationTypeText("related_to"));
   const [relTo, setRelTo] = useState<PickerOption | null>(props.picker?.chosen ?? null);
+  const [relFrom, setRelFrom] = useState("");
+  const [relUntil, setRelUntil] = useState("");
+  const [relOngoing, setRelOngoing] = useState(true);
   const [outcome, setOutcome] = useState("");
+  const names = detail.repositoryNames;
+  const span = entity.occurredAt ? null : spanLabel(entity.startedAt, entity.endedAt);
 
   async function addObservation(event: React.FormEvent) {
     event.preventDefault();
@@ -629,8 +675,11 @@ function EntityDetailPanel(props: {
   async function addRelation(event: React.FormEvent) {
     event.preventDefault();
     if (!relTo) return;
-    if (await props.run("ghost_os.relation.save", { relation: { fromId: entity.id, toId: relTo.id, type: relationTypeFromText(relType) } })) {
+    if (await props.run("ghost_os.relation.save", { relation: { fromId: entity.id, toId: relTo.id, type: relationTypeFromText(relType), ...relationDates(relFrom, relUntil, relOngoing) } })) {
       setRelTo(null);
+      setRelFrom("");
+      setRelUntil("");
+      setRelOngoing(true);
       props.reload();
     }
   }
@@ -649,10 +698,11 @@ function EntityDetailPanel(props: {
         </div>
         <div className="button-row">
           {entity.provenance.origin === "manual" && <Button size="sm" disabled={busy} onClick={props.onEdit}>Edit</Button>}
-          <Button variant="ghost" size="sm" disabled={busy} onClick={() => props.onAskForget({ kind: "entity", id: entity.id })} aria-label={`Forget ${entity.title}`}>Forget…</Button>
+          <Button variant="ghost" size="sm" disabled={busy} onClick={() => props.onAskForget({ kind: "entity", id: entity.id })} aria-label={`Delete ${entity.title}`}>Delete…</Button>
         </div>
       </div>
-      <SourceLine provenance={entity.provenance} />
+      {span && <p className="ghost-meta ghost-span">{span.charAt(0).toUpperCase() + span.slice(1)}</p>}
+      <SourceLine provenance={entity.provenance} names={names} subject={entity.type === "project" ? "project" : "other"} />
       {entity.tags.length > 0 && <p className="ghost-meta">Tags: {entity.tags.join(", ")}</p>}
       {entity.notes && <p className="ghost-notes">{entity.notes}</p>}
 
@@ -694,14 +744,13 @@ function EntityDetailPanel(props: {
             <li key={relation.id} className="ghost-row">
               <div>
                 <p>
-                  {direction === "out" ? `${relation.type.replace(/_/g, " ")} → ` : `← ${relation.type.replace(/_/g, " ")} `}
-                  {other ? <button type="button" className="ghost-link" onClick={() => props.onOpen(other.id)}>{other.title}</button> : "a forgotten entry"}
-                  {relation.validFrom && <> from <time className="technical" dateTime={relation.validFrom}>{shortDate(relation.validFrom)}</time></>}
-                  {relation.validTo && <> until <time className="technical" dateTime={relation.validTo}>{shortDate(relation.validTo)}</time></>}
+                  {connectionPhrase(relation.type, direction)}{" "}
+                  {other ? <button type="button" className="ghost-link" onClick={() => props.onOpen(other.id)}>{other.title}</button> : "a deleted entry"}
+                  {spanLabel(relation.validFrom, relation.validTo) && <span className="ghost-meta"> · {spanLabel(relation.validFrom, relation.validTo)}</span>}
                 </p>
-                <SourceLine provenance={relation.provenance} />
+                <p className="ghost-meta">{sourceLabel(relation.provenance)}</p>
               </div>
-              <Button variant="ghost" size="sm" disabled={busy} onClick={() => props.onAskForget({ kind: "relation", id: relation.id })} aria-label={`Forget connection ${relation.type} ${other?.title ?? ""}`.trim()}>Forget…</Button>
+              <Button variant="ghost" size="sm" disabled={busy} onClick={() => props.onAskForget({ kind: "relation", id: relation.id })} aria-label={`Delete connection ${relationTypeText(relation.type)} ${other?.title ?? ""}`.trim()}>Delete…</Button>
             </li>
           ))}
         </ul>
@@ -711,19 +760,32 @@ function EntityDetailPanel(props: {
         <TextInput id="ghost-rel-type" list="ghost-rel-types" value={relType} onChange={(e) => setRelType(e.target.value)} />
         <datalist id="ghost-rel-types">{RELATION_TYPE_LIST.map((t) => <option key={t} value={relationTypeText(t)} />)}</datalist>
         <ConnectionPicker excludeId={entity.id} chosen={relTo} onChoose={setRelTo} search={props.search} initial={props.picker} />
+        <label htmlFor="ghost-rel-from">From (optional)</label>
+        <TextInput id="ghost-rel-from" type="date" value={relFrom} onChange={(e) => setRelFrom(e.target.value)} />
+        <label className="ghost-check">
+          <input type="checkbox" checked={relOngoing} onChange={(e) => setRelOngoing(e.target.checked)} />
+          Present / ongoing
+        </label>
+        {!relOngoing && (
+          <>
+            <label htmlFor="ghost-rel-until">Until</label>
+            <TextInput id="ghost-rel-until" type="date" value={relUntil} onChange={(e) => setRelUntil(e.target.value)} />
+          </>
+        )}
         <Button type="submit" disabled={busy || !relTo}>Connect</Button>
       </form>
 
       <h4>Observations</h4>
-      {detail.observations.length === 0 ? <p className="ghost-hint">No observations.</p> : (
+      <p className="ghost-hint">Dated notes about this entry: something that happened or that you noticed, such as “shipped version 2” or “moved the API to Postgres”. Connected repositories add one for each day with commits.</p>
+      {detail.observations.length === 0 ? <p className="ghost-hint">None yet.</p> : (
         <ul className="ghost-list">
           {detail.observations.map((o: Observation) => (
             <li key={o.id} className="ghost-row">
               <div>
                 <p><time className="technical" dateTime={o.observedAt}>{shortDate(o.observedAt)}</time> · {o.statement}</p>
-                <SourceLine provenance={o.provenance} />
+                <SourceLine provenance={o.provenance} names={names} />
               </div>
-              <Button variant="ghost" size="sm" disabled={busy} onClick={() => props.onAskForget({ kind: "observation", id: o.id })} aria-label={`Forget observation from ${shortDate(o.observedAt)}`}>Forget…</Button>
+              <Button variant="ghost" size="sm" disabled={busy} onClick={() => props.onAskForget({ kind: "observation", id: o.id })} aria-label={`Delete observation from ${shortDate(o.observedAt)}`}>Delete…</Button>
             </li>
           ))}
         </ul>
@@ -735,7 +797,7 @@ function EntityDetailPanel(props: {
       </form>
 
       {detail.derivedFrom.length > 0 && (
-        <p className="ghost-meta">Derived from <span className="technical">{detail.derivedFrom.length}</span> record{detail.derivedFrom.length === 1 ? "" : "s"}; forgetting any of them removes this.</p>
+        <p className="ghost-meta">Worked out from <span className="technical">{detail.derivedFrom.length}</span> record{detail.derivedFrom.length === 1 ? "" : "s"}; deleting any of them removes this.</p>
       )}
     </article>
   );
@@ -753,7 +815,15 @@ function EntityFormPanel({ form, setForm, busy, onSubmit }: { form: EntityForm; 
       <label htmlFor="ghost-f-title">Title</label>
       <TextInput id="ghost-f-title" required value={form.title} onChange={(e) => set("title", e.target.value)} />
       {fields.includes("when") && (<><label htmlFor="ghost-f-when">{whenLabel(form.type)}</label><TextInput id="ghost-f-when" type="date" value={form.when} onChange={(e) => set("when", e.target.value)} /></>)}
-      {fields.includes("endedAt") && (<><label htmlFor="ghost-f-ended">Ended</label><TextInput id="ghost-f-ended" type="date" value={form.endedAt} onChange={(e) => set("endedAt", e.target.value)} /></>)}
+      {fields.includes("endedAt") && (
+        <>
+          <label className="ghost-check">
+            <input type="checkbox" checked={form.ongoing} onChange={(e) => set("ongoing", e.target.checked)} />
+            Present / ongoing (it has not ended)
+          </label>
+          {!form.ongoing && (<><label htmlFor="ghost-f-ended">Ended</label><TextInput id="ghost-f-ended" type="date" value={form.endedAt} onChange={(e) => set("endedAt", e.target.value)} /></>)}
+        </>
+      )}
       {fields.includes("text") && (<><label htmlFor="ghost-f-text">{form.type === "conversation" ? "Paste the conversation" : "What happened"}</label><TextArea id="ghost-f-text" value={form.text} onChange={(e) => set("text", e.target.value)} /></>)}
       {fields.includes("participants") && (<><label htmlFor="ghost-f-participants">Participants (comma separated)</label><TextInput id="ghost-f-participants" value={form.participants} onChange={(e) => set("participants", e.target.value)} /></>)}
       {fields.includes("choice") && (<><label htmlFor="ghost-f-choice">What you chose</label><TextInput id="ghost-f-choice" value={form.choice} onChange={(e) => set("choice", e.target.value)} /></>)}

@@ -145,6 +145,58 @@ button.ghost-chip[aria-pressed="true"] {
   list-style: none;
 }
 
+/* A timeline row and its delete button, side by side. */
+.ghost-timeline-row {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+
+.ghost-timeline-row .ghost-item {
+  flex: 1;
+  min-width: 0;
+}
+
+.ghost-row-delete {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 2.25rem;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.ghost-row-delete svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.ghost-row-delete:hover,
+.ghost-row-delete:focus-visible {
+  border-color: color-mix(in srgb, var(--error) 45%, var(--border));
+  color: var(--error);
+}
+
+.ghost-row-delete:focus-visible {
+  outline: 2px solid var(--accent-ghost);
+  outline-offset: 2px;
+}
+
+.ghost-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text);
+  font-size: 0.875rem;
+}
+
+.ghost-span {
+  color: var(--text);
+}
+
 .ghost-day {
   margin-top: var(--space-2);
   padding: var(--space-1) 0;

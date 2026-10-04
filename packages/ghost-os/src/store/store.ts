@@ -53,6 +53,8 @@ export interface TimelineItem {
   statement: string | null;
   origin: Origin;
   confidence: number;
+  /** An entry that has a start and no end: still going. */
+  ongoing: boolean;
 }
 
 export interface AdapterState {
@@ -550,20 +552,21 @@ export function openGhostStore(db: SqlDatabase, options: OpenGhostStoreOptions =
     }
     const w = (list: string[]) => (list.length ? `WHERE ${list.join(' AND ')}` : '');
     const parts = [
-      `SELECT 'entity' AS kind, e.id AS id, e.timeline_at AS at, e.id AS entity_id, e.type AS entity_type, e.title AS title, NULL AS statement, e.origin AS origin, e.confidence AS confidence
+      `SELECT 'entity' AS kind, e.id AS id, e.timeline_at AS at, e.id AS entity_id, e.type AS entity_type, e.title AS title, NULL AS statement, e.origin AS origin, e.confidence AS confidence,
+              (e.occurred_at IS NULL AND e.started_at IS NOT NULL AND e.ended_at IS NULL) AS ongoing
        FROM ghost_entities e ${w(entityWhere)}`,
     ];
     const params: unknown[] = [...entityParams];
     if (q.observations) {
       parts.push(
-        `SELECT 'observation', o.id, o.observed_at, o.entity_id, e.type, e.title, o.statement, o.origin, o.confidence
+        `SELECT 'observation', o.id, o.observed_at, o.entity_id, e.type, e.title, o.statement, o.origin, o.confidence, 0
          FROM ghost_observations o JOIN ghost_entities e ON e.id = o.entity_id ${w(obsWhere)}`,
       );
       params.push(...obsParams);
     }
     if (q.relations) {
       parts.push(
-        `SELECT 'relation', r.id, r.valid_to, r.from_id, e.type, e.title, r.type || ' ' || t.title, r.origin, r.confidence
+        `SELECT 'relation', r.id, r.valid_to, r.from_id, e.type, e.title, r.type || ' ' || t.title, r.origin, r.confidence, 0
          FROM ghost_relations r JOIN ghost_entities e ON e.id = r.from_id JOIN ghost_entities t ON t.id = r.to_id ${w(relWhere)}`,
       );
       params.push(...relParams);
@@ -585,6 +588,7 @@ export function openGhostStore(db: SqlDatabase, options: OpenGhostStoreOptions =
       statement: str(r.statement),
       origin: r.origin as Origin,
       confidence: Number(r.confidence),
+      ongoing: Number(r.ongoing) === 1,
     }));
   }
 

@@ -68,12 +68,13 @@ const detail = {
     { id: "obs_day00001", entityId: project.id, statement: "2 commits observed", observedAt: T, provenance: fromDi("day:r1:2026-06-01", [{ kind: "commit", repositoryId: "repo-app", sha: "abcdef1234", at: T }, { kind: "commit", repositoryId: "repo-app", sha: "1234567abc", at: T }], 0.6), createdAt: T },
     { id: "obs_note0001", entityId: project.id, statement: "shipped v1", observedAt: T, provenance: manual, createdAt: T }
   ],
-  derivedFrom: []
+  derivedFrom: [],
+  repositoryNames: { "repo-app": "Zephyr app" }
 };
 const items = [
   { kind: "observation", id: "obs_day00001", at: T, entityId: project.id, entityType: "project", title: "Zephyr app", statement: "2 commits observed", origin: "adapter", confidence: 0.6 },
   { kind: "entity", id: "ent_me000001", at: T, entityId: "ent_me000001", entityType: "person", title: "Me", statement: null, origin: "manual", confidence: 1 },
-  { kind: "entity", id: project.id, at: T, entityId: project.id, entityType: "project", title: "Zephyr app", statement: null, origin: "adapter", confidence: 1 },
+  { kind: "entity", id: project.id, at: T, entityId: project.id, entityType: "project", title: "Zephyr app", statement: null, origin: "adapter", confidence: 1, ongoing: true },
   { kind: "relation", id: "rel_ended001", at: "2026-05-01T00:00:00.000Z", entityId: project.id, entityType: "project", title: "Zephyr app", statement: "uses Go", origin: "adapter", confidence: 0.9 }
 ];
 
@@ -95,10 +96,13 @@ test("error: an alert with the reason and a retry", () => {
 
 test("empty: says what GhostOS is, what it never reads, and still offers every section", () => {
   const html = render({ initial: { status: empty } });
-  assert.match(html, /Every fact says where it came from and how sure it is/);
+  // What it is, by what it answers.
+  assert.match(html, /GhostOS answers questions like “when did I start that project\?”/);
+  assert.match(html, /kit-header__subtitle">Who, what and when: your projects, people, decisions and habits on one timeline</);
   assert.match(html, /never reads your vault, finance, journal, clipboard, captures or chat histories/);
   assert.match(html, /role="tablist"/);
-  assert.match(html, /Nothing on the timeline/);
+  // Nothing to search or filter yet, so neither is shown.
+  assert.doesNotMatch(html, /ghost-search|ghost-filter|Nothing on the timeline/);
   assert.doesNotMatch(html, />Sync now</, "no sync while no source is on");
 });
 
@@ -120,7 +124,12 @@ test("timeline: filterable by type, searchable, each row says where it came from
   assert.match(html, /<form class="ghost-search" role="search" aria-label="Search GhostOS">/);
   assert.match(html, /<label for="ghost-search-input">/);
   assert.match(html, /Zephyr app: 2 commits observed/);
-  assert.match(html, /Observation · <time class="technical" datetime="2026-06-01T09:00:00.000Z">1 Jun 2026<\/time> · from a source, 60% sure/i);
+  assert.match(html, /Observation · <time class="technical" datetime="2026-06-01T09:00:00.000Z">1 Jun 2026<\/time> · from your repositories, likely \(60% sure\)/i);
+  // A project that has a start and no end says so; a certain fact says nothing about sureness.
+  assert.match(html, /Project · since <time[^>]*>1 Jun 2026<\/time> · ongoing · from your repositories<\/span>/);
+  // Every row can be deleted where it is.
+  assert.equal((html.match(/class="ghost-row-delete"/g) ?? []).length, 4);
+  assert.match(html, /<button type="button" class="ghost-row-delete" aria-label="Delete Zephyr app: 2 commits observed" title="Delete">/);
   assert.match(html, /Person · <time[^>]*>1 Jun 2026<\/time> · entered by you/);
   assert.match(html, /<span>Zephyr app stopped: uses Go<\/span><span class="ghost-meta">Connection ended · <time[^>]*>1 May 2026<\/time>/i);
   assert.match(html, />Sync now</);
@@ -129,13 +138,20 @@ test("timeline: filterable by type, searchable, each row says where it came from
 test("empty: the first steps are buttons in the empty state", () => {
   const html = render({ initial: { status: empty } });
   assert.match(html, /<section class="kit-empty" aria-label="Nothing in GhostOS yet">/);
-  assert.match(html, /<div class="kit-empty__actions"><button type="button" class="kit-button kit-button--primary kit-button--md">Add an entry<\/button><button type="button" class="kit-button kit-button--secondary kit-button--md">Open Sources<\/button><\/div>/);
+  // The scan is running and GhostOS is not connected to it: connecting is one button, here.
+  assert.match(html, /<div class="kit-empty__actions"><button type="button" class="kit-button kit-button--primary kit-button--md">Connect your repositories<\/button><button type="button" class="kit-button kit-button--secondary kit-button--md">Add an entry<\/button><\/div>/);
+  assert.match(html, /Your repositories are already being scanned\. Connect them/);
+  assert.doesNotMatch(html, /Developer Intelligence/);
+  // No scan to connect: adding by hand is the first step, and it says where the scan is turned on.
+  const noScan = render({ initial: { status: status(zero, di(false, false)) } });
+  assert.match(noScan, /<div class="kit-empty__actions"><button type="button" class="kit-button kit-button--primary kit-button--md">Add an entry<\/button><\/div>/);
+  assert.match(noScan, /turn on the repository scan from Today first/);
 });
 
 test("entity detail: the entry's own actions sit in its header, next to its title", () => {
   const html = render({ initial: { status: full, items, detail } });
   // The type's icon, then the type and title, then the entry's own actions.
-  assert.match(html, /<div class="ghost-detail-head"><span class="ghost-type-icon" aria-hidden="true"><svg[^>]*lucide-folder-git[\s\S]*?<\/svg><\/span><div class="ghost-detail-title"><p class="ghost-meta">Project<\/p><h3 id="ghost-detail-title">Zephyr app<\/h3><\/div><div class="button-row"><button type="button" class="kit-button kit-button--ghost kit-button--sm" aria-label="Forget Zephyr app">Forget…<\/button><\/div><\/div>/);
+  assert.match(html, /<div class="ghost-detail-head"><span class="ghost-type-icon" aria-hidden="true"><svg[^>]*lucide-folder-git[\s\S]*?<\/svg><\/span><div class="ghost-detail-title"><p class="ghost-meta">Project<\/p><h3 id="ghost-detail-title">Zephyr app<\/h3><\/div><div class="button-row"><button type="button" class="kit-button kit-button--ghost kit-button--sm" aria-label="Delete Zephyr app">Delete…<\/button><\/div><\/div>/);
   // The connection form starts from words, not a stored id.
   assert.match(html, /<input class="kit-input" id="ghost-rel-type" list="ghost-rel-types" value="related to"\/>/);
   assert.match(html, /<option value="worked on"><\/option>/);
@@ -152,22 +168,30 @@ test("entity detail: every fact with its source and its evidence", () => {
   const html = render({ initial: { status: full, items, detail } });
   assert.match(html, /<h3 id="ghost-detail-title">Zephyr app<\/h3>/);
   // The entity, each connection and each observation carries a source line.
-  assert.match(html, /From Repository scan · 100% sure/);
-  assert.match(html, /From Repository scan · 90% sure/);
-  assert.match(html, /From Repository scan · 60% sure/);
+  assert.match(html, /<p class="ghost-meta">From your repositories<\/p>/);
+  assert.match(html, /From your repositories · very likely \(90% sure\)/);
+  assert.match(html, /From your repositories · likely \(60% sure\)/);
+  assert.match(html, /Commits in a repository are counted whoever wrote them, so some may not be yours\./);
   assert.equal((html.match(/Entered by you/g) ?? []).length, 2);
-  // Evidence, where it is not the owner.
-  assert.match(html, /Repository record repo-app/);
-  assert.match(html, /Technology fact in repo-app: package.json \(package.json\)/);
-  assert.match(html, /Commit abcdef1 in repo-app at 1 Jun 2026, 09:00/);
-  assert.match(html, /Commit 1234567 in repo-app/);
-  // Connections both ways, with validity.
-  assert.match(html, /uses → <button type="button" class="ghost-link">TypeScript<\/button>/);
-  assert.match(html, /← worked on <button type="button" class="ghost-link">Me<\/button> until <time[^>]*>1 May 2026<\/time>/i);
-  assert.match(html, /uses → <button type="button" class="ghost-link">TypeScript<\/button> from <time[^>]*>1 Jun 2026<\/time>/i);
-  // A source's entry is forgotten, not edited.
+  // Evidence, where it is not the owner: in the project's name, never its id.
+  assert.match(html, /<li>A repository found by the repository scan<\/li>/);
+  assert.match(html, /<li>Commit abcdef1 in Zephyr app, 1 Jun 2026, 09:00<\/li>/);
+  assert.match(html, /Commit 1234567 in Zephyr app/);
+  assert.doesNotMatch(html, /repo-app/);
+  // Connections read from this entry's side, with when.
+  assert.match(html, /Uses <button type="button" class="ghost-link">TypeScript<\/button><span class="ghost-meta"> · since 1 Jun 2026 · ongoing<\/span>/);
+  assert.match(html, /Worked on by <button type="button" class="ghost-link">Me<\/button><span class="ghost-meta"> · until 1 May 2026<\/span>/);
+  assert.doesNotMatch(html, /→|←/);
+  // A connection can be dated, and is ongoing unless said otherwise.
+  assert.match(html, /<label for="ghost-rel-from">From \(optional\)<\/label>/);
+  assert.match(html, /<label class="ghost-check"><input type="checkbox" checked=""\/>Present \/ ongoing<\/label>/);
+  assert.doesNotMatch(html, /ghost-rel-until/);
+  // Observations say what they are.
+  assert.match(html, /Dated notes about this entry: something that happened or that you noticed/);
+  // A source's entry is deleted, not edited.
   assert.doesNotMatch(html, />Edit</);
-  assert.match(html, /aria-label="Forget Zephyr app"/);
+  assert.match(html, /aria-label="Delete Zephyr app"[^>]*>Delete…<\/button>/);
+  assert.doesNotMatch(html, /Forget/);
   assert.match(html, /<form class="ghost-form ghost-form--inline" aria-label="New connection">/);
   assert.match(html, /<form class="ghost-form ghost-form--inline" aria-label="New observation">/);
 });
@@ -205,21 +229,21 @@ test("connection picker: no results, and a chosen entry", () => {
   assert.match(chosen, /<button type="submit" class="kit-button kit-button--secondary kit-button--md">Connect<\/button>/);
 });
 
-test("forget asks first, and says what it removes", () => {
+test("delete asks first, and says what it removes and that it stays deleted", () => {
   const html = render({ initial: { status: full, items, detail, confirmForget: true } });
   assert.match(html, /role="alertdialog"/);
-  assert.match(html, /class="kit-dialog__title">Forget this entry\?<\/h2><p [^>]*>GhostOS also forgets everything it derived from it\. This cannot be undone, and a source cannot bring it back\.<\/p>/);
-  assert.match(html, />Cancel<\/button><button type="button" class="kit-button kit-button--danger kit-button--md kit-confirm__ok">Forget<\/button>/);
+  assert.match(html, /class="kit-dialog__title">Delete this entry\?<\/h2><p [^>]*>GhostOS also deletes everything it worked out from it\. This cannot be undone, and it stays deleted: syncing your repositories will not bring it back\.<\/p>/);
+  assert.match(html, />Cancel<\/button><button type="button" class="kit-button kit-button--danger kit-button--md kit-confirm__ok">Delete<\/button>/);
 });
 
 test("an entry you made can be edited; a decision offers its outcome; a file is a reference", () => {
   const decision = { ...project, id: "ent_dec00001", type: "decision", title: "Move", provenance: manual, details: { decidedAt: T, choice: "go", alternatives: ["stay"], rationale: "light", outcome: null, outcomeAt: null, reviewAt: null } };
-  const html = render({ initial: { status: full, items, detail: { entity: decision, relations: [], observations: [], derivedFrom: [] } } });
+  const html = render({ initial: { status: full, items, detail: { entity: decision, relations: [], observations: [], derivedFrom: [], repositoryNames: {} } } });
   assert.match(html, />Edit</);
   assert.match(html, /<dt>Alternatives<\/dt><dd>stay<\/dd>/);
   assert.match(html, /<form class="ghost-form" aria-label="Record the outcome">/);
   const file = { ...project, id: "ent_file0001", type: "file", title: "Plan", provenance: manual, details: { path: "C:\\notes\\plan.md", label: "plan" } };
-  const fileHtml = render({ initial: { status: full, items, detail: { entity: file, relations: [], observations: [], derivedFrom: [] } } });
+  const fileHtml = render({ initial: { status: full, items, detail: { entity: file, relations: [], observations: [], derivedFrom: [], repositoryNames: {} } } });
   assert.match(fileHtml, /<dd class="technical">C:\\notes\\plan.md<\/dd>/);
   assert.match(fileHtml, /GhostOS never opens this file/);
 });
@@ -232,6 +256,11 @@ test("add: a labelled form whose fields follow the type", () => {
   }
   assert.match(html, /<label for="ghost-f-when">Decided on<\/label>/);
   assert.doesNotMatch(html, /ghost-f-path/);
+  // Something with a start is ongoing until the owner says it ended; then the end date is asked for.
+  const person = render({ initial: { status: full, tab: "add", form: emptyForm() } });
+  assert.match(person, /<label class="ghost-check"><input type="checkbox" checked=""\/>Present \/ ongoing \(it has not ended\)<\/label>/);
+  assert.doesNotMatch(person, /ghost-f-ended/);
+  assert.match(render({ initial: { status: full, tab: "add", form: { ...emptyForm(), ongoing: false } } }), /<label for="ghost-f-ended">Ended<\/label>/);
   const file = render({ initial: { status: full, tab: "add", form: { ...emptyForm(), type: "file" } } });
   assert.match(file, /Path \(a reference; GhostOS never opens it\)/);
 });
@@ -240,24 +269,25 @@ test("sources: what the repository scan gives, what it never gives, and off remo
   const on = render({ initial: { status: full, tab: "sources" } });
   assert.match(on, /It never reads commit messages, other event types, or any file/);
   assert.match(on, />Turn off and remove what it added</);
-  assert.match(on, /Things you forgot stay forgotten/);
+  assert.match(on, /Things you deleted stay deleted/);
+  assert.match(on, /each repository becomes a project named as in Projects, the skills are the ones on the Skills screen/);
   assert.match(on, />Export…</);
   assert.match(on, />Import…</);
   const off = render({ initial: { status: empty, tab: "sources" } });
-  assert.match(off, />Turn on</);
+  assert.match(off, />Connect your repositories</);
   const missing = render({ initial: { status: status(zero, di(false, false)), tab: "sources" } });
   assert.match(missing, /The repository scan is not running/);
-  assert.doesNotMatch(missing, />Turn on</);
+  assert.doesNotMatch(missing, />Connect your repositories</);
 });
 
 test("a refused forget is reported inside the confirmation, next to the question, not at the top of the page", () => {
-  const refused = { ok: false, text: "Forget in GhostOS requires confirmation." };
+  const refused = { ok: false, text: "Delete from GhostOS requires confirmation." };
   const html = render({ initial: { status: full, items, detail, confirmForget: true, notice: refused } });
-  assert.match(html, /<footer class="kit-dialog__footer"><p class="kit-inline-error" role="alert">Forget in GhostOS requires confirmation\.<\/p>/);
-  assert.equal(html.split("Forget in GhostOS requires confirmation.").length - 1, 1, "said once");
+  assert.match(html, /<footer class="kit-dialog__footer"><p class="kit-inline-error" role="alert">Delete from GhostOS requires confirmation\.<\/p>/);
+  assert.equal(html.split("Delete from GhostOS requires confirmation.").length - 1, 1, "said once");
   // Without a confirmation open, the same failure is reported at the top.
   const plain = render({ initial: { status: full, items, detail, notice: refused } });
-  assert.match(plain, /<\/header><p class="kit-inline-error" role="alert">Forget in GhostOS requires confirmation\.<\/p>/);
+  assert.match(plain, /<\/header><p class="kit-inline-error" role="alert">Delete from GhostOS requires confirmation\.<\/p>/);
 });
 
 test("sources: turning the source off asks first (it deletes what it added), then offers Turn off / Cancel", () => {
@@ -291,7 +321,7 @@ test("the shell routes to it: sidebar entry, icon, action", () => {
 });
 
 function emptyForm() {
-  return { id: null, type: "person", title: "", notes: "", tags: "", when: "", endedAt: "", text: "", choice: "", alternatives: "", rationale: "", cadence: "weekly", path: "", label: "", participants: "" };
+  return { id: null, type: "person", title: "", notes: "", tags: "", when: "", endedAt: "", ongoing: true, text: "", choice: "", alternatives: "", rationale: "", cadence: "weekly", path: "", label: "", participants: "" };
 }
 
 test("timeline: numbers first, rows grouped under day headings, each row marked with its kind's icon", () => {

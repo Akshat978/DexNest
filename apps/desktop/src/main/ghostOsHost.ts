@@ -63,6 +63,18 @@ export interface DiStoresLike {
   };
 }
 
+/**
+ * Skills (Skill Constellation) as GhostOS reads it: the built constellation
+ * and, per skill, which repositories evidence it. Nothing else is asked for.
+ */
+export interface SkillsLike {
+  constellation(): {
+    lastBuild: unknown | null;
+    skills: readonly { id: string; name: string; hidden: boolean; firstActivityAt: string | null }[];
+  };
+  evidenceCounts(skillId: string): readonly { repositoryId: string; kind: string }[];
+}
+
 /** The owner picks files; tests pass stand-ins. */
 export interface GhostFileDialogs {
   chooseExportPath(defaultName: string): Promise<string | null>;
@@ -86,6 +98,12 @@ export interface GhostOsHostOptions {
   scheduler: ModuleScheduler;
   /** Absent when Developer Intelligence is not running: GhostOS then has no source to turn on. */
   developerIntelligence?: DiStoresLike | null;
+  /**
+   * Skills, asked for at each sync (it may start after GhostOS). When given,
+   * GhostOS lists the skills Skills holds and derives none of its own; null
+   * from the function means Skills is not running.
+   */
+  skills?: () => SkillsLike | null;
   ipcMain: GhostIpcMain;
   getWindow(): GhostHostWindow | null;
   dialogs: GhostFileDialogs;
@@ -115,8 +133,26 @@ export const GHOST_CHANNELS = {
 } as const;
 
 /** Only the fields GhostOS reads leave DI: roots are reduced to their paths. */
-function narrowDi(stores: DiStoresLike): DiReader {
+function narrowDi(stores: DiStoresLike, skills?: () => SkillsLike | null): DiReader {
   return {
+    ...(skills
+      ? {
+          async listSkills() {
+            const module = skills();
+            const snapshot = module?.constellation();
+            // Never built (or not running): there are no skills to list yet.
+            if (!module || !snapshot?.lastBuild) return null;
+            return snapshot.skills
+              .filter((skill) => !skill.hidden)
+              .map((skill) => ({
+                key: skill.id,
+                name: skill.name,
+                repositoryIds: [...new Set(module.evidenceCounts(skill.id).filter((c) => c.kind !== "technology.removed").map((c) => c.repositoryId))],
+                startedAt: skill.firstActivityAt
+              }));
+          }
+        }
+      : {}),
     async listRepositories() {
       return (await stores.repositories.listRepositories()).map((r) => ({
         id: r.id,
@@ -155,7 +191,7 @@ export function createGhostOsHost(options: GhostOsHostOptions): GhostOsHost {
     events: options.events,
     scheduler: options.scheduler,
     isSensitive,
-    ...(options.developerIntelligence ? { developerIntelligence: narrowDi(options.developerIntelligence) } : {}),
+    ...(options.developerIntelligence ? { developerIntelligence: narrowDi(options.developerIntelligence, options.skills) } : {}),
     audit: (_actionId: AuditActionId, summary, metadata, status) => options.audit(summary, metadata, status),
     ...(options.now ? { now: options.now } : {})
   });
@@ -218,9 +254,9 @@ export function sourceOffMessage(removed: { entity: number; relation: number; ob
   return `Source turned off. Removed ${list}.`;
 }
 
-/** After forgetting: "Forgotten." or "Forgotten, with 3 dependent records." */
+/** After deleting: "Deleted." or "Deleted, with 3 things that depended on it." */
 export function forgottenMessage(dependents: number): string {
-  return dependents > 0 ? `Forgotten, with ${plural(dependents, "dependent record")}.` : "Forgotten.";
+  return dependents > 0 ? `Deleted, with ${dependents === 1 ? "1 thing" : `${dependents} things`} that depended on it.` : "Deleted.";
 }
 
 /**
@@ -250,7 +286,7 @@ export async function runGhostOsAction(host: GhostOsHost, actionId: string, para
       return { ok: true, message: forgottenMessage(total - 1), value: result.value };
     }
     case "ghost_os.adapter.enable":
-      return parsed(module.enableAdapter(params.adapterId), "Source turned on. GhostOS reads it on its next sync.");
+      return parsed(module.enableAdapter(params.adapterId), "Your repositories are connected. GhostOS reads them on its next sync.");
     case "ghost_os.adapter.disable": {
       const result = module.disableAdapter(params.adapterId);
       if (!result.ok) return { ok: false, error: result.errors.join("; ") };

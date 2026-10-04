@@ -11,10 +11,12 @@
  * - a commit: repository, sha and time (see privacy.ts projectCommit).
  *
  * What follows:
- * - repository -> project (confidence 1);
- * - technology in a skill category -> skill, one per name across
- *   repositories, and project -uses-> skill (0.9 from a manifest, 0.7
- *   from file extensions only);
+ * - repository -> project (confidence 1), started at its first counted commit;
+ * - skills come from Skills (Skill Constellation), so the two screens list
+ *   the same ones: one skill per constellation skill, and project -uses->
+ *   skill for each repository it is evidenced in. Until Skills has been
+ *   built there are no skills here. (A host that passes no skill list at all
+ *   gets the older derivation from technology facts.)
  * - commits -> one observation per repository per local day, "N commits
  *   observed" (0.6: DI on main does not say who wrote them).
  */
@@ -45,6 +47,15 @@ export interface DiTechnology {
   evidenceKind: string;
   status: string;
   firstObservedAt: string;
+}
+
+/** One skill as Skills holds it: its id and name, where it is evidenced, and when work in it began. */
+export interface DiSkill {
+  key: string;
+  name: string;
+  repositoryIds: readonly string[];
+  /** First dated work; null when nothing dates it. */
+  startedAt: string | null;
 }
 
 export const diRefs = {
@@ -91,7 +102,15 @@ export interface DiSnapshot {
 export function buildDiSnapshot(
   repositories: readonly DiRepository[],
   technologies: readonly DiTechnology[],
-  ctx: { now: string; isSensitive: (path: string) => boolean },
+  ctx: {
+    now: string;
+    isSensitive: (path: string) => boolean;
+    /**
+     * Skills as Skills holds them. `null`: Skills has never been built, so
+     * there are none. Absent: derive them from the technology facts.
+     */
+    skills?: readonly DiSkill[] | null;
+  },
 ): DiSnapshot {
   const entities: Entity[] = [];
   const relations: Relation[] = [];
@@ -126,6 +145,50 @@ export function buildDiSnapshot(
       createdAt: normalizeTimestamp(repo.discoveredAt) ?? ctx.now,
       updatedAt: ctx.now,
     });
+  }
+
+  if (ctx.skills !== undefined) {
+    for (const skill of [...(ctx.skills ?? [])].sort((a, b) => a.key.localeCompare(b.key))) {
+      const key = skillKey(skill.key);
+      const repositoryIds = [...new Set(skill.repositoryIds)].filter((id) => projects.has(id)).sort();
+      // Evidenced only in repositories GhostOS may not know about: not a skill here.
+      if (!key || repositoryIds.length === 0) continue;
+      const startedAt = normalizeTimestamp(skill.startedAt);
+      const skillId = skillIdFor(key);
+      const evidence = repositoryIds.slice(0, LIMITS.evidence).map((repositoryId): Evidence => ({ kind: 'repository', repositoryId }));
+      entities.push({
+        id: skillId,
+        type: 'skill',
+        title: clip(skill.name, LIMITS.title) || key,
+        notes: '',
+        tags: [],
+        details: {},
+        occurredAt: null,
+        startedAt,
+        endedAt: null,
+        provenance: { origin: 'adapter', sourceId: DI_SOURCE_ID, sourceRef: diRefs.skill(key), evidence, confidence: CONFIDENCE.skillFromConstellation },
+        createdAt: startedAt ?? ctx.now,
+        updatedAt: ctx.now,
+      });
+      for (const repositoryId of repositoryIds) {
+        const sourceRef = diRefs.uses(repositoryId, key);
+        relations.push({
+          id: sourceRowId('relation', DI_SOURCE_ID, sourceRef),
+          fromId: projects.get(repositoryId) as string,
+          toId: skillId,
+          type: 'uses',
+          strength: 1,
+          // Filled in by the adapter from the repository's first commit.
+          validFrom: null,
+          validTo: null,
+          notes: '',
+          provenance: { origin: 'adapter', sourceId: DI_SOURCE_ID, sourceRef, evidence: [{ kind: 'repository', repositoryId }], confidence: CONFIDENCE.skillFromConstellation },
+          createdAt: ctx.now,
+          updatedAt: ctx.now,
+        });
+      }
+    }
+    return { entities, relations, projects, skippedRepositories };
   }
 
   // Skills: one per name; the evidence is every fact naming it, in every known repository.
@@ -198,6 +261,40 @@ export function buildDiSnapshot(
   }
 
   return { entities, relations, projects, skippedRepositories };
+}
+
+/**
+ * Dates the projects and their "uses" relations by when work began: a
+ * project starts at its earliest commit (the earlier of what was read now
+ * and what it already held), not on the day a scan first saw it.
+ */
+export function datedByFirstCommit(
+  snapshot: Pick<DiSnapshot, 'entities' | 'relations' | 'projects'>,
+  commits: readonly CommitSample[],
+  heldStart: (projectId: string) => string | null,
+): { entities: Entity[]; relations: Relation[] } {
+  const first = new Map<string, string>();
+  for (const [repositoryId, projectId] of snapshot.projects) {
+    const held = heldStart(projectId);
+    if (held) first.set(projectId, held);
+  }
+  for (const commit of commits) {
+    const projectId = snapshot.projects.get(commit.repositoryId);
+    if (!projectId) continue;
+    const known = first.get(projectId);
+    if (!known || commit.at < known) first.set(projectId, commit.at);
+  }
+  const entities = snapshot.entities.map((entity) => {
+    const startedAt = entity.type === 'project' ? first.get(entity.id) : undefined;
+    return startedAt ? { ...entity, startedAt, createdAt: startedAt < entity.createdAt ? startedAt : entity.createdAt } : entity;
+  });
+  const relations = snapshot.relations.map((relation) => {
+    const startedAt = first.get(relation.fromId);
+    if (!startedAt || (relation.validFrom && relation.validFrom <= startedAt)) return relation;
+    // A fact first read by a scan is dated by the scan; the project used it from its start as far as anyone can tell.
+    return { ...relation, validFrom: startedAt, createdAt: startedAt < relation.createdAt ? startedAt : relation.createdAt };
+  });
+  return { entities, relations };
 }
 
 /** Commits grouped by repository and local day. Commits of unknown repositories are dropped. */
