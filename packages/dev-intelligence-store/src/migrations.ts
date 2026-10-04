@@ -217,6 +217,16 @@ CREATE INDEX IF NOT EXISTS idx_dev_scan_diagnostics_scan
 ALTER TABLE dev_repositories ADD COLUMN baselined_at TEXT;
 `,
   },
+  {
+    // When each repository's commit history was read once in full. NULL
+    // until then, including for a repository baselined before this existed:
+    // its next scan reads the history and fills it in.
+    version: 4,
+    name: 'repository-history',
+    sql: `
+ALTER TABLE dev_repositories ADD COLUMN history_read_at TEXT;
+`,
+  },
 ];
 
 export const STANDUP_MIGRATIONS: readonly ModuleMigration[] = [

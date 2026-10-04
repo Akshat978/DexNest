@@ -13,7 +13,7 @@ import { createSqlitePersistence } from '@dexnest/dev-intelligence-store/testing
 import { createDomainRegistry } from '../domain/execution-domains.js';
 import { defaultDiscoveryConfig } from '../config/roots.js';
 import { ScanOrchestrator } from '../scan/orchestrator.js';
-import { parseReflog } from '../git/readonly-git.js';
+import { parseReflog, readCommitHistory } from '../git/readonly-git.js';
 import { extractMarkersFromText, looseMarkerFingerprints, scanTodoCandidates } from '../todo/scan.js';
 import { reconcileTodos } from '../todo/lifecycle.js';
 import { cleanup, createGitRepo, createTempWorkspace, gitFiles, gitIn } from './fixture-repos.js';
@@ -158,6 +158,66 @@ describe('scans', () => {
     expect((fresh[0]!.payload as CommitObservedPayload).baseline, 'made after the baseline: news').toBeUndefined();
     expect(fresh[0]!.occurredAt, 'when it was made, in UTC, not when it was seen').toBe(new Date((fresh[0]!.payload as CommitObservedPayload).authorDate).toISOString());
     expect((await persistence.repositories.getRepository(id))!.baselinedAt, 'the baseline is never moved').toBe(stamped);
+  });
+
+  it('the whole history is read once: older than the latest few commits, as baseline, and never again', async () => {
+    const { repo, persistence, scan } = await setup('di-truth-history-', 'history', 27);
+
+    const first = await scan();
+    const id = first.repositories[0]!.id;
+    const read = (await persistence.repositories.getRepository(id))!.historyReadAt;
+    expect(read, 'the repository records that its history was read').toBeTruthy();
+
+    // A scan looks at the latest 20 commits; the history read brings the other 7.
+    const history = await persistence.events.listByRepository(id, { type: 'dev.commit.observed' });
+    expect(history).toHaveLength(27);
+    expect(history.every((event) => (event.payload as CommitObservedPayload).baseline === true), 'history, not news').toBe(true);
+    expect(new Set(history.map((event) => (event.payload as CommitObservedPayload).sha)).size).toBe(27);
+    const oldest = history.find((event) => (event.payload as CommitObservedPayload).subject === 'history: commit 1')!;
+    expect((oldest.payload as CommitObservedPayload).authorEmail, 'with its author, so "my commits" can be told apart').toBeTruthy();
+    expect(JSON.stringify(history)).not.toContain('"body"');
+
+    await writeFile(join(repo.path, 'new.txt'), 'new work\n', 'utf8');
+    gitIn(repo.path, ['add', 'new.txt']);
+    gitIn(repo.path, ['commit', '-m', 'history: new work']);
+    await scan();
+    const all = await persistence.events.listByRepository(id, { type: 'dev.commit.observed' });
+    expect(all).toHaveLength(28);
+    expect(all.filter((event) => (event.payload as CommitObservedPayload).baseline !== true).map((event) => (event.payload as CommitObservedPayload).subject)).toEqual(['history: new work']);
+    expect((await persistence.repositories.getRepository(id))!.historyReadAt, 'read once').toBe(read);
+  });
+
+  it('a repository baselined before the history was read gets it on its next scan, and what was news stays news', async () => {
+    const { repo, persistence, scan } = await setup('di-truth-backfill-', 'backfill', 25);
+    const first = await scan();
+    const id = first.repositories[0]!.id;
+    // As the previous version left it: baselined, the latest 20 commits recorded, the history never read.
+    persistence.database.prepare('UPDATE dev_repositories SET history_read_at = NULL WHERE id = ?').run([id]);
+    for (let n = 1; n <= 5; n += 1) {
+      persistence.database.prepare("DELETE FROM event_log WHERE type = 'dev.commit.observed' AND payload_json LIKE ?").run([`%backfill: commit ${n}"%`]);
+    }
+    expect(await persistence.events.listByRepository(id, { type: 'dev.commit.observed' })).toHaveLength(20);
+
+    await writeFile(join(repo.path, 'new.txt'), 'new work\n', 'utf8');
+    gitIn(repo.path, ['add', 'new.txt']);
+    gitIn(repo.path, ['commit', '-m', 'backfill: new work']);
+    await scan();
+
+    const all = await persistence.events.listByRepository(id, { type: 'dev.commit.observed' });
+    expect(all).toHaveLength(26);
+    const news = all.filter((event) => (event.payload as CommitObservedPayload).baseline !== true);
+    expect(news.map((event) => (event.payload as CommitObservedPayload).subject), 'the backfill did not turn a new commit into history').toEqual(['backfill: new work']);
+    expect((await persistence.repositories.getRepository(id))!.historyReadAt).toBeTruthy();
+  });
+
+  it('a history longer than the cap is read up to the cap, in pages', async () => {
+    const { repo } = await setup('di-truth-pages-', 'pages', 7);
+    const domains = createDomainRegistry();
+    const git = { cwd: repo.path, domain: domains.defaultDomain(), runner: domains.get(domains.defaultDomain()).processRunner };
+    expect(await readCommitHistory(git, { pageSize: 3, max: 100 })).toMatchObject({ complete: true, truncated: false, commits: { length: 7 } });
+    const capped = await readCommitHistory(git, { pageSize: 3, max: 6 });
+    expect(capped).toMatchObject({ complete: true, truncated: true });
+    expect(capped.commits.map((c) => c.subject)).toEqual(['pages: commit 7', 'pages: commit 6', 'pages: commit 5', 'pages: commit 4', 'pages: commit 3', 'pages: commit 2']);
   });
 
   it('a push and a pull are seen from the reflog, however they were made; none during the baseline', async () => {

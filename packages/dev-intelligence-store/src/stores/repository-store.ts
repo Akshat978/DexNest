@@ -14,6 +14,7 @@ export function createRepositoryStore(db: StoreDb): RepositoryStore {
       discoveredAt: String(row['discovered_at']),
       lastSeenAt: String(row['last_seen_at']),
       ...(row['baselined_at'] != null ? { baselinedAt: String(row['baselined_at']) } : {}),
+      ...(row['history_read_at'] != null ? { historyReadAt: String(row['history_read_at']) } : {}),
       roots: JSON.parse(String(row['roots_json'])) as Repository['roots'],
     };
   }
@@ -39,11 +40,12 @@ export function createRepositoryStore(db: StoreDb): RepositoryStore {
       db.run(
         `INSERT INTO dev_repositories (
           id, schema_version, display_name, discovered_at, last_seen_at,
-          roots_json, disabled, canonical_path, domain, baselined_at
-        ) VALUES (?, 1, ?, ?, ?, ?, 0, ?, ?, ?)
+          roots_json, disabled, canonical_path, domain, baselined_at, history_read_at
+        ) VALUES (?, 1, ?, ?, ?, ?, 0, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           -- Set once and kept: a later upsert without it must not undo the baseline.
           baselined_at = COALESCE(dev_repositories.baselined_at, excluded.baselined_at),
+          history_read_at = COALESCE(dev_repositories.history_read_at, excluded.history_read_at),
           display_name = excluded.display_name,
           last_seen_at = excluded.last_seen_at,
           roots_json = excluded.roots_json,
@@ -58,6 +60,7 @@ export function createRepositoryStore(db: StoreDb): RepositoryStore {
           primary?.path ?? null,
           primary?.domain ?? null,
           repo.baselinedAt ?? null,
+          repo.historyReadAt ?? null,
         ],
       );
     },

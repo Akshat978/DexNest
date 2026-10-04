@@ -228,6 +228,49 @@ export function parseCommitLog(stdout: string): GitCommit[] {
   return commits;
 }
 
+/** Sha, subject, author email and author date: what a commit event carries, and no message body. */
+const HISTORY_FMT = '%H%x1f%s%x1f%ae%x1f%aI%x1e';
+export const HISTORY_PAGE_SIZE = 500;
+export const HISTORY_MAX_COMMITS = 5000;
+
+export function parseHistoryLog(stdout: string): GitCommit[] {
+  const commits: GitCommit[] = [];
+  for (const record of stdout.split('\x1e')) {
+    const [sha, subject, authorEmail, authorDate] = record.replace(/^\n/, '').trim().split('\x1f');
+    if (!sha || !authorDate) continue;
+    commits.push({ sha, subject: subject ?? '', authorName: '', authorEmail: authorEmail ?? '', authorDate, parents: [] });
+  }
+  return commits;
+}
+
+/**
+ * The commits behind HEAD, newest first, read in pages so no single git call
+ * returns more than a page. Done once per repository: a scan otherwise sees
+ * only the latest few commits, and a project's history is older than that.
+ * `complete` is false when a call failed or the scan was cancelled part-way;
+ * `truncated` when the history is longer than `max`.
+ */
+export async function readCommitHistory(
+  opts: GitInspectOptions,
+  limits: { pageSize?: number; max?: number } = {},
+): Promise<{ commits: GitCommit[]; complete: boolean; truncated: boolean }> {
+  const pageSize = Math.max(1, limits.pageSize ?? HISTORY_PAGE_SIZE);
+  const max = Math.max(pageSize, limits.max ?? HISTORY_MAX_COMMITS);
+  const commits: GitCommit[] = [];
+  for (let skip = 0; skip < max; skip += pageSize) {
+    if (opts.cancel?.aborted) return { commits, complete: false, truncated: false };
+    const log = await git(opts, ['log', `-n${pageSize}`, `--skip=${skip}`, `--format=${HISTORY_FMT}`]);
+    if (!log.ok) {
+      // A repository with no commit yet has no history: that is complete.
+      return { commits, complete: skip === 0 && commits.length === 0 && /does not have any commits|bad default revision|unknown revision/i.test(log.stderr), truncated: false };
+    }
+    const page = parseHistoryLog(log.stdout);
+    commits.push(...page);
+    if (page.length < pageSize) return { commits, complete: true, truncated: false };
+  }
+  return { commits, complete: true, truncated: true };
+}
+
 /** A push or a pull, as the repository's reflog recorded it. */
 export interface RefTransfer {
   kind: 'push' | 'pull';

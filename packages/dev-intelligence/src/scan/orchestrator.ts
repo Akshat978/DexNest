@@ -37,7 +37,7 @@ import {
 } from '../events/emit.js';
 import { mapPool } from './concurrency.js';
 import { scanTodoCandidates } from '../todo/scan.js';
-import { listCandidateFiles, readRefTransfers, type GitInspectOptions } from '../git/readonly-git.js';
+import { listCandidateFiles, readCommitHistory, readRefTransfers, type GitInspectOptions } from '../git/readonly-git.js';
 
 /** Most remote-tracking refs whose reflog one inspection will read. */
 const MAX_TRANSFER_REFS = 10;
@@ -345,6 +345,30 @@ export class ScanOrchestrator {
                 snapshot.git.currentBranch,
                 baselining,
               );
+            }
+
+            // The history behind HEAD, read once. The loop above sees only the
+            // latest few commits; everything older is recorded here as
+            // baseline, so it counts as history and never as news. An event
+            // already recorded for a commit is kept as it is.
+            if (!existing?.historyReadAt && !cancel.aborted) {
+              const history = await readCommitHistory({
+                cwd: item.root.path,
+                domain: item.root.domain,
+                runner,
+                cancel,
+              });
+              for (const commit of history.commits) {
+                if (cancel.aborted) break;
+                await emitCommitObserved(emitCtx, repo.id, commit, snapshot.git.currentBranch, true);
+              }
+              if (history.complete && !cancel.aborted) {
+                const current = (await this.persistence.repositories.getRepository(repo.id)) ?? repo;
+                await this.persistence.repositories.upsertRepository({
+                  ...current,
+                  historyReadAt: new Date().toISOString(),
+                });
+              }
             }
 
             if (!baselining && previousSnap && !cancel.aborted) {

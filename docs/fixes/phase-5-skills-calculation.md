@@ -29,7 +29,7 @@ score = category weight × volume × (0.5 + 0.3 × recency + 0.2 × variety)
 - Volume, anything else: repositories that name it (33% at one, 70% at three).
 - Named with no dated work: the score is halved again.
 
-On a test pair of repositories: TypeScript 62%, React 45%, npm 18%, Jest 16%,
+On a test pair of repositories: TypeScript 72%, React 45%, npm 18%, Jest 16%,
 ESLint 16%.
 
 ## How
@@ -49,13 +49,26 @@ ESLint 16%.
   the event log. Nothing is stored, git is not run, and the emails stay out of
   the audit log as before.
 
+## The whole history, once
+
+Found while checking this phase: a scan looks at a repository's latest 20
+commits, so a long-lived project began at 20 counted commits and a range that
+started at the oldest of those.
+
+- The scanner now reads the history behind HEAD once per repository
+  (`readCommitHistory`, 500 commits per git call, at most 5,000) and records
+  each commit as baseline: history, never news. Standup and Reality RPG already
+  skip baseline commits, so nothing is reported or awarded for them.
+- It records sha, subject, author email and date, as for any commit. No
+  message body.
+- `dev_repositories.history_read_at` (scanner migration 4) marks it done. A
+  repository baselined before this gets its history on its next scan; a commit
+  already recorded as new stays new.
+- A cancelled or failed read is not marked, and is retried on the next scan.
+  A history over 5,000 commits is read to the newest 5,000.
+
 ## Not covered here
 
-- The scanner records only the latest 20 commits of a repository on its first
-  scan, so a long-lived project starts with 20 counted commits and a range that
-  begins at the oldest of those, not at the project's first commit. The line
-  says "N commits counted" for that reason. Reading the full history once is a
-  scanner change and is on the list as its own item.
 - The scan cannot see which files a commit touched, so a commit counts for
   every language the repository holds, and a dependency cannot be told apart
   from one that is listed and never imported.
@@ -73,6 +86,9 @@ ESLint 16%.
   repositories whose commits run back over a year: the ranking above, no skill
   dated by the scan day, Freshest "TypeScript, last worked 11 Sep 2026", the
   email picker listing both authors, and after picking one and rebuilding only
-  that author's commits counted. The bar captions were shortened afterwards
-  because one overflowed the panel; that wording is covered by the desktop
-  tests, not by a second run in the app.
+  that author's commits counted. Run again after the history read: all 30
+  commits of the larger repository counted, its range starting at its first
+  commit over a year back, TypeScript 72%.
+- `packages/dev-intelligence/src/__tests__/scanner-truth.test.ts`: the history
+  is read once, as baseline; a repository baselined earlier is backfilled
+  without turning a new commit into history; paging and the cap.

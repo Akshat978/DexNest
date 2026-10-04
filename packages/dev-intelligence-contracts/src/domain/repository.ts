@@ -34,6 +34,8 @@ export interface Repository {
    * first inspection has completed.
    */
   baselinedAt?: string; // ISO-8601
+  /** When the commit history behind HEAD was read once, in full. Absent until then. */
+  historyReadAt?: string; // ISO-8601
 }
 
 export interface GitCommit {
