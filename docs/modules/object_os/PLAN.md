@@ -84,6 +84,15 @@ fs-free (static test).
 Clipboard, Captures, Drop, Tools, Search index, OCR output, any other
 module's tables, events or folders.
 
+**Sent, never read back** (docs/fixes/phase-8-objectos-absorbs-finder.md): on a
+click, a warranty end or a maintenance due day goes to Calendar and a purchase
+goes to Finance, through those modules' own "create" actions. ObjectOS holds
+no reference to what they made and reads nothing from them.
+
+**Where things are** (what Finder was) lives here too: `obj_whereabouts`, and
+the `finder.*` actions that voice, the command bar, Capture and the Deck use
+are carried out in ObjectOS.
+
 **Attaching a file** is refused when the source path, written or resolved
 (junctions, symlinks), is inside DexNest's data root - that covers every
 other module's folder, and ObjectOS's own (re-attaching a copy is never

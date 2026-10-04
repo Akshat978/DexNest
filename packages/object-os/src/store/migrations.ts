@@ -233,4 +233,22 @@ CREATE TABLE IF NOT EXISTS obj_pending_files (
 );
 `,
   },
+  {
+    version: 3,
+    name: 'whereabouts',
+    // Where an object is, for finding it again (what Finder used to keep in a
+    // file of its own): one row per object, absent until something is set.
+    sql: `
+CREATE TABLE IF NOT EXISTS obj_whereabouts (
+  object_id  TEXT PRIMARY KEY REFERENCES obj_objects (id),
+  room       TEXT NOT NULL DEFAULT '',
+  container  TEXT NOT NULL DEFAULT '',
+  lent_to    TEXT NOT NULL DEFAULT '',
+  lent_at    TEXT,
+  missing    INTEGER NOT NULL DEFAULT 0 CHECK (missing IN (0, 1)),
+  located_at TEXT
+);
+CREATE INDEX IF NOT EXISTS obj_whereabouts_located ON obj_whereabouts (located_at);
+`,
+  },
 ];

@@ -26,6 +26,7 @@ import {
   type ObjectIpcEvent,
   type ObjectIpcMain
 } from "../src/main/objectOsHost.ts";
+import { allItems, changePlace, findItems, forgetItem, itemsIn, migrateFinderItems, rememberItem, reviseItem } from "../src/main/objectLocate.ts";
 import { openZip, writeZip } from "../src/main/objectOsZip.ts";
 
 type Listener = (event: ObjectIpcEvent, ...args: unknown[]) => unknown;
@@ -232,7 +233,7 @@ test("changes run only from DexNest's own window: the Stream Deck endpoint and a
 test("every object_os action but open has a handler", async () => {
   const s = setup();
   const ids = seededActions.filter((a) => a.moduleId === "object_os" && a.id !== A.open).map((a) => a.id);
-  assert.equal(ids.length, 21);
+  assert.equal(ids.length, 22);
   for (const id of ids) assert.notEqual(await s.run(id, {}), null, id);
   assert.equal(await s.run(A.open), null);
   assert.equal(await s.run("ghost_os.export"), null);
@@ -670,4 +671,90 @@ test("the delete message counts files and kept components only when there are so
   assert.equal(deletedMessage(2, 0), "Object deleted with 2 files.");
   assert.equal(deletedMessage(0, 1), "Object deleted; 1 component kept.");
   assert.equal(deletedMessage(1, 3), "Object deleted with 1 file; 3 components kept.");
+});
+
+// --- where things are (what Finder did) ------------------------------------------
+
+test("locate: a name and a place make an object; the same action moves, lends and returns it", async () => {
+  const s = setup();
+  const added = await s.run(A.objectLocate, { input: { name: "Passport", location: "black drawer", room: "Bedroom" } });
+  assert.equal(added?.ok, true, String(added?.error));
+  assert.equal(added?.message, "Saved, with where it is.");
+  const id = (added?.value as { id: string }).id;
+
+  const found = s.call(OBJECT_CHANNELS.find, trusted, "passport") as { ok: true; value: { name: string; whereabouts: { room: string } }[] };
+  assert.deepEqual(found.value.map((o) => [o.name, o.whereabouts.room]), [["Passport", "Bedroom"]]);
+  const there = s.call(OBJECT_CHANNELS.whatIsIn, trusted, "black drawer") as { ok: true; value: { name: string }[] };
+  assert.deepEqual(there.value.map((o) => o.name), ["Passport"]);
+  assert.deepEqual(s.call(OBJECT_CHANNELS.rooms), ["Bedroom"]);
+  assert.equal((s.call(OBJECT_CHANNELS.recentlyLocated) as unknown[]).length, 1);
+
+  const lent = await s.run(A.objectLocate, { input: { objectId: id, lentTo: "Alex" } });
+  assert.equal(lent?.message, "Where it is has been updated.");
+  const now = s.call(OBJECT_CHANNELS.whereabouts, trusted, id) as { ok: true; value: { status: string; whereabouts: { lentTo: string } } };
+  assert.equal(now.value.status, "lent_out");
+  assert.equal(now.value.whereabouts.lentTo, "Alex");
+
+  // Not from the Deck or the phone, like every other ObjectOS change.
+  assert.equal((await s.run(A.objectLocate, { input: { objectId: id, returned: true } }, "deck"))?.ok, false);
+  // A place, a room and a borrower never reach the journal.
+  assert.ok(s.audit.every((line) => !/Passport|black drawer|Bedroom|Alex/.test(line)));
+});
+
+test("the bridge the old where-is-it commands use: remember, find, look in a place, move, lend, return, forget", () => {
+  const s = setup();
+  const m = s.host.module;
+  const passport = rememberItem(m, { itemName: "Passport", location: "black drawer", room: "Bedroom", tags: ["documents"] });
+  rememberItem(m, { itemName: "Charger", location: "nightstand", room: "Bedroom" });
+  const bank = rememberItem(m, { itemName: "Power bank", lentTo: "Alex" });
+  assert.equal(passport.status, "at_home");
+  assert.deepEqual([bank.status, bank.lentTo], ["lent_out", "Alex"]);
+  assert.ok(bank.lentAt, "a loan is dated when it starts");
+
+  assert.deepEqual(findItems(m, "passport").map((i) => i.itemName), ["Passport"]);
+  assert.deepEqual(findItems(m, "").map((i) => i.itemName), ["Charger", "Passport", "Power bank"], "an empty question lists everything");
+  assert.deepEqual(findItems(m, "", "lent_out").map((i) => i.itemName), ["Power bank"]);
+  assert.deepEqual(itemsIn(m, "bedroom").map((i) => i.itemName), ["Charger", "Passport"]);
+  assert.equal(allItems(m).length, 3);
+
+  const moved = changePlace(m, passport.id, { kind: "moved", location: "safe", room: "Study" });
+  assert.deepEqual([moved.location, moved.room, moved.status], ["safe", "Study", "at_home"]);
+  assert.equal(changePlace(m, passport.id, { kind: "missing", missing: true }).status, "missing");
+  assert.equal(changePlace(m, passport.id, { kind: "missing", missing: false }).status, "at_home");
+  assert.deepEqual([changePlace(m, bank.id, { kind: "returned" }).status, changePlace(m, bank.id, { kind: "returned" }).lentTo], ["at_home", null]);
+  assert.equal(changePlace(m, bank.id, { kind: "lent", to: "" }).lentTo, "someone", "lent with no name still records that it is out");
+
+  const renamed = reviseItem(m, passport.id, { itemName: "Passport (new)", notes: "renewed" });
+  assert.deepEqual([renamed.itemName, renamed.notes, renamed.location], ["Passport (new)", "renewed", "safe"]);
+  // Put away, not deleted: it is still an object, and still found.
+  assert.equal(changePlace(m, passport.id, { kind: "archived" }).status, "at_home");
+  assert.equal(m.store.getObject(passport.id)?.status, "stored");
+
+  forgetItem(m, bank.id);
+  assert.deepEqual(findItems(m, "power").length, 0);
+  assert.throws(() => changePlace(m, "AAAAAAAA", { kind: "returned" }));
+});
+
+test("Finder's items move into ObjectOS with nothing dropped", () => {
+  const s = setup();
+  const m = s.host.module;
+  const result = migrateFinderItems(m, [
+    { id: "finder-item-1", itemName: "Passport", location: "black drawer", room: "Bedroom", container: "black drawer", notes: "in the folder", tags: ["Documents", "ID & travel"], status: "at_home", confidence: "sure" },
+    { id: "finder-item-2", itemName: "Power bank", location: "with Alex", tags: ["lent"], status: "lent_out", lentTo: "Alex", lentAt: "2026-03-01T10:00:00.000Z" },
+    { id: "finder-item-3", itemName: "Umbrella", location: "Unknown location", tags: [], status: "missing", confidence: "old" },
+    { id: "finder-item-4", itemName: "Old phone", location: "attic box", tags: [], status: "archived", confidence: "maybe" },
+    { id: "finder-item-5", itemName: "", location: "shelf", tags: [], status: "at_home" }
+  ]);
+  assert.deepEqual(result, { moved: 5, failed: [] });
+
+  const by = new Map(allItems(m).map((i) => [i.itemName, i]));
+  assert.deepEqual([by.get("Passport")?.location, by.get("Passport")?.room, by.get("Passport")?.container, by.get("Passport")?.notes], ["black drawer", "Bedroom", "black drawer", "in the folder"]);
+  assert.deepEqual(by.get("Passport")?.tags, ["documents", "id travel"], "tags are kept, in the characters ObjectOS allows");
+  assert.deepEqual([by.get("Power bank")?.status, by.get("Power bank")?.lentTo, by.get("Power bank")?.lentAt], ["lent_out", "Alex", "2026-03-01T10:00:00.000Z"]);
+  assert.deepEqual([by.get("Umbrella")?.status, by.get("Umbrella")?.location], ["missing", ""]);
+  assert.match(by.get("Umbrella")?.notes ?? "", /this place may be out of date/);
+  assert.match(by.get("Old phone")?.notes ?? "", /not sure this is where it is\.\nFinder: archived\./);
+  assert.ok(by.has("Untitled item"));
+  const phone = m.store.locate({ search: "old phone" })[0];
+  assert.equal(phone?.status, "stored");
 });

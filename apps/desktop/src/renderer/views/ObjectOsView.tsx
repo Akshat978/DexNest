@@ -3,6 +3,7 @@ import type {
   AttentionItem,
   AttentionView,
   Category,
+  LocatedObject,
   ObjectDetail,
   ObjectOsStatus,
   ObjectRecord,
@@ -35,6 +36,9 @@ import {
   moneyAmountText,
   objectFromForm,
   overviewRows,
+  purchaseFinanceEntry,
+  scheduleCalendarEvent,
+  warrantyCalendarEvent,
   parseSettingsText,
   ROLE_LABELS,
   ROLE_LIST,
@@ -55,10 +59,11 @@ import {
   type ObjectForm,
   type Tab
 } from "./objectOsModel";
+import { LocatePanel, WhereaboutsCard, type LocateInitial, type ObjectOsLocateBridge } from "./ObjectOsLocate";
 import "./ObjectOs.css";
 
 /** The preload methods this view uses. Every change is an object_os.* action. */
-export interface ObjectOsBridge {
+export interface ObjectOsBridge extends ObjectOsLocateBridge {
   objectOsStatus(): Promise<ObjectOsStatus>;
   objectOsList(filter?: unknown): Promise<Parsed<ObjectRecord[]>>;
   objectOsDetail(id: string): Promise<Parsed<ObjectDetail>>;
@@ -99,6 +104,9 @@ export interface ObjectOsViewProps {
     history?: TimelineItem[];
     photo?: string | null;
     diff?: { from: string; to: string; diff: SettingsDiff } | null;
+    /** The "where is it" panel's state, and the open object's place. */
+    locate?: LocateInitial;
+    whereabouts?: LocatedObject | null;
   };
 }
 
@@ -149,6 +157,20 @@ function unwrap<T>(r: Parsed<T>): T {
   return r.value;
 }
 
+/**
+ * Hands something to another module, once: "Add to Calendar", "Log in Finance".
+ * One way, and only on a click. After it worked the button says so, so the
+ * same thing is not sent twice by accident.
+ */
+function SendTo({ label, done, actionId, params, run, busy }: { label: string; done: string; actionId: string; params: Record<string, unknown>; run: Run; busy: boolean }) {
+  const [sent, setSent] = useState(false);
+  return sent ? (
+    <span className="objectos-meta" role="status">{done}</span>
+  ) : (
+    <Button size="sm" disabled={busy} onClick={() => void run(actionId, params).then((ok) => ok && setSent(true))}>{label}</Button>
+  );
+}
+
 const Id = ({ id }: { id: string }) => <span className="technical">{formatObjectId(id)}</span>;
 const When = ({ at, withTime = false }: { at: string; withTime?: boolean }) => (
   <time className="technical" dateTime={at}>{withTime ? shortDateTime(at) : shortDate(at)}</time>
@@ -173,6 +195,8 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
   const [history, setHistory] = useState<TimelineItem[]>(initial?.history ?? []);
   const [moreHistory, setMoreHistory] = useState(false);
   const [showAllAttention, setShowAllAttention] = useState(false);
+  // Bumped after every action, so "where is it" reads its lists again.
+  const [changes, setChanges] = useState(0);
 
   const listFilter = useCallback(
     (text: string, f: typeof filter) => ({
@@ -247,6 +271,7 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
         const outcome = actionMessage(result);
         if (outcome.text) setNotice({ ok: outcome.ok, text: outcome.text });
         await refreshLists(search, filter);
+        setChanges((n) => n + 1);
         if (detail && actionId !== "object_os.object.delete") await openObject(detail.object.id, true);
         return outcome.ok;
       } catch (e) {
@@ -327,7 +352,7 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
 
   return (
     <section className="view-stack objectos" style={accentStyle("object")} aria-labelledby="objectos-title" aria-busy={state.kind === "loading" || busy}>
-      <PageHeader icon={<Package />} title="ObjectOS" titleId="objectos-title" subtitle="Your things, and everything about them" actions={headerActions} />
+      <PageHeader icon={<Package />} title="ObjectOS" titleId="objectos-title" subtitle="Your things: where each one is, and everything about it" actions={headerActions} />
       <div className="objectos-live" aria-live="polite">
         {notice && (notice.ok ? <Notice>{notice.text}</Notice> : <InlineError>{notice.text}</InlineError>)}
       </div>
@@ -347,9 +372,21 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
             </>
           }
         >
-          <p>ObjectOS keeps one record for each thing you own: what it is, where it is, its maintenance, parts, settings, measurements, files and receipts, and everything that happened to it.</p>
-          <p>Add your first object, or import an ObjectOS export. Everything stays on this computer; ObjectOS never reads Finance, Vault or any other module's data.</p>
+          <p>ObjectOS answers “where is my passport?” and “what's in the black drawer?”, and keeps everything else about a thing in the same place: its maintenance, parts, settings, receipts, warranty and what happened to it.</p>
+          <p>Start small: type what it is and where it is below, and it is remembered. Add the rest when it matters. Everything stays on this computer; ObjectOS never reads Finance, Vault or any other module's data.</p>
         </EmptyState>
+      )}
+
+      {(state.kind === "ready" || state.kind === "empty") && status && !editing && (
+        <LocatePanel
+          bridge={bridge}
+          run={run}
+          busy={busy}
+          count={status.objects}
+          refreshKey={changes}
+          onOpen={(id) => showObject(id)}
+          {...(initial ? { initial: initial.locate ?? {} } : {})}
+        />
       )}
 
       {confirm && (
@@ -522,6 +559,15 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
                     </Button>
                   </div>
                 </div>
+
+                <WhereaboutsCard
+                  bridge={bridge}
+                  objectId={detail.object.id}
+                  refreshKey={`${detail.object.updatedAt}:${changes}`}
+                  run={run}
+                  busy={busy}
+                  {...(initial ? { initial: initial.whereabouts ?? null } : {})}
+                />
 
                 <Tabs wrap label="Object sections" idPrefix="objectos" value={tab} onChange={selectTab} tabs={TABS.map((t) => ({ id: t, label: TAB_LABELS[t] }))} />
 
@@ -781,6 +827,9 @@ function MaintenancePanel({ detail, busy, run, ask }: PanelProps) {
                     onClick={() => void run("object_os.schedule.save", { input: { id: schedule.id, objectId: o.id, title: schedule.title, rule: schedule.rule, startsAt: schedule.startsAt, startReading: schedule.startReading, notes: schedule.notes, active: !schedule.active } })}>
                     {schedule.active ? "Pause" : "Resume"}
                   </Button>
+                  {scheduleCalendarEvent(o, schedule.title, status) && (
+                    <SendTo label="Add to Calendar" done="In Calendar" actionId="calendar.create_event" params={scheduleCalendarEvent(o, schedule.title, status) as Record<string, unknown>} run={run} busy={busy} />
+                  )}
                   <Button variant="ghost" size="sm" disabled={busy} aria-label={`Delete schedule ${schedule.title}`} onClick={() => ask(recordDelete("schedule", schedule.id, `the schedule "${schedule.title}"`))}>Delete…</Button>
                 </span>
               </li>
@@ -1302,6 +1351,17 @@ function PurchasePanel({ detail, busy, run }: { detail: ObjectDetail; busy: bool
             </dd>
           </div>
         </dl>
+      )}
+      {(warrantyCalendarEvent(o, p) || purchaseFinanceEntry(o, p)) && (
+        <div className="objectos-send" role="group" aria-label="Send to another module">
+          {warrantyCalendarEvent(o, p) && (
+            <SendTo label="Add warranty end to Calendar" done="Warranty end is in Calendar" actionId="calendar.create_event" params={warrantyCalendarEvent(o, p) as Record<string, unknown>} run={run} busy={busy} />
+          )}
+          {purchaseFinanceEntry(o, p) && (
+            <SendTo label="Log this purchase in Finance" done="Purchase is in Finance" actionId="finance.create_transaction" params={purchaseFinanceEntry(o, p) as Record<string, unknown>} run={run} busy={busy} />
+          )}
+          <p className="objectos-hint">Sends the name, the date and the amount, once, when you click. ObjectOS reads nothing from Calendar or Finance.</p>
+        </div>
       )}
       <form className="objectos-form" aria-label="Purchase and warranty" onSubmit={(e) => void save(e)}>
         <div className="objectos-grid">

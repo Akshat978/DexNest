@@ -13,6 +13,7 @@ import { isObjectId, isRecordId } from './ids.ts';
 import { normalizeTimestamp } from './time.ts';
 import type { FileRecord, MaintenanceEntry, Measurement, Modification, ObjectChange, ObjectRecord, Part, Purchase, Schedule, SettingsSnapshot, StateFact } from './types.ts';
 import { FILE_ROLES } from './types.ts';
+import { WHEREABOUTS_LIMITS, type Whereabouts } from './whereabouts.ts';
 import {
   parseMaintenanceInput,
   parseMeasurementInput,
@@ -73,6 +74,8 @@ export interface ObjectExport {
   measurements: Measurement[];
   purchases: Purchase[];
   files: FileRecord[];
+  /** Where each object is. Absent from exports written before it existed. */
+  whereabouts?: Whereabouts[];
 }
 
 /** Where a file lives inside the zip. */
@@ -286,9 +289,36 @@ export function parseExport(input: unknown): Parsed<ObjectExport> {
     purchases.push({ ...d, receiptFileId: receipt, updatedAt: ts(row.updatedAt, where, 'updatedAt') });
   });
 
+  // Optional: an export written before whereabouts existed has none.
+  const whereabouts: Whereabouts[] = [];
+  if (input.whereabouts !== undefined) {
+    if (!Array.isArray(input.whereabouts)) return { ok: false, errors: ['whereabouts must be a list'] };
+    const seen = new Set<string>();
+    input.whereabouts.forEach((row, i) => {
+      const where = `whereabouts[${i}]`;
+      if (!isObj(row) || typeof row.objectId !== 'string') return push(`${where}: invalid`);
+      known(row.objectId, where);
+      if (seen.has(row.objectId)) return push(`${where}: an object has one place`);
+      seen.add(row.objectId);
+      const text = (v: unknown, field: string, max: number) => {
+        if (typeof v !== 'string' || v.length > max) push(`${where}: ${field} is invalid`);
+        return typeof v === 'string' ? v : '';
+      };
+      whereabouts.push({
+        objectId: row.objectId,
+        room: text(row.room, 'room', WHEREABOUTS_LIMITS.room),
+        container: text(row.container, 'container', WHEREABOUTS_LIMITS.container),
+        lentTo: text(row.lentTo, 'lentTo', WHEREABOUTS_LIMITS.lentTo),
+        lentAt: row.lentAt === null || row.lentAt === undefined ? null : ts(row.lentAt, where, 'lentAt'),
+        missing: row.missing === true,
+        locatedAt: row.locatedAt === null || row.locatedAt === undefined ? null : ts(row.locatedAt, where, 'locatedAt'),
+      });
+    });
+  }
+
   if (errors.length) return { ok: false, errors };
   return {
     ok: true,
-    value: { format: EXPORT_FORMAT, version: EXPORT_VERSION, exportedAt, objects, changes, state, stateLog, schedules, maintenance, modifications, settings, parts, stockLog, measurements, purchases, files },
+    value: { format: EXPORT_FORMAT, version: EXPORT_VERSION, exportedAt, objects, changes, state, stateLog, schedules, maintenance, modifications, settings, parts, stockLog, measurements, purchases, files, whereabouts },
   };
 }

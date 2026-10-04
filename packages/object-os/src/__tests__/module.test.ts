@@ -20,6 +20,8 @@ interface Harness {
   audits: { actionId: string; summary: string; metadata: Record<string, unknown>; status: string }[];
   notes: { title: string; body: string }[];
   home: string;
+  /** Set to move the module's clock. */
+  clock: { now: Date };
   types(): string[];
 }
 
@@ -48,6 +50,7 @@ function harness(): Harness {
   const audits: Harness['audits'] = [];
   const notes: Harness['notes'] = [];
   const port = createTestPort(dataRoot);
+  const clock = { now: new Date(NOW) };
   const module = createObjectOsModule({
     database: handle.db,
     events: log,
@@ -65,14 +68,14 @@ function harness(): Harness {
       log.append({ type: 'action_executed', stream: 'audit', module: 'object_os', source: 'module_ui', payload: { actionId, summary, status, metadata } });
     },
     notify: (title, body) => notes.push({ title, body }),
-    now: () => new Date(NOW),
+    now: () => clock.now,
     newToken: () => `00000000-0000-4000-8000-${String(++n).padStart(12, '0')}`,
     randomBytes: (len) => {
       seed += 1;
       return Array.from({ length: len }, (_, i) => Math.floor(seed / 32 ** (len - 1 - i)) % 32);
     },
   });
-  return { handle, log, module, port, jobs, audits, notes, home, types: () => log.query({ stream: 'object' }).map((e) => e.type) };
+  return { handle, log, module, port, jobs, audits, notes, home, clock, types: () => log.query({ stream: 'object' }).map((e) => e.type) };
 }
 
 function ok<T>(r: Parsed<T>): T {
@@ -149,6 +152,7 @@ describe('every action writes the log', () => {
     ok(h.module.saveObject({ id: printer.id, name: 'Printer', category: 'printer', location: 'garage' }));
     ok(h.module.setStatus({ id: printer.id, status: 'broken' }));
     ok(h.module.moveObject({ id: hotend.id, parentId: null }));
+    ok(h.module.locateObject({ objectId: hotend.id, room: 'Workshop', container: 'parts bin' }));
     ok(h.module.setState({ objectId: printer.id, key: 'firmware', value: '6.1' }));
     const schedule = ok(h.module.saveSchedule({ objectId: printer.id, title: 'Nozzle', rule: { kind: 'usage', measurementKey: 'hours', every: 200 } }));
     const part = ok(h.module.savePart({ name: 'Nozzle', quantity: 2, fits: [printer.id] }));
@@ -184,6 +188,7 @@ describe('every action writes the log', () => {
       'object.updated',
       'object.status_changed',
       'object.moved',
+      'object.located',
       'object.state_set',
       'object.schedule_saved',
       'object.part_saved',
@@ -219,6 +224,89 @@ describe('every action writes the log', () => {
     expect(h.module.adjustStock({ partId: 'prt_00000001', delta: 1 }).ok).toBe(false);
     expect((await h.module.attachFile({ objectId: 'AAAAAAAA', sourcePath: '/x', role: 'manual' })).ok).toBe(false);
     expect(h.types()).toEqual([]);
+  });
+});
+
+describe('where things are (what Finder did)', () => {
+  it('quick add: a name and a place make an object that can be found by either', () => {
+    const h = harness();
+    const passport = ok(h.module.quickAdd({ name: 'Passport', location: 'black drawer', room: 'Bedroom' }));
+    expect(passport).toMatchObject({ name: 'Passport', category: 'other', status: 'active', location: 'black drawer', whereabouts: { room: 'Bedroom', missing: false } });
+    expect(passport.whereabouts.locatedAt).toBeTruthy();
+    ok(h.module.quickAdd({ name: 'Charger', location: 'nightstand', room: 'Bedroom', tags: ['electronics'] }));
+    ok(h.module.quickAdd({ name: 'Keys', location: 'kitchen drawer', room: 'Kitchen' }));
+    expect(h.module.quickAdd({ name: '', location: 'x' }).ok).toBe(false);
+
+    const names = (r: ReturnType<typeof h.module.findObjects>) => ok(r).map((o) => o.name);
+    expect(names(h.module.findObjects('passport'))).toEqual(['Passport']);
+    expect(names(h.module.findObjects('PASS'))).toEqual(['Passport']);
+    expect(names(h.module.findObjects('electronics'))).toEqual(['Charger']);
+    expect(names(h.module.findObjects('bedroom drawer')), 'every word must match').toEqual(['Passport']);
+    expect(names(h.module.findObjects('100%')), 'wildcards in what was typed are literal').toEqual([]);
+    expect(h.module.findObjects('   ').ok).toBe(false);
+
+    // Reverse lookup: what is in a place.
+    expect(names(h.module.whatIsIn('bedroom'))).toEqual(['Charger', 'Passport']);
+    expect(names(h.module.whatIsIn('drawer'))).toEqual(['Keys', 'Passport']);
+    expect(h.module.rooms()).toEqual(['Bedroom', 'Kitchen']);
+    expect(h.types()).toEqual(['object.created', 'object.located', 'object.created', 'object.located', 'object.created', 'object.located']);
+  });
+
+  it('what is in: the components of an object count as being in it', () => {
+    const h = harness();
+    const box = ok(h.module.saveObject({ name: 'Camera bag' }));
+    ok(h.module.saveObject({ name: 'Lens cap', parentId: box.id }));
+    expect(ok(h.module.whatIsIn('camera bag')).map((o) => o.name)).toEqual(['Lens cap']);
+  });
+
+  it('moved, lent, returned, missing and found, each keeping what it should', () => {
+    const h = harness();
+    const drill = ok(h.module.quickAdd({ name: 'Drill', location: 'garage shelf', room: 'Garage' }));
+
+    h.clock.now = new Date('2026-03-01T10:00:00.000Z');
+    const lent = ok(h.module.locateObject({ objectId: drill.id, lentTo: 'Alex' }));
+    expect(lent).toMatchObject({ status: 'lent_out', whereabouts: { lentTo: 'Alex', lentAt: '2026-03-01T10:00:00.000Z' } });
+
+    // Correcting something else later does not restart the loan.
+    h.clock.now = new Date('2026-06-01T10:00:00.000Z');
+    ok(h.module.saveObject({ id: drill.id, name: 'Cordless drill', location: 'garage shelf', status: 'lent_out' }));
+    expect(ok(h.module.locateObject({ objectId: drill.id, lentTo: 'Alex' })).whereabouts.lentAt).toBe('2026-03-01T10:00:00.000Z');
+
+    const back = ok(h.module.locateObject({ objectId: drill.id, returned: true }));
+    expect(back).toMatchObject({ status: 'active', location: 'garage shelf', whereabouts: { lentTo: '', lentAt: null, room: 'Garage' } });
+
+    expect(ok(h.module.locateObject({ objectId: drill.id, missing: true })).whereabouts.missing).toBe(true);
+    // Putting it somewhere means it was found.
+    const moved = ok(h.module.locateObject({ objectId: drill.id, location: 'hall cupboard', room: 'Hall' }));
+    expect(moved).toMatchObject({ location: 'hall cupboard', whereabouts: { room: 'Hall', missing: false, locatedAt: '2026-06-01T10:00:00.000Z' } });
+    expect(h.module.store.changes(drill.id).filter((c) => c.field === 'location').map((c) => [c.from, c.to])).toEqual([['garage shelf', 'hall cupboard']]);
+
+    expect(h.module.locateObject({ objectId: drill.id, lentTo: 'Sam', returned: true }).ok).toBe(false);
+    expect(h.module.locateObject({ objectId: 'AAAAAAAA', missing: true }).ok).toBe(false);
+    expect(h.module.recentlyLocated(5).map((o) => o.name)).toEqual(['Cordless drill']);
+  });
+
+  it('deleting an object removes where it was; an export carries it and an import restores it', async () => {
+    const h = harness();
+    const keys = ok(h.module.quickAdd({ name: 'Keys', location: 'bowl', room: 'Hall', lentTo: 'Sam' }));
+    expect(keys.status).toBe('lent_out');
+    let json = '';
+    ok(await h.module.exportObjects({ objectIds: 'all' }, async (b) => { json = JSON.stringify(b.data); }));
+    const target = harness();
+    ok(await target.module.importArchive(memoryArchive(target.port, new Map(), json)));
+    expect(ok(target.module.findObjects('keys'))[0]).toMatchObject({ name: 'Keys', whereabouts: { room: 'Hall', lentTo: 'Sam' } });
+
+    ok(h.module.deleteObject({ id: keys.id }));
+    expect(ok(h.module.findObjects('keys'))).toEqual([]);
+    expect(h.handle.db.prepare('SELECT count(*) AS n FROM obj_whereabouts').get<{ n: number }>()?.n).toBe(0);
+  });
+
+  it('a place, a room and a borrower never reach the event log', () => {
+    const h = harness();
+    const o = ok(h.module.quickAdd({ name: `${MARK} thing`, location: `${MARK} drawer`, room: `${MARK} room`, container: `${MARK} box`, lentTo: `${MARK} person` }));
+    ok(h.module.locateObject({ objectId: o.id, location: `${MARK} shelf`, room: `${MARK} attic` }));
+    const logged = JSON.stringify(h.handle.db.prepare("SELECT * FROM event_log WHERE stream IN ('object', 'audit')").all());
+    expect(logged.toLowerCase()).not.toContain(MARK.toLowerCase());
   });
 });
 

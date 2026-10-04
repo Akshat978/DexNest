@@ -17,6 +17,7 @@ export const OBJECT_ACTION_IDS = {
   objectSave: 'object_os.object.save',
   objectSetStatus: 'object_os.object.set_status',
   objectMove: 'object_os.object.move',
+  objectLocate: 'object_os.object.locate',
   objectDelete: 'object_os.object.delete',
   stateSet: 'object_os.state.set',
   scheduleSave: 'object_os.schedule.save',

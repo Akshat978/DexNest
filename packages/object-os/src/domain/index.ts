@@ -13,3 +13,4 @@ export * from './events.ts';
 export * from './settings.ts';
 export * from './read-api.ts';
 export * from './timeline.ts';
+export * from './whereabouts.ts';

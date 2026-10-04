@@ -40,7 +40,6 @@ export const SIDEBAR_VIEWS: SidebarView[] = [
   { id: "timetable", label: "Timetable", accentClass: "accent-timetable", actionId: "timetable.open" },
   { id: "utilities", label: "Utilities", accentClass: "accent-utilities", actionId: "utilities.open" },
   { id: "news", label: "News", accentClass: "accent-news", actionId: "news.open" },
-  { id: "finder", label: "Finder", accentClass: "accent-finder", actionId: "finder.open" },
   { id: "capture", label: "Capture", accentClass: "accent-capture", actionId: "capture.open" },
   { id: "finance", label: "Finance", accentClass: "accent-finance", actionId: "finance.open" },
   { id: "dev", label: "Projects", accentClass: "accent-dev", actionId: "dev.open_dashboard" },

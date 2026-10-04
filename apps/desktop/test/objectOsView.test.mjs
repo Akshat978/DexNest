@@ -44,7 +44,8 @@ after(() => {
 const never = () => new Promise(() => {});
 const bridge = {
   objectOsStatus: never, objectOsList: never, objectOsDetail: never, objectOsTimeline: never,
-  objectOsAttention: never, objectOsSettingsDiff: never, objectOsLocations: never, objectOsPhoto: never
+  objectOsAttention: never, objectOsSettingsDiff: never, objectOsLocations: never, objectOsPhoto: never,
+  objectOsFind: never, objectOsWhatIsIn: never, objectOsRecentlyLocated: never, objectOsRooms: never, objectOsWhereabouts: never
 };
 const onAction = async () => ({ ok: true });
 const T = "2026-06-01T09:00:00.000Z";
@@ -122,7 +123,12 @@ test("error: an alert with the reason and a retry", () => {
 
 test("empty: says what ObjectOS is and what it never reads, and offers add and import", () => {
   const html = render({ initial: { status: status(0) } });
-  assert.match(html, /one record for each thing you own/);
+  // What it answers, and that it also keeps everything else about a thing.
+  assert.match(html, /ObjectOS answers “where is my passport\?” and “what&#x27;s in the black drawer\?”/);
+  assert.match(html, /kit-header__subtitle">Your things: where each one is, and everything about it</);
+  // The five-second add is there before anything exists.
+  assert.match(html, /<form class="objectos-locate__add" aria-label="Remember where something is">/);
+  assert.match(html, /<h3 id="objectos-locate-title">Where is it\?<\/h3><p class="objectos-meta">Nothing yet<\/p>/);
   assert.match(html, /never reads Finance, Vault or any other module&#x27;s data/);
   assert.match(html, />Add object</);
   assert.match(html, />Import…</);
@@ -396,4 +402,65 @@ test("every row carries a mark: the category on objects, the urgency on attentio
   assert.match(att, /<svg[^>]*lucide-package-minus/);
   // The object's own mark sits in its header, before its name.
   assert.match(html, /<div class="objectos-detail-head"><span class="objectos-icon" aria-hidden="true"><svg[^>]*lucide-printer[\s\S]*?<\/svg><\/span><div class="objectos-detail-title"><h3 id="objectos-detail-title">Workshop printer<\/h3>/);
+});
+
+// --- where things are (what Finder did) ------------------------------------------------
+
+const placed = (o, whereabouts = {}) => ({ ...o, whereabouts: { objectId: o.id, room: "", container: "", lentTo: "", lentAt: null, missing: false, locatedAt: T, ...whereabouts } });
+const passport = placed({ ...printer, id: "PASS0001", name: "Passport", category: "other", location: "black drawer", photoFileId: null }, { room: "Bedroom" });
+const bank = placed({ ...printer, id: "BANK0001", name: "Power bank", category: "other", location: "", status: "lent_out", photoFileId: null }, { lentTo: "Alex", lentAt: "2026-03-01T10:00:00.000Z" });
+
+test("where is it: a labelled lookup with two modes, a five-second add, and what was placed lately", () => {
+  const html = render({ initial: { ...ready, locate: { recent: [passport, bank], rooms: ["Bedroom", "Kitchen"] } } });
+  assert.match(html, /<section class="objectos-card objectos-locate" aria-labelledby="objectos-locate-title">/);
+  assert.match(html, /<p class="objectos-meta">2 things in 2 rooms<\/p>/);
+  assert.match(html, /<button type="button" class="objectos-chip" aria-pressed="true">Where is my…<\/button><button type="button" class="objectos-chip" aria-pressed="false">What&#x27;s in…<\/button>/);
+  assert.match(html, /<input class="kit-input" id="objectos-locate-query" type="search" aria-label="The thing you are looking for"/);
+  // Recently placed, each saying where it is in a few words.
+  assert.match(html, /<ul class="objectos-list" aria-label="Recently placed">/);
+  assert.match(html, /<span>Passport<\/span><span class="objectos-meta">Bedroom · black drawer · placed <time[^>]*>1 Jun 2026<\/time>/);
+  assert.match(html, /<span>Power bank<\/span><span class="objectos-meta">with Alex/);
+  // Rooms as shortcuts into "what's in".
+  assert.match(html, /<div class="objectos-locate__rooms" role="group" aria-label="Rooms"><button type="button" class="objectos-chip">Bedroom<\/button><button type="button" class="objectos-chip">Kitchen<\/button>/);
+  for (const id of ["objectos-quick-name", "objectos-quick-where", "objectos-quick-room"]) assert.match(html, new RegExp(`<label for="${id}">`), id);
+  assert.match(html, /<button type="submit" class="kit-button kit-button--primary kit-button--md" disabled="">Remember<\/button>/);
+});
+
+test("where is it: results say where each thing is; nothing found says what to do next", () => {
+  const found = render({ initial: { ...ready, locate: { query: "pass", results: [passport] } } });
+  assert.match(found, /<ul class="objectos-list" aria-label="Where it is">/);
+  assert.match(found, /<span>Passport<\/span><span class="objectos-meta">Bedroom · black drawer/);
+  assert.doesNotMatch(found, /Recently placed/, "results replace the recent list");
+  const none = render({ initial: { ...ready, locate: { query: "umbrella", results: [] } } });
+  assert.match(none, /Nothing called “umbrella” yet\. Add it on the right, with where it is\./);
+  const place = render({ initial: { ...ready, locate: { mode: "place", query: "attic", results: [] } } });
+  assert.match(place, /aria-label="The place, room or container"/);
+  assert.match(place, /Nothing is recorded in “attic”\./);
+});
+
+test("an open object says where it is and offers moved, lent, back and missing", () => {
+  const home = render({ initial: { ...ready, detail, whereabouts: placed(printer, { room: "Garage", container: "bench" }) } });
+  assert.match(home, /<section class="objectos-whereabouts" aria-label="Where Workshop printer is">/);
+  assert.match(home, /<strong>Garage · Workshop · bench<\/strong><span class="objectos-meta"> · placed <time[^>]*>1 Jun 2026<\/time>/);
+  assert.match(home, />I moved it<\/button>/);
+  assert.match(home, />Lent to…<\/button>/);
+  assert.match(home, />Mark missing<\/button>/);
+  const out = render({ initial: { ...ready, detail, whereabouts: { ...bank, name: printer.name } } });
+  assert.match(out, /<strong>with Alex<\/strong><span class="objectos-meta"> · since <time[^>]*>1 Mar 2026<\/time>/);
+  assert.match(out, />It&#x27;s back<\/button>/);
+  assert.doesNotMatch(out, />Lent to…</);
+  const lost = render({ initial: { ...ready, detail, whereabouts: placed(printer, { missing: true }) } });
+  assert.match(lost, /<strong>missing<\/strong>/);
+  assert.match(lost, />Found it<\/button>/);
+});
+
+test("Finder is gone from the shell: no screen, no sidebar entry; its commands open ObjectOS", () => {
+  const meta = readFileSync(join(desktop, "src/renderer/lib/moduleMeta.ts"), "utf8");
+  const shell = readFileSync(join(desktop, "src/renderer/main.tsx"), "utf8");
+  assert.doesNotMatch(meta, /id: "finder"/);
+  assert.doesNotMatch(shell, /function FinderView|activeView === "finder"/);
+  assert.match(shell, /finder: \{ module: "object", actionId: "object_os\.open" \}/);
+  const main = readFileSync(join(desktop, "src/main/main.ts"), "utf8");
+  assert.doesNotMatch(main, /saveFinderItems|writeJsonFile\(finderItemsPath, items\)/, "nothing writes Finder's own file any more");
+  assert.match(main, /function loadFinderItems\(\): FinderItem\[\] \{\r?\n  return objectOsHost \? allItems\(objectOsHost\.module\) : \[\];/);
 });

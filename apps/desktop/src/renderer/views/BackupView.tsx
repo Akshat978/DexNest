@@ -78,7 +78,7 @@ export function BackupView({
             <ProgressRing value={100} size={64} color={ACCENT_BACKUP} label={busy ? "…" : "✓"} sub="ready" />
             <div className="flex-1">
               <SectionTitle>Create backup</SectionTitle>
-              <p className="mb-2.5 text-xs text-[#A3A3A3]">Snapshot Vault, Journal, Finance, Finder &amp; settings.</p>
+              <p className="mb-2.5 text-xs text-[#A3A3A3]">Snapshot Vault, Journal, Finance, ObjectOS &amp; settings.</p>
               <div className="flex flex-wrap items-center gap-2">
                 <ActionButton accent={ACCENT_BACKUP} variant="solid" icon={Plus} disabled={busy} onClick={() => void createBackup()}>Backup now</ActionButton>
                 <label className="flex items-center gap-2 text-xs text-[#A3A3A3]">

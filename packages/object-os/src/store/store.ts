@@ -51,6 +51,7 @@ import {
   type SettingsDraft,
   type StockAdjustment,
 } from '../domain/validation.ts';
+import { emptyWhereabouts, type LocatedObject, type Whereabouts } from '../domain/whereabouts.ts';
 import { OBJECT_OS_MIGRATIONS } from './migrations.ts';
 
 export const OBJECT_MIGRATION_MODULE = 'object_os';
@@ -128,6 +129,19 @@ export interface ObjectStore {
   listObjects(filter?: ObjectFilter): ObjectRecord[];
   components(id: string): ObjectRecord[];
   locations(): string[];
+  /** Where an object is; the empty record when nothing was ever set. */
+  whereabouts(objectId: string): Whereabouts;
+  putWhereabouts(w: Whereabouts): void;
+  /** Sets only the object's location line, recording the change. */
+  setLocation(id: string, location: string, now: string): void;
+  /** Every word of `search` must match the name, a place (location, room, container, who has it), a tag or the notes. */
+  locate(filter?: { search?: string; limit?: number }): LocatedObject[];
+  /** What is in a place: its location, room or container matches, or it is a component of an object so named. */
+  inPlace(place: string, limit?: number): LocatedObject[];
+  /** Objects whose place was set most recently, newest first. */
+  recentlyLocated(limit?: number): LocatedObject[];
+  rooms(): string[];
+  allWhereabouts(objectIds: readonly string[] | 'all'): Whereabouts[];
   changes(objectId: string): ObjectChange[];
 
   setState(objectId: string, key: string, value: string, now: string): { removed: boolean };
@@ -406,7 +420,7 @@ export function openObjectStore(db: SqlDatabase, options: { now?: string } = {})
       const files = all('SELECT * FROM obj_files WHERE object_id = ? ORDER BY id', [id]).map(toFile);
       run('DELETE FROM obj_maintenance_parts WHERE maintenance_id IN (SELECT id FROM obj_maintenance WHERE object_id = ?)', [id]);
       run('UPDATE obj_stock_log SET maintenance_id = NULL WHERE maintenance_id IN (SELECT id FROM obj_maintenance WHERE object_id = ?)', [id]);
-      for (const table of ['obj_maintenance', 'obj_schedules', 'obj_modifications', 'obj_settings', 'obj_measurements', 'obj_purchase', 'obj_files', 'obj_state', 'obj_state_log', 'obj_changes', 'obj_tags', 'obj_part_fits']) {
+      for (const table of ['obj_whereabouts', 'obj_maintenance', 'obj_schedules', 'obj_modifications', 'obj_settings', 'obj_measurements', 'obj_purchase', 'obj_files', 'obj_state', 'obj_state_log', 'obj_changes', 'obj_tags', 'obj_part_fits']) {
         run(`DELETE FROM ${table} WHERE object_id = ?`, [id]);
       }
       run('DELETE FROM obj_objects WHERE id = ?', [id]);
@@ -447,6 +461,84 @@ export function openObjectStore(db: SqlDatabase, options: { now?: string } = {})
     return all(`SELECT * FROM obj_objects o ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY o.name COLLATE NOCASE, o.id LIMIT ?`, [...params, limit]).map((r) =>
       toObject(r, tagsOf(String(r.id))),
     );
+  }
+
+  // --- whereabouts ------------------------------------------------------------------
+
+  const toWhereabouts = (r: Row): Whereabouts => ({
+    objectId: String(r.object_id),
+    room: String(r.room),
+    container: String(r.container),
+    lentTo: String(r.lent_to),
+    lentAt: str(r.lent_at),
+    missing: Number(r.missing) === 1,
+    locatedAt: str(r.located_at),
+  });
+
+  function whereabouts(objectId: string): Whereabouts {
+    const row = one('SELECT * FROM obj_whereabouts WHERE object_id = ?', [objectId]);
+    return row ? toWhereabouts(row) : emptyWhereabouts(objectId);
+  }
+
+  function putWhereabouts(w: Whereabouts): void {
+    need(w.objectId);
+    run(
+      `INSERT INTO obj_whereabouts (object_id, room, container, lent_to, lent_at, missing, located_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (object_id) DO UPDATE SET room = excluded.room, container = excluded.container, lent_to = excluded.lent_to,
+         lent_at = excluded.lent_at, missing = excluded.missing, located_at = excluded.located_at`,
+      [w.objectId, w.room, w.container, w.lentTo, w.lentAt, w.missing ? 1 : 0, w.locatedAt],
+    );
+  }
+
+  function setLocation(id: string, location: string, now: string): void {
+    const before = getObject(id);
+    if (!before) throw new ObjectStoreError(`object ${id} does not exist`);
+    if (before.location === location) return;
+    run('UPDATE obj_objects SET location = ?, updated_at = ? WHERE id = ?', [location, now, id]);
+    change(id, 'location', before.location || null, location || null, now);
+  }
+
+  const LOCATED = 'SELECT o.* FROM obj_objects o LEFT JOIN obj_whereabouts w ON w.object_id = o.id';
+  const located = (rows: Row[]): LocatedObject[] => rows.map((r) => ({ ...toObject(r, tagsOf(String(r.id))), whereabouts: whereabouts(String(r.id)) }));
+  const cap = (limit: number | undefined, fallback: number) => Math.max(1, Math.min(limit ?? fallback, 5000));
+
+  function locate(filter: { search?: string; limit?: number } = {}): LocatedObject[] {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    for (const term of (filter.search ?? '').toLowerCase().split(/\s+/).filter(Boolean).slice(0, 8)) {
+      where.push(
+        `(o.name LIKE ? ESCAPE '\\' OR o.location LIKE ? ESCAPE '\\' OR o.notes LIKE ? ESCAPE '\\' OR o.make LIKE ? ESCAPE '\\' OR o.model LIKE ? ESCAPE '\\'
+          OR w.room LIKE ? ESCAPE '\\' OR w.container LIKE ? ESCAPE '\\' OR w.lent_to LIKE ? ESCAPE '\\'
+          OR EXISTS (SELECT 1 FROM obj_tags t WHERE t.object_id = o.id AND t.tag LIKE ? ESCAPE '\\'))`,
+      );
+      const p = likeEscape(term);
+      params.push(p, p, p, p, p, p, p, p, p);
+    }
+    return located(all(`${LOCATED} ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY o.name COLLATE NOCASE, o.id LIMIT ?`, [...params, cap(filter.limit, 50)]));
+  }
+
+  function inPlace(place: string, limit?: number): LocatedObject[] {
+    const p = likeEscape(place.trim().toLowerCase());
+    return located(
+      all(
+        `${LOCATED} LEFT JOIN obj_objects parent ON parent.id = o.parent_id
+         WHERE o.location LIKE ? ESCAPE '\\' OR w.room LIKE ? ESCAPE '\\' OR w.container LIKE ? ESCAPE '\\' OR parent.name LIKE ? ESCAPE '\\'
+         ORDER BY o.name COLLATE NOCASE, o.id LIMIT ?`,
+        [p, p, p, p, cap(limit, 100)],
+      ),
+    );
+  }
+
+  const recentlyLocated = (limit?: number) =>
+    located(all(`${LOCATED} WHERE w.located_at IS NOT NULL ORDER BY w.located_at DESC, o.id LIMIT ?`, [cap(limit, 8)]));
+
+  const rooms = () => all<{ room: string }>("SELECT DISTINCT room FROM obj_whereabouts WHERE room <> '' ORDER BY room COLLATE NOCASE").map((r) => r.room);
+
+  function allWhereabouts(objectIds: readonly string[] | 'all'): Whereabouts[] {
+    const rows = all('SELECT * FROM obj_whereabouts ORDER BY object_id').map(toWhereabouts);
+    if (objectIds === 'all') return rows;
+    const wanted = new Set(objectIds);
+    return rows.filter((w) => wanted.has(w.objectId));
   }
 
   // --- state ---------------------------------------------------------------------
@@ -781,6 +873,7 @@ export function openObjectStore(db: SqlDatabase, options: { now?: string } = {})
       ),
       measurements: inIds('SELECT * FROM obj_measurements WHERE object_id = ? ORDER BY id').map(toMeasurement),
       purchases: inIds('SELECT * FROM obj_purchase WHERE object_id = ?').map(toPurchase),
+      whereabouts: allWhereabouts(objectIds),
       files: inIds('SELECT * FROM obj_files WHERE object_id = ? ORDER BY id').map(toFile),
     };
   }
@@ -867,6 +960,7 @@ export function openObjectStore(db: SqlDatabase, options: { now?: string } = {})
           f.id, f.objectId, f.role, f.name, f.storedName, f.sizeBytes, f.type, f.sha256, f.addedAt,
         ]);
       }
+      for (const w of take(data.whereabouts ?? [])) putWhereabouts(w);
       for (const p of take(data.purchases)) {
         run('INSERT INTO obj_purchase (object_id, purchased_on, price_amount, price_currency, shop, warranty_until, receipt_file_id, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [
           p.objectId, p.purchasedOn, p.price?.amount ?? null, p.price?.currency ?? null, p.shop, p.warrantyUntil, p.receiptFileId, p.updatedAt,
@@ -924,6 +1018,14 @@ export function openObjectStore(db: SqlDatabase, options: { now?: string } = {})
     listObjects,
     components: (id) => listObjects({ parentId: id }),
     locations: () => all<{ location: string }>("SELECT DISTINCT location FROM obj_objects WHERE location <> '' ORDER BY location COLLATE NOCASE").map((r) => r.location),
+    whereabouts,
+    putWhereabouts,
+    setLocation,
+    locate,
+    inPlace,
+    recentlyLocated,
+    rooms,
+    allWhereabouts,
     changes: (objectId) => all('SELECT * FROM obj_changes WHERE object_id = ? ORDER BY seq', [objectId]).map((r) => ({ objectId, field: r.field as ObjectChange['field'], from: str(r.from_value), to: str(r.to_value), at: String(r.at) })),
 
     setState,

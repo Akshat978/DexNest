@@ -37,7 +37,12 @@ describe('export file', () => {
   it('round-trips unchanged', () => {
     const r = roundTrip(sample());
     expect(errorsOf(r)).toEqual([]);
-    expect(r.ok && r.value).toEqual(sample());
+    // An export written before whereabouts existed has none; it reads back with an empty list.
+    expect(r.ok && r.value).toEqual({ ...sample(), whereabouts: [] });
+    const placed = { ...sample(), whereabouts: [{ objectId: sample().objects[0]!.id, room: 'Office', container: 'shelf', lentTo: '', lentAt: null, missing: false, locatedAt: '2026-05-01T00:00:00.000Z' }] };
+    const back = roundTrip(placed);
+    expect(back.ok && back.value.whereabouts).toEqual(placed.whereabouts);
+    expect(errorsOf(parseExport({ ...placed, whereabouts: [{ ...placed.whereabouts[0], objectId: 'ZZZZZZZZ' }] })).length).toBeGreaterThan(0);
     expect(zipPathOf(sample().files[0]!)).toBe('files/7K3F9QXM/fil_photo001-front.jpg');
   });
 

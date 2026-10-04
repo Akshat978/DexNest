@@ -20,7 +20,7 @@ export function computePinId(input: PinInput): string {
 export function pinModuleToView(module: string): ViewId {
   const map: Record<string, ViewId> = {
     command: "command", clipboard: "clipboard", drop: "drop", tools: "tools", vault: "vault",
-    search: "search", capture: "capture", journal: "journal", calendar: "calendar", finder: "finder",
+    search: "search", capture: "capture", journal: "journal", calendar: "calendar", finder: "object",
     finance: "finance", dev: "dev", deck: "deck", heatmap: "heatmap", backup: "backup",
     external_devices: "devices", timetable: "timetable", utilities: "utilities", news: "news"
   };

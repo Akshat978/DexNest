@@ -539,3 +539,123 @@ button.objectos-item:hover {
   font-size: 0.875rem;
   line-height: 1.55;
 }
+
+/* --- Where is it (what Finder did) ---------------------------------------------------- */
+.objectos-locate__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.objectos-locate__head h3 {
+  margin: 0;
+}
+
+.objectos-locate__head .objectos-meta {
+  margin-left: auto;
+}
+
+.objectos-locate__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(16rem, 2fr);
+  gap: var(--space-5);
+  align-items: start;
+}
+
+@media (max-width: 1000px) {
+  .objectos-locate__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.objectos-locate__find,
+.objectos-locate__add {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.objectos-locate__modes,
+.objectos-locate__rooms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.objectos-locate__label {
+  margin: var(--space-2) 0 0;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.6875rem;
+}
+
+.objectos-chip {
+  padding: var(--space-1) var(--space-3);
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.objectos-chip:hover,
+.objectos-chip[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent-object) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent-object) 10%, transparent);
+  color: var(--text);
+}
+
+.objectos-chip:focus-visible {
+  outline: 2px solid var(--accent-object);
+  outline-offset: 2px;
+}
+
+.objectos-locate__add label,
+.objectos-whereabouts__form label {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+.objectos-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.objectos-whereabouts {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--accent-object) 25%, var(--border));
+  background: color-mix(in srgb, var(--accent-object) 5%, transparent);
+}
+
+.objectos-whereabouts__where {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0;
+}
+
+.objectos-whereabouts__form {
+  display: grid;
+  gap: var(--space-2);
+  max-width: 28rem;
+}
+
+.objectos-send {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+
+.objectos-send .objectos-hint {
+  flex-basis: 100%;
+  margin: 0;
+}

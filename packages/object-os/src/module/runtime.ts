@@ -39,6 +39,7 @@ import {
   parseStockAdjustment,
   type Parsed,
 } from '../domain/validation.ts';
+import { parseLocateInput, parseQuery, type LocatedObject, type Whereabouts } from '../domain/whereabouts.ts';
 import { createObjectEngine, type ExportBundle, type ObjectEngine, type OpenDecision, type ReminderOutcome } from '../engine/engine.ts';
 import type { ImportArchive, ObjectFilePort } from '../files/port.ts';
 import { OBJECT_REMINDER_JOB } from '../manifest.ts';
@@ -134,6 +135,18 @@ export interface ObjectOsModule {
   attentionView(): AttentionView;
   settingsDiff(input: unknown): Parsed<SettingsDiff>;
   locations(): string[];
+
+  /** A thing and where it is, in one step: an object with only a name and a place. */
+  quickAdd(input: unknown): Parsed<LocatedObject>;
+  /** It moved, was lent, came back, went missing or was found. */
+  locateObject(input: unknown): Parsed<LocatedObject>;
+  /** "Where is my…": objects matching the words, with where each one is. */
+  findObjects(query: unknown): Parsed<LocatedObject[]>;
+  /** "What is in…": objects whose place matches. */
+  whatIsIn(place: unknown): Parsed<LocatedObject[]>;
+  recentlyLocated(limit?: number): LocatedObject[];
+  rooms(): string[];
+  whereabouts(id: unknown): Parsed<LocatedObject>;
 }
 
 const fail = <T>(...errors: string[]): Parsed<T> => ({ ok: false, errors });
@@ -255,6 +268,84 @@ export function createObjectOsModule(options: ObjectOsModuleOptions): ObjectOsMo
       });
       audit('object_os.object.save', { objectId: object.id, created: true });
       return { ok: true, value: object };
+    });
+  }
+
+  // --- where things are --------------------------------------------------------
+
+  const withWhereabouts = (object: ObjectRecord): LocatedObject => ({ ...object, whereabouts: store.whereabouts(object.id) });
+
+  function quickAdd(input: unknown): Parsed<LocatedObject> {
+    if (!isObj(input)) return fail('quick add must be an object');
+    const parsed = parseObjectInput({ name: input.name, location: input.location, notes: input.notes, tags: input.tags, category: input.category ?? 'other' });
+    if (!parsed.ok) return parsed;
+    const at = iso();
+    return guarded(() => {
+      const id = engine.newObjectId();
+      const place = parseLocateInput({ objectId: id, room: input.room, container: input.container, lentTo: input.lentTo, lentAt: input.lentAt, missing: input.missing });
+      if (!place.ok) return place;
+      const lent = Boolean(place.value.lentTo);
+      const object = store.transaction(() => {
+        const o = store.createObject(id, { ...parsed.value, status: lent ? 'lent_out' : parsed.value.status }, at);
+        store.putWhereabouts({
+          objectId: id,
+          room: place.value.room ?? '',
+          container: place.value.container ?? '',
+          lentTo: place.value.lentTo ?? '',
+          lentAt: lent ? (place.value.lentAt ?? at) : null,
+          missing: place.value.missing === true,
+          locatedAt: at,
+        });
+        appendObjectEvent(ev, 'object.created', { subject: o.id, at, payload: { hasParent: false } });
+        appendObjectEvent(ev, 'object.located', { subject: o.id, at, payload: { lent, missing: place.value.missing === true } });
+        return o;
+      });
+      audit('object_os.object.save', { objectId: object.id, created: true });
+      return { ok: true, value: withWhereabouts(object) };
+    });
+  }
+
+  function locateObject(input: unknown): Parsed<LocatedObject> {
+    const parsed = parseLocateInput(input);
+    if (!parsed.ok) return parsed;
+    const p = parsed.value;
+    const at = iso();
+    return guarded(() => {
+      const before = store.getObject(p.objectId);
+      if (!before) return fail(`object ${p.objectId} does not exist`);
+      const object = store.transaction(() => {
+        const was = store.whereabouts(p.objectId);
+        const moved = p.location !== undefined || p.room !== undefined || p.container !== undefined;
+        const next: Whereabouts = {
+          ...was,
+          room: p.room ?? was.room,
+          container: p.container ?? was.container,
+          // Putting it somewhere, or getting it back, means it is no longer missing.
+          missing: p.missing ?? (moved || p.returned ? false : was.missing),
+          locatedAt: at,
+        };
+        let status = before.status;
+        if (p.lentTo) {
+          next.lentTo = p.lentTo;
+          // Lending it again to the same person keeps the first date.
+          next.lentAt = p.lentAt ?? (was.lentTo === p.lentTo && was.lentAt ? was.lentAt : at);
+          status = 'lent_out';
+        } else if (p.returned) {
+          next.lentTo = '';
+          next.lentAt = null;
+          if (before.status === 'lent_out') status = 'active';
+        }
+        if (p.location !== undefined) store.setLocation(p.objectId, p.location, at);
+        if (status !== before.status) {
+          store.setStatus(p.objectId, status, at);
+          appendObjectEvent(ev, 'object.status_changed', { subject: p.objectId, at, payload: { from: before.status, to: status } });
+        }
+        store.putWhereabouts(next);
+        appendObjectEvent(ev, 'object.located', { subject: p.objectId, at, payload: { lent: status === 'lent_out', missing: next.missing } });
+        return store.getObject(p.objectId) as ObjectRecord;
+      });
+      audit('object_os.object.locate', { objectId: object.id });
+      return { ok: true, value: withWhereabouts(object) };
     });
   }
 
@@ -686,5 +777,22 @@ export function createObjectOsModule(options: ObjectOsModuleOptions): ObjectOsMo
     attentionView,
     settingsDiff,
     locations: () => store.locations(),
+    quickAdd,
+    locateObject,
+    findObjects: (query) => {
+      const q = parseQuery(query);
+      return q ? { ok: true, value: store.locate({ search: q }) } : fail('say what to look for');
+    },
+    whatIsIn: (place) => {
+      const q = parseQuery(place);
+      return q ? { ok: true, value: store.inPlace(q) } : fail('say which place');
+    },
+    recentlyLocated: (limit) => store.recentlyLocated(limit),
+    rooms: () => store.rooms(),
+    whereabouts: (id) => {
+      const objectId = objectIdArg(id);
+      const object = objectId ? store.getObject(objectId) : undefined;
+      return object ? { ok: true, value: { ...object, whereabouts: store.whereabouts(object.id) } } : fail('id is not an object id');
+    },
   };
 }

@@ -188,6 +188,11 @@ contextBridge.exposeInMainWorld("dexNest", {
   objectOsAttention: () => ipcRenderer.invoke("dexnest:object-os-attention"),
   objectOsSettingsDiff: (query: unknown) => ipcRenderer.invoke("dexnest:object-os-settings-diff", query),
   objectOsLocations: () => ipcRenderer.invoke("dexnest:object-os-locations"),
+  objectOsFind: (query: string) => ipcRenderer.invoke("dexnest:object-os-find", query),
+  objectOsWhatIsIn: (place: string) => ipcRenderer.invoke("dexnest:object-os-what-is-in", place),
+  objectOsRecentlyLocated: () => ipcRenderer.invoke("dexnest:object-os-recently-located"),
+  objectOsRooms: () => ipcRenderer.invoke("dexnest:object-os-rooms"),
+  objectOsWhereabouts: (id: string) => ipcRenderer.invoke("dexnest:object-os-whereabouts", id),
   objectOsPhoto: (fileId: string) => ipcRenderer.invoke("dexnest:object-os-photo", fileId),
   // --- Projects (docs/modules/projects/PLAN.md) ----------------------------
   // Every channel is checked against the trusted main frame in projectsHost.ts.

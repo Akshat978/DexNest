@@ -83,7 +83,7 @@ describe('migrations and manifest', () => {
     dbs.push(t2);
     const again = openObjectStore(t2.db, { now: NOW });
     expect(again.exportRows('all', NOW)).toEqual(before);
-    expect(t2.db.prepare("SELECT version FROM dexnest_module_migrations WHERE module = 'object_os' ORDER BY version").all()).toEqual([{ version: 1 }, { version: 2 }]);
+    expect(t2.db.prepare("SELECT version FROM dexnest_module_migrations WHERE module = 'object_os' ORDER BY version").all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }]);
   });
 });
 

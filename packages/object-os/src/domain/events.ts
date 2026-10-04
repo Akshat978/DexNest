@@ -17,6 +17,7 @@ export const OBJECT_EVENT_TYPES = [
   'object.created',
   'object.updated',
   'object.moved',
+  'object.located',
   'object.status_changed',
   'object.deleted',
   'object.state_set',
@@ -48,6 +49,8 @@ export interface ObjectEventPayloads {
   'object.created': { hasParent: boolean };
   'object.updated': Record<string, never>;
   'object.moved': { parentId: string | null };
+  /** Its place was set. Flags only: never the place, the room or who has it. */
+  'object.located': { lent: boolean; missing: boolean };
   'object.status_changed': { from: ObjectStatus; to: ObjectStatus };
   'object.deleted': { childrenDetached: number; filesRemoved: number };
   'object.state_set': { removed: boolean };
@@ -74,6 +77,7 @@ export const AUDIT_SUMMARIES = {
   'object_os.object.save': 'ObjectOS object saved',
   'object_os.object.set_status': 'ObjectOS object status changed',
   'object_os.object.move': 'ObjectOS object moved',
+  'object_os.object.locate': 'ObjectOS object located',
   'object_os.object.delete': 'ObjectOS object deleted',
   'object_os.state.set': 'ObjectOS state updated',
   'object_os.schedule.save': 'ObjectOS maintenance schedule saved',

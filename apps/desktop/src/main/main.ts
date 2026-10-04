@@ -28,6 +28,10 @@ import { createSkillConstellationHost, type SkillConstellationHost } from "./ski
 import { createRealityRpgHost, runRealityRpgAction, type RealityRpgHost } from "./realityRpgHost.js";
 import { createGhostOsHost, runGhostOsAction, type GhostOsHost } from "./ghostOsHost.js";
 import { createObjectOsHost, objectJournalLine, runObjectOsAction, type ObjectOsHost } from "./objectOsHost.js";
+import {
+  allItems, changePlace, findItems, forgetItem, itemsIn, migrateFinderItems, rememberItem, reviseItem,
+  type LegacyFinderItem, type LocatedItem, type LocatedStatus
+} from "./objectLocate.js";
 import { activeProfileAfterDemoSeed } from "./demoFinance.js";
 import { DEFAULT_OCR_DEVICE, resolveOcrDevice } from "./ocrDevice.js";
 import { createProjectsHost, type ProjectsHost } from "./projectsHost.js";
@@ -208,7 +212,10 @@ const newsSettingsPath = join(settingsRoot, "news-settings.json");
 const newsCachePath = join(settingsRoot, "news-cache.json");
 const nudgesPath = join(settingsRoot, "nudges.json");
 const nudgeSettingsPath = join(settingsRoot, "nudge-settings.json");
+// Finder's own file. Read once to move its items into ObjectOS; nothing writes it any more.
 const finderItemsPath = join(settingsRoot, "finder-items.json");
+const finderBackupPath = join(settingsRoot, "finder-items.backup-before-objectos.json");
+const finderMigratedPath = join(settingsRoot, "finder-items.migrated.json");
 const financeTransactionsPath = join(settingsRoot, "finance-transactions.json");
 const financeRecurringPath = join(settingsRoot, "finance-recurring.json");
 // Where Autopilot sends notifications, and when it keeps quiet. Holds the
@@ -1906,33 +1913,11 @@ interface NudgeSettings {
   backupReminderAfterDays: number;
 }
 
-type FinderItemStatus = "at_home" | "lent_out" | "missing" | "archived";
-type FinderItemConfidence = "sure" | "maybe" | "old";
-
-interface FinderItem {
-  id: string;
-  itemName: string;
-  location: string;
-  room?: string;
-  container?: string;
-  notes?: string;
-  tags: string[];
-  status: FinderItemStatus;
-  lentTo?: string | null;
-  /**
-   * When it was lent out.
-   *
-   * Recorded separately from updatedAt, which moves whenever anything about
-   * the item is edited. Counting from updatedAt would reset the clock every
-   * time someone corrected a typo in the notes, so a thing lent in March could
-   * read as lent this morning.
-   */
-  lentAt?: string | null;
-  photoPath?: string | null;
-  confidence?: FinderItemConfidence;
-  createdAt: string;
-  updatedAt: string;
-}
+// A thing and where it is. These are ObjectOS objects now (see objectLocate.ts);
+// the names are kept because voice, Capture, the search index and the nudges
+// were written against them.
+type FinderItemStatus = LocatedStatus;
+type FinderItem = LocatedItem;
 
 interface FinderItemInput {
   id?: string;
@@ -1945,8 +1930,6 @@ interface FinderItemInput {
   status?: FinderItemStatus;
   lentTo?: string | null;
   lentAt?: string | null;
-  photoPath?: string | null;
-  confidence?: FinderItemConfidence;
   query?: string;
   itemId?: string;
 }
@@ -3211,6 +3194,12 @@ function createBackup(optionsInput: Partial<BackupOptions> = {}, source: DexNest
       if (options.includeDropFiles) {
         addPathToZip(zip, dropFilesRoot, "files/drop");
       }
+      // ObjectOS's records are in the database, which is always in the backup;
+      // its attached files go with them, or a restore would list files that are not there.
+      const objectFilesRoot = join(filesRoot, "objects");
+      if (existsSync(objectFilesRoot)) {
+        addPathToZip(zip, objectFilesRoot, "files/objects");
+      }
     }
 
     if (options.includeIndex) {
@@ -3284,7 +3273,6 @@ function dataManagementCatalog(): DataManagementCategory[] {
     { id: "calendar", label: "Calendar", description: "Calendar events and reminders/nudges. Keeps reminder settings.", sensitive: false, recordFiles: [calendarEventsPath, nudgesPath], fileRoots: [] },
     { id: "capture", label: "Capture", description: "Capture items and managed capture files.", sensitive: true, recordFiles: [captureItemsPath], fileRoots: [capturesRoot] },
     { id: "finance", label: "Finance", description: "Transactions, recurring items, profiles, and managed receipt files. Keeps Finance settings.", sensitive: true, recordFiles: [financeTransactionsPath, financeRecurringPath, financeProfilesPath], fileRoots: [receiptsRoot] },
-    { id: "finder", label: "Finder", description: "Saved Finder items.", sensitive: false, recordFiles: [finderItemsPath], fileRoots: [] },
     { id: "dev", label: "Dev projects/history/profiles", description: "Dev projects, command run history, and pinned actions.", sensitive: false, recordFiles: [projectsConfigPath, commandResultsPath, pinnedActionsPath], fileRoots: [] },
     { id: "deck", label: "Deck routines/export status", description: "Deck routines and export status records.", sensitive: false, recordFiles: [routinesPath], fileRoots: [] },
     { id: "timetable", label: "Timetable", description: "Timetable blocks, weekly status, and templates. Defaults are recreated after deletion.", sensitive: false, recordFiles: [timetablePath], fileRoots: [] },
@@ -5796,7 +5784,7 @@ function findPinByName(pins: DexNestPin[], name: string): DexNestPin | undefined
 function moduleToView(module: string): string {
   const map: Record<string, string> = {
     command: "command", clipboard: "clipboard", drop: "drop", tools: "tools", vault: "vault",
-    search: "search", capture: "capture", journal: "journal", calendar: "calendar", finder: "finder",
+    search: "search", capture: "capture", journal: "journal", calendar: "calendar", finder: "object",
     finance: "finance", dev: "dev", deck: "deck", heatmap: "heatmap", backup: "backup",
     external_devices: "devices", timetable: "timetable", utilities: "utilities", weather: "command", news: "news"
   };
@@ -5923,6 +5911,22 @@ function clearRecordArray<T extends { id: string }>(
   return existing.length - kept.length;
 }
 
+/** Removes the demo things-and-places from ObjectOS, by the ids the seed recorded. */
+function clearDemoLocatedItems(manifest: DemoManifest): number {
+  if (!objectOsHost) return 0;
+  let removed = 0;
+  for (const id of manifest.modules["finder.items"]?.recordIds ?? []) {
+    try {
+      forgetItem(objectOsHost.module, id);
+      removed += 1;
+    } catch {
+      // Already deleted by hand: nothing to clear.
+    }
+  }
+  if (removed) scheduleSearchReindex();
+  return removed;
+}
+
 interface DemoModuleResult { module: string; label: string; records: number; files: number; status: "seeded" | "cleared" | "skipped" | "failed"; note?: string }
 
 // Returns the list of modules + counts a seed run WOULD create (no writes).
@@ -6002,7 +6006,7 @@ function seedDemoData(optionsInput: Partial<DemoSeedOptions>, source: DexNestAct
       { module: "vault", actionId: "vault.import_document", summary: "Imported Passport Demo into Vault." },
       { module: "finance", actionId: "finance.create_transaction", summary: "Logged a demo groceries transaction." },
       { module: "journal", actionId: "journal.save_entry", summary: "Saved today's demo journal entry." },
-      { module: "finder", actionId: "finder.create_item", summary: "Remembered where the demo passport is." },
+      { module: "object_os", actionId: "finder.create_item", summary: "Remembered where the demo passport is." },
       { module: "calendar", actionId: "calendar.create_event", summary: "Added a demo meeting for tomorrow." },
       { module: "backup", actionId: "backup.create", summary: "Created a demo local backup." }
     ];
@@ -6155,14 +6159,19 @@ function seedDemoData(optionsInput: Partial<DemoSeedOptions>, source: DexNestAct
       ];
       const capCount = seedRecordArray("capture.items", loadCaptureItems, saveCaptureItems, captures, options, manifest);
 
-      const finder: FinderItem[] = [
-        { id: createId("demo-finder"), itemName: "Passport", location: "black drawer", room: "Bedroom", container: "black drawer", notes: "Demo: passport is in the black drawer.", tags: ["documents", "demo"], status: "at_home", lentTo: null, photoPath: null, confidence: "sure", createdAt: nowIso, updatedAt: nowIso },
-        { id: createId("demo-finder"), itemName: "Charger", location: "beside bed", room: "Bedroom", container: "nightstand", notes: "Demo: charger beside the bed.", tags: ["electronics", "demo"], status: "at_home", lentTo: null, photoPath: null, confidence: "sure", createdAt: nowIso, updatedAt: nowIso },
-        { id: createId("demo-finder"), itemName: "Keys", location: "kitchen drawer", room: "Kitchen", container: "kitchen drawer", notes: "Demo: keys in the kitchen drawer.", tags: ["demo"], status: "at_home", lentTo: null, photoPath: null, confidence: "maybe", createdAt: nowIso, updatedAt: nowIso },
-        { id: createId("demo-finder"), itemName: "Headphones", location: "desk drawer", room: "Office", container: "desk drawer", notes: "Demo: headphones in desk drawer.", tags: ["electronics", "demo"], status: "at_home", lentTo: null, photoPath: null, confidence: "sure", createdAt: nowIso, updatedAt: nowIso },
-        { id: createId("demo-finder"), itemName: "Power bank", location: "with Alex", room: undefined, container: undefined, notes: "Demo: lent the power bank to Alex.", tags: ["demo", "lent"], status: "lent_out", lentTo: "Alex", photoPath: null, confidence: "sure", createdAt: nowIso, updatedAt: nowIso }
+      // Things and where they are: ObjectOS objects, remembered by id so they can be cleared again.
+      const finder: { itemName: string; location: string; room?: string; container?: string; notes: string; tags: string[]; lentTo?: string }[] = [
+        { itemName: "Passport", location: "black drawer", room: "Bedroom", container: "black drawer", notes: "Demo: passport is in the black drawer.", tags: ["documents", "demo"] },
+        { itemName: "Charger", location: "beside bed", room: "Bedroom", container: "nightstand", notes: "Demo: charger beside the bed.", tags: ["electronics", "demo"] },
+        { itemName: "Keys", location: "kitchen drawer", room: "Kitchen", container: "kitchen drawer", notes: "Demo: keys in the kitchen drawer.", tags: ["demo"] },
+        { itemName: "Headphones", location: "desk drawer", room: "Office", container: "desk drawer", notes: "Demo: headphones in desk drawer.", tags: ["electronics", "demo"] },
+        { itemName: "Power bank", location: "", notes: "Demo: lent the power bank to Alex.", tags: ["demo", "lent"], lentTo: "Alex" }
       ];
-      const finderCount = seedRecordArray("finder.items", loadFinderItems, saveFinderItems, finder, options, manifest);
+      if (options.replaceExisting) clearDemoLocatedItems(manifest);
+      const finderIds = finder.map((item) => rememberItem(locator(), item).id);
+      manifest.modules["finder.items"] = { records: finderIds.length, recordIds: finderIds };
+      scheduleSearchReindex();
+      const finderCount = finderIds.length;
       push("captureFinder", "Capture / Finder", capCount + finderCount, 1);
     } catch (error) {
       push("captureFinder", "Capture / Finder", 0, 0, "failed", error instanceof Error ? error.message : "failed");
@@ -6417,7 +6426,7 @@ function clearDemoData(source: DexNestActionTrigger): { ok: boolean; results: De
   add("tools", "Tools", clearRecordArray("tools.outputs", loadToolsOutputs, saveToolsOutputs, manifest));
   add("vault", "Vault", clearRecordArray("vault.documents", loadVaultDocuments, saveVaultDocuments, manifest) + clearRecordArray("vault.ocrJobs", loadVaultOcrJobs, saveVaultOcrJobs, manifest));
   add("journalCalendar", "Journal / Calendar", clearRecordArray("journal.entries", loadJournalEntries, saveJournalEntries, manifest) + clearRecordArray("calendar.events", loadCalendarEvents, saveCalendarEvents, manifest));
-  add("captureFinder", "Capture / Finder", clearRecordArray("capture.items", loadCaptureItems, saveCaptureItems, manifest) + clearRecordArray("finder.items", loadFinderItems, saveFinderItems, manifest));
+  add("captureFinder", "Capture / Finder", clearRecordArray("capture.items", loadCaptureItems, saveCaptureItems, manifest) + clearDemoLocatedItems(manifest));
   add("command", "Nudges", clearRecordArray("command.nudges", loadNudges, saveNudges, manifest));
   add("finance", "Finance txns/recurring", clearRecordArray("finance.transactions", loadFinanceTransactions, saveFinanceTransactions, manifest) + clearRecordArray("finance.recurring", loadFinanceRecurring, saveFinanceRecurring, manifest));
   add("heatmap", "Heatmap", clearRecordArray("heatmap.events", loadHeatmapEvents, saveHeatmapEvents, manifest) + clearRecordArray("heatmap.goals", loadHeatmapGoals, saveHeatmapGoals, manifest));
@@ -9046,14 +9055,52 @@ function saveNudges(items: Nudge[]): Nudge[] {
   return writeJsonFile(nudgesPath, items);
 }
 
+/** Every object with where it is, from ObjectOS. Empty while ObjectOS is not running. */
 function loadFinderItems(): FinderItem[] {
-  return readJsonFile<FinderItem[]>(finderItemsPath, []);
+  return objectOsHost ? allItems(objectOsHost.module) : [];
 }
 
-function saveFinderItems(items: FinderItem[]): FinderItem[] {
-  const saved = writeJsonFile(finderItemsPath, items);
-  scheduleSearchReindex();
-  return saved;
+function locator() {
+  if (!objectOsHost) throw new Error("ObjectOS is not running, so there is nowhere to keep that.");
+  return objectOsHost.module;
+}
+
+/**
+ * The old Finder file, moved into ObjectOS once. The file is copied aside
+ * first; it is renamed only when every item made it, and anything that did
+ * not is left in it for the next start.
+ */
+function migrateFinderFile(): void {
+  if (!objectOsHost || !existsSync(finderItemsPath)) return;
+  try {
+    const items = readJsonFile<LegacyFinderItem[]>(finderItemsPath, []);
+    if (!Array.isArray(items) || items.length === 0) {
+      renameSync(finderItemsPath, finderMigratedPath);
+      return;
+    }
+    if (!existsSync(finderBackupPath)) copyFileSync(finderItemsPath, finderBackupPath);
+    const result = migrateFinderItems(objectOsHost.module, items);
+    if (result.failed.length === 0) {
+      renameSync(finderItemsPath, finderMigratedPath);
+    } else {
+      const failedNames = new Set(result.failed.map((f) => f.name));
+      writeJsonFile(finderItemsPath, items.filter((item) => failedNames.has((item.itemName ?? "").trim() || "Untitled item")));
+    }
+    localDb.appendActionEvent({
+      module: "ObjectOS",
+      actionId: "object_os.object.locate",
+      eventType: "finder_migrated",
+      status: result.failed.length === 0 ? "success" : "failed",
+      source: "system",
+      summary: `Moved ${result.moved} Finder item${result.moved === 1 ? "" : "s"} into ObjectOS.`,
+      metadataJson: { moved: result.moved, failed: result.failed.length },
+      errorMessage: result.failed.length ? `${result.failed.length} could not be moved and stay in the Finder file.` : null,
+      durationMs: 0
+    });
+    scheduleSearchReindex();
+  } catch (error) {
+    console.warn("[object-os] moving Finder items failed", error);
+  }
 }
 
 // --- Finance profiles (Finance-module-only; not global app profiles) ----------
@@ -12748,16 +12795,17 @@ function buildSearchIndexRecords(): SearchIndexRecord[] {
 
   for (const item of loadFinderItems()) {
     records.push({
-      id: `finder-item-${item.id}`,
-      sourceModule: "finder",
-      entityType: "finder_item",
+      id: `object-${item.id}`,
+      // Objects from ObjectOS, by name and place. "object" is the view they open in.
+      sourceModule: "object",
+      entityType: "object",
       entityId: item.id,
       title: item.itemName,
       filePath: null,
       fileType: "metadata",
       sizeBytes: null,
       textPreview: previewText(textBucket(item.location, item.room, item.container, item.notes)),
-      tags: [...item.tags, item.status, item.confidence ?? "sure"].filter(Boolean),
+      tags: [...item.tags, item.status].filter(Boolean),
       category: item.room || item.container || item.location,
       createdAt: item.createdAt,
       updatedAt: item.updatedAt,
@@ -13964,7 +14012,7 @@ function generatedNudgeCandidates(settings: NudgeSettings): Nudge[] {
         id: `finder-lent-${item.id}-${item.lentAt.slice(0, 10)}`,
         title: "Still lent out",
         message: `${item.itemName}${who ? ` is with ${who}` : ""} · ${daysOut} days`,
-        sourceModule: "finder",
+        sourceModule: "object",
         sourceId: item.id,
         date: today,
         time: null,
@@ -14202,7 +14250,6 @@ function finderState() {
   const items = loadFinderItems().sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
   return {
     items,
-    itemsPath: finderItemsPath,
     statusCounts: {
       at_home: items.filter((item) => item.status === "at_home").length,
       lent_out: items.filter((item) => item.status === "lent_out").length,
@@ -14222,7 +14269,7 @@ function logFinderEvent(
   errorMessage: string | null = null
 ): void {
   localDb.appendActionEvent({
-    module: "DexNest Finder",
+    module: "ObjectOS",
     actionId,
     eventType: "finder_action",
     status,
@@ -14234,33 +14281,6 @@ function logFinderEvent(
   });
 }
 
-function finderItemMatches(item: FinderItem, query: string, status = "all"): boolean {
-  const normalizedQuery = query.trim().toLowerCase();
-  const matchesStatus = status === "all" || item.status === status;
-  if (!matchesStatus) {
-    return false;
-  }
-  if (!normalizedQuery) {
-    return true;
-  }
-
-  return [
-    item.itemName,
-    item.location,
-    item.room ?? "",
-    item.container ?? "",
-    item.tags.join(" ")
-  ].join(" ").toLowerCase().includes(normalizedQuery);
-}
-
-function reverseLookupMatches(item: FinderItem, query: string): boolean {
-  const normalizedQuery = query.trim().toLowerCase();
-  if (!normalizedQuery) {
-    return false;
-  }
-
-  return [item.location, item.room ?? "", item.container ?? ""].join(" ").toLowerCase().includes(normalizedQuery);
-}
 
 function financeMonthKey(value: string): string {
   return value.slice(0, 7);
@@ -18845,9 +18865,11 @@ async function runCalendarAction(action: DexNestActionDefinition, source: DexNes
         calendar: "calendar",
         capture: "capture",
         finance: "finance",
-        // Loans live in Finder, and a nudge that opened the calendar instead
+        // Loans live in ObjectOS, and a nudge that opened the calendar instead
         // would be asking someone to go and find the thing it just mentioned.
-        finder: "finder",
+        // "finder" is what nudges made before the merge carry.
+        finder: "object",
+        object: "object",
         journal: "journal",
         vault: "vault"
       };
@@ -18959,51 +18981,57 @@ async function runCalendarAction(action: DexNestActionDefinition, source: DexNes
   return null;
 }
 
-function normalizeFinderItem(input: FinderItemInput, existing?: FinderItem): FinderItem {
-  const now = new Date().toISOString();
-  return {
-    id: input.id || existing?.id || createId("finder-item"),
-    itemName: input.itemName?.trim() || existing?.itemName || "Untitled item",
-    location: input.location?.trim() || existing?.location || "Unknown location",
-    room: input.room?.trim() || existing?.room || "",
-    container: input.container?.trim() || existing?.container || "",
-    notes: input.notes ?? existing?.notes ?? "",
-    tags: parseTagList(input.tags ?? existing?.tags),
-    status: input.status ?? existing?.status ?? "at_home",
-    lentTo: input.lentTo ?? existing?.lentTo ?? null,
-    // Cleared when it comes home, so an item lent again later starts a fresh
-    // count rather than inheriting the age of the previous loan.
-    lentAt: (input.status ?? existing?.status) === "lent_out"
-      ? (input.lentAt ?? existing?.lentAt ?? now)
-      : null,
-    photoPath: input.photoPath ?? existing?.photoPath ?? null,
-    confidence: input.confidence ?? existing?.confidence ?? "sure",
-    createdAt: existing?.createdAt ?? now,
-    updatedAt: now
-  };
+/** Tags as ObjectOS accepts them: lower case, plain characters, no empties. */
+function locatedTags(value: string[] | string | undefined): string[] | undefined {
+  if (value === undefined) return undefined;
+  const seen = new Set<string>();
+  for (const tag of parseTagList(value)) {
+    const clean = tag.toLowerCase().replace(/[^a-z0-9 ._-]/g, "").replace(/\s+/g, " ").trim().slice(0, 40);
+    if (clean) seen.add(clean);
+  }
+  return [...seen].slice(0, 20);
 }
 
+/**
+ * "Where is…", "remember where…", "I lent…": the actions voice, the command
+ * bar, Capture and the Deck already use, kept under their ids and carried out
+ * in ObjectOS.
+ */
 function runFinderAction(action: DexNestActionDefinition, source: DexNestActionTrigger, payload: unknown = {}) {
   const startedAt = Date.now();
   const input = typeof payload === "object" && payload !== null ? (payload as FinderItemInput & { statusFilter?: string; newLocation?: string; updateExisting?: boolean }) : {};
 
   try {
     if (action.id === "finder.open") {
-      logFinderEvent(action.id, "success", source, "Opened DexNest Finder.", {}, startedAt);
+      logFinderEvent(action.id, "success", source, "Opened ObjectOS.", {}, startedAt);
       return { ok: true, actionId: action.id, finderState: finderState() };
     }
 
     if (action.id === "finder.create_item" || action.id === "finder.update_item") {
-      const items = loadFinderItems();
+      const module = locator();
       const itemName = input.itemName?.trim().toLowerCase();
       const existing = input.id
-        ? items.find((item) => item.id === input.id)
+        ? loadFinderItems().find((item) => item.id === input.id)
         : input.updateExisting && itemName
-          ? items.find((item) => item.itemName.trim().toLowerCase() === itemName && item.status !== "archived")
+          ? loadFinderItems().find((item) => item.itemName.trim().toLowerCase() === itemName && item.status !== "archived")
           : undefined;
-      const nextItem = normalizeFinderItem(input, existing);
-      saveFinderItems([nextItem, ...items.filter((item) => item.id !== nextItem.id)]);
-      logFinderEvent(action.id, "success", source, `${existing ? "Updated" : "Created"} DexNest Finder item.`, {
+      const fields = {
+        ...(input.itemName !== undefined ? { itemName: input.itemName } : {}),
+        ...(input.location !== undefined ? { location: input.location } : {}),
+        ...(input.room !== undefined ? { room: input.room } : {}),
+        ...(input.container !== undefined ? { container: input.container } : {}),
+        ...(input.notes !== undefined ? { notes: input.notes } : {}),
+        ...(input.tags !== undefined ? { tags: locatedTags(input.tags) } : {})
+      };
+      let nextItem = existing ? reviseItem(module, existing.id, fields) : rememberItem(module, { ...fields, ...(input.status === "lent_out" ? { lentTo: input.lentTo ?? "someone" } : {}) });
+      if (existing && input.status && input.status !== existing.status) {
+        if (input.status === "lent_out") nextItem = changePlace(module, existing.id, { kind: "lent", to: input.lentTo ?? existing.lentTo ?? "" });
+        else if (input.status === "missing") nextItem = changePlace(module, existing.id, { kind: "missing", missing: true });
+        else if (input.status === "archived") nextItem = changePlace(module, existing.id, { kind: "archived" });
+        else nextItem = changePlace(module, existing.id, existing.status === "missing" ? { kind: "missing", missing: false } : { kind: "returned" });
+      }
+      scheduleSearchReindex();
+      logFinderEvent(action.id, "success", source, existing ? "Updated where something is." : "Remembered where something is.", {
         itemId: nextItem.id,
         status: nextItem.status
       }, startedAt);
@@ -19012,51 +19040,30 @@ function runFinderAction(action: DexNestActionDefinition, source: DexNestActionT
 
     if (action.id === "finder.delete_item") {
       const itemId = input.itemId ?? input.id ?? "";
-      const items = loadFinderItems();
-      const existing = items.find((item) => item.id === itemId);
-      saveFinderItems(items.filter((item) => item.id !== itemId));
-      logFinderEvent(action.id, "success", source, "Deleted DexNest Finder item.", {
-        itemId,
-        status: existing?.status ?? null
-      }, startedAt);
+      forgetItem(locator(), itemId);
+      scheduleSearchReindex();
+      logFinderEvent(action.id, "success", source, "Deleted an object.", { itemId }, startedAt);
       return { ok: true, actionId: action.id, finderState: finderState() };
     }
 
     if (["finder.archive_item", "finder.mark_moved", "finder.mark_lent_out", "finder.mark_returned"].includes(action.id)) {
       const itemId = input.itemId ?? input.id ?? "";
-      const items = loadFinderItems();
-      const existing = items.find((item) => item.id === itemId);
-      if (!existing) {
-        throw new Error("Finder item not found.");
-      }
-
-      const patch: FinderItemInput = { id: itemId };
-      if (action.id === "finder.archive_item") {
-        patch.status = "archived";
-      }
-      if (action.id === "finder.mark_moved") {
-        patch.location = input.newLocation ?? input.location ?? existing.location;
-        patch.room = input.room ?? existing.room;
-        patch.container = input.container ?? existing.container;
-        patch.status = "at_home";
-        patch.lentTo = null;
-      }
-      if (action.id === "finder.mark_lent_out") {
-        patch.status = "lent_out";
-        patch.lentTo = input.lentTo ?? existing.lentTo ?? "";
-        // Re-lending an item that was already out keeps the original date:
-        // marking it again is usually correcting who has it, not restarting
-        // the loan.
-        patch.lentAt = existing.status === "lent_out" ? (existing.lentAt ?? null) : new Date().toISOString();
-      }
-      if (action.id === "finder.mark_returned") {
-        patch.status = "at_home";
-        patch.lentTo = null;
-      }
-
-      const nextItem = normalizeFinderItem({ ...existing, ...patch }, existing);
-      saveFinderItems([nextItem, ...items.filter((item) => item.id !== itemId)]);
-      logFinderEvent(action.id, "success", source, "Updated DexNest Finder item status/location.", {
+      const module = locator();
+      const nextItem =
+        action.id === "finder.archive_item"
+          ? changePlace(module, itemId, { kind: "archived" })
+          : action.id === "finder.mark_moved"
+            ? changePlace(module, itemId, {
+                kind: "moved",
+                ...((input.newLocation ?? input.location) !== undefined ? { location: (input.newLocation ?? input.location ?? "").trim() } : {}),
+                ...(input.room !== undefined ? { room: input.room.trim() } : {}),
+                ...(input.container !== undefined ? { container: input.container.trim() } : {})
+              })
+            : action.id === "finder.mark_lent_out"
+              ? changePlace(module, itemId, { kind: "lent", to: input.lentTo ?? "" })
+              : changePlace(module, itemId, { kind: "returned" });
+      scheduleSearchReindex();
+      logFinderEvent(action.id, "success", source, "Updated where something is.", {
         itemId,
         status: nextItem.status
       }, startedAt);
@@ -19065,9 +19072,9 @@ function runFinderAction(action: DexNestActionDefinition, source: DexNestActionT
 
     if (action.id === "finder.search_items") {
       const query = input.query ?? "";
-      const statusFilter = input.statusFilter ?? input.status ?? "all";
-      const results = loadFinderItems().filter((item) => finderItemMatches(item, query, statusFilter));
-      logFinderEvent(action.id, "success", source, `Searched DexNest Finder with ${results.length} result${results.length === 1 ? "" : "s"}.`, {
+      const statusFilter = (input.statusFilter ?? input.status ?? "all") as FinderItemStatus | "all";
+      const results = findItems(locator(), query, statusFilter);
+      logFinderEvent(action.id, "success", source, `Looked for something: ${results.length} result${results.length === 1 ? "" : "s"}.`, {
         queryLength: query.length,
         statusFilter,
         resultCount: results.length
@@ -19077,16 +19084,17 @@ function runFinderAction(action: DexNestActionDefinition, source: DexNestActionT
 
     if (action.id === "finder.reverse_lookup") {
       const query = input.query ?? "";
-      const results = loadFinderItems().filter((item) => reverseLookupMatches(item, query));
-      logFinderEvent(action.id, "success", source, `Ran DexNest Finder reverse lookup with ${results.length} result${results.length === 1 ? "" : "s"}.`, {
+      const results = itemsIn(locator(), query);
+      logFinderEvent(action.id, "success", source, `Looked in a place: ${results.length} result${results.length === 1 ? "" : "s"}.`, {
         queryLength: query.length,
         resultCount: results.length
       }, startedAt);
       return { ok: true, actionId: action.id, results, finderState: finderState() };
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : "DexNest Finder action failed.";
-    logFinderEvent(action.id, "failed", source, message, payloadMetadata(payload), startedAt, message);
+    const message = error instanceof Error ? error.message : "That could not be done.";
+    // The reason can quote what was typed, so the journal gets fixed text.
+    logFinderEvent(action.id, "failed", source, "A where-is-it action failed.", payloadMetadata(payload), startedAt, "Refused; the reason was shown.");
     return { ok: false, actionId: action.id, error: message };
   }
 
@@ -19436,8 +19444,8 @@ function runCaptureAction(action: DexNestActionDefinition, source: DexNestAction
       if (route === "finder") {
         const itemName = input.title || item.title;
         const location = typeof input.location === "string" && input.location.trim() ? input.location.trim() : windowlessLocationFromText(item.text);
-        const finderItem = normalizeFinderItem({ itemName, location, notes: item.text, tags: item.tags, status: "at_home" });
-        saveFinderItems([finderItem, ...loadFinderItems()]);
+        rememberItem(locator(), { itemName, location, notes: item.text, tags: locatedTags(item.tags) ?? [] });
+        scheduleSearchReindex();
       }
       if (route === "drop") {
         if (item.filePath) {
@@ -20582,6 +20590,8 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
         // Journalled as fixed text with counts; never what the owner typed.
         const line = objectJournalLine(result);
         logActionEvent(action, result.ok ? "success" : result.cancelled ? "cancelled" : "failed", source, line.summary, {}, line.error, Date.now() - startedAt);
+        // Objects are in Search (name and place), so a change to one refreshes the index.
+        if (result.ok) scheduleSearchReindex();
         return { ...result, actionId: action.id };
       }
     } catch (error) {
@@ -22704,7 +22714,6 @@ function registerIpcHandlers(): void {
     newsCachePath,
     nudgesPath,
     nudgeSettingsPath,
-    finderItemsPath,
     financeTransactionsPath,
     financeRecurringPath,
     financeSettingsPath,
@@ -23510,6 +23519,7 @@ app.whenReady().then(() => {
   startRealityRpgHost();
   startGhostOsHost();
   startObjectOsHost();
+  migrateFinderFile();
   syncAppLifecycleLoginItemStatus();
   cleanupClipboardHistory(false, "system");
   startActionEndpoint();

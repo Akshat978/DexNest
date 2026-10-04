@@ -98,6 +98,11 @@ export const OBJECT_CHANNELS = {
   attention: "dexnest:object-os-attention",
   settingsDiff: "dexnest:object-os-settings-diff",
   locations: "dexnest:object-os-locations",
+  find: "dexnest:object-os-find",
+  whatIsIn: "dexnest:object-os-what-is-in",
+  recentlyLocated: "dexnest:object-os-recently-located",
+  rooms: "dexnest:object-os-rooms",
+  whereabouts: "dexnest:object-os-whereabouts",
   photo: "dexnest:object-os-photo"
 } as const;
 
@@ -149,6 +154,12 @@ export function createObjectOsHost(options: ObjectOsHostOptions): ObjectOsHost {
   handle(OBJECT_CHANNELS.attention, () => module.attentionView());
   handle(OBJECT_CHANNELS.settingsDiff, (query) => module.settingsDiff(query));
   handle(OBJECT_CHANNELS.locations, () => module.locations());
+  // Where things are: "where is my…", "what is in…", what was placed lately.
+  handle(OBJECT_CHANNELS.find, (query) => module.findObjects(query));
+  handle(OBJECT_CHANNELS.whatIsIn, (place) => module.whatIsIn(place));
+  handle(OBJECT_CHANNELS.recentlyLocated, () => module.recentlyLocated(8));
+  handle(OBJECT_CHANNELS.rooms, () => module.rooms());
+  handle(OBJECT_CHANNELS.whereabouts, (id) => module.whereabouts(id));
   // A photo for the view: only a stored image of a known type, still inside its folder, and small enough to inline.
   handle(OBJECT_CHANNELS.photo, (fileId) => photoDataUrl(module, files, fileId));
 
@@ -243,6 +254,11 @@ export async function runObjectOsAction(host: ObjectOsHost, actionId: string, pa
       return parsed(module.setStatus(input), "Status changed.");
     case OBJECT_ACTION_IDS.objectMove:
       return parsed(module.moveObject(input), "Object moved.");
+    case OBJECT_ACTION_IDS.objectLocate: {
+      // With a name and no object: a new thing and where it is. Otherwise a change to where one is.
+      const quick = typeof input === "object" && input !== null && !("objectId" in input);
+      return quick ? parsed(module.quickAdd(input), "Saved, with where it is.") : parsed(module.locateObject(input), "Where it is has been updated.");
+    }
     case OBJECT_ACTION_IDS.objectDelete: {
       const r = module.deleteObject(input);
       if (!r.ok) return { ok: false, error: r.errors.join("; ") };

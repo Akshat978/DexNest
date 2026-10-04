@@ -434,6 +434,11 @@ export const fallbackBridge: DexNestBridge = {
   objectOsAttention: async () => ({ summary: { items: [], counts: { overdue: 0, dueSoon: 0, warrantyEnding: 0, lowStock: 0 } }, names: {} }),
   objectOsSettingsDiff: async () => objectOsUnavailable,
   objectOsLocations: async () => [],
+  objectOsFind: async () => ({ ok: true, value: [] }),
+  objectOsWhatIsIn: async () => ({ ok: true, value: [] }),
+  objectOsRecentlyLocated: async () => [],
+  objectOsRooms: async () => [],
+  objectOsWhereabouts: async () => objectOsUnavailable,
   objectOsPhoto: async () => null,
   getAppInfo: async () => ({
     appName: "DexNest",
@@ -492,7 +497,6 @@ export const fallbackBridge: DexNestBridge = {
     newsCachePath: "./local-data/settings/news-cache.json",
     nudgesPath: "./local-data/settings/nudges.json",
     nudgeSettingsPath: "./local-data/settings/nudge-settings.json",
-    finderItemsPath: "./local-data/settings/finder-items.json",
     financeTransactionsPath: "./local-data/settings/finance-transactions.json",
     financeRecurringPath: "./local-data/settings/finance-recurring.json",
     financeSettingsPath: "./local-data/settings/finance-settings.json",
@@ -709,7 +713,6 @@ export const fallbackBridge: DexNestBridge = {
   getNewsState: async () => defaultNewsState,
   getFinderState: async () => ({
     items: [],
-    itemsPath: "./local-data/settings/finder-items.json",
     statusCounts: { at_home: 0, lent_out: 0, missing: 0, archived: 0 }
   }),
   getFinanceState: async () => ({

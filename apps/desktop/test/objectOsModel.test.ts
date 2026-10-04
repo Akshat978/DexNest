@@ -213,3 +213,40 @@ test("the last action's notice clears when the user opens another object or tab 
   assert.match(view, /onOpen=\{\(id\) => showObject\(id\)\}/);
   assert.doesNotMatch(view, /onClick=\{\(\) => void openObject\(/);
 });
+
+test("where a thing is, in a few words", async () => {
+  const { locateSummary, whereLine } = await import("../src/renderer/views/objectOsModel.ts");
+  const at = (location: string, status: string, w: Partial<{ room: string; container: string; lentTo: string; missing: boolean }> = {}) =>
+    whereLine({ location, status: status as never, whereabouts: { room: "", container: "", lentTo: "", missing: false, ...w } });
+  assert.equal(at("black drawer", "active", { room: "Bedroom" }), "Bedroom · black drawer");
+  assert.equal(at("black drawer", "active", { room: "Bedroom", container: "Black Drawer" }), "Bedroom · black drawer", "the same place is not said twice");
+  assert.equal(at("", "active"), "no place recorded");
+  assert.equal(at("shelf", "lent_out", { lentTo: "Alex" }), "with Alex");
+  assert.equal(at("shelf", "lent_out"), "lent out");
+  assert.equal(at("shelf", "active", { missing: true }), "missing", "missing wins: the recorded place is where it is not");
+  assert.equal(locateSummary(0, 0), "Nothing yet");
+  assert.equal(locateSummary(1, 0), "1 thing");
+  assert.equal(locateSummary(12, 1), "12 things in 1 room");
+  assert.equal(locateSummary(1204, 4), "1,204 things in 4 rooms");
+});
+
+test("sending to Calendar and Finance: only what there is, in their own shapes", async () => {
+  const { purchaseFinanceEntry, scheduleCalendarEvent, warrantyCalendarEvent } = await import("../src/renderer/views/objectOsModel.ts");
+  const o = { id: "7K3F9QXM", name: "Workshop printer" };
+  assert.deepEqual(warrantyCalendarEvent(o, { warrantyUntil: "2027-03-01" }), { title: "Warranty ends: Workshop printer", date: "2027-03-01", allDay: true, sourceModule: "object", sourceId: "7K3F9QXM", notes: "Sent from ObjectOS." });
+  assert.equal(warrantyCalendarEvent(o, { warrantyUntil: null }), null);
+  assert.equal(warrantyCalendarEvent(o, null), null);
+
+  const due = { state: "due_soon" as const, kind: "time" as const, dueAt: "2026-07-10T09:00:00.000Z", daysLeft: 10, lastDoneAt: null };
+  assert.deepEqual(scheduleCalendarEvent(o, "Replace nozzle", due), { title: "Replace nozzle: Workshop printer", date: "2026-07-10", allDay: true, sourceModule: "object", sourceId: "7K3F9QXM", notes: "Maintenance due. Sent from ObjectOS." });
+  assert.equal(scheduleCalendarEvent(o, "x", { state: "inactive" } as never), null);
+  assert.equal(scheduleCalendarEvent(o, "x", { state: "ok", kind: "usage", measurementKey: "hours", left: 5, dueAtReading: 200 } as never), null, "a counter has no day to put in a calendar");
+
+  assert.deepEqual(purchaseFinanceEntry(o, { purchasedOn: "2026-01-15", price: { amount: 79900, currency: "EUR" }, shop: "Prusa" }), {
+    date: "2026-01-15", store: "Prusa", amount: 799, currency: "EUR", category: "Purchases", paymentType: "other", notes: "Workshop printer (sent from ObjectOS)"
+  });
+  assert.equal((purchaseFinanceEntry(o, { purchasedOn: "2026-01-15", price: { amount: 5000, currency: "JPY" }, shop: "" }) as { amount: number; store: string }).amount, 5000, "a currency with no decimals is not divided");
+  assert.equal((purchaseFinanceEntry(o, { purchasedOn: "2026-01-15", price: { amount: 5000, currency: "JPY" }, shop: "" }) as { store: string }).store, "Workshop printer");
+  assert.equal(purchaseFinanceEntry(o, { purchasedOn: null, price: { amount: 1, currency: "EUR" }, shop: "" }), null);
+  assert.equal(purchaseFinanceEntry(o, { purchasedOn: "2026-01-15", price: null, shop: "" }), null);
+});

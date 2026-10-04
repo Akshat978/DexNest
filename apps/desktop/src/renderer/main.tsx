@@ -143,7 +143,6 @@ interface AppInfo {
   newsCachePath: string;
   nudgesPath: string;
   nudgeSettingsPath: string;
-  finderItemsPath: string;
   financeTransactionsPath: string;
   financeRecurringPath: string;
   financeSettingsPath: string;
@@ -1660,7 +1659,6 @@ interface FinderItem {
 
 interface FinderState {
   items: FinderItem[];
-  itemsPath: string;
   statusCounts: Record<FinderItemStatus, number>;
 }
 
@@ -2244,7 +2242,6 @@ const moduleCards = [
   ["timetable", "Timetable", "Weekly routine and current block cockpit.", "available"],
   ["utilities", "Utilities", "Local calculator, timers, converters, and clocks.", "available"],
   ["news", "News", "Optional RSS headlines and morning briefing.", "available"],
-  ["finder", "Finder", "Physical item-location memory.", "available"],
   ["finance", "Finance", "Manual expenses, receipts, and reminders.", "available"],
   ["heatmap", "Heatmap", "Local app usage and goals.", "available"]
 ] as const;
@@ -2284,7 +2281,8 @@ const voiceModuleAliases: Record<string, { module: ViewId; actionId: string }> =
   news: { module: "news", actionId: "news.open" },
   "weekly timetable": { module: "timetable", actionId: "timetable.open" },
   routine: { module: "timetable", actionId: "timetable.open" },
-  finder: { module: "finder", actionId: "finder.open" },
+  // "Open finder" still works: where things are is part of ObjectOS now.
+  finder: { module: "object", actionId: "object_os.open" },
   heatmap: { module: "heatmap", actionId: "heatmap.open" },
   audit: { module: "audit", actionId: "audit.open_history" },
   settings: { module: "settings", actionId: "settings.open" },
@@ -2377,8 +2375,8 @@ const BASE_VOICE_CAPABILITY_GROUPS: VoiceCapabilityGroup[] = [
     { label: "Morning Briefing", examples: ["read morning news", "read my news"], sources: VOICE_NO_DECK },
     { label: "Category News", examples: ["show AI news", "show tech news", "read finance headlines", "read sports headlines"], sources: VOICE_NO_DECK }
   ] },
-  { module: "Finder", accent: "var(--accent-finder)", items: [
-    { label: "Finder lookup", examples: ["where is my passport", "what is in black drawer"], sources: VOICE_NO_DECK },
+  { module: "ObjectOS", accent: "var(--accent-object)", items: [
+    { label: "Where is it", examples: ["where is my passport", "what is in black drawer"], sources: VOICE_NO_DECK },
     { label: "Remember location", examples: ["remember passport is in black drawer"], sources: VOICE_NO_DECK }
   ] },
   { module: "Capture", accent: "var(--accent-capture)", items: [
@@ -2938,7 +2936,7 @@ function routeVoiceCommand(input: string, actions: ActionDefinition[], workflowS
       confidence: finderAdd.confidence,
       requiresConfirmation: finderAdd.confidence !== "high",
       sensitivity: "personal",
-      explanation: "Creates or updates a DexNest Finder item-location memory."
+      explanation: "Remembers where something is, in ObjectOS."
     };
   }
 
@@ -2952,7 +2950,7 @@ function routeVoiceCommand(input: string, actions: ActionDefinition[], workflowS
       confidence: finderLookup.query ? "high" : "low",
       requiresConfirmation: false,
       sensitivity: "personal",
-      explanation: finderLookup.kind === "location" ? "Runs a DexNest Finder reverse lookup." : "Searches DexNest Finder item-location records."
+      explanation: finderLookup.kind === "location" ? "Lists what is in a place, from ObjectOS." : "Looks up where something is, in ObjectOS."
     };
   }
 
@@ -2980,7 +2978,7 @@ function routeVoiceCommand(input: string, actions: ActionDefinition[], workflowS
       confidence: query ? "high" : "low",
       requiresConfirmation: true,
       sensitivity: "personal",
-      explanation: "Searches DexNest Finder item-location records."
+      explanation: "Looks up where something is, in ObjectOS."
     };
   }
 
@@ -4014,7 +4012,7 @@ function buildRouteForIntent(intent: VoiceIntentName, text: string, actions: Act
         confidence: query ? "high" : "low",
         requiresConfirmation: false,
         sensitivity: "personal",
-        explanation: "Searches DexNest Finder item-location records."
+        explanation: "Looks up where something is, in ObjectOS."
       };
     }
     case "finder_reverse_lookup": {
@@ -4028,7 +4026,7 @@ function buildRouteForIntent(intent: VoiceIntentName, text: string, actions: Act
         confidence: query ? "high" : "low",
         requiresConfirmation: false,
         sensitivity: "personal",
-        explanation: "Runs a DexNest Finder reverse lookup for a location or container."
+        explanation: "Lists what is in a place, from ObjectOS."
       };
     }
     case "finder_add": {
@@ -4052,7 +4050,7 @@ function buildRouteForIntent(intent: VoiceIntentName, text: string, actions: Act
         confidence: candidate.confidence,
         requiresConfirmation: candidate.confidence !== "high",
         sensitivity: "personal",
-        explanation: "Creates or updates a DexNest Finder item-location memory."
+        explanation: "Remembers where something is, in ObjectOS."
       };
     }
     case "calendar_create_candidate":
@@ -4213,7 +4211,7 @@ function sourceOpenActionId(sourceModule: string): string | null {
     dev: "dev.open_dashboard",
     drop: "drop.open",
     finance: "finance.open",
-    finder: "finder.open",
+    finder: "object_os.open",
     tools: "tools.open",
     tools_ocr: "tools.open",
     vault: "vault.open"
@@ -4233,7 +4231,7 @@ function assistantPendingText(route: VoiceRouteResult): string {
     case "capture_note":
       return "Start DexNest Capture voice mode?";
     case "finder_add":
-      return `Save this Finder memory?`;
+      return `Remember where this is?`;
     case "external_device_control":
       return "Run this External Devices action?";
     case "performance_mode":
@@ -4292,9 +4290,9 @@ function assistantSuccessText(route: VoiceRouteResult, resultCount: number): str
         ? "I found a likely answer in your Vault/OCR documents. It is masked for safety."
         : "I could not find a confident answer in your indexed documents.";
     case "finder_search":
-      return resultCount > 0 ? "I found this in Finder." : "Finder search ran. Open Finder to see matches.";
+      return resultCount > 0 ? "I found this in ObjectOS." : "Nothing by that name yet. Open ObjectOS to add it.";
     case "finder_reverse_lookup":
-      return resultCount > 0 ? "I found items in that Finder location." : "No Finder items matched that location.";
+      return resultCount > 0 ? "I found things in that place." : "Nothing is recorded in that place.";
     case "search_query":
       return resultCount > 0 ? `I found ${resultCount} matching document${resultCount === 1 ? "" : "s"}.` : "Search ran. No strong matches in the current index.";
     case "calendar_create_candidate":
@@ -4314,7 +4312,7 @@ function assistantSuccessText(route: VoiceRouteResult, resultCount: number): str
     case "capture_note":
       return "Capture voice mode started.";
     case "finder_add":
-      return "Saved to Finder.";
+      return "Saved in ObjectOS.";
     case "external_device_control":
       return "External Devices action completed.";
     case "performance_mode":
@@ -4359,7 +4357,7 @@ function assistantAnswerText(route: VoiceRouteResult, smartResults: SmartLookupR
 function finderItemLookupAnswer(query: string, results: FinderItem[]): string {
   const top = results[0];
   if (!top) {
-    return `I could not find ${query || "that item"} in Finder. Want to add it?`;
+    return `I could not find ${query || "that item"} in ObjectOS. Want to add it?`;
   }
   return `${top.itemName} is in ${top.location}${top.container ? ` / ${top.container}` : ""}${top.room ? ` / ${top.room}` : ""}.`;
 }
@@ -4605,8 +4603,7 @@ function DexNestApp() {
   const [newsState, setNewsState] = useState<NewsState>(defaultNewsState);
   const [finderState, setFinderState] = useState<FinderState>({
     items: [],
-    itemsPath: "",
-    statusCounts: { at_home: 0, lent_out: 0, missing: 0, archived: 0 }
+        statusCounts: { at_home: 0, lent_out: 0, missing: 0, archived: 0 }
   });
   const [financeState, setFinanceState] = useState<FinanceState>({
     transactions: [],
@@ -5099,7 +5096,7 @@ function DexNestApp() {
       status: result.ok === false ? "error" : "saved",
       activeEntityId: result.item?.id ?? null,
       lastSavedAt: result.ok === false ? current.lastSavedAt : Date.now(),
-      error: result.ok === false ? (result.error ?? "Finder save failed.") : ""
+      error: result.ok === false ? (result.error ?? "That could not be saved.") : ""
     }));
     await refreshShellData();
   }
@@ -6403,18 +6400,6 @@ function DexNestApp() {
               onNavigate={(view) => void navigate(view)}
             />
           )}
-          {activeView === "finder" && (
-            <FinderView
-              finderState={finderState}
-              speechState={speechState}
-              voiceWorkflow={voiceWorkflow}
-              onSpeechStateChange={setSpeechState}
-              onSaveVoiceCandidate={saveFinderVoiceCandidate}
-              onCancelVoiceCandidate={cancelFinderVoiceCandidate}
-              onAction={runUiAction}
-              onRefresh={refreshShellData}
-            />
-          )}
           {activeView === "finance" && (
             <FinanceView
               financeState={financeState}
@@ -6727,7 +6712,7 @@ function AskDexNest({
     if (route.intent === "smart_lookup") return resultCount > 0 ? "I found it, but it is hidden for safety." : "I could not find it.";
     if (route.intent === "search_query") return resultCount > 0 ? "I found results." : "I could not find it.";
     if (route.intent === "finder_search" || route.intent === "finder_reverse_lookup") return resultCount > 0 ? "I found it." : "I could not find it.";
-    if (route.intent === "finder_add") return "Saved in Finder.";
+    if (route.intent === "finder_add") return "Saved in ObjectOS.";
     if (route.intent === "calendar_create_candidate") return "Review the calendar event in DexNest.";
     if (route.intent === "calendar_show_today" || route.intent === "calendar_show_upcoming") return "Calendar opened.";
     if (route.intent === "drop_send_clipboard") return "Sent to Drop.";
@@ -7895,7 +7880,7 @@ function CommandView({
     ["Vault documents", commandStats.vaultDocuments],
     ["Drop in/out", `${commandStats.dropIncoming}/${commandStats.dropOutgoing}`],
     ["Capture inbox", commandStats.capturesInbox],
-    ["Finder items", commandStats.finderItems],
+    ["Things located", commandStats.finderItems],
     ["Dev projects", commandStats.devProjects],
     ["Actions today", commandStats.actionsRunToday],
     ["Failures today", commandStats.failedActionsToday],
@@ -12690,397 +12675,6 @@ function CalendarView({
 
 }
 
-const emptyFinderForm = {
-  id: "",
-  itemName: "",
-  location: "",
-  room: "",
-  container: "",
-  notes: "",
-  tags: "",
-  status: "at_home" as FinderItemStatus,
-  lentTo: "",
-  confidence: "sure" as FinderItemConfidence
-};
-
-function FinderView({
-  finderState,
-  speechState,
-  voiceWorkflow,
-  onSpeechStateChange,
-  onSaveVoiceCandidate,
-  onCancelVoiceCandidate,
-  onAction,
-  onRefresh
-}: {
-  finderState: FinderState;
-  speechState: SpeechServiceState;
-  voiceWorkflow: VoiceWorkflowState;
-  onSpeechStateChange: (state: SpeechServiceState) => void;
-  onSaveVoiceCandidate: () => Promise<void>;
-  onCancelVoiceCandidate: () => void;
-  onAction: (actionId: string, source?: string, params?: unknown) => Promise<{
-    ok: boolean;
-    error?: string;
-  }>;
-  onRefresh: () => Promise<void>;
-}) {
-  const [form, setForm] = useState(emptyFinderForm);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState<FinderItemStatus | "all">("all");
-  const [reverseQuery, setReverseQuery] = useState("");
-  const [moveItemId, setMoveItemId] = useState("");
-  const [moveLocation, setMoveLocation] = useState("");
-  const [moveRoom, setMoveRoom] = useState("");
-  const [moveContainer, setMoveContainer] = useState("");
-  const [showMove, setShowMove] = useState(false);
-  const [toast, setToast] = useState<{ message: string; tone: "success" | "error" } | null>(null);
-
-  const visibleItems = finderState.items.filter((item) => {
-    const query = searchQuery.trim().toLowerCase();
-    const statusMatches = statusFilter === "all" || item.status === statusFilter;
-    const textMatches = !query || [
-      item.itemName,
-      item.location,
-      item.room ?? "",
-      item.container ?? "",
-      item.tags.join(" ")
-    ].join(" ").toLowerCase().includes(query);
-    return statusMatches && textMatches;
-  });
-  const reverseItems = finderState.items.filter((item) => {
-    const query = reverseQuery.trim().toLowerCase();
-    return Boolean(query) && [item.location, item.room ?? "", item.container ?? ""].join(" ").toLowerCase().includes(query);
-  });
-  const lentOutItems = finderState.items.filter((item) => item.status === "lent_out");
-
-  function showToast(message: string, tone: "success" | "error" = "success"): void {
-    setToast({ message, tone });
-    window.setTimeout(() => {
-      setToast((current) => current?.message === message ? null : current);
-    }, 3000);
-  }
-
-  function loadItem(item: FinderItem): void {
-    setForm({
-      id: item.id,
-      itemName: item.itemName,
-      location: item.location,
-      room: item.room ?? "",
-      container: item.container ?? "",
-      notes: item.notes ?? "",
-      tags: item.tags.join(", "),
-      status: item.status,
-      lentTo: item.lentTo ?? "",
-      confidence: item.confidence ?? "sure"
-    });
-  }
-
-  function editVoiceCandidate(): void {
-    const candidate = voiceWorkflow.candidate;
-    if (!candidate) {
-      return;
-    }
-    setForm({
-      ...emptyFinderForm,
-      itemName: candidate.itemName,
-      location: candidate.location,
-      room: candidate.room,
-      container: candidate.container,
-      notes: candidate.notes,
-      confidence: candidate.confidence === "high" ? "sure" : "maybe"
-    });
-  }
-
-  function formPayload() {
-    return {
-      id: form.id || undefined,
-      itemName: form.itemName,
-      location: form.location,
-      room: form.room,
-      container: form.container,
-      notes: form.notes,
-      tags: form.tags,
-      status: form.status,
-      lentTo: form.status === "lent_out" ? form.lentTo : null,
-      confidence: form.confidence
-    };
-  }
-
-  async function saveItem(): Promise<void> {
-    const result = await onAction(form.id ? "finder.update_item" : "finder.create_item", "module_ui", formPayload());
-    if (result.ok) {
-      setForm(emptyFinderForm);
-      showToast("Finder item saved.");
-      await onRefresh();
-    } else {
-      showToast(result.error ?? "Finder save failed.", "error");
-    }
-  }
-
-  async function deleteItem(item: FinderItem): Promise<void> {
-    if (!window.confirm(`Delete ${item.itemName} from Finder?`)) {
-      return;
-    }
-    const result = await onAction("finder.delete_item", "module_ui", { itemId: item.id, confirmedDangerous: true });
-    showToast(result.ok ? "Finder item deleted." : result.error ?? "Delete failed.", result.ok ? "success" : "error");
-    await onRefresh();
-  }
-
-  async function simpleItemAction(actionId: string, item: FinderItem, extra: Record<string, unknown> = {}): Promise<void> {
-    const result = await onAction(actionId, "module_ui", { itemId: item.id, ...extra });
-    showToast(result.ok ? "Finder item updated." : result.error ?? "Update failed.", result.ok ? "success" : "error");
-    await onRefresh();
-  }
-
-  async function markLentOut(item: FinderItem): Promise<void> {
-    const lentTo = window.prompt(`Who did you lend ${item.itemName} to?`, item.lentTo ?? "");
-    if (lentTo === null) {
-      return;
-    }
-    await simpleItemAction("finder.mark_lent_out", item, { lentTo });
-  }
-
-  function openMove(item: FinderItem): void {
-    setMoveItemId(item.id);
-    setMoveLocation(item.location);
-    setMoveRoom(item.room ?? "");
-    setMoveContainer(item.container ?? "");
-    setShowMove(true);
-  }
-
-  async function markMoved(): Promise<void> {
-    const item = finderState.items.find((entry) => entry.id === moveItemId);
-    if (!item) {
-      showToast("Choose an item to move.", "error");
-      return;
-    }
-    const result = await onAction("finder.mark_moved", "module_ui", {
-      itemId: item.id,
-      newLocation: moveLocation,
-      room: moveRoom,
-      container: moveContainer
-    });
-    if (result.ok) {
-      setMoveItemId("");
-      setMoveLocation("");
-      setMoveRoom("");
-      setMoveContainer("");
-      setShowMove(false);
-    }
-    showToast(result.ok ? "Finder item moved." : result.error ?? "Move failed.", result.ok ? "success" : "error");
-    await onRefresh();
-  }
-
-  async function runSearchAudit(): Promise<void> {
-    const result = await onAction("finder.search_items", "module_ui", { query: searchQuery, statusFilter });
-    showToast(result.ok ? "Finder search logged." : result.error ?? "Search failed.", result.ok ? "success" : "error");
-  }
-
-  async function runReverseLookupAudit(): Promise<void> {
-    const result = await onAction("finder.reverse_lookup", "module_ui", { query: reverseQuery });
-    showToast(result.ok ? "Reverse lookup logged." : result.error ?? "Reverse lookup failed.", result.ok ? "success" : "error");
-  }
-
-  const finderAgo = (iso: string): string => {
-    const diff = Date.now() - new Date(iso).getTime();
-    const day = Math.floor(diff / 86400000);
-    if (day > 0) return `${day}d`;
-    const hr = Math.floor(diff / 3600000);
-    if (hr > 0) return `${hr}h`;
-    return `${Math.max(1, Math.floor(diff / 60000))}m`;
-  };
-  const finderRooms = Array.from(new Set(finderState.items.map((item) => item.room).filter((r): r is string => Boolean(r))));
-  const recentlyLocated = [...finderState.items].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)).slice(0, 3);
-  const ACCENT_FINDER = "#84CC16";
-
-  return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-xl border" style={{ borderColor: `${ACCENT_FINDER}40`, background: `${ACCENT_FINDER}14`, color: ACCENT_FINDER }}>
-            <PackageSearch className="h-5 w-5" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight text-[#F5F5F5]">Finder</h1>
-            <p className="text-sm text-[#A3A3A3]">Physical item memory — where did you put that?</p>
-          </div>
-        </div>
-        <StatusChip tone="ok">{finderState.items.length} items tracked</StatusChip>
-      </div>
-
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
-        <div className="space-y-4 lg:col-span-8">
-          <div className="flex items-center gap-2 rounded-xl border border-[#262626] bg-[#0d0d0d] px-3.5 py-2.5 transition-colors focus-within:border-[#84CC16]/40">
-            <Search className="h-4 w-4 text-[#525252]" />
-            <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Where is my…" className="flex-1 bg-transparent text-sm text-[#F5F5F5] placeholder:text-[#525252] focus:outline-none" />
-          </div>
-
-          {finderRooms.length > 0 && (
-            <div className="flex flex-wrap gap-1.5">
-              {["All", ...finderRooms].map((r) => {
-                const on = r === "All" ? searchQuery.trim() === "" : searchQuery.trim().toLowerCase() === r.toLowerCase();
-                return (
-                  <button key={r} type="button" onClick={() => setSearchQuery(r === "All" ? "" : r)} className="rounded-full border px-3 py-1 text-xs font-medium transition-all" style={on ? { borderColor: `${ACCENT_FINDER}55`, background: `${ACCENT_FINDER}1a`, color: ACCENT_FINDER } : { borderColor: "#262626", color: "#A3A3A3" }}>{r}</button>
-                );
-              })}
-            </div>
-          )}
-
-          {visibleItems.length === 0 ? (
-            <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-[#262626] py-12 text-center">
-              <PackageSearch className="h-8 w-8 text-[#525252]" />
-              <p className="mt-2 text-sm text-[#A3A3A3]">No items match</p>
-              <p className="text-xs text-[#525252]">Try another room or add it on the right</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              {visibleItems.map((item) => (
-                <GlassCard key={item.id} className="flex flex-col gap-1.5 p-3">
-                  <div className="flex items-center gap-2">
-                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#84CC16]/12 text-[#84CC16]"><Box className="h-3.5 w-3.5" /></div>
-                    <p className="min-w-0 flex-1 truncate text-sm font-medium text-[#F5F5F5]">{item.itemName}</p>
-                    <span className="font-mono text-[10px] text-[#84CC16]">{item.confidence}</span>
-                  </div>
-                  <p className="flex items-center gap-1 truncate text-xs text-[#A3A3A3]"><MapPin className="h-3 w-3 shrink-0 text-[#84CC16]" />{item.location}{item.container ? ` · ${item.container}` : ""}</p>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="flex items-center gap-1 font-mono text-[10px] text-[#525252]"><Clock className="h-3 w-3" />{finderAgo(item.updatedAt)} ago</span>
-                    {item.status === "lent_out" && <StatusChip tone="warn" dot={false}><ArrowRightLeft className="mr-1 h-2.5 w-2.5" />lent{item.lentTo ? ` · ${item.lentTo}` : ""}</StatusChip>}
-                  </div>
-                  <div className="flex flex-wrap gap-1.5 border-t border-[#1a1a1a] pt-1.5">
-                    <button type="button" onClick={() => loadItem(item)} className="rounded-md border border-[#262626] px-2 py-0.5 text-[10px] text-[#A3A3A3] hover:text-[#F5F5F5]">Edit</button>
-                    <button type="button" onClick={() => openMove(item)} className="rounded-md border border-[#262626] px-2 py-0.5 text-[10px] text-[#A3A3A3] hover:text-[#84CC16]">Move</button>
-                    {item.status === "lent_out"
-                      ? <button type="button" onClick={() => void simpleItemAction("finder.mark_returned", item)} className="rounded-md border border-[#262626] px-2 py-0.5 text-[10px] text-[#A3A3A3] hover:text-[#F5F5F5]">Returned</button>
-                      : <button type="button" onClick={() => void markLentOut(item)} className="rounded-md border border-[#262626] px-2 py-0.5 text-[10px] text-[#A3A3A3] hover:text-[#F5F5F5]">Lend</button>}
-                    <button type="button" onClick={() => void deleteItem(item)} className="rounded-md border border-[#262626] px-2 py-0.5 text-[10px] text-[#A3A3A3] hover:text-[#EF4444]">Delete</button>
-                  </div>
-                </GlassCard>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="space-y-5 lg:col-span-4">
-          <GlassCard accent={ACCENT_FINDER} hover={false}>
-            <SectionTitle>Quick add</SectionTitle>
-            <div className="space-y-2">
-              <input value={form.itemName} onChange={(event) => setForm({ ...form, itemName: event.target.value })} placeholder="Item name" />
-              <input value={form.location} onChange={(event) => setForm({ ...form, location: event.target.value })} placeholder="Location" />
-              <input value={form.room} onChange={(event) => setForm({ ...form, room: event.target.value })} placeholder="Room (optional)" />
-              <details>
-                <summary className="cursor-pointer text-[11px] text-[#525252] hover:text-[#A3A3A3]">more fields</summary>
-                <div className="mt-2 space-y-2">
-                  <input value={form.container} onChange={(event) => setForm({ ...form, container: event.target.value })} placeholder="Container" />
-                  <input value={form.tags} onChange={(event) => setForm({ ...form, tags: event.target.value })} placeholder="Tags (comma separated)" />
-                  <textarea value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} placeholder="Notes" />
-                  <div className="flex gap-2">
-                    <select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value as FinderItemStatus })}><option value="at_home">at home</option><option value="lent_out">lent out</option><option value="missing">missing</option><option value="archived">archived</option></select>
-                    <select value={form.confidence} onChange={(event) => setForm({ ...form, confidence: event.target.value as FinderItemConfidence })}><option value="sure">sure</option><option value="maybe">maybe</option><option value="old">old</option></select>
-                  </div>
-                  {form.status === "lent_out" && <input value={form.lentTo} onChange={(event) => setForm({ ...form, lentTo: event.target.value })} placeholder="Lent to" />}
-                </div>
-              </details>
-              <ActionButton accent={ACCENT_FINDER} icon={Plus} className="w-full justify-center" onClick={() => void saveItem()}>{form.id ? "Update item" : "Add item"}</ActionButton>
-              {form.id && <button type="button" onClick={() => setForm(emptyFinderForm)} className="w-full rounded-md border border-[#262626] py-1.5 text-xs text-[#A3A3A3] hover:text-[#F5F5F5]">Cancel edit</button>}
-            </div>
-          </GlassCard>
-
-          {voiceWorkflow.candidate && (
-            <GlassCard accent="#06B6D4" hover={false}>
-              <SectionTitle action={<Mic className="h-3.5 w-3.5 text-[#06B6D4]" />}>Voice add candidate</SectionTitle>
-              <div className="glass-card flex items-center gap-2.5 p-2.5">
-                <span className="flex-1 text-xs text-[#F5F5F5]">Save {voiceWorkflow.candidate.itemName} in {voiceWorkflow.candidate.location}?</span>
-                <button type="button" onClick={() => void onSaveVoiceCandidate()} className="rounded-md bg-[#06B6D4]/15 p-1.5 text-[#06B6D4]"><Check className="h-3.5 w-3.5" /></button>
-                <button type="button" onClick={onCancelVoiceCandidate} className="rounded-md border border-[#262626] px-2 py-1 text-[10px] text-[#A3A3A3]">Dismiss</button>
-              </div>
-            </GlassCard>
-          )}
-
-          {finderRooms.length > 0 && (
-            <GlassCard hover={false}>
-              <SectionTitle action={<DoorOpen className="h-3.5 w-3.5 text-[#84CC16]" />}>Rooms &amp; containers</SectionTitle>
-              <div className="flex flex-wrap gap-2">
-                {finderRooms.map((r) => {
-                  const count = finderState.items.filter((i) => i.room === r).length;
-                  const on = searchQuery.trim().toLowerCase() === r.toLowerCase();
-                  return (
-                    <button key={r} type="button" onClick={() => setSearchQuery(on ? "" : r)} className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-all" style={on ? { borderColor: `${ACCENT_FINDER}55`, background: `${ACCENT_FINDER}1a`, color: ACCENT_FINDER } : { borderColor: "#1f1f1f", color: "#A3A3A3" }}>
-                      {r}<span className="font-mono text-[10px] text-[#525252]">{count}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </GlassCard>
-          )}
-
-          <GlassCard hover={false}>
-            <SectionTitle action={<Clock className="h-3.5 w-3.5 text-[#84CC16]" />}>Recently located</SectionTitle>
-            <div className="space-y-1.5">
-              {recentlyLocated.length === 0 ? <p className="text-xs text-[#525252]">Nothing tracked yet.</p> : recentlyLocated.map((item) => (
-                <div key={item.id} className="flex items-center gap-2.5 rounded-lg px-1.5 py-1">
-                  <Box className="h-3.5 w-3.5 text-[#84CC16]" />
-                  <span className="flex-1 truncate text-xs text-[#F5F5F5]">{item.itemName}</span>
-                  <span className="font-mono text-[10px] text-[#525252]">{finderAgo(item.updatedAt)} ago</span>
-                </div>
-              ))}
-            </div>
-          </GlassCard>
-
-          <GlassCard hover={false}>
-            <SectionTitle action={<Search className="h-3.5 w-3.5 text-[#84CC16]" />}>Reverse lookup</SectionTitle>
-            <p className="mb-2 text-[11px] text-[#525252]">What's in a place? Search by container or location.</p>
-            <div className="flex items-center gap-2 rounded-lg border border-[#262626] bg-[#0d0d0d] px-3 py-2 transition-colors focus-within:border-[#84CC16]/40">
-              <MapPin className="h-3.5 w-3.5 text-[#525252]" />
-              <input value={reverseQuery} onChange={(event) => setReverseQuery(event.target.value)} onBlur={() => { if (reverseQuery.trim()) void runReverseLookupAudit(); }} placeholder="black drawer, suitcase…" className="flex-1 bg-transparent text-xs text-[#F5F5F5] placeholder:text-[#525252] focus:outline-none" />
-            </div>
-            {reverseQuery.trim() && (
-              <div className="mt-2 space-y-1.5">
-                {reverseItems.length === 0 ? <p className="text-xs text-[#525252]">No matching items.</p> : reverseItems.map((item) => (
-                  <div key={item.id} className="flex items-center gap-2.5 rounded-lg px-1.5 py-1">
-                    <Box className="h-3.5 w-3.5 shrink-0 text-[#84CC16]" />
-                    <span className="min-w-0 flex-1 truncate text-xs text-[#F5F5F5]">{item.itemName}</span>
-                    <span className="truncate font-mono text-[10px] text-[#525252]">{item.location}{item.container ? ` · ${item.container}` : ""}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </GlassCard>
-        </div>
-      </div>
-
-      {showMove && (() => {
-        const moveItem = finderState.items.find((entry) => entry.id === moveItemId);
-        return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="Move item">
-            <div className="w-full max-w-md rounded-2xl border p-5 shadow-2xl" style={{ borderColor: "var(--border)", background: "var(--surface)" }}>
-              <div className="mb-4 flex items-start justify-between gap-4">
-                <div>
-                  <p className="text-xs uppercase tracking-[0.16em]" style={{ color: ACCENT_FINDER }}>I moved it</p>
-                  <h2 className="text-xl font-semibold text-[#F5F5F5]">{moveItem?.itemName ?? "Move item"}</h2>
-                </div>
-                <button type="button" aria-label="Close" onClick={() => { setShowMove(false); }} className="text-[#A3A3A3] hover:text-[#F5F5F5]">✕</button>
-              </div>
-              <div className="space-y-3">
-                <label className="block text-xs text-[#A3A3A3]">New location<input className="mt-1 w-full" value={moveLocation} onChange={(event) => setMoveLocation(event.target.value)} placeholder="suitcase" /></label>
-                <label className="block text-xs text-[#A3A3A3]">Room<input className="mt-1 w-full" value={moveRoom} onChange={(event) => setMoveRoom(event.target.value)} placeholder="Bedroom" /></label>
-                <label className="block text-xs text-[#A3A3A3]">Container<input className="mt-1 w-full" value={moveContainer} onChange={(event) => setMoveContainer(event.target.value)} placeholder="black drawer" /></label>
-              </div>
-              <div className="button-row mt-4">
-                <button type="button" className="button-primary" disabled={!moveLocation.trim()} onClick={() => void markMoved()}>Save move</button>
-                <button type="button" onClick={() => setShowMove(false)}>Cancel</button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
-
-      {toast && <ToastStack toasts={[{ id: toast.message, message: toast.message, tone: toast.tone }]} />}
-    </div>
-  );
-
-}
-
 const emptyFinanceTransactionForm = {
   id: "",
   date: getLocalTodayDateString(),
@@ -13750,7 +13344,7 @@ function CaptureView({
     { id: "calendar", label: "Calendar", icon: CalendarPlus, c: "#14B8A6", action: "capture.route_to_calendar", success: "Calendar event created." },
     { id: "vault", label: "Vault", icon: Vault, c: "#10B981", action: "capture.route_to_vault", success: "Saved to Vault." },
     { id: "finance", label: "Finance", icon: Wallet, c: "#22C55E", action: "capture.route_to_finance", success: "Added to Finance." },
-    { id: "finder", label: "Finder", icon: PackageSearch, c: "#84CC16", action: "capture.route_to_finder", success: "Added to Finder." },
+    { id: "finder", label: "ObjectOS", icon: PackageSearch, c: "#84CC16", action: "capture.route_to_finder", success: "Added to ObjectOS, with where it is." },
     { id: "drop", label: "Drop", icon: Share2, c: "#38BDF8", action: "capture.route_to_drop", success: "Sent to Drop." }
   ];
 
@@ -14209,7 +13803,7 @@ function SearchView({
       dev: "dev.open_dashboard",
       drop: "drop.open",
       finance: "finance.open",
-      finder: "finder.open",
+      finder: "object_os.open",
       tools: "tools.open",
       tools_ocr: "tools.open",
       vault: "vault.open"
@@ -15461,7 +15055,6 @@ function SettingsView({
     ["Calendar events", appInfo?.calendarEventsPath ?? "Loading"],
     ["Nudges", appInfo?.nudgesPath ?? "Loading"],
     ["Nudge settings", appInfo?.nudgeSettingsPath ?? "Loading"],
-    ["Finder items", appInfo?.finderItemsPath ?? "Loading"],
     ["Finance transactions", appInfo?.financeTransactionsPath ?? "Loading"],
     ["Finance recurring", appInfo?.financeRecurringPath ?? "Loading"],
     ["Finance settings", appInfo?.financeSettingsPath ?? "Loading"],
@@ -17524,7 +17117,7 @@ const DEMO_OPTION_ROWS: Array<{ key: keyof DemoSeedOptions; label: string; descr
   { key: "vault", label: "Vault demo documents", description: "Work Permit / Passport / Lease / Resume with OCR text for Smart Lookup." },
   { key: "finance", label: "Finance demo data", description: "Personal + Business profiles, transactions, recurring, receipts." },
   { key: "journalCalendar", label: "Journal / Calendar demo data", description: "Entries (incl. ‘Call Tim tomorrow at 3’) and events." },
-  { key: "captureFinder", label: "Capture / Finder demo data", description: "Inbox captures and item locations." },
+  { key: "captureFinder", label: "Capture and where-things-are demo data", description: "Inbox captures, and a few objects with places in ObjectOS." },
   { key: "timetable", label: "Timetable demo data", description: "Weekly blocks incl. current/next based on the time now." },
   { key: "news", label: "News cached demo", description: "Cached AI/Tech/Finance/Sports/Canada headlines (no network)." },
   { key: "devDeck", label: "Dev / Deck demo data", description: "A safe demo project and demo routines (commands not run)." }

@@ -16,6 +16,7 @@ import type {
   ObjectOsStatus,
   ObjectRecord,
   ObjectStatus,
+  Purchase,
   Money,
   SettingsSnapshot,
   TimelineItem,
@@ -332,4 +333,50 @@ export function overviewRows(o: ObjectRecord): { label: string; value: string; t
 export function deleteObjectConfirm(name: string, components: number): { title: string; detail: string } {
   const kept = components === 0 ? "" : ` Its ${components} component${components === 1 ? "" : "s"} will be kept.`;
   return { title: `Delete ${name}?`, detail: `All its records and attached files are deleted.${kept} This cannot be undone.` };
+}
+
+// --- where things are (what Finder did) ---------------------------------------------
+
+export type LocateMode = "item" | "place";
+
+type Placed = Pick<ObjectRecord, "location" | "status"> & { whereabouts: { room: string; container: string; lentTo: string; missing: boolean } };
+
+/** "Bedroom · black drawer", "with Alex", "missing": where to look, in a few words. */
+export function whereLine(o: Placed): string {
+  const w = o.whereabouts;
+  if (w.missing) return "missing";
+  if (o.status === "lent_out") return w.lentTo ? `with ${w.lentTo}` : "lent out";
+  const parts = [w.room, o.location, w.container].map((p) => p.trim()).filter(Boolean);
+  const unique = parts.filter((p, i) => parts.findIndex((q) => q.toLowerCase() === p.toLowerCase()) === i);
+  return unique.length ? unique.join(" · ") : "no place recorded";
+}
+
+/** "12 things in 4 rooms", "1 thing", "Nothing yet". */
+export function locateSummary(count: number, rooms: number): string {
+  if (count === 0) return "Nothing yet";
+  const things = `${count.toLocaleString("en")} ${count === 1 ? "thing" : "things"}`;
+  return rooms > 0 ? `${things} in ${rooms} ${rooms === 1 ? "room" : "rooms"}` : things;
+}
+
+// --- sending to other modules ---------------------------------------------------------
+// One way, and only when the owner clicks: ObjectOS hands a date or an amount to
+// Calendar or Finance through their own "create" actions. It reads nothing back.
+
+/** The Calendar event for a warranty's last day. Null when there is no end date. */
+export function warrantyCalendarEvent(o: Pick<ObjectRecord, "id" | "name">, purchase: Pick<Purchase, "warrantyUntil"> | null): Record<string, unknown> | null {
+  if (!purchase?.warrantyUntil) return null;
+  return { title: `Warranty ends: ${o.name}`, date: purchase.warrantyUntil, allDay: true, sourceModule: "object", sourceId: o.id, notes: "Sent from ObjectOS." };
+}
+
+/** The Calendar event for a schedule's next due day. Only time schedules have a day. */
+export function scheduleCalendarEvent(o: Pick<ObjectRecord, "id" | "name">, title: string, status: DueStatus): Record<string, unknown> | null {
+  if (status.state === "inactive" || status.state === "no_reading" || status.kind !== "time") return null;
+  return { title: `${title}: ${o.name}`, date: status.dueAt.slice(0, 10), allDay: true, sourceModule: "object", sourceId: o.id, notes: "Maintenance due. Sent from ObjectOS." };
+}
+
+/** The Finance entry for a purchase. Null until it has both a price and a day. */
+export function purchaseFinanceEntry(o: Pick<ObjectRecord, "name">, purchase: Pick<Purchase, "purchasedOn" | "price" | "shop"> | null): Record<string, unknown> | null {
+  if (!purchase?.price || !purchase.purchasedOn) return null;
+  const amount = purchase.price.amount / 10 ** decimalsOf(purchase.price.currency);
+  return { date: purchase.purchasedOn, store: purchase.shop || o.name, amount, currency: purchase.price.currency, category: "Purchases", paymentType: "other", notes: `${o.name} (sent from ObjectOS)` };
 }
