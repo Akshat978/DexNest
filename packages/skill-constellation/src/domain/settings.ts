@@ -71,8 +71,16 @@ export function normalizeSkillConstellationSettings(input: unknown): SkillConste
  * and the same fingerprint would produce the same constellation, so it can be
  * skipped. (hiddenSkills only affects display.)
  */
+/** Bumped when what a build stores, or what it means, changes: a build made before it is stale. */
+export const SCORING_VERSION = 2;
+
 export function buildSettingsFingerprint(settings: SkillConstellationSettings): string {
   return stableHash(
-    JSON.stringify({ includeUnmappedLibraries: settings.includeUnmappedLibraries, myEmails: settings.myEmails }),
+    JSON.stringify({
+      includeUnmappedLibraries: settings.includeUnmappedLibraries,
+      myEmails: settings.myEmails,
+      // What a build stores changed with this version, so a build made before it is stale.
+      scoring: SCORING_VERSION,
+    }),
   );
 }

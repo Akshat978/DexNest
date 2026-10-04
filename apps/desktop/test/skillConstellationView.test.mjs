@@ -49,6 +49,7 @@ const bridge = {
   skillConstellationEvidence: never,
   skillConstellationHistory: never,
   skillConstellationSettings: never,
+  skillConstellationCommitAuthors: never,
   skillConstellationUpdateSettings: never
 };
 const onAction = async () => ({ ok: true });
@@ -57,7 +58,9 @@ const staleness = { hasBuild: true, devChanged: false, settingsChanged: false, s
 const lastBuild = { id: "b1", occurrenceId: "o", trigger: "manual", status: "completed", startedAt: "2026-06-01T00:00:00.000Z", finishedAt: "2026-06-01T00:00:01.000Z", devCursorSeq: 3, settingsFingerprint: "f", skills: 2, evidence: 3, links: 1, added: 2, lost: 0, refusedPrivate: 0, othersCommits: 0, error: null };
 const skill = (id, name, score, extra = {}) => ({
   id, name, category: "language", evidenceCount: 3, repositoryCount: 2, evidenceKinds: 2,
-  firstEvidenceAt: "2026-01-01T00:00:00.000Z", lastEvidenceAt: "2026-05-01T00:00:00.000Z", lastActivityAt: null,
+  // Read by a scan on 1 May; the work itself ran from November to March.
+  firstEvidenceAt: "2026-01-01T00:00:00.000Z", lastEvidenceAt: "2026-05-01T00:00:00.000Z",
+  activityCount: 12, firstActivityAt: "2025-11-03T00:00:00.000Z", lastActivityAt: "2026-03-03T00:00:00.000Z", basis: "work",
   strength: { volume: 0.14, recency: 0.8, variety: 0.45, score }, hidden: false, ...extra
 });
 const ready = {
@@ -65,6 +68,7 @@ const ready = {
   skills: [skill("typescript", "TypeScript", 0.7), skill("react", "React", 0.4, { category: "framework" }), skill("go", "Go", 0.2, { hidden: true })],
   links: [{ a: "react", b: "typescript", source: "evidence", sharedRepositoryIds: ["r1"], weight: 0.5 }],
   layout: [{ skillId: "go", x: 700, y: 700 }, { skillId: "react", x: 300, y: 200 }, { skillId: "typescript", x: 500, y: 500 }],
+  repositoryActivity: [{ repositoryId: "r2", count: 12, firstAt: "2025-11-03T00:00:00.000Z", lastAt: "2026-03-03T00:00:00.000Z" }],
   lastBuild,
   staleness,
   countsAllCommits: true
@@ -163,7 +167,13 @@ test("a selected star shows why: repositories, files, dates, the numbers behind 
   assert.match(html, /<q class="skill-evidence__todo">TODO: tidy the router<\/q>/);
   assert.match(html, /abcdef1234/, "a commit shows its sha, not a subject");
   assert.match(html, /kit-meter__label">Variety<\/span><span class="kit-meter__value">45% · 2 repositories, 2 kinds</);
-  assert.match(html, /kit-meter__label">Recency<\/span><span class="kit-meter__value">80% · last 1 May 2026</);
+  // Dated by the work, never by the scan that read the files (1 May).
+  assert.match(html, /kit-meter__label">Recency<\/span><span class="kit-meter__value">80% · last work 3 Mar 2026</);
+  assert.match(html, /kit-meter__label">Volume<\/span><span class="kit-meter__value">14% · 12 changes in 2 repositories</);
+  assert.match(html, /Changes are commits and resolved TODOs in repositories that hold this language\./);
+  assert.match(html, /Evidence in api"><h4>api <span class="skill-repo__dates technical">3 Nov 2025 – 3 Mar 2026 · 12 commits counted<\/span>/);
+  assert.match(html, /Evidence in app"><h4>app <span class="skill-repo__dates technical">no commits counted<\/span>/);
+  assert.match(html, /Freshest<\/p><\/div><p class="kit-stat__value">TypeScript<\/p><p class="kit-stat__foot"><span class="kit-stat__hint">last worked 3 Mar 2026</);
   assert.match(html, /aria-label="Close evidence for TypeScript"/);
 });
 

@@ -60,6 +60,50 @@ function toCommit(repositoryId: string | null, payload: unknown): InputCommit | 
   };
 }
 
+/** One page after another of the commits Developer Intelligence recorded, up to `upToSeq`. */
+function* commitEvents(events: EventLog, upToSeq: number, pageSize: number) {
+  let after = 0;
+  for (;;) {
+    const page = events.query({
+      stream: DEV_STREAM,
+      module: DEV_MODULE,
+      types: [COMMIT_EVENT],
+      afterSeq: after,
+      orderBy: 'seq',
+      order: 'asc',
+      limit: pageSize,
+    });
+    for (const event of page) {
+      if (event.seq > upToSeq) return;
+      yield event;
+    }
+    if (page.length < pageSize) return;
+    after = page[page.length - 1]!.seq;
+  }
+}
+
+export interface CommitAuthor {
+  email: string;
+  commits: number;
+}
+
+/**
+ * The author emails on the commits already recorded, most commits first, so
+ * "my commit emails" can be picked instead of typed. Read from the event log;
+ * nothing is stored and git is not run.
+ */
+export function listCommitAuthors(events: EventLog, options?: { pageSize?: number; limit?: number }): CommitAuthor[] {
+  const counts = new Map<string, number>();
+  for (const event of commitEvents(events, latestDevSeq(events), Math.max(1, options?.pageSize ?? DEFAULT_PAGE_SIZE))) {
+    const email = toCommit(event.subject, event.payload)?.authorEmail?.trim().toLowerCase();
+    if (email && /^[^@\s]+@[^@\s]+$/.test(email)) counts.set(email, (counts.get(email) ?? 0) + 1);
+  }
+  return [...counts]
+    .map(([email, commits]) => ({ email, commits }))
+    .sort((a, b) => b.commits - a.commits || a.email.localeCompare(b.email))
+    .slice(0, Math.max(1, options?.limit ?? 12));
+}
+
 export async function collectInput(options: {
   reader: DevIntelligenceReader;
   events: EventLog;
@@ -109,29 +153,10 @@ export async function collectInput(options: {
   // Commits: every one DI recorded, in pages, up to the cursor read above.
   const commits: InputCommit[] = [];
   let malformedCommits = 0;
-  let after = 0;
-  for (;;) {
-    const page = options.events.query({
-      stream: DEV_STREAM,
-      module: DEV_MODULE,
-      types: [COMMIT_EVENT],
-      afterSeq: after,
-      orderBy: 'seq',
-      order: 'asc',
-      limit: pageSize,
-    });
-    let reachedCursor = false;
-    for (const event of page) {
-      if (event.seq > devCursorSeq) {
-        reachedCursor = true;
-        break;
-      }
-      const commit = toCommit(event.subject, event.payload);
-      if (commit) commits.push(commit);
-      else malformedCommits += 1;
-    }
-    if (reachedCursor || page.length < pageSize) break;
-    after = page[page.length - 1]!.seq;
+  for (const event of commitEvents(options.events, devCursorSeq, pageSize)) {
+    const commit = toCommit(event.subject, event.payload);
+    if (commit) commits.push(commit);
+    else malformedCommits += 1;
   }
 
   return { input: { repositories, technologies, todos, commits }, devCursorSeq, repositoryRoots, malformedCommits };

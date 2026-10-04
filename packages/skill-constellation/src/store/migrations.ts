@@ -95,4 +95,21 @@ CREATE TABLE IF NOT EXISTS skill_strength_history (
 CREATE INDEX IF NOT EXISTS skill_strength_history_by_skill ON skill_strength_history (skill_id, at);
 `,
   },
+  {
+    // Dated work per skill, so strength and date ranges come from when the
+    // work happened and not from when a scan ran. Filled by the next build.
+    version: 2,
+    name: 'dated_work',
+    sql: `
+ALTER TABLE skill_skills ADD COLUMN activity_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE skill_skills ADD COLUMN first_activity_at TEXT;
+
+CREATE TABLE IF NOT EXISTS skill_repository_activity (
+  repository_id TEXT PRIMARY KEY,
+  commits       INTEGER NOT NULL,
+  first_at      TEXT NOT NULL,
+  last_at       TEXT NOT NULL
+);
+`,
+  },
 ];

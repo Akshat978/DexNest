@@ -16,11 +16,11 @@
 
 import { randomUUID } from 'node:crypto';
 import type { DataBoundary, EventLog, JobOccurrence, ModuleScheduler, ModuleSettings, SqlDatabase } from '@dexnest/foundation';
-import { computeStrength } from '../domain/strength.ts';
+import { computeStrength, strengthBasis } from '../domain/strength.ts';
 import { normalizeSkillConstellationSettings, type SkillConstellationSettings } from '../domain/settings.ts';
-import type { Skill, SkillLayoutPoint, SkillLink, SkillStrength, SkillStrengthSnapshot } from '../domain/types.ts';
+import type { RepositoryActivityRow, Skill, SkillLayoutPoint, SkillLink, SkillStrength, SkillStrengthSnapshot, StrengthBasis } from '../domain/types.ts';
 import { createConstellationEngine, type BuildOutcome, type ConstellationEngine, type EvidenceView, type Staleness } from '../engine/engine.ts';
-import type { DevIntelligenceReader } from '../engine/collect.ts';
+import { listCommitAuthors, type CommitAuthor, type DevIntelligenceReader } from '../engine/collect.ts';
 import { SKILL_REBUILD_JOB } from '../manifest.ts';
 import { createSkillStore, type BuildRecord, type SkillStore } from '../store/store.ts';
 import { appendBuildEvents } from './events.ts';
@@ -44,6 +44,8 @@ export interface SkillConstellationModuleOptions {
 
 export interface ConstellationSkill extends Skill {
   strength: SkillStrength;
+  /** What the strength rests on: dated work in it, a project that names it, or a manifest line alone. */
+  basis: StrengthBasis;
   hidden: boolean;
 }
 
@@ -52,6 +54,8 @@ export interface ConstellationSnapshot {
   skills: ConstellationSkill[];
   links: SkillLink[];
   layout: SkillLayoutPoint[];
+  /** When the counted commits in each repository happened: work dates, not scan dates. */
+  repositoryActivity: RepositoryActivityRow[];
   lastBuild: BuildRecord | null;
   staleness: Staleness;
   /** True when my emails are unset, so every commit counts. */
@@ -82,6 +86,8 @@ export interface SkillConstellationModule {
   constellation(): ConstellationSnapshot;
   describeEvidence(skillId: string, options?: { limit?: number }): Promise<EvidenceView[]>;
   strengthHistory(skillId: string): SkillStrengthSnapshot[];
+  /** Author emails on the commits already scanned, to pick "my emails" from. */
+  commitAuthors(): CommitAuthor[];
 }
 
 export function createSkillConstellationModule(options: SkillConstellationModuleOptions): SkillConstellationModule {
@@ -212,9 +218,10 @@ export function createSkillConstellationModule(options: SkillConstellationModule
       const at = now();
       return {
         enabled: settings.enabled,
-        skills: store.listSkills().map((skill) => ({ ...skill, strength: computeStrength(skill, at), hidden: hidden.has(skill.id) })),
+        skills: store.listSkills().map((skill) => ({ ...skill, strength: computeStrength(skill, at), basis: strengthBasis(skill), hidden: hidden.has(skill.id) })),
         links: store.listLinks(),
         layout: store.listLayout(),
+        repositoryActivity: store.listRepositoryActivity(),
         lastBuild: store.lastCompletedBuild() ?? null,
         staleness: engine.staleness(),
         countsAllCommits: settings.myEmails.length === 0,
@@ -227,6 +234,10 @@ export function createSkillConstellationModule(options: SkillConstellationModule
 
     strengthHistory(skillId) {
       return store.strengthHistory(skillId);
+    },
+
+    commitAuthors() {
+      return listCommitAuthors(options.events, options.pageSize ? { pageSize: options.pageSize } : undefined);
     },
   };
 }

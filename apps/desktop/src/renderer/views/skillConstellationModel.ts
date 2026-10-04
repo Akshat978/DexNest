@@ -8,7 +8,9 @@ import type {
   ConstellationSnapshot,
   EvidenceKind,
   EvidenceView,
-  SkillLayoutPoint
+  RepositoryActivityRow,
+  SkillLayoutPoint,
+  StrengthBasis
 } from "@dexnest/skill-constellation";
 import { dayLabel } from "../lib/dates.ts";
 
@@ -144,7 +146,55 @@ export function shortDate(iso: string): string {
 export function starLabel(skill: ConstellationSkill): string {
   const repos = skill.repositoryCount === 1 ? "1 repository" : `${skill.repositoryCount} repositories`;
   const evidence = skill.evidenceCount === 1 ? "1 piece of evidence" : `${skill.evidenceCount} pieces of evidence`;
-  return `${skill.name}, ${CATEGORY_LABELS[skill.category]}, strength ${percent(skill.strength.score)}, ${evidence} in ${repos}${skill.hidden ? ", hidden" : ""}`;
+  const declared = basisOf(skill) === "declared" ? ", named only, no dated work" : "";
+  return `${skill.name}, ${CATEGORY_LABELS[skill.category]}, strength ${percent(skill.strength.score)}, ${evidence} in ${repos}${declared}${skill.hidden ? ", hidden" : ""}`;
+}
+
+type Dated = Pick<ConstellationSkill, "category" | "lastActivityAt"> & { basis?: StrengthBasis };
+
+/** What a strength rests on; worked out here for a snapshot from before it was sent. */
+export function basisOf(skill: Dated): StrengthBasis {
+  if (skill.basis) return skill.basis;
+  if (!skill.lastActivityAt) return "declared";
+  return skill.category === "language" ? "work" : "project";
+}
+
+/** One sentence under the bars: where this strength comes from, and what it cannot know. */
+export function basisNote(skill: Dated & Pick<ConstellationSkill, "repositoryCount">): string {
+  switch (basisOf(skill)) {
+    case "work":
+      return "Changes are commits and resolved TODOs in repositories that hold this language.";
+    case "project":
+      return `Named in the manifest of ${countOf(skill.repositoryCount, "repository", "repositories")} with commits, and dated by the last commit there. The scan cannot tell how much of that work used it, so it counts for less than a language.`;
+    case "declared":
+      return "Named or present only: no commit is counted in a repository that has it, so it stays faint.";
+  }
+}
+
+/** What the Volume bar counted. */
+export function volumeNote(skill: Pick<ConstellationSkill, "category" | "activityCount" | "repositoryCount">): string {
+  const repos = countOf(skill.repositoryCount, "repository", "repositories");
+  if (skill.category !== "language") return `named in ${repos}`;
+  const work = skill.activityCount ?? 0;
+  return work > 0 ? `${countOf(work, "change", "changes")} in ${repos}` : `present in ${repos}`;
+}
+
+/** When it was last worked in, or where it is used was. Never a scan date. Short: it sits beside a bar. */
+export function recencyNote(skill: Pick<ConstellationSkill, "lastActivityAt">): string {
+  return skill.lastActivityAt ? `last work ${shortDate(skill.lastActivityAt)}` : "no dated work";
+}
+
+/**
+ * A repository's line in the evidence panel: when the counted commits there
+ * happened. The evidence rows cannot say this - a manifest line is dated by
+ * the scan that read it.
+ */
+export function repositoryRange(repositoryId: string, activity: readonly RepositoryActivityRow[] | undefined): string {
+  const row = activity?.find((a) => a.repositoryId === repositoryId);
+  if (!row) return "no commits counted";
+  const first = shortDate(row.firstAt);
+  const last = shortDate(row.lastAt);
+  return `${first === last ? first : `${first} – ${last}`} · ${countOf(row.count, "commit", "commits")} counted`;
 }
 
 /** How many stars carry a written label; the rest show theirs on hover, focus or selection. */
@@ -314,9 +364,17 @@ export interface SkyStats {
   languages: number;
 }
 
-/** The numbers above the sky. */
+/**
+ * The numbers above the sky. Freshest is the skill last worked in: one that
+ * nothing dates is never it, and skills sharing a last commit (everything in
+ * one repository does) go to the strongest, so it names a language or a
+ * framework before the linter beside it.
+ */
 export function skyStats(skills: readonly ConstellationSkill[]): SkyStats {
-  const freshest = [...skills].sort((a, b) => b.lastEvidenceAt.localeCompare(a.lastEvidenceAt) || a.name.localeCompare(b.name))[0] ?? null;
+  const freshest =
+    skills
+      .filter((s) => s.lastActivityAt)
+      .sort((a, b) => b.lastActivityAt!.localeCompare(a.lastActivityAt!) || b.strength.score - a.strength.score || a.name.localeCompare(b.name))[0] ?? null;
   return {
     count: skills.length,
     strongest: brightest(skills, 1)[0] ?? null,

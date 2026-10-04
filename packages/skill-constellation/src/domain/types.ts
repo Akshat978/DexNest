@@ -65,10 +65,38 @@ export interface Skill extends SkillDefinition {
   repositoryCount: number;
   /** Distinct evidence kinds. */
   evidenceKinds: number;
+  /** When the scanner first and last recorded something. A scan date, not a work date. */
   firstEvidenceAt: string;
   lastEvidenceAt: string;
-  /** Latest commit or resolved TODO; null when the only evidence is presence. */
+  /**
+   * Dated work behind the skill. For a language: its commits and resolved
+   * TODOs. For anything else, which is only ever named in a manifest: the
+   * commits in the repositories that still declare it.
+   */
+  activityCount: number;
+  /** Earliest and latest of that work; null when the only evidence is presence. */
+  firstActivityAt: string | null;
   lastActivityAt: string | null;
+}
+
+/**
+ * What a strength rests on.
+ * - `work`: dated work in the language itself.
+ * - `project`: named in a manifest of a repository that has dated work.
+ * - `declared`: named or present, with no dated work anywhere.
+ */
+export type StrengthBasis = 'work' | 'project' | 'declared';
+
+/** Commits counted in one repository, after the owner filter. */
+export interface RepositoryActivity {
+  count: number;
+  firstAt: string;
+  lastAt: string;
+}
+
+/** The same, as stored and shown: when the work in a repository actually happened. */
+export interface RepositoryActivityRow extends RepositoryActivity {
+  repositoryId: string;
 }
 
 /** Each component and the score are in [0, 1]. Computed when read, never stored. */

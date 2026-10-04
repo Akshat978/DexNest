@@ -72,6 +72,7 @@ export const SKILL_CHANNELS = {
   evidence: "dexnest:skill-constellation-evidence",
   history: "dexnest:skill-constellation-history",
   settings: "dexnest:skill-constellation-settings",
+  commitAuthors: "dexnest:skill-constellation-commit-authors",
   updateSettings: "dexnest:skill-constellation-update-settings"
 } as const;
 
@@ -124,6 +125,8 @@ export function createSkillConstellationHost(options: SkillConstellationHostOpti
   handle(SKILL_CHANNELS.evidence, (skillId) => module.describeEvidence(skillIdArgument(skillId), { limit: 200 }));
   handle(SKILL_CHANNELS.history, (skillId) => module.strengthHistory(skillIdArgument(skillId)));
   handle(SKILL_CHANNELS.settings, () => module.getSettings());
+  // The author emails on commits already scanned, so "my emails" is a pick, not a typing test.
+  handle(SKILL_CHANNELS.commitAuthors, () => module.commitAuthors());
   // On/off is not a setting here: it goes through the skill_constellation.enable
   // and .disable actions, so it is journalled like every other action.
   handle(SKILL_CHANNELS.updateSettings, (next) => {

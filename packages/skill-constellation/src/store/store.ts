@@ -23,6 +23,7 @@ import type {
   SkillLink,
   SkillLinkSource,
   SkillStrengthSnapshot,
+  RepositoryActivityRow,
 } from '../domain/types.ts';
 
 export type BuildStatus = 'running' | 'completed' | 'skipped' | 'failed';
@@ -90,6 +91,8 @@ export interface SkillStore {
   countEvidence(skillId?: string): number;
   listLinks(): SkillLink[];
   listLayout(): SkillLayoutPoint[];
+  /** Counted commits per repository as of the last build. */
+  listRepositoryActivity(): RepositoryActivityRow[];
   strengthHistory(skillId: string, options?: { limit?: number }): SkillStrengthSnapshot[];
   historyBuildIds(): string[];
 }
@@ -132,6 +135,8 @@ function toSkill(row: Row): Skill {
     evidenceKinds: num(row.evidence_kinds),
     firstEvidenceAt: str(row.first_evidence_at),
     lastEvidenceAt: str(row.last_evidence_at),
+    activityCount: num(row.activity_count),
+    firstActivityAt: strOrNull(row.first_activity_at),
     lastActivityAt: strOrNull(row.last_activity_at),
   };
 }
@@ -247,14 +252,15 @@ export function createSkillStore(db: SqlDatabase, options: { historyBuildsKept?:
         run('DELETE FROM skill_evidence');
         run('DELETE FROM skill_links');
         run('DELETE FROM skill_layout');
+        run('DELETE FROM skill_repository_activity');
 
         const insertSkill = db.prepare(
           `INSERT INTO skill_skills (id, name, category, evidence_count, repository_count, evidence_kinds,
-             first_evidence_at, last_evidence_at, last_activity_at, build_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             first_evidence_at, last_evidence_at, activity_count, first_activity_at, last_activity_at, build_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         );
         for (const s of result.skills) {
-          insertSkill.run([s.id, s.name, s.category, s.evidenceCount, s.repositoryCount, s.evidenceKinds, s.firstEvidenceAt, s.lastEvidenceAt, s.lastActivityAt, input.buildId]);
+          insertSkill.run([s.id, s.name, s.category, s.evidenceCount, s.repositoryCount, s.evidenceKinds, s.firstEvidenceAt, s.lastEvidenceAt, s.activityCount, s.firstActivityAt, s.lastActivityAt, input.buildId]);
         }
 
         const insertEvidence = db.prepare(
@@ -272,6 +278,11 @@ export function createSkillStore(db: SqlDatabase, options: { historyBuildsKept?:
 
         const insertPoint = db.prepare('INSERT INTO skill_layout (skill_id, x, y) VALUES (?, ?, ?)');
         for (const p of result.layout) insertPoint.run([p.skillId, p.x, p.y]);
+
+        const insertActivity = db.prepare(
+          'INSERT INTO skill_repository_activity (repository_id, commits, first_at, last_at) VALUES (?, ?, ?, ?)',
+        );
+        for (const a of result.repositoryActivity) insertActivity.run([a.repositoryId, a.count, a.firstAt, a.lastAt]);
 
         const insertHistory = db.prepare(
           `INSERT INTO skill_strength_history (build_id, skill_id, at, evidence_count, volume, recency, variety, score)
@@ -392,6 +403,15 @@ export function createSkillStore(db: SqlDatabase, options: { historyBuildsKept?:
 
     listLinks() {
       return all('SELECT * FROM skill_links ORDER BY a, b').map(toLink);
+    },
+
+    listRepositoryActivity() {
+      return all('SELECT * FROM skill_repository_activity ORDER BY repository_id').map((row) => ({
+        repositoryId: str(row.repository_id),
+        count: num(row.commits),
+        firstAt: str(row.first_at),
+        lastAt: str(row.last_at),
+      }));
     },
 
     listLayout() {

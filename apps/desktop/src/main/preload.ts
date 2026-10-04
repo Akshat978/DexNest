@@ -161,6 +161,7 @@ contextBridge.exposeInMainWorld("dexNest", {
   skillConstellationEvidence: (skillId: string) => ipcRenderer.invoke("dexnest:skill-constellation-evidence", skillId),
   skillConstellationHistory: (skillId: string) => ipcRenderer.invoke("dexnest:skill-constellation-history", skillId),
   skillConstellationSettings: () => ipcRenderer.invoke("dexnest:skill-constellation-settings"),
+  skillConstellationCommitAuthors: () => ipcRenderer.invoke("dexnest:skill-constellation-commit-authors"),
   skillConstellationUpdateSettings: (settings: unknown) => ipcRenderer.invoke("dexnest:skill-constellation-update-settings", settings),
   // Reality RPG: reads and settings. Refresh, on/off, rules, quests,
   // achievements and backfill are reality_rpg.* actions, run through runAction.

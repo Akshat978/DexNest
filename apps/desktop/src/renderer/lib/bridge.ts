@@ -383,6 +383,7 @@ export const fallbackBridge: DexNestBridge = {
     skills: [],
     links: [],
     layout: [],
+    repositoryActivity: [],
     lastBuild: null,
     staleness: { hasBuild: false, devChanged: false, settingsChanged: false, stale: true, devCursorSeq: 0, latestDevSeq: 0 },
     countsAllCommits: true
@@ -390,6 +391,7 @@ export const fallbackBridge: DexNestBridge = {
   skillConstellationEvidence: async () => [],
   skillConstellationHistory: async () => [],
   skillConstellationSettings: async () => ({ ...fallbackSkillSettings }),
+  skillConstellationCommitAuthors: async () => [],
   skillConstellationUpdateSettings: async (settings) => settings,
   devIntelligenceStatus: async () => ({ enabled: false, scanning: false, repositories: 0 }),
   devIntelligenceSettings: async () => ({ schemaVersion: 1, enabled: false, roots: [], manualRepositories: [], excludedRoots: [], scanIntervalMinutes: 30, runHealthChecks: true }),

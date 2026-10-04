@@ -17,7 +17,7 @@ import { languageForPath } from './extensions.ts';
 import { stableHash } from './hash.ts';
 import { escapesRepository, isPrivateLookingPath, normalizeRelativePath } from './privacy.ts';
 import type { SkillConstellationSettings } from './settings.ts';
-import type { ConstellationInput, EvidenceKind, SkillDefinition, SkillEvidence } from './types.ts';
+import type { ConstellationInput, EvidenceKind, RepositoryActivity, SkillDefinition, SkillEvidence } from './types.ts';
 
 export interface DeriveEvidenceOptions {
   settings: Pick<SkillConstellationSettings, 'includeUnmappedLibraries' | 'myEmails'>;
@@ -31,6 +31,8 @@ export interface DeriveEvidenceOptions {
 export interface DerivedEvidence {
   evidence: SkillEvidence[];
   definitions: Map<string, SkillDefinition>;
+  /** Counted commits per repository, whatever the repository evidences. */
+  repositoryActivity: Map<string, RepositoryActivity>;
   /** Evidence dropped because its path looked private or was sensitive. */
   refusedPrivate: number;
   /** Commits dropped because their author is not one of `myEmails`. */
@@ -46,6 +48,7 @@ export function deriveEvidence(input: ConstellationInput, options: DeriveEvidenc
   const byId = new Map<string, SkillEvidence>();
   const definitions = new Map<string, SkillDefinition>();
   const languagesByRepository = new Map<string, Set<string>>();
+  const repositoryActivity = new Map<string, RepositoryActivity>();
   let refusedPrivate = 0;
   let othersCommits = 0;
 
@@ -110,6 +113,13 @@ export function deriveEvidence(input: ConstellationInput, options: DeriveEvidenc
       othersCommits += 1;
       continue;
     }
+    const seen = repositoryActivity.get(commit.repositoryId);
+    if (!seen) repositoryActivity.set(commit.repositoryId, { count: 1, firstAt: commit.authorDate, lastAt: commit.authorDate });
+    else {
+      seen.count += 1;
+      if (commit.authorDate < seen.firstAt) seen.firstAt = commit.authorDate;
+      if (commit.authorDate > seen.lastAt) seen.lastAt = commit.authorDate;
+    }
     const languages = languagesByRepository.get(commit.repositoryId);
     if (!languages) continue;
     for (const skillId of [...languages].sort()) {
@@ -127,5 +137,5 @@ export function deriveEvidence(input: ConstellationInput, options: DeriveEvidenc
   }
 
   const evidence = [...byId.values()].sort((a, b) => a.skillId.localeCompare(b.skillId) || a.at.localeCompare(b.at) || a.id.localeCompare(b.id));
-  return { evidence, definitions, refusedPrivate, othersCommits };
+  return { evidence, definitions, repositoryActivity, refusedPrivate, othersCommits };
 }

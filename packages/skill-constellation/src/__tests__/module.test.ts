@@ -199,6 +199,49 @@ describe('Skill Constellation module', () => {
     expect(snap.layout).toHaveLength(2);
   });
 
+  it('the snapshot dates a skill by its work and says what its strength rests on', async () => {
+    const { w, module } = await setup();
+    await w.repo('r-lib', 'lib');
+    await w.tech('r-lib', { name: 'jest' });
+    await module.rebuildNow();
+    const byId = new Map(module.constellation().skills.map((s) => [s.id, s]));
+    // The facts were read by a scan on 1 June; the one commit was on 1 May.
+    expect(byId.get('typescript')).toMatchObject({ basis: 'work', activityCount: 1, firstActivityAt: '2026-05-01T00:00:00.000Z', lastActivityAt: '2026-05-01T00:00:00.000Z' });
+    expect(byId.get('react')).toMatchObject({ basis: 'project', lastActivityAt: '2026-05-01T00:00:00.000Z' });
+    expect(byId.get('react')!.strength.recency).toBeLessThan(1);
+    expect(module.constellation().repositoryActivity).toEqual([
+      { repositoryId: 'r-app', count: 1, firstAt: '2026-05-01T00:00:00.000Z', lastAt: '2026-05-01T00:00:00.000Z' },
+    ]);
+    // Named in a manifest of a repository with no commits: declared, and faint.
+    expect(byId.get('jest')).toMatchObject({ basis: 'declared', lastActivityAt: null });
+    expect(byId.get('jest')!.strength.score).toBeLessThan(0.06);
+  });
+
+  it('a constellation built before the scoring changed is stale, and one rebuild brings it up to date', async () => {
+    const { w, module } = await setup();
+    await module.rebuildNow();
+    expect(module.status().staleness.stale).toBe(false);
+    // What the previous version stored for the same settings.
+    w.di.database.prepare("UPDATE skill_state SET value = 'fingerprint-of-the-old-scoring' WHERE value = ?").run([w.store.settingsFingerprint()]);
+    expect(module.status().staleness).toMatchObject({ stale: true, settingsChanged: true, devChanged: false });
+    expect((await module.rebuildNow()).status).toBe('completed');
+    expect(module.status().staleness.stale).toBe(false);
+  });
+
+  it('offers the commit emails already scanned, most commits first, without storing them', async () => {
+    const { w, module } = await setup();
+    await w.commit('r-app', 'bbb', '2026-05-02T00:00:00.000Z', 'Me@Example.com');
+    await w.commit('r-app', 'ccc', '2026-05-03T00:00:00.000Z', 'me@example.com');
+    await w.commit('r-app', 'ddd', '2026-05-04T00:00:00.000Z', 'other@example.com');
+    await w.commit('r-app', 'eee', '2026-05-05T00:00:00.000Z', 'not an email');
+    expect(module.commitAuthors()).toEqual([
+      { email: 'me@example.com', commits: 2 },
+      { email: 'other@example.com', commits: 1 },
+    ]);
+    await module.rebuildNow();
+    expect(w.dumpSkillTables()).not.toContain('example.com');
+  });
+
   it('start closes out a build a crash left running', async () => {
     const { w, module } = await setup();
     w.store.beginBuild({ id: 'crashed', occurrenceId: 'occ', trigger: 'scheduled', startedAt: '2026-06-01T00:00:00.000Z' });

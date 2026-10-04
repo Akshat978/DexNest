@@ -4,7 +4,7 @@ import { inspectModuleMigrations, validateManifest, type SqlDatabase } from '@de
 import { buildConstellation } from '../domain/build.ts';
 import { createSkillStore, runSkillConstellationMigrations, SKILL_CONSTELLATION_MIGRATIONS } from '../store/index.ts';
 import { manifestProblems, SKILL_CONSTELLATION_MANIFEST } from '../manifest.ts';
-import { commit, input, OPEN, tech, todo } from './fixtures.ts';
+import { commit, input, OPEN, T0, tech, todo } from './fixtures.ts';
 
 const NOW = new Date('2026-06-01T10:00:00.000Z');
 
@@ -67,8 +67,8 @@ describe('Skill Constellation store', () => {
 
   it('migrates through the foundation ledger, once', () => {
     const { db } = open();
-    expect(inspectModuleMigrations(db, 'skill_constellation', SKILL_CONSTELLATION_MIGRATIONS)).toEqual({ applied: [1], pending: [] });
-    expect(runSkillConstellationMigrations(db)).toEqual({ applied: [], alreadyApplied: [1] });
+    expect(inspectModuleMigrations(db, 'skill_constellation', SKILL_CONSTELLATION_MIGRATIONS)).toEqual({ applied: [1, 2], pending: [] });
+    expect(runSkillConstellationMigrations(db)).toEqual({ applied: [], alreadyApplied: [1, 2] });
     const tables = db
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'skill_%' ORDER BY name")
       .all<{ name: string }>()
@@ -78,6 +78,7 @@ describe('Skill Constellation store', () => {
       'skill_evidence',
       'skill_layout',
       'skill_links',
+      'skill_repository_activity',
       'skill_skills',
       'skill_state',
       'skill_strength_history',
@@ -106,6 +107,7 @@ describe('Skill Constellation store', () => {
     expect(reopened.countEvidence()).toBe(result.evidence.length);
     expect(reopened.listLinks()).toEqual(result.links);
     expect(reopened.listLayout()).toEqual(result.layout);
+    expect(reopened.listRepositoryActivity()).toEqual([{ repositoryId: 'r-app', count: 1, firstAt: T0, lastAt: T0 }]);
     expect(reopened.strengthHistory('react')).toHaveLength(1);
     expect(reopened.devCursor()).toBe(42);
     expect(reopened.settingsFingerprint()).toBe('fp');

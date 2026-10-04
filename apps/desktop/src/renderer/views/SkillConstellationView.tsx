@@ -37,6 +37,10 @@ import {
   percent,
   shortDate,
   starLabel,
+  basisNote,
+  recencyNote,
+  repositoryRange,
+  volumeNote,
   labelledIds,
   labelPlacement,
   labelSides,
@@ -61,6 +65,7 @@ export interface SkillConstellationBridge {
   skillConstellationEvidence(skillId: string): Promise<EvidenceView[]>;
   skillConstellationHistory(skillId: string): Promise<SkillStrengthSnapshot[]>;
   skillConstellationSettings(): Promise<SkillConstellationSettings>;
+  skillConstellationCommitAuthors?(): Promise<{ email: string; commits: number }[]>;
   skillConstellationUpdateSettings(settings: SkillConstellationSettings): Promise<SkillConstellationSettings>;
 }
 
@@ -219,7 +224,7 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
           <StatGrid columns={4}>
             <StatTile label="Skills" value={String(stats.count)} icon={<Stars />} hint={`${stats.languages} language${stats.languages === 1 ? "" : "s"}`} />
             <StatTile label="Strongest" value={stats.strongest?.name ?? "—"} icon={<Star />} tone="warning" hint={stats.strongest ? `strength ${percent(stats.strongest.strength.score)}` : undefined} />
-            <StatTile label="Freshest" value={stats.freshest?.name ?? "—"} icon={<Clock />} tone="success" hint={stats.freshest ? `last ${shortDate(stats.freshest.lastEvidenceAt)}` : undefined} />
+            <StatTile label="Freshest" value={stats.freshest?.name ?? "—"} icon={<Clock />} tone="success" hint={stats.freshest?.lastActivityAt ? `last worked ${shortDate(stats.freshest.lastActivityAt)}` : "no dated work yet"} />
             <StatTile label="Evidence" value={String(skills.reduce((n, s) => n + s.evidenceCount, 0))} icon={<Code2 />} tone="info" hint="facts behind the stars" />
           </StatGrid>
           <div className="skill-layout">
@@ -310,6 +315,7 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
                 skill={selected}
                 bridge={bridge}
                 initialEvidence={initial?.evidence ?? null}
+                repositoryActivity={state.snapshot.repositoryActivity}
                 onClose={closeEvidence}
                 onToggleHidden={async () => {
                   const settings = await bridge.skillConstellationSettings();
@@ -359,7 +365,13 @@ function StatusLine({ snapshot, showHidden, onToggleHidden }: { snapshot: Conste
         {snapshot.lastBuild?.finishedAt ? <> · built <span className="technical">{shortDate(snapshot.lastBuild.finishedAt)}</span></> : null}
         {snapshot.enabled ? " · rebuilds on schedule" : " · off"}
       </p>
-      {snapshot.staleness.stale && <p className="skill-stale">The repository scan has recorded something new since this was built. Rebuild to include it.</p>}
+      {snapshot.staleness.stale && (
+        <p className="skill-stale">
+          {snapshot.staleness.devChanged || !snapshot.staleness.settingsChanged
+            ? "The repository scan has recorded something new since this was built. Rebuild to include it."
+            : "A setting, or how strength is worked out, changed since this was built. Rebuild to bring the numbers up to date."}
+        </p>
+      )}
       {snapshot.countsAllCommits && (
         <p className="skill-hint">Every commit counts, because no commit emails are set. Add yours below to count only your own.</p>
       )}
@@ -376,12 +388,15 @@ function EvidencePanel({
   skill,
   bridge,
   initialEvidence,
+  repositoryActivity,
   onClose,
   onToggleHidden
 }: {
   skill: ConstellationSkill;
   bridge: SkillConstellationBridge;
   initialEvidence: EvidenceView[] | null;
+  /** When the counted commits in each repository happened. */
+  repositoryActivity: ConstellationSnapshot["repositoryActivity"] | undefined;
   onClose(): void;
   onToggleHidden(): Promise<void>;
 }) {
@@ -433,10 +448,12 @@ function EvidencePanel({
       </div>
 
       <div className="skill-strength">
-        <Meter label="Volume" value={s.volume} max={1} display={`${percent(s.volume)} · ${skill.evidenceCount} evidence`} />
-        <Meter label="Recency" value={s.recency} max={1} display={`${percent(s.recency)} · last ${shortDate(skill.lastEvidenceAt)}`} tone="success" />
+        <Meter label="Volume" value={s.volume} max={1} display={`${percent(s.volume)} · ${volumeNote(skill)}`} />
+        <Meter label="Recency" value={s.recency} max={1} display={`${percent(s.recency)} · ${recencyNote(skill)}`} tone="success" />
         <Meter label="Variety" value={s.variety} max={1} display={`${percent(s.variety)} · ${countOf(skill.repositoryCount, "repository", "repositories")}, ${countOf(skill.evidenceKinds, "kind", "kinds")}`} tone="info" />
       </div>
+
+      <p className="skill-hint">{basisNote(skill)}</p>
 
       {history.length > 1 && (
         <div className="skill-history">
@@ -453,7 +470,7 @@ function EvidencePanel({
         <section key={group.repositoryId} className="skill-repo" aria-label={`Evidence in ${group.repositoryName}`}>
           <h4>
             {group.repositoryName}{" "}
-            <span className="skill-repo__dates technical">{shortDate(group.firstAt)} – {shortDate(group.lastAt)}</span>
+            <span className="skill-repo__dates technical">{repositoryRange(group.repositoryId, repositoryActivity)}</span>
           </h4>
           <ul>
             {group.items.map((item) => (
@@ -479,6 +496,7 @@ function EvidencePanel({
 function SettingsPanel({ bridge, onSaved }: { bridge: SkillConstellationBridge; onSaved(): Promise<void> }) {
   const [settings, setSettings] = useState<SkillConstellationSettings | null>(null);
   const [emails, setEmails] = useState("");
+  const [authors, setAuthors] = useState<{ email: string; commits: number }[]>([]);
   const [status, setStatus] = useState<string | null>(null);
 
   useEffect(() => {
@@ -491,12 +509,21 @@ function SettingsPanel({ bridge, onSaved }: { bridge: SkillConstellationBridge; 
         setEmails(s.myEmails.join(", "));
       })
       .catch(() => undefined);
+    bridge
+      .skillConstellationCommitAuthors?.()
+      .then((found) => {
+        if (live) setAuthors(found);
+      })
+      .catch(() => undefined);
     return () => {
       live = false;
     };
   }, [bridge]);
 
   if (!settings) return null;
+
+  const typed = new Set(emails.toLowerCase().split(/[,\s]+/).filter(Boolean));
+  const suggestions = authors.filter((a) => !typed.has(a.email));
 
   async function save(next: SkillConstellationSettings) {
     try {
@@ -528,7 +555,23 @@ function SettingsPanel({ bridge, onSaved }: { bridge: SkillConstellationBridge; 
             onChange={(event) => setEmails(event.target.value)}
           />
         </Field>
-        <p className="skill-hint">Only commits by these authors count. Commits recorded before authors were tracked still count.</p>
+        {suggestions.length > 0 && (
+          <div className="skill-authors" role="group" aria-label="Emails on the commits already scanned">
+            <span className="skill-hint">On your scanned commits:</span>
+            {suggestions.map((author) => (
+              <button
+                key={author.email}
+                type="button"
+                className="skill-link-button technical"
+                title={`Add ${author.email}`}
+                onClick={() => setEmails([...typed, author.email].join(", "))}
+              >
+                {author.email} ({countOf(author.commits, "commit", "commits")})
+              </button>
+            ))}
+          </div>
+        )}
+        <p className="skill-hint">Only commits by these authors count. Pick yours above, then save. Commits recorded before authors were tracked still count.</p>
         <label className="skill-check">
           <input
             type="checkbox"

@@ -27,13 +27,14 @@ const staleness = { hasBuild: true, devChanged: false, settingsChanged: false, s
 function skill(id: string, extra: Partial<ConstellationSkill> = {}): ConstellationSkill {
   return {
     id, name: id.toUpperCase(), category: "language", evidenceCount: 3, repositoryCount: 2, evidenceKinds: 2,
-    firstEvidenceAt: "2026-01-01T00:00:00.000Z", lastEvidenceAt: "2026-05-01T00:00:00.000Z", lastActivityAt: null,
+    firstEvidenceAt: "2026-01-01T00:00:00.000Z", lastEvidenceAt: "2026-05-01T00:00:00.000Z",
+    activityCount: 12, firstActivityAt: "2025-11-03T00:00:00.000Z", lastActivityAt: "2026-03-03T00:00:00.000Z", basis: "work",
     strength: { volume: 0.1, recency: 0.8, variety: 0.4, score: 0.42 }, hidden: false, ...extra
   };
 }
 
 function snapshot(extra: Partial<ConstellationSnapshot> = {}): ConstellationSnapshot {
-  return { enabled: false, skills: [], links: [], layout: [], lastBuild: null, staleness, countsAllCommits: true, ...extra };
+  return { enabled: false, skills: [], links: [], layout: [], repositoryActivity: [], lastBuild: null, staleness, countsAllCommits: true, ...extra };
 }
 
 const build = {
@@ -214,7 +215,7 @@ test("glow follows recency; dust is deterministic and stays inside the sky", asy
 test("stats and the brightest stars", async () => {
   const { skyStats, brightest } = await import("../src/renderer/views/skillConstellationModel.ts");
   const sk = (id: string, score: number, last: string, category = "language") =>
-    ({ id, name: id, category, strength: { score }, lastEvidenceAt: last }) as never;
+    ({ id, name: id, category, strength: { score }, lastEvidenceAt: "2026-09-09", lastActivityAt: last }) as never;
   const skills = [sk("Go", 0.3, "2026-01-01"), sk("TypeScript", 0.9, "2026-03-01"), sk("React", 0.5, "2026-06-01", "framework")];
   const stats = skyStats(skills);
   assert.equal(stats.count, 3);
@@ -223,4 +224,40 @@ test("stats and the brightest stars", async () => {
   assert.equal(stats.languages, 2);
   assert.deepEqual(brightest(skills, 2).map((s: { id: string }) => s.id), ["TypeScript", "React"]);
   assert.deepEqual(skyStats([]), { count: 0, strongest: null, freshest: null, languages: 0 });
+
+  // Everything in one repository shares its last commit: the strongest of them is named, not the linter.
+  const oneRepo = [sk("ESLint", 0.2, "2026-06-01", "tooling"), sk("TypeScript", 0.9, "2026-06-01"), sk("npm", 0.3, "2026-06-01", "packageManager")];
+  assert.equal((skyStats(oneRepo).freshest as unknown as { id: string }).id, "TypeScript");
+  // A scan date is not work: a skill nothing dates is never the freshest.
+  const undated = [sk("Jest", 0.9, null as never, "tooling"), sk("Go", 0.1, "2025-01-01")];
+  assert.equal((skyStats(undated).freshest as unknown as { id: string }).id, "Go");
+  assert.equal(skyStats([sk("Jest", 0.9, null as never, "tooling")]).freshest, null);
+});
+
+test("the numbers say what was counted and when the work was, never when a scan ran", async () => {
+  const { basisNote, basisOf, recencyNote, repositoryRange, volumeNote } = await import("../src/renderer/views/skillConstellationModel.ts");
+  assert.equal(volumeNote(skill("go")), "12 changes in 2 repositories");
+  assert.equal(volumeNote(skill("go", { activityCount: 1, repositoryCount: 1 })), "1 change in 1 repository");
+  assert.equal(volumeNote(skill("go", { activityCount: 0 })), "present in 2 repositories");
+  assert.equal(volumeNote(skill("jest", { category: "tooling", repositoryCount: 1 })), "named in 1 repository");
+
+  assert.equal(recencyNote(skill("go")), "last work 3 Mar 2026");
+  assert.equal(recencyNote(skill("react", { category: "framework" })), "last work 3 Mar 2026");
+  assert.equal(recencyNote(skill("jest", { lastActivityAt: null })), "no dated work");
+
+  assert.equal(basisOf(skill("go")), "work");
+  assert.equal(basisOf({ category: "framework", lastActivityAt: "2026-03-03" }), "project", "worked out when the snapshot does not say");
+  assert.equal(basisOf({ category: "tooling", lastActivityAt: null }), "declared");
+  assert.match(basisNote(skill("react", { category: "framework", basis: "project", repositoryCount: 3 })), /^Named in the manifest of 3 repositories with commits, and dated by the last commit there\./);
+  assert.match(basisNote(skill("jest", { category: "tooling", basis: "declared", lastActivityAt: null })), /^Named or present only/);
+  assert.equal(starLabel(skill("jest", { category: "tooling", basis: "declared", lastActivityAt: null })), "JEST, tooling, strength 42%, 3 pieces of evidence in 2 repositories, named only, no dated work");
+
+  const activity = [
+    { repositoryId: "r1", count: 240, firstAt: "2024-02-10T08:00:00.000Z", lastAt: "2026-10-02T19:00:00.000Z" },
+    { repositoryId: "r2", count: 1, firstAt: "2026-05-01T00:00:00.000Z", lastAt: "2026-05-01T00:00:00.000Z" }
+  ];
+  assert.equal(repositoryRange("r1", activity), "10 Feb 2024 – 2 Oct 2026 · 240 commits counted");
+  assert.equal(repositoryRange("r2", activity), "1 May 2026 · 1 commit counted");
+  assert.equal(repositoryRange("r3", activity), "no commits counted");
+  assert.equal(repositoryRange("r1", undefined), "no commits counted");
 });
