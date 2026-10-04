@@ -389,6 +389,7 @@ export const fallbackBridge: DexNestBridge = {
     countsAllCommits: true
   }),
   skillConstellationEvidence: async () => [],
+  skillConstellationEvidenceCounts: async () => [],
   skillConstellationHistory: async () => [],
   skillConstellationSettings: async () => ({ ...fallbackSkillSettings }),
   skillConstellationCommitAuthors: async () => [],

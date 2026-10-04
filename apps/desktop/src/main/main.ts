@@ -20660,13 +20660,13 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
     try {
       if (actionId === "skill_constellation.enable" || actionId === "skill_constellation.disable") {
         const settings = actionId === "skill_constellation.enable" ? skills.enable() : skills.disable();
-        const message = settings.enabled ? "Skill Constellation is on. It rebuilds after Developer Intelligence records something new." : "Skill Constellation is off. Your constellation is kept.";
+        const message = settings.enabled ? "Skill Constellation is on. It rebuilds after the repository scan records something new." : "Skill Constellation is off. Your constellation is kept.";
         logActionEvent(action, "success", source, message, { enabled: settings.enabled });
         return { ok: true, actionId: action.id, message, enabled: settings.enabled };
       }
       const outcome = await skills.rebuildNow();
       const message = outcome.status === "completed"
-        ? `Constellation rebuilt: ${outcome.build.skills} skill(s) from ${outcome.build.evidence} piece(s) of evidence.`
+        ? `Rebuilt: ${outcome.build.skills === 1 ? "1 skill" : `${outcome.build.skills} skills`} from ${outcome.build.evidence === 1 ? "1 piece" : `${outcome.build.evidence.toLocaleString("en-GB")} pieces`} of evidence.`
         : "Nothing new since the last build; the constellation is up to date.";
       logActionEvent(action, "success", source, message, { buildId: outcome.build.id, status: outcome.status });
       return { ok: true, actionId: action.id, message, buildId: outcome.build.id, status: outcome.status };

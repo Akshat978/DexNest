@@ -24,6 +24,7 @@ import type {
   SkillLinkSource,
   SkillStrengthSnapshot,
   RepositoryActivityRow,
+  EvidenceCount,
 } from '../domain/types.ts';
 
 export type BuildStatus = 'running' | 'completed' | 'skipped' | 'failed';
@@ -89,6 +90,8 @@ export interface SkillStore {
   skillIds(): string[];
   listEvidence(skillId: string, options?: { limit?: number }): SkillEvidence[];
   countEvidence(skillId?: string): number;
+  /** A skill's evidence counted per repository and kind. */
+  countEvidenceByRepository(skillId: string): EvidenceCount[];
   listLinks(): SkillLink[];
   listLayout(): SkillLayoutPoint[];
   /** Counted commits per repository as of the last build. */
@@ -399,6 +402,19 @@ export function createSkillStore(db: SqlDatabase, options: { historyBuildsKept?:
         ? get('SELECT COUNT(*) AS n FROM skill_evidence WHERE skill_id = ?', [skillId])
         : get('SELECT COUNT(*) AS n FROM skill_evidence');
       return num(row?.n ?? 0);
+    },
+
+    countEvidenceByRepository(skillId) {
+      return all(
+        `SELECT repository_id, MAX(repository_name) AS repository_name, kind, COUNT(*) AS n
+           FROM skill_evidence WHERE skill_id = ? GROUP BY repository_id, kind ORDER BY repository_id, kind`,
+        [skillId],
+      ).map((row) => ({
+        repositoryId: str(row.repository_id),
+        repositoryName: strOrNull(row.repository_name),
+        kind: str(row.kind) as EvidenceKind,
+        count: num(row.n),
+      }));
     },
 
     listLinks() {

@@ -94,6 +94,14 @@ export interface RepositoryActivity {
   lastAt: string;
 }
 
+/** How many rows of one kind a skill has in one repository: the whole count, however many rows are listed. */
+export interface EvidenceCount {
+  repositoryId: string;
+  repositoryName: string | null;
+  kind: EvidenceKind;
+  count: number;
+}
+
 /** The same, as stored and shown: when the work in a repository actually happened. */
 export interface RepositoryActivityRow extends RepositoryActivity {
   repositoryId: string;

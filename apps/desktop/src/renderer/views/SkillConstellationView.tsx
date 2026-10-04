@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type {
   ConstellationSkill,
   ConstellationSnapshot,
+  EvidenceCount,
   EvidenceView,
   SkillConstellationSettings,
   SkillStrengthSnapshot
@@ -38,6 +39,11 @@ import {
   shortDate,
   starLabel,
   basisNote,
+  countsFromEvidence,
+  METER_HELP,
+  orderEvidence,
+  STRENGTH_HELP,
+  summariseRepositories,
   recencyNote,
   repositoryRange,
   volumeNote,
@@ -63,6 +69,7 @@ import "./SkillConstellation.css";
 export interface SkillConstellationBridge {
   skillConstellationSnapshot(): Promise<ConstellationSnapshot>;
   skillConstellationEvidence(skillId: string): Promise<EvidenceView[]>;
+  skillConstellationEvidenceCounts?(skillId: string): Promise<EvidenceCount[]>;
   skillConstellationHistory(skillId: string): Promise<SkillStrengthSnapshot[]>;
   skillConstellationSettings(): Promise<SkillConstellationSettings>;
   skillConstellationCommitAuthors?(): Promise<{ email: string; commits: number }[]>;
@@ -119,7 +126,8 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
       if (failed) {
         const reason = "error" in result && typeof result.error === "string" ? result.error : "That did not work.";
         setNotice(reason);
-      } else if (text) {
+      } else if (text && !(result && typeof result === "object" && "status" in result && result.status === "completed")) {
+        // A finished rebuild needs no second line: the status line below already says what was built and when.
         setNotice(text);
       }
       await load();
@@ -178,9 +186,9 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
   const header = (
     <PageHeader
       icon={<Stars />}
-      title="Skill Constellation"
+      title="Skills"
       titleId="skills-title"
-      subtitle="From the repository scan"
+      subtitle="Your constellation, drawn from the repository scan"
       actions={state.kind === "loading" || state.kind === "error" ? undefined : (
         <>
           <Button disabled={busy !== null} onClick={() => void run("skill_constellation.rebuild", "rebuild")}>
@@ -203,18 +211,18 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
 
       {state.kind === "loading" && <LoadingState label="Loading your constellation" />}
 
-      {state.kind === "error" && <ErrorState title="Skill Constellation could not load" message={state.message} onRetry={() => void load()} />}
+      {state.kind === "error" && <ErrorState title="Skills could not load" message={state.message} onRetry={() => void load()} />}
 
       {state.kind === "off" && (
-        <EmptyState icon={<Stars />} title="Skill Constellation is off">
-          <p>Skill Constellation draws your skills from what the repository scan has already recorded about your repositories - technologies, TODOs and commits. It never scans your disk itself, and every star shows the evidence behind it.</p>
+        <EmptyState icon={<Stars />} title="Skills is off">
+          <p>Skills draws your skills from what the repository scan has already recorded about your repositories - technologies, TODOs and commits. It never scans your disk itself, and every star shows the evidence behind it.</p>
           <p>Turn it on to rebuild after each new repository scan, or build it once now.</p>
         </EmptyState>
       )}
 
       {state.kind === "empty" && (
         <EmptyState icon={<Stars />} title="No evidence yet">
-          <p>Skill Constellation reads only what the repository scan has recorded, so scan your repositories from Today first, then rebuild.</p>
+          <p>Skills reads only what the repository scan has recorded, so scan your repositories from Today first, then rebuild.</p>
         </EmptyState>
       )}
 
@@ -286,12 +294,13 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
                       onMouseLeave={() => setHoveredId((current) => (current === skill.id ? null : current))}
                       onKeyDown={(event) => onStarKey(event, skill.id)}
                     >
+                      <title>{`${skill.name} · ${categoryLabel(skill.category)} · strength ${percent(skill.strength.score)}`}</title>
                       <circle className="skill-star__glow" r={r * 2.6} fillOpacity={starGlow(skill.strength.recency)} />
                       <circle className="skill-star__halo" r={r + 6 * scale} />
                       <circle className="skill-star__core" r={r} />
                       {labelled.has(skill.id) && (
                         <text
-                          className="skill-star__label"
+                          className={`skill-star__label${skill.strength.score < 0.1 ? " skill-star__label--faint" : ""}`}
                           x={labelPlacement(r, sides.get(skill.id) ?? "below", scale).dx}
                           y={labelPlacement(r, sides.get(skill.id) ?? "below", scale).dy}
                           textAnchor={labelPlacement(r, sides.get(skill.id) ?? "below", scale).anchor}
@@ -304,8 +313,14 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
                   );
                 })}
               </svg>
-              <figcaption className="skill-caption">
-                Bigger, nearer the centre: more evidence, more recent, across more repositories. Lines join skills evidenced in the same repositories; dashed lines are hand-written relations.
+              <figcaption className="skill-legend">
+                <span className="skill-legend__title">How to read it</span>
+                <ul>
+                  <li><span className="skill-key skill-key--size" aria-hidden="true" />Bigger and nearer the centre: stronger</li>
+                  <li><span className="skill-key skill-key--glow" aria-hidden="true" />Brighter glow: worked in more recently</li>
+                  <li><span className="skill-key skill-key--line" aria-hidden="true" />Line: used in the same repositories</li>
+                  <li><span className="skill-key skill-key--dashed" aria-hidden="true" />Dashed line: known to go together</li>
+                </ul>
               </figcaption>
             </figure>
 
@@ -345,6 +360,7 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
                   ))}
                 </div>
                 <p className="skill-hint">Select a star to see why it is there: the repositories, files and dates behind it.</p>
+                <StrengthHelp />
               </aside>
             )}
           </div>
@@ -401,17 +417,23 @@ function EvidencePanel({
   onToggleHidden(): Promise<void>;
 }) {
   const [evidence, setEvidence] = useState<EvidenceView[] | null>(initialEvidence);
+  const [counts, setCounts] = useState<EvidenceCount[] | null>(null);
   const [history, setHistory] = useState<SkillStrengthSnapshot[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (initialEvidence) return;
     let live = true;
-    Promise.all([bridge.skillConstellationEvidence(skill.id), bridge.skillConstellationHistory(skill.id)])
-      .then(([rows, past]) => {
+    Promise.all([
+      bridge.skillConstellationEvidence(skill.id),
+      bridge.skillConstellationHistory(skill.id),
+      bridge.skillConstellationEvidenceCounts?.(skill.id) ?? Promise.resolve(null)
+    ])
+      .then(([rows, past, counted]) => {
         if (!live) return;
         setEvidence(rows);
         setHistory(past);
+        setCounts(counted);
       })
       .catch((e: unknown) => {
         if (live) setError(message(e));
@@ -422,6 +444,8 @@ function EvidencePanel({
   }, [bridge, skill.id, initialEvidence]);
 
   const groups = evidence ? groupEvidence(evidence) : [];
+  // The whole counts when the host gave them; otherwise what the listed rows add up to.
+  const summaries = evidence ? summariseRepositories(counts ?? countsFromEvidence(evidence)) : [];
   const s = skill.strength;
 
   return (
@@ -449,11 +473,15 @@ function EvidencePanel({
 
       <div className="skill-strength">
         <Meter label="Volume" value={s.volume} max={1} display={`${percent(s.volume)} · ${volumeNote(skill)}`} />
+        <p className="skill-meter-help">{skill.category === "language" ? METER_HELP.volume.language : METER_HELP.volume.other}</p>
         <Meter label="Recency" value={s.recency} max={1} display={`${percent(s.recency)} · ${recencyNote(skill)}`} tone="success" />
+        <p className="skill-meter-help">{METER_HELP.recency}</p>
         <Meter label="Variety" value={s.variety} max={1} display={`${percent(s.variety)} · ${countOf(skill.repositoryCount, "repository", "repositories")}, ${countOf(skill.evidenceKinds, "kind", "kinds")}`} tone="info" />
+        <p className="skill-meter-help">{METER_HELP.variety}</p>
       </div>
 
       <p className="skill-hint">{basisNote(skill)}</p>
+      <StrengthHelp />
 
       {history.length > 1 && (
         <div className="skill-history">
@@ -466,30 +494,56 @@ function EvidencePanel({
       {!error && !evidence && <LoadingState label="Loading evidence" rows={1} />}
       {evidence && evidence.length === 0 && <EmptyNote>No evidence rows are stored for this skill.</EmptyNote>}
 
-      {groups.map((group) => (
-        <section key={group.repositoryId} className="skill-repo" aria-label={`Evidence in ${group.repositoryName}`}>
-          <h4>
-            {group.repositoryName}{" "}
-            <span className="skill-repo__dates technical">{repositoryRange(group.repositoryId, repositoryActivity)}</span>
-          </h4>
-          <ul>
-            {group.items.map((item) => (
-              <li key={item.id} className="skill-evidence">
-                <span className="skill-evidence__kind">{EVIDENCE_LABELS[item.kind]}</span>
-                {item.path ? <span className="technical skill-evidence__path">{item.path}</span> : <span className="technical skill-evidence__path">{item.sourceRef.slice(0, 10)}</span>}
-                <time className="technical" dateTime={item.at} title={item.at}>{shortDate(item.at)}</time>
-                {item.detail && <span className="technical skill-evidence__detail">{item.detail}</span>}
-                {item.todoText && <q className="skill-evidence__todo">{item.todoText}</q>}
-              </li>
-            ))}
-          </ul>
-        </section>
-      ))}
+      {summaries.length > 0 && <h4 className="skill-panel__eyebrow">Where it comes from</h4>}
+      {summaries.map((summary) => {
+        const items = orderEvidence(groups.find((g) => g.repositoryId === summary.repositoryId)?.items ?? []);
+        return (
+          <section key={summary.repositoryId} className="skill-repo" aria-label={`Evidence in ${summary.repositoryName}`}>
+            <h4>
+              {summary.repositoryName}{" "}
+              <span className="skill-repo__dates technical">{repositoryRange(summary.repositoryId, repositoryActivity)}</span>
+            </h4>
+            <p className="skill-repo__summary">{summary.line}</p>
+            {items.length > 0 && (
+              <details className="skill-repo__detail">
+                <summary>
+                  {items.length < summary.total ? `Show the latest ${items.length} of ${summary.total.toLocaleString("en-GB")} pieces of evidence` : `Show ${countOf(items.length, "piece", "pieces")} of evidence`}
+                </summary>
+                <ul>
+                  {items.map((item) => (
+                    <li key={item.id} className={`skill-evidence${item.kind === "todo.open" || item.kind === "todo.resolved" ? " skill-evidence--todo" : ""}`}>
+                      <span className="skill-evidence__kind">{EVIDENCE_LABELS[item.kind]}</span>
+                      {item.path ? <span className="technical skill-evidence__path">{item.path}</span> : <span className="technical skill-evidence__path">{item.sourceRef.slice(0, 10)}</span>}
+                      <time className="technical" dateTime={item.at} title={item.at}>
+                        {item.kind === "commit" || item.kind === "todo.resolved" ? shortDate(item.at) : `seen ${shortDate(item.at)}`}
+                      </time>
+                      {item.detail && <span className="technical skill-evidence__detail">{item.detail}</span>}
+                      {item.todoText && <q className="skill-evidence__todo">{item.todoText}</q>}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </section>
+        );
+      })}
 
       <button type="button" className="skill-link-button" onClick={() => void onToggleHidden()}>
         {skill.hidden ? "Show this skill again" : "Hide this skill"}
       </button>
     </aside>
+  );
+}
+
+/** What a strength percentage means, for whoever asks. Closed until opened. */
+function StrengthHelp() {
+  return (
+    <details className="skill-help">
+      <summary>What the percentages mean</summary>
+      {STRENGTH_HELP.map((line) => (
+        <p key={line}>{line}</p>
+      ))}
+    </details>
   );
 }
 

@@ -72,7 +72,7 @@ export function normalizeSkillConstellationSettings(input: unknown): SkillConste
  * skipped. (hiddenSkills only affects display.)
  */
 /** Bumped when what a build stores, or what it means, changes: a build made before it is stale. */
-export const SCORING_VERSION = 2;
+export const SCORING_VERSION = 3;
 
 export function buildSettingsFingerprint(settings: SkillConstellationSettings): string {
   return stableHash(

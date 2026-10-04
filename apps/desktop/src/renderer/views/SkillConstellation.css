@@ -76,6 +76,67 @@
   padding: 0 var(--space-2) var(--space-1);
 }
 
+/* --- Legend: one line, each entry with the mark it explains -------------------------- */
+.skill-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  padding: 0 var(--space-2) var(--space-1);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.skill-legend__title {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.skill-legend ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.skill-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.skill-key {
+  display: inline-block;
+  flex: none;
+}
+
+.skill-key--size {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent-skills) 70%, var(--text));
+}
+
+.skill-key--glow {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--text);
+  box-shadow: 0 0 0.5rem 0.2rem color-mix(in srgb, var(--accent-skills) 80%, transparent);
+}
+
+.skill-key--line,
+.skill-key--dashed {
+  width: 1.5rem;
+  border-top: 1px solid var(--accent-skills);
+}
+
+.skill-key--dashed {
+  border-top-style: dashed;
+}
+
 .skill-dust circle {
   fill: var(--text);
 }
@@ -159,6 +220,16 @@
   stroke: var(--bg);
   stroke-width: 6px;
   stroke-linejoin: round;
+}
+
+/* A star too weak to matter much still has its name, quieter. Hover and selection bring it up. */
+.skill-star__label--faint {
+  fill: var(--text-muted);
+}
+
+.skill-star:hover .skill-star__label--faint,
+.skill-star--selected .skill-star__label--faint {
+  fill: var(--text);
 }
 
 /* --- Side panel ------------------------------------------------------------------- */
@@ -252,6 +323,42 @@
 .skill-repo__dates {
   color: var(--text-muted);
   font-weight: normal;
+  font-size: 0.75rem;
+}
+
+.skill-repo__summary {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.8125rem;
+}
+
+.skill-repo__detail summary,
+.skill-help summary {
+  color: var(--accent-skills);
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.skill-repo__detail[open] summary {
+  margin-bottom: var(--space-2);
+}
+
+.skill-help p {
+  margin: var(--space-2) 0 0;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+.skill-meter-help {
+  margin: calc(var(--space-1) * -1) 0 0;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+/* TODOs are the smallest kind of evidence: last in the list, and quieter. */
+.skill-evidence--todo {
+  padding: var(--space-1) var(--space-3);
+  border-style: dashed;
   font-size: 0.75rem;
 }
 

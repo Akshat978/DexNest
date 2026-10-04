@@ -99,25 +99,40 @@ describe('layout', () => {
     }
   });
 
-  it('adding a star does not move the others', () => {
-    const before = layoutConstellation(stars);
-    const after = layoutConstellation([...stars, { id: 'rust', category: 'language', score: 0.4 }]);
-    expect(after.filter((p) => p.skillId !== 'rust')).toEqual(before);
+  // The sky is an ellipse, wider than tall: distance is measured as a fraction of its edge.
+  const centre = (p: { x: number; y: number }) => Math.hypot((p.x - VIEW_SIZE / 2) / 460, (p.y - VIEW_SIZE / 2) / (460 * 0.62));
+
+  it('places stronger stars nearer the centre, by rank, so the sky is used from the middle to the rim', () => {
+    const by = new Map(layoutConstellation(stars).map((p) => [p.skillId, p]));
+    expect(centre(by.get('typescript')!)).toBeLessThan(centre(by.get('react')!));
+    expect(centre(by.get('react')!)).toBeLessThan(centre(by.get('go')!));
+    // Real data after phase 5: one strong language and a dozen weak skills. By
+    // score they all sat on the rim; by rank they step outward evenly.
+    const weak = Array.from({ length: 12 }, (_, i) => ({ id: `lib-${i}`, category: 'library' as const, score: 0.1 + i / 1000 }));
+    const sky = layoutConstellation([{ id: 'typescript', category: 'language', score: 0.9 }, ...weak]);
+    const distances = sky.map(centre).sort((a, b) => a - b);
+    expect(distances[0]).toBeLessThan(0.3);
+    expect(distances[distances.length - 1]).toBeGreaterThan(0.9);
+    expect(distances.filter((d) => d > 0.35 && d < 0.85).length, 'the middle of the sky is not empty').toBeGreaterThanOrEqual(5);
+    // Wider than tall, like the panel it is drawn in.
+    const span = (axis: 'x' | 'y') => Math.max(...sky.map((p) => p[axis])) - Math.min(...sky.map((p) => p[axis]));
+    expect(span('x')).toBeGreaterThan(span('y') * 1.2);
   });
 
-  it('places stronger stars nearer the centre', () => {
-    const [strong, weak] = [
-      layoutConstellation([{ id: 'x', category: 'language', score: 1 }])[0]!,
-      layoutConstellation([{ id: 'x', category: 'language', score: 0 }])[0]!,
-    ];
-    const d = (p: { x: number; y: number }) => Math.hypot(p.x - VIEW_SIZE / 2, p.y - VIEW_SIZE / 2);
-    expect(d(strong)).toBeLessThan(d(weak));
+  it('gives a category with more skills a wider slice', () => {
+    const many = Array.from({ length: 9 }, (_, i) => ({ id: `lang-${i}`, category: 'language' as const, score: 0.5 }));
+    const sky = layoutConstellation([...many, { id: 'npm', category: 'packageManager', score: 0.5 }]);
+    const angle = (p: { x: number; y: number }) => Math.atan2(p.y - VIEW_SIZE / 2, p.x - VIEW_SIZE / 2);
+    const languages = sky.filter((p) => p.skillId.startsWith('lang-')).map(angle).sort((a, b) => a - b);
+    // Nine of ten stars: they span well over half the circle, not one sixth of it.
+    let widestGap = 2 * Math.PI - (languages[languages.length - 1]! - languages[0]!);
+    for (let i = 1; i < languages.length; i += 1) widestGap = Math.max(widestGap, languages[i]! - languages[i - 1]!);
+    expect(2 * Math.PI - widestGap).toBeGreaterThan(Math.PI);
   });
 
   it('never draws two stars on top of each other, even in one crowded sector', () => {
     // Integration QA F5: on real data "Docker" landed on "Vite" and "Next.js" on "React".
-    // 18 in one sector (about 100 skills over the six) still fit; beyond that the
-    // stepping gives up after MAX_STEPS rather than loop.
+    // 18 of one category, all the same strength, still each get room for a name.
     const crowded = Array.from({ length: 18 }, (_, i) => ({ id: `tool-${i}`, category: 'tooling' as const, score: 0.5 }));
     const points = layoutConstellation(crowded);
     for (let i = 0; i < points.length; i += 1) {
@@ -135,17 +150,12 @@ describe('layout', () => {
     expect(layoutConstellation([...crowded].reverse())).toEqual(points);
   });
 
-  it('only a star that would land on another one moves', () => {
-    const alone = layoutConstellation([{ id: 'zz-solo', category: 'language', score: 0.3 }])[0]!;
+  it('parts two stars that would land on the same spot', () => {
     const twin = layoutConstellation([
       { id: 'aa-first', category: 'language', score: 0.3 },
       { id: 'zz-solo', category: 'language', score: 0.3 },
     ]);
-    const first = twin.find((p) => p.skillId === 'aa-first')!;
-    const solo = twin.find((p) => p.skillId === 'zz-solo')!;
-    // Either it was already clear (unchanged) or it stepped clear.
-    if (Math.hypot(first.x - alone.x, first.y - alone.y) >= MIN_SEPARATION) expect(solo).toEqual(alone);
-    expect(Math.hypot(first.x - solo.x, first.y - solo.y)).toBeGreaterThanOrEqual(MIN_SEPARATION);
+    expect(Math.hypot(twin[0]!.x - twin[1]!.x, twin[0]!.y - twin[1]!.y)).toBeGreaterThanOrEqual(MIN_SEPARATION);
   });
 
   it('survives a non-finite score', () => {

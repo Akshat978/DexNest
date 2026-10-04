@@ -106,16 +106,27 @@ test("off: explains it reads only the repository scan, and offers to turn on or 
   assert.doesNotMatch(html, /class="skill-sky"/, "no constellation drawn");
 });
 
-test("labels: only the fifteen strongest stars are written, plus the selected one; every star keeps its accessible name", () => {
-  const many = Array.from({ length: 30 }, (_, i) => skill(`s${i}`, `Skill ${String(i).padStart(2, "0")}`, 1 - i / 40));
+test("labels: every star is named, the weakest more quietly, and each has a tooltip", () => {
+  const many = Array.from({ length: 30 }, (_, i) => skill(`s${i}`, `Skill ${String(i).padStart(2, "0")}`, 1 - i / 31));
   const snapshot = { ...ready, skills: many, links: [], layout: many.map((m, i) => ({ skillId: m.id, x: 30 * i + 20, y: 500 })) };
-  const html = render({ initial: { snapshot, selectedId: "s29" } });
-  assert.equal(count(html, 'class="skill-star__label"'), 16);
-  assert.match(html, />Skill 00<\/text>/);
-  assert.match(html, />Skill 14<\/text>/);
-  assert.doesNotMatch(html, />Skill 15<\/text>/);
-  assert.match(html, />Skill 29<\/text>/, "the selected star is labelled");
+  const html = render({ initial: { snapshot } });
+  assert.equal(count(html, 'class="skill-star__label'), 30, "thirty stars, thirty names");
+  assert.match(html, /class="skill-star__label"[^>]*>Skill 00<\/text>/);
+  assert.match(html, /class="skill-star__label skill-star__label--faint"[^>]*>Skill 29<\/text>/, "under 10%: still named, quieter");
+  assert.equal(count(html, "<title>Skill "), 30, "a tooltip on every star");
+  assert.match(html, /<title>Skill 00 · language · strength 100%<\/title>/);
   assert.equal(count(html, 'role="button" tabindex='), 30);
+});
+
+test("the sky explains itself: size, glow, lines and dashed lines each have a key", () => {
+  const html = render({ initial: { snapshot: ready } });
+  assert.match(html, /<figcaption class="skill-legend"><span class="skill-legend__title">How to read it<\/span>/);
+  for (const [key, text] of [["size", "Bigger and nearer the centre: stronger"], ["glow", "Brighter glow: worked in more recently"], ["line", "Line: used in the same repositories"], ["dashed", "Dashed line: known to go together"]]) {
+    assert.ok(html.includes(`<li><span class="skill-key skill-key--${key}" aria-hidden="true"></span>${text}</li>`), key);
+  }
+  // With nothing selected, the side panel says what a percentage is.
+  assert.match(html, /<details class="skill-help"><summary>What the percentages mean<\/summary><p>Strength is volume, raised or lowered by how recent and how widespread the work is\. It is not a level and not compared with your other skills\.<\/p>/);
+  assert.match(html, /kit-header__title">Skills<\/h1>/, "the page is called what the sidebar calls it");
 });
 
 test("empty: says why there is nothing and what to do", () => {
@@ -165,6 +176,17 @@ test("a selected star shows why: repositories, files, dates, the numbers behind 
   assert.match(html, /src\/main\.ts/);
   assert.match(html, /datetime="2026-04-02T00:00:00.000Z"/i);
   assert.match(html, /<q class="skill-evidence__todo">TODO: tidy the router<\/q>/);
+  // Each repository leads with one line; the rows are folded away under it, TODOs last and quieter.
+  assert.match(html, /<h4 class="skill-panel__eyebrow">Where it comes from<\/h4>/);
+  assert.match(html, /<p class="skill-repo__summary">files in this language · 1 open TODO<\/p><details class="skill-repo__detail"><summary>Show 2 pieces of evidence<\/summary>/);
+  assert.match(html, /<p class="skill-repo__summary">1 commit<\/p><details class="skill-repo__detail"><summary>Show 1 piece of evidence<\/summary>/);
+  assert.ok(html.indexOf("Files in this language") < html.indexOf("Open TODO"), "the TODO is not first");
+  assert.match(html, /<li class="skill-evidence skill-evidence--todo"><span class="skill-evidence__kind">Open TODO/);
+  assert.match(html, />seen 1 May 2026<\/time>/, "a file's date is when the scan saw it, and says so");
+  // What each bar measures, under the bar.
+  assert.match(html, /<p class="skill-meter-help">How much dated work is counted\. About 60 commits fills it\.<\/p>/);
+  assert.match(html, /<p class="skill-meter-help">Full on the day of the last work; halves every 90 days\.<\/p>/);
+  assert.match(html, /<p class="skill-meter-help">Full at 5 repositories and 4 kinds of evidence\.<\/p>/);
   assert.match(html, /abcdef1234/, "a commit shows its sha, not a subject");
   assert.match(html, /kit-meter__label">Variety<\/span><span class="kit-meter__value">45% · 2 repositories, 2 kinds</);
   // Dated by the work, never by the scan that read the files (1 May).

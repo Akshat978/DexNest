@@ -159,6 +159,7 @@ contextBridge.exposeInMainWorld("dexNest", {
   skillConstellationStatus: () => ipcRenderer.invoke("dexnest:skill-constellation-status"),
   skillConstellationSnapshot: () => ipcRenderer.invoke("dexnest:skill-constellation-snapshot"),
   skillConstellationEvidence: (skillId: string) => ipcRenderer.invoke("dexnest:skill-constellation-evidence", skillId),
+  skillConstellationEvidenceCounts: (skillId: string) => ipcRenderer.invoke("dexnest:skill-constellation-evidence-counts", skillId),
   skillConstellationHistory: (skillId: string) => ipcRenderer.invoke("dexnest:skill-constellation-history", skillId),
   skillConstellationSettings: () => ipcRenderer.invoke("dexnest:skill-constellation-settings"),
   skillConstellationCommitAuthors: () => ipcRenderer.invoke("dexnest:skill-constellation-commit-authors"),

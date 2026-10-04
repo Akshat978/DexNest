@@ -6,6 +6,7 @@ import type {
   ConstellationSkill,
   SkillCategory,
   ConstellationSnapshot,
+  EvidenceCount,
   EvidenceKind,
   EvidenceView,
   RepositoryActivityRow,
@@ -197,13 +198,16 @@ export function repositoryRange(repositoryId: string, activity: readonly Reposit
   return `${first === last ? first : `${first} – ${last}`} · ${countOf(row.count, "commit", "commits")} counted`;
 }
 
-/** How many stars carry a written label; the rest show theirs on hover, focus or selection. */
-export const LABEL_LIMIT = 15;
+/**
+ * How many stars carry a written label. Set well above what a real
+ * constellation holds, so every star has its name; past it, the weakest show
+ * theirs on hover, focus or selection (and every star has a tooltip).
+ */
+export const LABEL_LIMIT = 40;
 
 /**
  * Which stars are labelled: the LABEL_LIMIT strongest (ties by name), plus any
- * star the owner is pointing at, has focused or has selected. With dozens of
- * skills, labelling every star made them unreadable.
+ * star the owner is pointing at, has focused or has selected.
  */
 export function labelledIds(skills: readonly Pick<ConstellationSkill, "id" | "name" | "strength">[], always: readonly (string | null)[] = []): Set<string> {
   const top = [...skills]
@@ -280,6 +284,83 @@ export function labelSides(stars: readonly LabelStar[], scale = 1, obstacles: re
   }
   return sides;
 }
+
+/** Evidence kinds in the order they matter: what names it, then the work, and TODOs last. */
+export const KIND_ORDER: readonly EvidenceKind[] = ["commit", "todo.resolved", "technology.manifest", "technology.extension", "technology.removed", "todo.open"];
+
+const KIND_COUNT: Record<EvidenceKind, (n: number) => string> = {
+  commit: (n) => countOf(n, "commit", "commits"),
+  "todo.resolved": (n) => countOf(n, "resolved TODO", "resolved TODOs"),
+  "technology.manifest": (n) => (n === 1 ? "named in a manifest" : `named in ${n} manifests`),
+  "technology.extension": () => "files in this language",
+  "technology.removed": () => "since removed",
+  "todo.open": (n) => countOf(n, "open TODO", "open TODOs")
+};
+
+export interface RepositorySummary {
+  repositoryId: string;
+  repositoryName: string;
+  /** Every row of evidence in this repository, not only the ones listed. */
+  total: number;
+  /** "240 commits · named in a manifest · 3 open TODOs". */
+  line: string;
+}
+
+/**
+ * What a skill rests on in each repository, in one line each, busiest first.
+ * From the whole counts, so a long history reads "1,204 commits" even though
+ * only the newest rows are listed underneath.
+ */
+export function summariseRepositories(counts: readonly EvidenceCount[]): RepositorySummary[] {
+  const byRepository = new Map<string, { name: string; kinds: Map<EvidenceKind, number> }>();
+  for (const row of counts) {
+    let entry = byRepository.get(row.repositoryId);
+    if (!entry) byRepository.set(row.repositoryId, (entry = { name: row.repositoryName ?? row.repositoryId, kinds: new Map() }));
+    entry.kinds.set(row.kind, (entry.kinds.get(row.kind) ?? 0) + row.count);
+  }
+  return [...byRepository]
+    .map(([repositoryId, entry]) => ({
+      repositoryId,
+      repositoryName: entry.name,
+      total: [...entry.kinds.values()].reduce((n, c) => n + c, 0),
+      line: KIND_ORDER.filter((kind) => entry.kinds.has(kind)).map((kind) => KIND_COUNT[kind](entry.kinds.get(kind)!)).join(" · ")
+    }))
+    .sort((a, b) => b.total - a.total || a.repositoryName.localeCompare(b.repositoryName));
+}
+
+/** The counts a listed set of rows gives, for when the whole counts are not to hand. */
+export function countsFromEvidence(evidence: readonly EvidenceView[]): EvidenceCount[] {
+  const counts = new Map<string, EvidenceCount>();
+  for (const item of evidence) {
+    const key = `${item.repositoryId}\u001f${item.kind}`;
+    const row = counts.get(key);
+    if (row) row.count += 1;
+    else counts.set(key, { repositoryId: item.repositoryId, repositoryName: item.repositoryName, kind: item.kind, count: 1 });
+  }
+  return [...counts.values()];
+}
+
+/** Rows for the detail list: by kind in KIND_ORDER, newest first inside a kind. */
+export function orderEvidence(items: readonly EvidenceView[]): EvidenceView[] {
+  return [...items].sort((a, b) => KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind) || b.at.localeCompare(a.at) || a.id.localeCompare(b.id));
+}
+
+/** What each bar measures and what fills it. One line each, shown under the bar. */
+export const METER_HELP = {
+  volume: {
+    language: "How much dated work is counted. About 60 commits fills it.",
+    other: "How many repositories name it. About 8 fills it."
+  },
+  recency: "Full on the day of the last work; halves every 90 days.",
+  variety: "Full at 5 repositories and 4 kinds of evidence."
+} as const;
+
+/** What a strength percentage is, in words. It is not relative to the strongest skill. */
+export const STRENGTH_HELP = [
+  "Strength is volume, raised or lowered by how recent and how widespread the work is. It is not a level and not compared with your other skills.",
+  "100% would be a language with a lot of counted work, touched this week, across five or more repositories.",
+  "Libraries, runtimes, tooling and package managers are scaled down, so a linter never outranks the language it lints."
+] as const;
 
 /** "1 repository", "3 repositories". */
 export const countOf = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;

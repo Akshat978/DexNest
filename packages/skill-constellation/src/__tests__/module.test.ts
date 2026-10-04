@@ -163,7 +163,7 @@ describe('Skill Constellation module', () => {
     expect(auditLines(w)).toEqual([
       'Skill Constellation turned on',
       'Skill Constellation turned off',
-      expect.stringMatching(/^Skill Constellation rebuilt: 2 skill\(s\)/),
+      'Skill Constellation rebuilt: 2 skills, 3 evidence rows',
     ]);
   });
 

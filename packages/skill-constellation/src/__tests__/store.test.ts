@@ -107,6 +107,14 @@ describe('Skill Constellation store', () => {
     expect(reopened.countEvidence()).toBe(result.evidence.length);
     expect(reopened.listLinks()).toEqual(result.links);
     expect(reopened.listLayout()).toEqual(result.layout);
+    // The whole counts per repository and kind, however many rows a list is cut to.
+    expect(reopened.countEvidenceByRepository('typescript')).toEqual([
+      { repositoryId: 'r-api', repositoryName: 'api', kind: 'technology.extension', count: 1 },
+      { repositoryId: 'r-app', repositoryName: 'app', kind: 'commit', count: 1 },
+      { repositoryId: 'r-app', repositoryName: 'app', kind: 'technology.extension', count: 1 },
+      { repositoryId: 'r-app', repositoryName: 'app', kind: 'todo.open', count: 1 },
+    ]);
+    expect(reopened.countEvidenceByRepository('nothing')).toEqual([]);
     expect(reopened.listRepositoryActivity()).toEqual([{ repositoryId: 'r-app', count: 1, firstAt: T0, lastAt: T0 }]);
     expect(reopened.strengthHistory('react')).toHaveLength(1);
     expect(reopened.devCursor()).toBe(42);

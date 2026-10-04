@@ -113,15 +113,42 @@ test("labels say what the numbers are, not a level", () => {
   assert.match(starLabel(skill("pnpm", { category: "packageManager" })), /^PNPM, package manager,/);
 });
 
-test("only the strongest stars are labelled, plus whatever the owner is pointing at", () => {
-  const many = Array.from({ length: 25 }, (_, i) => skill(`s${String(i).padStart(2, "0")}`, { strength: { volume: 0, recency: 0, variety: 0, score: 1 - i / 50 } }));
+test("every star in a real constellation is named; past the limit, the strongest and whatever the owner is pointing at", () => {
+  const star = (i: number) => skill(`s${String(i).padStart(2, "0")}`, { strength: { volume: 0, recency: 0, variety: 0, score: 1 - i / 100 } });
+  // Seventeen skills, as on the day two of them had no name.
+  assert.equal(labelledIds(Array.from({ length: 17 }, (_, i) => star(i))).size, 17);
+  const many = Array.from({ length: 50 }, (_, i) => star(i));
   const ids = labelledIds(many);
   assert.equal(ids.size, LABEL_LIMIT);
-  assert.ok(ids.has("s00") && ids.has("s14") && !ids.has("s15"));
-  const withHover = labelledIds(many, ["s24", null, "s20"]);
-  assert.ok(withHover.has("s24") && withHover.has("s20"));
+  assert.ok(LABEL_LIMIT >= 40);
+  assert.ok(ids.has("s00") && ids.has("s39") && !ids.has("s40"));
+  const withHover = labelledIds(many, ["s49", null, "s45"]);
+  assert.ok(withHover.has("s49") && withHover.has("s45"));
   assert.equal(withHover.size, LABEL_LIMIT + 2);
-  assert.equal(labelledIds(many.slice(0, 3)).size, 3);
+});
+
+test("a repository's evidence reads as one line from the whole counts, work first and TODOs last", async () => {
+  const { countsFromEvidence, orderEvidence, summariseRepositories } = await import("../src/renderer/views/skillConstellationModel.ts");
+  const count = (repositoryId: string, kind: EvidenceView["kind"], n: number, repositoryName: string | null = repositoryId) => ({ repositoryId, repositoryName, kind, count: n });
+  const summaries = summariseRepositories([
+    count("r1", "todo.open", 123, "DeskNest"),
+    count("r1", "commit", 1204, "DeskNest"),
+    count("r1", "technology.extension", 1, "DeskNest"),
+    count("r1", "technology.manifest", 2, "DeskNest"),
+    count("r2", "commit", 1, null),
+    count("r2", "todo.resolved", 1, null)
+  ]);
+  assert.deepEqual(summaries, [
+    { repositoryId: "r1", repositoryName: "DeskNest", total: 1330, line: "1204 commits · named in 2 manifests · files in this language · 123 open TODOs" },
+    { repositoryId: "r2", repositoryName: "r2", total: 2, line: "1 commit · 1 resolved TODO" }
+  ]);
+
+  const ev = (id: string, kind: EvidenceView["kind"], at: string): EvidenceView => ({
+    id, skillId: "go", kind, repositoryId: "r1", repositoryName: "app", path: null, at, sourceRef: id, detail: null, todoText: null
+  });
+  const rows = [ev("t", "todo.open", "2026-09-01"), ev("c1", "commit", "2026-01-01"), ev("m", "technology.manifest", "2026-10-01"), ev("c2", "commit", "2026-03-01")];
+  assert.deepEqual(orderEvidence(rows).map((r) => r.id), ["c2", "c1", "m", "t"], "the newest TODO no longer leads the list");
+  assert.deepEqual(summariseRepositories(countsFromEvidence(rows)).map((s) => s.line), ["2 commits · named in a manifest · 1 open TODO"]);
 });
 
 test("a hidden star says so in its accessible name; counts read as words", () => {

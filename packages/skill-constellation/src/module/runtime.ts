@@ -18,7 +18,7 @@ import { randomUUID } from 'node:crypto';
 import type { DataBoundary, EventLog, JobOccurrence, ModuleScheduler, ModuleSettings, SqlDatabase } from '@dexnest/foundation';
 import { computeStrength, strengthBasis } from '../domain/strength.ts';
 import { normalizeSkillConstellationSettings, type SkillConstellationSettings } from '../domain/settings.ts';
-import type { RepositoryActivityRow, Skill, SkillLayoutPoint, SkillLink, SkillStrength, SkillStrengthSnapshot, StrengthBasis } from '../domain/types.ts';
+import type { EvidenceCount, RepositoryActivityRow, Skill, SkillLayoutPoint, SkillLink, SkillStrength, SkillStrengthSnapshot, StrengthBasis } from '../domain/types.ts';
 import { createConstellationEngine, type BuildOutcome, type ConstellationEngine, type EvidenceView, type Staleness } from '../engine/engine.ts';
 import { listCommitAuthors, type CommitAuthor, type DevIntelligenceReader } from '../engine/collect.ts';
 import { SKILL_REBUILD_JOB } from '../manifest.ts';
@@ -85,6 +85,8 @@ export interface SkillConstellationModule {
   rebuildNow(options?: { force?: boolean }): Promise<BuildOutcome>;
   constellation(): ConstellationSnapshot;
   describeEvidence(skillId: string, options?: { limit?: number }): Promise<EvidenceView[]>;
+  /** The whole of a skill's evidence, counted per repository and kind. */
+  evidenceCounts(skillId: string): EvidenceCount[];
   strengthHistory(skillId: string): SkillStrengthSnapshot[];
   /** Author emails on the commits already scanned, to pick "my emails" from. */
   commitAuthors(): CommitAuthor[];
@@ -117,7 +119,7 @@ export function createSkillConstellationModule(options: SkillConstellationModule
       if (outcome.status === 'completed') {
         const b = outcome.build;
         options.audit?.(
-          `Skill Constellation rebuilt: ${b.skills} skill(s), ${b.evidence} evidence row(s)`,
+          `Skill Constellation rebuilt: ${b.skills} skills, ${b.evidence} evidence rows`,
           { buildId: b.id, trigger: occurrence.trigger, added: b.added, lost: b.lost, refusedPrivate: b.refusedPrivate },
           'success',
         );
@@ -230,6 +232,10 @@ export function createSkillConstellationModule(options: SkillConstellationModule
 
     describeEvidence(skillId, describeOptions) {
       return engine.describeEvidence(skillId, describeOptions);
+    },
+
+    evidenceCounts(skillId) {
+      return store.countEvidenceByRepository(skillId);
     },
 
     strengthHistory(skillId) {

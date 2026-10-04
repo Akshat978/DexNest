@@ -70,6 +70,7 @@ export const SKILL_CHANNELS = {
   status: "dexnest:skill-constellation-status",
   snapshot: "dexnest:skill-constellation-snapshot",
   evidence: "dexnest:skill-constellation-evidence",
+  evidenceCounts: "dexnest:skill-constellation-evidence-counts",
   history: "dexnest:skill-constellation-history",
   settings: "dexnest:skill-constellation-settings",
   commitAuthors: "dexnest:skill-constellation-commit-authors",
@@ -123,6 +124,7 @@ export function createSkillConstellationHost(options: SkillConstellationHostOpti
   handle(SKILL_CHANNELS.status, () => module.status());
   handle(SKILL_CHANNELS.snapshot, () => module.constellation());
   handle(SKILL_CHANNELS.evidence, (skillId) => module.describeEvidence(skillIdArgument(skillId), { limit: 200 }));
+  handle(SKILL_CHANNELS.evidenceCounts, (skillId) => module.evidenceCounts(skillIdArgument(skillId)));
   handle(SKILL_CHANNELS.history, (skillId) => module.strengthHistory(skillIdArgument(skillId)));
   handle(SKILL_CHANNELS.settings, () => module.getSettings());
   // The author emails on commits already scanned, so "my emails" is a pick, not a typing test.
