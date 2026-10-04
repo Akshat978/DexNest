@@ -49,6 +49,7 @@ export function ProjectDetail(props: ProjectDetailProps) {
   const [tab, setTab] = useState<DetailTab>("overview");
   const [state, setState] = useState<RepoState | null>(null);
   const [allBranches, setAllBranches] = useState(false);
+  const [showIgnored, setShowIgnored] = useState(false);
   const [history, setHistory] = useState<HistoryEntry[] | null>(null);
   const [stat, setStat] = useState<DiffStat | null>(null);
   const [ops, setOps] = useState<OperationRecord[]>([]);
@@ -60,14 +61,15 @@ export function ProjectDetail(props: ProjectDetailProps) {
 
   const read = useCallback(async () => {
     try {
-      const [s, o] = await Promise.all([bridge.projectsRepoState(project.id, { allBranches }), bridge.projectsOperations(project.id)]);
+      // Sizes of new files and folders are measured here, where a commit is made; the home screen does not need them.
+      const [s, o] = await Promise.all([bridge.projectsRepoState(project.id, { allBranches, measureUntracked: true, includeIgnored: showIgnored }), bridge.projectsOperations(project.id)]);
       setState(s);
       setOps(o);
     } catch (e) {
       props.onToast("error", `Couldn't read git state: ${(e as Error).message}`);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bridge, project.id, allBranches]);
+  }, [bridge, project.id, allBranches, showIgnored]);
 
   useEffect(() => {
     void read();
@@ -131,6 +133,14 @@ export function ProjectDetail(props: ProjectDetailProps) {
       props.onChanged();
       void read();
     } else props.onToast("error", result.reason);
+  };
+
+  /** Adds new files or folders to .gitignore, through the registered action so it is logged. */
+  const ignore = async (paths: string[]) => {
+    const result = await props.runAction("projects.ignore", { projectId: project.id, paths });
+    props.onToast(result.ok ? "success" : "error", result.message ?? result.error ?? (result.ok ? "Added to .gitignore." : "That didn't work."));
+    void read();
+    void bridge.projectsDiffStat(project.id).then(setStat, () => setStat(null));
   };
 
   const run = async (actionId: string, params: Record<string, unknown> = {}) => {
@@ -233,7 +243,7 @@ export function ProjectDetail(props: ProjectDetailProps) {
         {tab === "branches" && (
           <BranchesTab project={project} state={state} now={now} staleDays={props.staleDays} allBranches={allBranches} onShowAll={() => setAllBranches(true)} onAsk={ask} onOpenGithub={(branch, base) => void open("github", { branch, base })} onSetDeployed={(branch) => void setDeployed(branch)} />
         )}
-        {tab === "changes" && <ChangesTab state={state} stat={stat} onAsk={ask} onOpenVsCode={() => void open("vscode")} />}
+        {tab === "changes" && <ChangesTab state={state} stat={stat} onAsk={ask} onOpenVsCode={() => void open("vscode")} onIgnore={(paths) => void ignore(paths)} showIgnored={showIgnored} onToggleIgnored={setShowIgnored} />}
         {tab === "history" && <HistoryTab entries={history ?? []} now={now} loading={history === null} />}
         {tab === "run" && (
           <RunTab

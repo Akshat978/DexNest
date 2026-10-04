@@ -18,6 +18,17 @@ import {
   type UndoRecord
 } from "./operations.ts";
 import { changedPaths, currentBranch, isDirty, type LocalBranch, type RepoState, type RepoStateOk } from "./repoState.ts";
+import { riskLines, riskyPaths, type RiskKind } from "./risk.ts";
+
+/**
+ * What a plan says and asks when it would take something risky. Nothing is
+ * refused: the owner may well mean it. It stops being one click.
+ */
+function riskGuard(state: RepoStateOk, files: "all" | readonly string[], only?: readonly RiskKind[]): { safety: "caution"; confirm: { kind: "dialog" }; lines: string[] } | null {
+  const risky = riskyPaths(state.workingTree, files, only);
+  if (risky.length === 0) return null;
+  return { safety: "caution", confirm: { kind: "dialog" }, lines: riskLines(risky) };
+}
 
 function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`;
@@ -328,14 +339,19 @@ export function planCommit(state: RepoStateOk, request: Extract<OperationRequest
     const total = tree.counts.staged + tree.counts.unstaged + tree.counts.untracked;
     if (total === 0) return refuse("commit", "nothing_to_do", "Nothing to commit.");
     const files = changedPaths(tree).size;
+    const guard = riskGuard(state, "all");
     return plan({
       kind: "commit",
-      safety: "normal",
+      safety: guard?.safety ?? "normal",
       title: "Commit",
       summary: `Commit all ${plural(files, "changed file")} to ${branchName}: "${subject}".`,
-      details: ["Stages every change, including new files, then commits.", "Stays on this PC until you push. Can be undone until then."],
+      details: [
+        ...(guard ? [...guard.lines, "\"Commit all\" takes these too. To leave them out, cancel and tick only the files you mean, or ignore them first."] : []),
+        "Stages every change, including new files, then commits.",
+        "Stays on this PC until you push. Can be undone until then."
+      ],
       network: false,
-      confirm: { kind: "none" },
+      confirm: guard?.confirm ?? { kind: "none" },
       steps: [{ op: "stage", paths: "all" }, { op: "commit", message, only: null }],
       undo: state.head.unborn ? null : "uncommit",
       branch: branchName,
@@ -351,14 +367,16 @@ export function planCommit(state: RepoStateOk, request: Extract<OperationRequest
   const steps: OperationPlan["steps"] = [];
   if (toAdd.length > 0) steps.push({ op: "stage", paths: toAdd });
   steps.push({ op: "commit", message, only: files });
+  // Ticked on purpose, but still worth a second look before it is in history.
+  const guard = riskGuard(state, files);
   return plan({
     kind: "commit",
-    safety: "normal",
+    safety: guard?.safety ?? "normal",
     title: "Commit",
     summary: `Commit ${plural(files.length, "file")} to ${branchName}: "${subject}".`,
-    details: ["Only the chosen files are committed; other changes stay as they are.", "Stays on this PC until you push. Can be undone until then."],
+    details: [...(guard?.lines ?? []), "Only the chosen files are committed; other changes stay as they are.", "Stays on this PC until you push. Can be undone until then."],
     network: false,
-    confirm: { kind: "none" },
+    confirm: guard?.confirm ?? { kind: "none" },
     steps,
     undo: state.head.unborn ? null : "uncommit",
     branch: branchName,
@@ -375,14 +393,20 @@ export function planStash(state: RepoStateOk, request: Extract<OperationRequest,
   const c = state.workingTree.counts;
   const files = c.staged + c.unstaged + (includeUntracked ? c.untracked : 0);
   if (files === 0) return refuse("stash", "nothing_to_do", "Nothing to stash.");
+  // A stash stays on this PC, so a secrets file in it is no leak. A very large
+  // new folder is the problem: git copies all of it into the stash.
+  const guard = includeUntracked ? riskGuard(state, "all", ["large"]) : null;
   return plan({
     kind: "stash",
-    safety: "normal",
+    safety: guard?.safety ?? "normal",
     title: "Stash",
     summary: `Stash ${plural(changedPaths(state.workingTree).size, "changed file")}${includeUntracked ? ", including new files" : ""}.`,
-    details: ["Puts your changes aside and leaves the folder clean. Pop the stash to bring them back."],
+    details: [
+      ...(guard ? [...guard.lines, "Git copies everything it stashes, so this may take a long time and a lot of disk. To leave it out, cancel and ignore it first."] : []),
+      "Puts your changes aside and leaves the folder clean. Pop the stash to bring them back."
+    ],
     network: false,
-    confirm: { kind: "none" },
+    confirm: guard?.confirm ?? { kind: "none" },
     steps: [{ op: "stash_push", label: "stash", paths: null, includeUntracked }],
     undo: "pop_stash",
     branch: state.head.branch,

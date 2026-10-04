@@ -41,7 +41,7 @@ export interface ProjectsBridge {
   projectsGroups(): Promise<ProjectGroup[]>;
   projectsSaveGroup(group: { id: string; name: string; position?: number }): Promise<ProjectGroup[]>;
   projectsDeleteGroup(groupId: string): Promise<ProjectGroup[]>;
-  projectsRepoState(projectId: string, options?: { allBranches?: boolean }): Promise<RepoState>;
+  projectsRepoState(projectId: string, options?: { allBranches?: boolean; measureUntracked?: boolean; includeIgnored?: boolean }): Promise<RepoState>;
   projectsRepoStates(projectIds?: string[]): Promise<Record<string, RepoState | { error: string }>>;
   projectsHistory(projectId: string, limit?: number): Promise<HistoryEntry[]>;
   projectsDiffStat(projectId: string): Promise<DiffStat>;

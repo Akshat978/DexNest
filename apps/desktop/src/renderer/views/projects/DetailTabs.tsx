@@ -13,6 +13,7 @@ import {
   availability,
   branchRows,
   changeRows,
+  commitAllWarnings,
   defaultBaseLabel,
   formFromProject,
   formProblems,
@@ -382,12 +383,19 @@ export function ChangesTab({
   state,
   stat,
   onAsk,
-  onOpenVsCode
+  onOpenVsCode,
+  onIgnore,
+  showIgnored = false,
+  onToggleIgnored
 }: {
   state: RepoState | null;
   stat: Parameters<typeof changeRows>[1];
   onAsk: Ask;
   onOpenVsCode(): void;
+  /** Adds new files or folders to .gitignore. */
+  onIgnore?(paths: string[]): void;
+  showIgnored?: boolean;
+  onToggleIgnored?(show: boolean): void;
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [message, setMessage] = useState("");
@@ -405,6 +413,10 @@ export function ChangesTab({
   const commitReq = { kind: "commit", message: message.trim() || "x", files: chosen.length > 0 ? chosen : "all" } as const;
   const commitReason = !message.trim() ? "Write a commit message first." : availability(state, commitReq);
   const groups = (["conflicted", "staged", "unstaged", "untracked"] as const).map((g) => ({ group: g, rows: rows.filter((r) => r.group === g) })).filter((g) => g.rows.length > 0);
+  // Only new files can be ignored: git keeps following a file it already tracks.
+  const ignorable = chosen.filter((p) => rows.some((r) => r.path === p && r.group === "untracked"));
+  const warnings = chosen.length === 0 ? commitAllWarnings(state) : [];
+  const ignored = repo.workingTree.ignored ?? [];
   return (
     <div className="projects-changes">
       {rows.length === 0 && <p className="projects-muted">No uncommitted changes. Everything is committed.</p>}
@@ -439,6 +451,12 @@ export function ChangesTab({
                   </span>
                 )}
                 {row.added === null && row.deleted === null && row.group !== "untracked" && row.group !== "conflicted" && stat && <span className="projects-muted">binary</span>}
+                {row.risk && <Badge tone={row.risk.kind === "secret" ? "error" : "warning"}>{row.risk.label}</Badge>}
+                {group === "untracked" && onIgnore && row.path !== ".gitignore" && (
+                  <Button size="sm" variant="ghost" title={`Add ${row.path} to .gitignore`} aria-label={`Ignore ${row.path}`} onClick={() => onIgnore([row.path])}>
+                    Ignore
+                  </Button>
+                )}
               </li>
             ))}
           </ul>
@@ -449,6 +467,17 @@ export function ChangesTab({
         <Card className="projects-commit">
           <label htmlFor="projects-commit-message">Commit message</label>
           <textarea id="projects-commit-message" rows={3} value={message} placeholder="Describe the change" onChange={(e) => setMessage(e.target.value)} />
+          {warnings.length > 0 && (
+            <div className="projects-commit__warn" role="note">
+              <p>Before you commit everything:</p>
+              <ul>
+                {warnings.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+              <p>Tick only the files you mean, or use Ignore on the ones that should never be committed. "Commit all" will ask first.</p>
+            </div>
+          )}
           <div className="projects-commit__actions">
             <Button variant="primary" disabledReason={commitReason} onClick={() => onAsk({ ...commitReq, message })}>
               {chosen.length > 0 ? `Commit ${chosen.length} selected` : "Commit all"}
@@ -456,11 +485,53 @@ export function ChangesTab({
             <Button variant="ghost" disabledReason={availability(state, { kind: "stash" })} onClick={() => onAsk({ kind: "stash" })}>
               Stash all
             </Button>
+            {onIgnore && (
+              <Button
+                variant="ghost"
+                disabledReason={chosen.length === 0 ? "Select the new files to ignore." : ignorable.length === 0 ? "Only new files can be ignored; git already tracks these." : null}
+                onClick={() => {
+                  onIgnore(ignorable);
+                  setSelected(new Set());
+                }}
+              >
+                {ignorable.length > 0 ? `Ignore ${ignorable.length} selected` : "Ignore selected"}
+              </Button>
+            )}
             <Button variant="danger" disabledReason={chosen.length === 0 ? "Select the files to discard." : availability(state, { kind: "discard", files: chosen })} onClick={() => onAsk({ kind: "discard", files: chosen })}>
               Discard selected…
             </Button>
           </div>
         </Card>
+      )}
+
+      {onToggleIgnored && (
+        <section aria-labelledby="projects-ignored" className="projects-ignored">
+          <label className="projects-ignored__toggle">
+            <input type="checkbox" checked={showIgnored} onChange={(e) => onToggleIgnored(e.target.checked)} />
+            <span id="projects-ignored">Show ignored files</span>
+          </label>
+          {showIgnored && (
+            repo.workingTree.ignored === undefined ? (
+              <p className="projects-muted">Reading what is ignored…</p>
+            ) : ignored.length === 0 ? (
+              <p className="projects-muted">Nothing in this folder is ignored.</p>
+            ) : (
+              <>
+                <p className="projects-muted">
+                  {ignored.length}{repo.workingTree.ignoredTruncated ? "+" : ""} ignored by .gitignore, folders as one line. They are never committed. To stop ignoring one, edit .gitignore.
+                </p>
+                <ul className="projects-files">
+                  {ignored.map((path) => (
+                    <li key={path}>
+                      <span className="projects-files__status">I</span>
+                      <Technical className="projects-files__path" title={path}>{path}</Technical>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )
+          )}
+        </section>
       )}
 
       {repo.stashes.length > 0 && (

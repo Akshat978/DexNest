@@ -10,6 +10,8 @@ export * from "./repoState.ts";
 export * from "./badge.ts";
 export * from "./operations.ts";
 export * from "./planners.ts";
+export * from "./risk.ts";
+export * from "./gitignore.ts";
 export * from "./events.ts";
 export * from "./settings.ts";
 export * from "./actions.ts";

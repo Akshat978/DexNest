@@ -1,6 +1,8 @@
 // What the read engine (Phase 3) reports about one repository. Planners,
 // badges and the view all work from this one shape; nothing here runs git.
 
+import type { PathSize } from "./risk.ts";
+
 export type InProgressOperation = "merge" | "rebase" | "cherry_pick" | "revert" | "bisect";
 
 export interface Counts {
@@ -79,6 +81,14 @@ export interface WorkingTree {
   /** True when any list above was capped. Counts are still exact. */
   truncated: boolean;
   counts: { staged: number; unstaged: number; untracked: number; conflicted: number };
+  /**
+   * How much each new file or folder holds, when the reader was asked to
+   * measure. A folder's count stops at a cap, so a dataset costs a bounded walk.
+   */
+  sizes?: Record<string, PathSize>;
+  /** Paths git ignores, folders collapsed, when the reader was asked for them. Capped; `ignoredTruncated` says so. */
+  ignored?: string[];
+  ignoredTruncated?: boolean;
 }
 
 export interface StashEntry {

@@ -2,7 +2,7 @@
 // database, a real read engine and real repositories.
 
 import { strict as assert } from "node:assert";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
 
@@ -12,6 +12,7 @@ import { createTestDatabase, type TestDatabase } from "@dexnest/foundation/testi
 import type { ExecuteInput, ExecuteResult, GitOpsPort } from "../src/domain/gitOpsPort.ts";
 import { DEFAULT_PROJECTS_SETTINGS, type ProjectsSettings } from "../src/domain/settings.ts";
 import { createProjectsModule, type LaunchPort, type ProjectsModule } from "../src/module/runtime.ts";
+import { createNodeIgnoreFile } from "../src/node/ignoreFile.ts";
 import { createNodeInspectFs } from "../src/node/inspectFs.ts";
 import type { LaunchCommand } from "../src/node/launch.ts";
 import { createLegacyFileSource } from "../src/node/legacyFile.ts";
@@ -103,6 +104,7 @@ function rig(options: { legacy?: unknown; platform?: NodeJS.Platform } = {}): Ri
     reader: b.reader(),
     gitOps,
     inspectFs: createNodeInspectFs(),
+    ignoreFile: createNodeIgnoreFile(),
     isSensitive: (p) => boundary.isSensitive(p),
     launch,
     scheduler: {
@@ -287,4 +289,95 @@ test("settings are normalised and saved", () => {
   assert.deepEqual(r.saved.at(-1), saved);
   assert.deepEqual(r.module.updateSettings("garbage"), saved);
   assert.equal(DEFAULT_PROJECTS_SETTINGS.scheduledFetch.enabled, false);
+});
+
+// --- Add to .gitignore ---------------------------------------------------------------------------
+
+async function messyProject(r: Rig): Promise<{ id: string; path: string }> {
+  r.module.start();
+  const path = join(r.b.root, "messy");
+  mkdirSync(join(path, "src"), { recursive: true });
+  r.b.git(path, "init", "-q");
+  writeFileSync(join(path, "src", "app.ts"), "export const a = 1;\n");
+  writeFileSync(join(path, ".env"), "KEY=tracked-by-mistake\n");
+  r.b.git(path, "add", "-A");
+  r.b.git(path, "commit", "-q", "-m", "first");
+  // What accumulates in a real folder: documents, a dataset, and a file sharing a name with one in a subfolder.
+  writeFileSync(join(path, "Alliance Grant.docx"), "x");
+  writeFileSync(join(path, "notes [draft].txt"), "x");
+  mkdirSync(join(path, "dataset", "raw"), { recursive: true });
+  writeFileSync(join(path, "dataset", "raw", "a.bin"), "x");
+  writeFileSync(join(path, "report.md"), "top\n");
+  mkdirSync(join(path, "docs"));
+  writeFileSync(join(path, "docs", "report.md"), "nested\n");
+  writeFileSync(join(path, ".env"), "KEY=changed\n");
+  const added = await r.module.add({ path, name: "Messy" }, "wizard");
+  return { id: added.ok ? added.project.id : "", path };
+}
+
+const untrackedOf = async (r: Rig, id: string) => {
+  const state = await r.module.repoState(id);
+  return state.isRepo ? state.workingTree.untracked : [];
+};
+
+test("ignore: new files and folders go into .gitignore and stop appearing; nothing else is touched", async () => {
+  const r = rig();
+  const { id, path } = await messyProject(r);
+  assert.deepEqual((await untrackedOf(r, id)).sort(), ["Alliance Grant.docx", "dataset/", "docs/", "notes [draft].txt", "report.md"]);
+
+  const out = await r.module.runAction("projects.ignore", "module_ui", { projectId: id, paths: ["Alliance Grant.docx", "dataset/", "notes [draft].txt", "report.md"] });
+  assert.equal(out.ok, true, out.message);
+  assert.equal(out.message, "Added 4 to .gitignore.");
+  assert.equal(readFileSync(join(path, ".gitignore"), "utf8"), "# Added from DexNest\n/Alliance Grant.docx\n/dataset/\n/notes \\[draft\\].txt\n/report.md\n");
+
+  // Gone from the list - and only those: docs/report.md has the same name as an ignored file and is still there.
+  assert.deepEqual((await untrackedOf(r, id)).sort(), [".gitignore", "docs/"]);
+  assert.equal(r.b.git(path, "status", "--porcelain", "--", "docs/report.md").trim(), "?? docs/report.md");
+  // The files themselves are untouched.
+  assert.ok(existsSync(join(path, "Alliance Grant.docx")) && existsSync(join(path, "dataset", "raw", "a.bin")));
+
+  // Again: nothing is written twice.
+  const again = await r.module.runAction("projects.ignore", "module_ui", { projectId: id, paths: [".gitignore"] });
+  assert.equal(again.ok, false);
+  assert.match(again.message, /won't make \.gitignore ignore itself/);
+});
+
+test("ignore: a file git already tracks is refused with the reason, and .gitignore is not written", async () => {
+  const r = rig();
+  const { id, path } = await messyProject(r);
+  const out = await r.module.runAction("projects.ignore", "module_ui", { projectId: id, paths: [".env"] });
+  assert.equal(out.ok, false);
+  assert.match(out.message, /\.env: Git already tracks this file, so ignoring it changes nothing\. Leave it out of the commit instead\./);
+  assert.equal(existsSync(join(path, ".gitignore")), false);
+
+  // Mixed: the new file is added, the tracked one is reported.
+  const mixed = await r.module.runAction("projects.ignore", "module_ui", { projectId: id, paths: [".env", "Alliance Grant.docx"] });
+  assert.equal(mixed.ok, true);
+  assert.match(mixed.message, /^Added 1 to \.gitignore\. \.env: Git already tracks/);
+});
+
+test("ignore: an existing .gitignore keeps every line it had", async () => {
+  const r = rig();
+  const { id, path } = await messyProject(r);
+  writeFileSync(join(path, ".gitignore"), "node_modules/\r\n# mine\r\n*.log");
+  await r.module.runAction("projects.ignore", "module_ui", { projectId: id, paths: ["dataset/"] });
+  assert.equal(readFileSync(join(path, ".gitignore"), "utf8"), "node_modules/\r\n# mine\r\n*.log\r\n\r\n# Added from DexNest\r\n/dataset/\r\n");
+});
+
+test("ignore: only from the screen, logged as counts, and never a path outside the project", async () => {
+  const r = rig();
+  const { id, path } = await messyProject(r);
+  const fromDeck = await r.module.runAction("projects.ignore", "stream_deck_http", { projectId: id, paths: ["dataset/"] });
+  assert.equal(fromDeck.ok, false);
+  assert.match(fromDeck.message, /can't be started from stream_deck_http/);
+
+  const outside = await r.module.runAction("projects.ignore", "module_ui", { projectId: id, paths: ["../elsewhere.txt", "C:/Windows/x"] });
+  assert.equal(outside.ok, false);
+  assert.equal(existsSync(join(path, ".gitignore")), false);
+
+  await r.module.runAction("projects.ignore", "module_ui", { projectId: id, paths: ["Alliance Grant.docx"] });
+  const logged = r.events.query({ stream: "projects", types: ["projects.ignore.added"] });
+  assert.equal(logged.length, 1);
+  assert.deepEqual(logged[0].payload, { projectId: id, added: 1, already: 0, refused: 0 });
+  assert.doesNotMatch(JSON.stringify(logged[0]), /Alliance/, "file names are not written to the log");
 });

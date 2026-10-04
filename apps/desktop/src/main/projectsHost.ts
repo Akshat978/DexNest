@@ -18,6 +18,7 @@ import {
   createGitReader,
   createLegacyFileSource,
   createNodeGitRunner,
+  createNodeIgnoreFile,
   createNodeInspectFs,
   createNodeRepoFs,
   createProjectsModule,
@@ -151,6 +152,7 @@ export function createProjectsHost(options: ProjectsHostOptions): ProjectsHost {
         }
       }
     },
+    ignoreFile: createNodeIgnoreFile(),
     discovered,
     folderScan,
     continuation,
@@ -189,7 +191,9 @@ export function createProjectsHost(options: ProjectsHostOptions): ProjectsHost {
     return projects.saveGroup({ id: id(g.id), name: String(g.name ?? ""), position: typeof g.position === "number" ? g.position : 0 });
   });
   handle("dexnest:projects-delete-group", (groupId) => projects.deleteGroup(id(groupId)));
-  handle("dexnest:projects-repo-state", (projectId, o) => projects.repoState(id(projectId), { allBranches: opt(o).allBranches === true }));
+  handle("dexnest:projects-repo-state", (projectId, o) =>
+    projects.repoState(id(projectId), { allBranches: opt(o).allBranches === true, measureUntracked: opt(o).measureUntracked === true, includeIgnored: opt(o).includeIgnored === true })
+  );
   handle("dexnest:projects-repo-states", (ids) => projects.repoStates(Array.isArray(ids) ? ids.filter((x): x is string => typeof x === "string") : undefined));
   handle("dexnest:projects-history", (projectId, limit) => projects.history(id(projectId), typeof limit === "number" ? limit : 50));
   handle("dexnest:projects-diff-stat", (projectId) => projects.diffStat(id(projectId)));

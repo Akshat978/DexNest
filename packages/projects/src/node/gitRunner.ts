@@ -5,7 +5,8 @@
 // engine wraps it with the read-only allowlist.
 
 import { spawn } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, statSync, type Dirent } from "node:fs";
+import { join } from "node:path";
 
 import type { RepoFsPort } from "../git/reader.ts";
 import type { GitRunner, GitRunResult } from "../git/runner.ts";
@@ -103,6 +104,45 @@ export function createNodeRepoFs(): RepoFsPort {
       } catch {
         return null;
       }
+    },
+    measure(path, maxFiles) {
+      let files = 0;
+      let bytes = 0;
+      let truncated = false;
+      // Breadth-first, links not followed: a junction cannot lead the walk out of the folder or round in a circle.
+      const queue: string[] = [path];
+      try {
+        const top = lstatSync(path);
+        if (!top.isDirectory()) return { files: 1, bytes: top.size, truncated: false };
+      } catch {
+        return null;
+      }
+      while (queue.length > 0 && !truncated) {
+        const dir = queue.shift() as string;
+        let entries: Dirent[];
+        try {
+          entries = readdirSync(dir, { withFileTypes: true });
+        } catch {
+          continue;
+        }
+        for (const entry of entries) {
+          const full = join(dir, entry.name);
+          if (entry.isDirectory()) queue.push(full);
+          else if (entry.isFile()) {
+            if (files >= maxFiles) {
+              truncated = true;
+              break;
+            }
+            files += 1;
+            try {
+              bytes += lstatSync(full).size;
+            } catch {
+              // gone between the listing and the stat
+            }
+          }
+        }
+      }
+      return { files, bytes, truncated };
     }
   };
 }

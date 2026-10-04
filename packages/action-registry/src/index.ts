@@ -1121,6 +1121,24 @@ export const seededActions = [
     status: "available"
   },
   {
+    id: "projects.ignore",
+    title: "Add to .gitignore",
+    moduleId: "projects",
+    module: "projects",
+    description: "Add new files or folders to a project's .gitignore, so they stop appearing as changes and cannot be committed by accident.",
+    category: "project",
+    dangerLevel: "caution",
+    requiresConfirmation: false,
+    confirmationRule: null,
+    reversible: false,
+    undoActionId: null,
+    handlerType: "internal_function",
+    handlerRef: "projects.ignore",
+    allowedTriggers: ["module_ui"],
+    enabled: true,
+    status: "available"
+  },
+  {
     id: "projects.open_vscode",
     title: "Open project in VS Code",
     moduleId: "projects",

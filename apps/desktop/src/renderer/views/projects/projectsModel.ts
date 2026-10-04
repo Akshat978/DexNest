@@ -4,6 +4,9 @@
 // a button is disabled for exactly the reason the operation would be refused.
 
 import {
+  riskLines,
+  riskyPaths,
+  type RiskKind,
   attentionReasons,
   currentBranch,
   fetchedAgoText,
@@ -527,6 +530,23 @@ export interface ChangeRowView {
   status: string;
   added: number | null;
   deleted: number | null;
+  /** Why this deserves a look before it is committed: a secrets file, a document, an archive, or very large. */
+  risk?: { kind: RiskKind; label: string } | null;
+}
+
+const RISK_LABELS: Record<RiskKind, string> = { secret: "secrets file?", document: "document", archive: "archive", large: "very large" };
+
+/** The label a risky path carries in the list. */
+export function riskFor(state: RepoState | null, path: string): ChangeRowView["risk"] {
+  if (!state?.isRepo) return null;
+  const risk = riskyPaths(state.workingTree, [path])[0];
+  if (!risk) return null;
+  return { kind: risk.kind, label: risk.note ? `${RISK_LABELS[risk.kind]} · ${risk.note}` : RISK_LABELS[risk.kind] };
+}
+
+/** What "Commit all" would sweep up that deserves a look, as the dialog will say it; empty when nothing does. */
+export function commitAllWarnings(state: RepoState | null): string[] {
+  return state?.isRepo ? riskLines(riskyPaths(state.workingTree, "all")) : [];
 }
 
 const STATUS_LETTER: Record<string, string> = { added: "A", modified: "M", deleted: "D", renamed: "R", copied: "C", type_changed: "T" };
@@ -535,12 +555,13 @@ export function changeRows(state: RepoState | null, stat: { staged: Array<{ path
   if (!state?.isRepo) return [];
   const t = state.workingTree;
   const find = (list: Array<{ path: string; added: number | null; deleted: number | null }> | undefined, path: string) => list?.find((r) => r.path === path);
-  return [
+  const rows: ChangeRowView[] = [
     ...t.conflicted.map((path) => ({ path, group: "conflicted" as const, status: "U", added: null, deleted: null })),
     ...t.staged.map((f) => ({ path: f.path, from: f.from, group: "staged" as const, status: STATUS_LETTER[f.status] ?? "M", added: find(stat?.staged, f.path)?.added ?? null, deleted: find(stat?.staged, f.path)?.deleted ?? null })),
     ...t.unstaged.map((f) => ({ path: f.path, group: "unstaged" as const, status: STATUS_LETTER[f.status] ?? "M", added: find(stat?.unstaged, f.path)?.added ?? null, deleted: find(stat?.unstaged, f.path)?.deleted ?? null })),
     ...t.untracked.map((path) => ({ path, group: "untracked" as const, status: "?", added: null, deleted: null }))
   ];
+  return rows.map((row) => (row.group === "conflicted" ? row : { ...row, risk: riskFor(state, row.path) }));
 }
 
 /** The Dev dashboard's rule, kept identical (main.ts isDangerousCommand): such a command always asks first. */

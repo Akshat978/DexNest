@@ -196,7 +196,7 @@ contextBridge.exposeInMainWorld("dexNest", {
   projectsGroups: () => ipcRenderer.invoke("dexnest:projects-groups"),
   projectsSaveGroup: (group: { id: string; name: string; position?: number }) => ipcRenderer.invoke("dexnest:projects-save-group", group),
   projectsDeleteGroup: (groupId: string) => ipcRenderer.invoke("dexnest:projects-delete-group", groupId),
-  projectsRepoState: (projectId: string, options?: { allBranches?: boolean }) => ipcRenderer.invoke("dexnest:projects-repo-state", projectId, options),
+  projectsRepoState: (projectId: string, options?: { allBranches?: boolean; measureUntracked?: boolean; includeIgnored?: boolean }) => ipcRenderer.invoke("dexnest:projects-repo-state", projectId, options),
   projectsRepoStates: (projectIds?: string[]) => ipcRenderer.invoke("dexnest:projects-repo-states", projectIds),
   projectsHistory: (projectId: string, limit?: number) => ipcRenderer.invoke("dexnest:projects-history", projectId, limit),
   projectsDiffStat: (projectId: string) => ipcRenderer.invoke("dexnest:projects-diff-stat", projectId),

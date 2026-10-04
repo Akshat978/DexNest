@@ -31,6 +31,7 @@ export * from "./node/gitRunner.ts";
 export * from "./inspect/detect.ts";
 export * from "./inspect/inspect.ts";
 export * from "./node/inspectFs.ts";
+export * from "./node/ignoreFile.ts";
 export * from "./domain/gitOpsPort.ts";
 export * from "./node/launch.ts";
 export * from "./module/runtime.ts";

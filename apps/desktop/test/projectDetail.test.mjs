@@ -226,6 +226,73 @@ test("changes: grouped files with line counts, conflicts sent to the editor, com
   assert.match(clean, /Everything is committed/);
 });
 
+const messyTree = () => ({
+  ...tree({
+    unstaged: [{ path: "apps/api/.env", status: "modified" }, { path: "src/app.ts", status: "modified" }],
+    untracked: ["Alliance Grant.docx", "skin_dataset_builder.zip", "skin_dataset_builder/", "scripts/audit.py"]
+  }),
+  sizes: { "skin_dataset_builder/": { files: 2000, bytes: 4 * 1024 ** 3, truncated: true }, "scripts/audit.py": { files: 1, bytes: 900, truncated: false } }
+});
+
+test("changes: what deserves a look is marked on its row and listed above the buttons; new files can be ignored", () => {
+  const html = render(tabs.ChangesTab, { state: repo({ workingTree: messyTree() }), stat: null, onAsk: noop, onOpenVsCode: noop, onIgnore: noop, showIgnored: false, onToggleIgnored: noop });
+  const row = (name) => html.split("<li").find((r) => r.includes(`title="${name}"`));
+  assert.match(row("apps/api/.env"), /kit-badge--error[^>]*>.*?secrets file\?<\/span>/s);
+  assert.match(row("Alliance Grant.docx"), /kit-badge--warning[^>]*>.*?document<\/span>/s);
+  assert.match(row("skin_dataset_builder.zip"), />archive<\/span>/);
+  assert.match(row("skin_dataset_builder/"), /very large · more than 4\.0 GB in more than 2,000 files/);
+  assert.doesNotMatch(row("src/app.ts"), /kit-badge/);
+  assert.doesNotMatch(row("scripts/audit.py"), /kit-badge/, "an ordinary new file carries no mark");
+
+  // Only new files get an Ignore button: git keeps following a file it already tracks.
+  assert.match(row("Alliance Grant.docx"), /aria-label="Ignore Alliance Grant\.docx"[^>]*>Ignore<\/button>/);
+  assert.match(row("skin_dataset_builder/"), /title="Add skin_dataset_builder\/ to \.gitignore"/);
+  assert.doesNotMatch(row("apps/api/.env"), />Ignore<\/button>/);
+
+  // The warning is on the screen before the button is pressed, in the dialog's own words.
+  assert.match(html, /<div class="projects-commit__warn" role="note"><p>Before you commit everything:<\/p>/);
+  assert.match(html, /<li>apps\/api\/\.env looks like a secrets file\.<\/li>/);
+  assert.match(html, /<li>skin_dataset_builder\/ \(more than 4\.0 GB in more than 2,000 files\) is very large\.<\/li>/);
+  assert.match(html, /&quot;Commit all&quot; will ask first\./);
+  assert.match(html, />Commit all<\/button>/);
+  assert.match(html, /aria-disabled="true"[^>]*title="Select the new files to ignore\."[^>]*>Ignore selected<\/button>/);
+});
+
+test("changes: a tidy folder has no warning and no marks", () => {
+  const html = render(tabs.ChangesTab, { state: repo({ workingTree: tree({ unstaged: [{ path: "src/app.ts", status: "modified" }], untracked: ["src/new.ts"] }) }), stat: null, onAsk: noop, onOpenVsCode: noop, onIgnore: noop, showIgnored: false, onToggleIgnored: noop });
+  assert.doesNotMatch(html, /projects-commit__warn|secrets file|very large/);
+});
+
+test("changes: ignored files are hidden until asked for, then listed with how to change it", () => {
+  const base = { stat: null, onAsk: noop, onOpenVsCode: noop, onIgnore: noop, onToggleIgnored: noop };
+  const off = render(tabs.ChangesTab, { ...base, state: repo({ workingTree: tree({ untracked: ["a.txt"] }) }), showIgnored: false });
+  assert.match(off, /<input type="checkbox"\/><span id="projects-ignored">Show ignored files<\/span>/);
+  assert.doesNotMatch(off, /ignored by \.gitignore/);
+
+  const reading = render(tabs.ChangesTab, { ...base, state: repo({ workingTree: tree({ untracked: ["a.txt"] }) }), showIgnored: true });
+  assert.match(reading, /Reading what is ignored…/);
+
+  const on = render(tabs.ChangesTab, { ...base, state: repo({ workingTree: { ...tree({ untracked: ["a.txt"] }), ignored: ["node_modules/", "dataset/", ".env.local"], ignoredTruncated: false } }), showIgnored: true });
+  assert.match(on, /<input type="checkbox" checked=""\/>/);
+  assert.match(on, /3 ignored by \.gitignore, folders as one line\. They are never committed\. To stop ignoring one, edit \.gitignore\./);
+  assert.match(on, /title="dataset\/"/);
+  const none = render(tabs.ChangesTab, { ...base, state: repo({ workingTree: { ...tree({ untracked: ["a.txt"] }), ignored: [], ignoredTruncated: false } }), showIgnored: true });
+  assert.match(none, /Nothing in this folder is ignored\./);
+
+  // A clean folder still offers the toggle: that is where one looks for what is hidden.
+  const clean = render(tabs.ChangesTab, { ...base, state: repo(), showIgnored: false });
+  assert.match(clean, /No uncommitted changes/);
+  assert.match(clean, /Show ignored files/);
+});
+
+test("changes: the detail measures new files, asks for ignored ones only when shown, and ignores through the logged action", () => {
+  const source = readFileSync(join(desktop, "src/renderer/views/projects/ProjectDetail.tsx"), "utf8").replace(/\r\n/g, "\n");
+  assert.match(source, /projectsRepoState\(project\.id, \{ allBranches, measureUntracked: true, includeIgnored: showIgnored \}\)/);
+  assert.match(source, /props\.runAction\("projects\.ignore", \{ projectId: project\.id, paths \}\)/);
+  const home = readFileSync(join(desktop, "src/renderer/views/projects/ProjectsView.tsx"), "utf8");
+  assert.doesNotMatch(home, /measureUntracked/, "the home screen does not walk folders");
+});
+
 test("history: short sha, subject, author, pushed or local", () => {
   const html = render(tabs.HistoryTab, { entries: [{ sha: "a".repeat(40), parents: [], subject: "local work", author: "Me", committedAt: NOW, onRemote: false }, { sha: "b".repeat(40), parents: [], subject: "old", author: "Me", committedAt: NOW, onRemote: true }], now: NOW, loading: false });
   assert.match(html, /aaaaaaa/);

@@ -5,6 +5,7 @@
 //
 // Remote state is only as fresh as the last fetch; this engine never fetches.
 
+import type { PathSize } from "../domain/risk.ts";
 import { isFullSha } from "../domain/names.ts";
 import type { UndoFacts } from "../domain/planners.ts";
 import {
@@ -39,6 +40,12 @@ export interface RepoFsPort {
   exists(path: string): boolean;
   /** null when the file does not exist. */
   mtimeMs(path: string): number | null;
+  /**
+   * How much a file or folder holds, counting no further than `maxFiles`
+   * files. Links are not followed. Absent on a host that cannot measure; null
+   * when the path is gone.
+   */
+  measure?(path: string, maxFiles: number): PathSize | null;
 }
 
 export type GitReadErrorCode = "git_missing" | "timeout" | "cancelled" | "failed";
@@ -71,7 +78,16 @@ export interface ReadOptions {
   allBranches?: boolean;
   /** The branch the owner marked as deployed; local branches are compared with it too. */
   deployedBranch?: string | null;
+  /** Measure new (untracked) files and folders, so a plan can say when one is very large. */
+  measureUntracked?: boolean;
+  /** Also list what git ignores. */
+  includeIgnored?: boolean;
 }
+
+/** New paths measured per read, and files counted per path, at most. */
+const MEASURE_PATHS = 60;
+const MEASURE_FILES = 2000;
+const IGNORED_LIMIT = 200;
 
 export interface HistoryEntry {
   sha: string;
@@ -310,6 +326,21 @@ export function createGitReader(options: GitReaderOptions): GitReader {
 
     const last = parseLog(okOut(lastOut))[0];
     const fetchMs = options.fs.mtimeMs(`${commonDir}/FETCH_HEAD`);
+
+    if (read.measureUntracked && options.fs.measure) {
+      const sizes: Record<string, PathSize> = {};
+      for (const entry of st.tree.untracked.slice(0, MEASURE_PATHS)) {
+        const size = options.fs.measure(`${toplevel}/${entry.replace(/\/+$/, "")}`, MEASURE_FILES);
+        if (size) sizes[entry] = size;
+      }
+      st.tree.sizes = sizes;
+    }
+    if (read.includeIgnored) {
+      const listed = await run(toplevel, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "--no-empty-directory", "-z"], read);
+      const all = listed.exitCode === 0 ? listed.stdout.split("\0").filter(Boolean) : [];
+      st.tree.ignored = all.slice(0, IGNORED_LIMIT);
+      st.tree.ignoredTruncated = all.length > IGNORED_LIMIT;
+    }
 
     return {
       isRepo: true,

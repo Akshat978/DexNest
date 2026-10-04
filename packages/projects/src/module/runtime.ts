@@ -26,6 +26,7 @@ import {
 import type { CloneRequest, CloneResult, ExecuteResult, GitOpsPort, PreviewResult } from "../domain/gitOpsPort.ts";
 import { legacyProjectToProject, projectToLegacy, type LegacyProject } from "../domain/legacy.ts";
 import { normaliseProjectInput, type Project, type ProjectInput } from "../domain/project.ts";
+import { addIgnorePatterns } from "../domain/gitignore.ts";
 import { githubLinks } from "../domain/remote.ts";
 import type { RepoState } from "../domain/repoState.ts";
 import type { Confirmation } from "../domain/safety.ts";
@@ -58,6 +59,21 @@ import {
 import { createProjectsStore, runProjectsMigrations, type FetchState, type OperationRecord, type ProjectGroup, type ProjectsStore } from "../store/store.ts";
 import { SCHEDULED_FETCH_JOB_ID } from "./manifest.ts";
 
+/** Reads and writes a repository's own .gitignore. The host confines it to that one file. */
+export interface IgnoreFilePort {
+  /** null when the file does not exist. */
+  read(file: string): string | null;
+  write(file: string, content: string): void;
+}
+
+export interface IgnoreResult {
+  ok: boolean;
+  message: string;
+  added: string[];
+  already: string[];
+  refused: Array<{ path: string; reason: string }>;
+}
+
 export interface LaunchPort {
   env(): LaunchEnv;
   /** Opens a folder in the file manager. Resolves to an error message, or null. */
@@ -84,6 +100,8 @@ export interface ProjectsModuleOptions {
   reader: GitReader;
   gitOps: GitOpsPort;
   inspectFs: InspectFsPort;
+  /** Absent on a host that cannot write: "Add to .gitignore" then says so. */
+  ignoreFile?: IgnoreFilePort;
   /** createDataBoundary(...).isSensitive */
   isSensitive(path: string): boolean;
   launch: LaunchPort;
@@ -136,7 +154,7 @@ export interface ProjectsModule {
   groups(): ProjectGroup[];
   saveGroup(group: ProjectGroup): ProjectGroup[];
   deleteGroup(id: string): ProjectGroup[];
-  repoState(projectId: string, options?: { allBranches?: boolean }): Promise<RepoState>;
+  repoState(projectId: string, options?: { allBranches?: boolean; measureUntracked?: boolean; includeIgnored?: boolean }): Promise<RepoState>;
   repoStates(projectIds?: readonly string[]): Promise<Record<string, RepoState | { error: string }>>;
   history(projectId: string, limit?: number): Promise<HistoryEntry[]>;
   diffStat(projectId: string): Promise<DiffStat>;
@@ -277,7 +295,7 @@ export function createProjectsModule(options: ProjectsModuleOptions): ProjectsMo
     });
   }
 
-  async function repoState(projectId: string, readOptions: { allBranches?: boolean } = {}): Promise<RepoState> {
+  async function repoState(projectId: string, readOptions: { allBranches?: boolean; measureUntracked?: boolean; includeIgnored?: boolean } = {}): Promise<RepoState> {
     const project = mustGet(projectId);
     if (options.isSensitive(project.path)) return { isRepo: false, reason: "This folder is inside DexNest's own data folder.", readAt: now() };
     const state = await options.reader.readRepoState(project.path, { ...readOptions, deployedBranch: project.deployedBranch });
@@ -377,6 +395,43 @@ export function createProjectsModule(options: ProjectsModuleOptions): ProjectsMo
     // DexNest has no way to see the window. Say what was done and where to look.
     const terminalWords = `Started ${terminalName} in ${project.name}. If it didn't come to the front, it's in the taskbar.`;
     return { ok: true, message: target === "folder" ? `Opened ${project.name} folder.` : target === "vscode" ? `Opened ${project.name} ${words.vscode}.` : terminalWords };
+  }
+
+  /**
+   * Adds new files or folders to the project's .gitignore. Only paths git
+   * currently lists as new: ignoring a file git already tracks changes
+   * nothing, and DexNest does not stop tracking files.
+   */
+  async function ignore(projectId: string, paths: readonly string[], source: string): Promise<IgnoreResult> {
+    const project = mustGet(projectId);
+    const none = { added: [], already: [], refused: [] };
+    if (!options.ignoreFile) return { ok: false, message: "This DexNest can't write .gitignore.", ...none };
+    if (options.isSensitive(project.path)) return { ok: false, message: "That folder is inside DexNest's own data folder.", ...none };
+    if (options.gitOps.isBusy(projectId)) return { ok: false, message: "Git is busy in this project. Try again when it has finished.", ...none };
+    if (paths.length === 0) return { ok: false, message: "Choose what to ignore.", ...none };
+    const state = await options.reader.readRepoState(project.path);
+    if (!state.isRepo) return { ok: false, message: state.reason, ...none };
+    const untracked = new Set(state.workingTree.untracked);
+    const refused: IgnoreResult["refused"] = [];
+    const wanted: string[] = [];
+    for (const path of [...new Set(paths)]) {
+      if (untracked.has(path)) wanted.push(path);
+      else refused.push({ path, reason: "Git already tracks this file, so ignoring it changes nothing. Leave it out of the commit instead." });
+    }
+    const file = `${project.path.replace(/[\\/]+$/, "")}/.gitignore`;
+    const edit = addIgnorePatterns(options.ignoreFile.read(file), wanted);
+    refused.push(...edit.refused);
+    if (edit.added.length > 0) {
+      options.ignoreFile.write(file, edit.content);
+      store.noteActivity(projectId, now());
+      // Counts only: a file name can itself be private.
+      emit("projects.ignore.added", projectId, source, { projectId, added: edit.added.length, already: edit.already.length, refused: refused.length });
+    }
+    const words: string[] = [];
+    if (edit.added.length > 0) words.push(`Added ${edit.added.length} to .gitignore.`);
+    if (edit.already.length > 0) words.push(`${edit.already.length} already there.`);
+    if (refused.length > 0) words.push(refused.length === 1 ? `${refused[0].path}: ${refused[0].reason}` : `${refused.length} not added.`);
+    return { ok: edit.added.length > 0 || (edit.already.length > 0 && refused.length === 0), message: words.join(" ") || "Nothing to ignore.", added: edit.added, already: edit.already, refused };
   }
 
   function mostRecentlyOpened(): Project | null {
@@ -610,6 +665,11 @@ export function createProjectsModule(options: ProjectsModuleOptions): ProjectsMo
             const paths = Array.isArray(p.paths) ? p.paths.filter((x): x is string => typeof x === "string") : [];
             const r = await module.importFolders(paths);
             return { ok: r.skipped.length === 0, message: `Imported ${r.added.length}; ${r.skipped.length} skipped.`, data: r };
+          }
+          case "projects.ignore": {
+            const paths = Array.isArray(p.paths) ? p.paths.filter((x): x is string => typeof x === "string") : [];
+            const r = await ignore(need(), paths, source);
+            return { ok: r.ok, message: r.message, data: r };
           }
           case "projects.open_vscode":
             return open(need(), "vscode", { path: str(p.path) });

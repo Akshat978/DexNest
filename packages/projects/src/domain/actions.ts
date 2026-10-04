@@ -47,6 +47,7 @@ export const PROJECTS_ACTIONS: readonly ProjectsActionContract[] = [
   { id: "projects.git.fast_forward", title: "Move a branch forward without switching to it", safety: "normal", triggers: UI, network: false },
   { id: "projects.git.push", title: "Push", safety: "normal", triggers: COMMAND_UI, network: true },
   { id: "projects.git.push_current", title: "Push current project", safety: "normal", triggers: DECK, network: true },
+  { id: "projects.ignore", title: "Add to .gitignore", safety: "normal", triggers: UI, network: false },
   { id: "projects.git.commit", title: "Commit", safety: "normal", triggers: UI, network: false },
   { id: "projects.git.stash", title: "Stash changes", safety: "normal", triggers: UI, network: false },
   { id: "projects.git.stash_pop", title: "Pop stash", safety: "normal", triggers: UI, network: false },
