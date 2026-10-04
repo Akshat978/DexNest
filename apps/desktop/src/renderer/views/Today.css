@@ -97,3 +97,51 @@
   overflow-wrap: anywhere;
   color: var(--text-muted);
 }
+
+/* --- The day: planned, and what needs you ------------------------------------------- */
+.today-day {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-5);
+  align-items: start;
+}
+
+@media (max-width: 1000px) {
+  .today-day {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.today-todos summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.today-todos summary svg {
+  width: 1rem;
+  height: 1rem;
+  color: var(--text-muted);
+}
+
+.today-todos ul {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  padding: 0 0 0 var(--space-5);
+  list-style: none;
+  font-size: 0.8125rem;
+}
+
+.today-todos li {
+  display: grid;
+  gap: 2px;
+}
+
+.today-todos__place {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}

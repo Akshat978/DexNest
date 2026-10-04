@@ -240,3 +240,88 @@ test("times are shown in the report's own timezone", () => {
   assert.equal(whenLabel(null), "");
   assert.equal(windowLine(report({})), "Since 29 Jun, 09:12 · written 30 Jun, 08:40");
 });
+
+// --- the day: one agenda, one list of what needs you ------------------------------------
+
+test("the day: events and timetable blocks in one list, each saying when and from where", async () => {
+  const { dayLine, dayRows } = await import("../src/renderer/views/todayDayModel.ts");
+  const item = (extra: Record<string, unknown>) => ({ id: "x", kind: "event", title: "x", startTime: null, endTime: null, allDay: false, source: { id: "dexnest.calendar", label: "Calendar" }, detail: null, needsAction: false, status: null, accent: null, ...extra });
+  const agenda = {
+    items: [
+      item({ id: "event:1", title: "Birthday", allDay: true }),
+      item({ id: "block:1", kind: "block", title: "Deep work", startTime: "09:00", endTime: "11:00", source: { id: "dexnest.timetable", label: "Timetable" }, status: "done" }),
+      item({ id: "event:2", title: "Dentist", startTime: "15:00" }),
+      item({ id: "block:2", kind: "block", title: "Gym", startTime: "18:00", endTime: "19:00", source: { id: "dexnest.timetable", label: "Timetable" }, status: "planned" }),
+      item({ id: "nudge:1", kind: "nudge", title: "Back up", needsAction: true })
+    ],
+    counts: { events: 2, blocks: 2, nudges: 1, needsAction: 1 }
+  } as never;
+  assert.deepEqual(dayRows(agenda).map((r) => [r.title, r.time, r.meta, r.done]), [
+    ["Birthday", "all day", "Calendar", false],
+    ["Deep work", "09:00 – 11:00", "Timetable · done", true],
+    ["Dentist", "15:00", "Calendar", false],
+    ["Gym", "18:00 – 19:00", "Timetable", false]
+  ]);
+  assert.equal(dayLine(agenda), "2 events and 2 timetable blocks today");
+  assert.equal(dayLine({ counts: { events: 1, blocks: 0, nudges: 0, needsAction: 0 } }), "1 event today");
+  assert.equal(dayLine(null), "Nothing planned today");
+  assert.deepEqual(dayRows(null), []);
+});
+
+test("needs you: reminders, ObjectOS and Autopilot in one list, most pressing first", async () => {
+  const { bellBadge, needsYou } = await import("../src/renderer/views/todayDayModel.ts");
+  const nudge = (id: string, title: string, needsAction: boolean) => ({ id, kind: "nudge", title, startTime: null, endTime: null, allDay: false, source: { id: "dexnest.nudges", label: "Nudge" }, detail: "since March", needsAction, status: "open", accent: null });
+  const list = needsYou({
+    agenda: { items: [nudge("nudge:1", "Still lent out", true), nudge("nudge:2", "Snoozed thing", false)] } as never,
+    objects: {
+      summary: {
+        items: [
+          { kind: "stock", partId: "prt_1", quantity: 1, lowStockAt: 2 },
+          { kind: "warranty", objectId: "OBJ00001", state: "ending", daysLeft: 12 },
+          { kind: "maintenance", objectId: "OBJ00001", scheduleId: "sch_1", status: { state: "overdue" } },
+          { kind: "maintenance", objectId: "OBJ00001", scheduleId: "sch_2", status: { state: "due_soon" } }
+        ]
+      },
+      names: { OBJ00001: "Workshop printer", sch_1: "Replace nozzle", sch_2: "Oil rails", prt_1: "0.4 nozzle" }
+    },
+    autopilot: { deliver: [{ id: "a1", title: "A run is waiting for an answer", detail: "dermassist" }], hold: [{ id: "a2", title: "held, not shown", detail: "" }] }
+  });
+  assert.deepEqual(list.map((i) => [i.source, i.title, i.detail, i.tone, i.view]), [
+    ["Autopilot", "A run is waiting for an answer", "dermassist", "error", "autopilot"],
+    ["ObjectOS", "Replace nozzle is overdue", "Workshop printer", "error", "object"],
+    ["ObjectOS", "Warranty ends in 12 days", "Workshop printer", "warning", "object"],
+    ["ObjectOS", "Oil rails is due soon", "Workshop printer", "warning", "object"],
+    ["ObjectOS", "0.4 nozzle is low", "1 left", "info", "object"],
+    ["Reminder", "Still lent out", "since March", "info", "calendar"]
+  ]);
+  assert.deepEqual(needsYou({ agenda: null, objects: null, autopilot: null }), []);
+  assert.deepEqual([0, 1, 9, 10, 42].map(bellBadge), [null, "1", "9", "9+", "9+"]);
+});
+
+test("open TODOs by project, and earlier Standups", async () => {
+  const { earlierStandups, resolvedSince, todoGroups, todoPlace } = await import("../src/renderer/views/todayDayModel.ts");
+  const todo = (repositoryId: string, filePath: string, line: number | undefined, text: string) => ({ repositoryId, kind: "TODO", filePath, ...(line !== undefined ? { line } : {}), text });
+  const groups = todoGroups([todo("r1", "src/b.ts", 9, "later"), todo("r2", "x.py", 1, "one"), todo("r1", "src/a.ts", 40, "split"), todo("r1", "src/a.ts", 3, "rename")], (id) => (id === "r1" ? "DexNest" : "calc"));
+  assert.deepEqual(groups.map((g) => [g.name, g.todos.map(todoPlace)]), [["DexNest", ["src/a.ts:3", "src/a.ts:40", "src/b.ts:9"]], ["calc", ["x.py:1"]]]);
+  assert.equal(todoPlace({ filePath: "README.md" }), "README.md");
+  assert.deepEqual(todoGroups([], () => ""), []);
+
+  const report = (id: string, generatedAt: string, changed: number, attention: number, history: unknown[] = []) => ({
+    id, generatedAt,
+    sections: [
+      { kind: "Changed", items: Array.from({ length: changed }, (_, i) => ({ id: `c${i}`, section: "Changed", title: "c" })) },
+      { kind: "NeedsAttention", items: Array.from({ length: attention }, (_, i) => ({ id: `n${i}`, section: "NeedsAttention", title: "n" })) },
+      { kind: "History", items: history }
+    ]
+  }) as never;
+  const now = report("r3", "2026-10-03T08:00:00.000Z", 4, 0, [
+    { id: "history:resolved:x", section: "History", title: "Resolved failing check", summary: "lint passes again", lifecycle: "RESOLVED" },
+    { id: "history:prev:r2", section: "History", title: "Previous report r2", summary: "..." }
+  ]);
+  assert.deepEqual(earlierStandups([report("r1", "2026-10-01T08:00:00.000Z", 1, 2), now, report("r2", "2026-10-02T08:00:00.000Z", 12, 0)], "r3").map((s) => [s.id, s.line]), [
+    ["r2", "12 changes · nothing needed attention"],
+    ["r1", "1 change · 2 needed attention"]
+  ]);
+  assert.deepEqual(resolvedSince(now), [{ id: "history:resolved:x", title: "Resolved failing check", summary: "lint passes again" }]);
+  assert.deepEqual(resolvedSince(null), []);
+});

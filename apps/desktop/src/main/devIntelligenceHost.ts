@@ -94,6 +94,18 @@ export function createDevIntelligenceHost(options: DevIntelligenceHostOptions): 
   });
   handle("dexnest:dev-intelligence-scan", () => module.scanNow());
   handle("dexnest:dev-intelligence-repositories", () => module.listRepositories());
+  // The open TODOs behind the number Today shows: where each is and what it says.
+  // The owner's own comments in their own code, for their own screen.
+  handle("dexnest:dev-intelligence-todos", async () => {
+    const out: { repositoryId: string; kind: string; filePath: string; line?: number; text: string }[] = [];
+    for (const repo of await module.listRepositories()) {
+      for (const todo of await module.persistence.todos.listByRepository(repo.id, { status: "open" })) {
+        if (out.length >= 1000) return out;
+        out.push({ repositoryId: todo.repositoryId, kind: String(todo.kind), filePath: todo.filePath, ...(todo.line !== undefined ? { line: todo.line } : {}), text: todo.text });
+      }
+    }
+    return out;
+  });
   handle("dexnest:standup-generate", (input) =>
     module.generateStandup({ forceNew: Boolean((input as { forceNew?: unknown } | undefined)?.forceNew) })
   );

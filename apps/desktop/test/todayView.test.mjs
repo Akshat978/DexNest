@@ -280,3 +280,84 @@ test("the view changes settings through the bridge and everything else through r
   assert.doesNotMatch(css, /#[0-9a-fA-F]{3,8}\b|rgba?\(/, "tokens only");
   assert.match(readSource(join(desktop, "src/main/devIntelligenceHost.ts")), /dev-intelligence-update-settings[\s\S]{0,300}?options\.audit\?\.\("Repository scan settings updated"/);
 });
+
+// --- the day on Today ---------------------------------------------------------------------
+
+const agendaItem = (extra) => ({ id: "x", kind: "event", title: "x", startTime: null, endTime: null, allDay: false, source: { id: "dexnest.calendar", label: "Calendar" }, detail: null, needsAction: false, status: null, accent: null, ...extra });
+const day = {
+  agenda: {
+    date: "2026-06-30",
+    items: [
+      agendaItem({ id: "event:1", title: "Dentist", startTime: "15:00" }),
+      agendaItem({ id: "block:1", kind: "block", title: "Deep work", startTime: "09:00", endTime: "11:00", source: { id: "dexnest.timetable", label: "Timetable" }, status: "done" }),
+      agendaItem({ id: "nudge:1", kind: "nudge", title: "Still lent out", detail: "Power bank is with Alex", needsAction: true, source: { id: "dexnest.nudges", label: "Nudge" } })
+    ],
+    counts: { events: 1, blocks: 1, nudges: 1, needsAction: 1 },
+    generatedAt: T
+  },
+  objects: { summary: { items: [{ kind: "maintenance", objectId: "OBJ00001", scheduleId: "sch_1", status: { state: "overdue" } }], counts: { overdue: 1, dueSoon: 0, warrantyEnding: 0, lowStock: 0 } }, names: { OBJ00001: "Workshop printer", sch_1: "Replace nozzle" } },
+  autopilot: { deliver: [], hold: [] },
+  todos: [
+    { repositoryId: "repo_zephyr", kind: "TODO", filePath: "src/router.ts", line: 12, text: "tidy the router" },
+    { repositoryId: "repo_zephyr", kind: "FIXME", filePath: "src/api.ts", line: 3, text: "retry on 429" }
+  ],
+  standups: []
+};
+
+test("the day: what is planned and what needs you sit above the Standup, in one list each", () => {
+  const html = render({ ...ready, day });
+  assert.match(html, /<h[23][^>]*id="today-day-title"[^>]*>Your day</);
+  assert.match(html, /1 event and 1 timetable block today/);
+  assert.match(html, /Deep work/);
+  assert.match(html, /Timetable · done/);
+  assert.match(html, /<span class="technical">09:00 – 11:00<\/span>/);
+  assert.match(html, /<h[23][^>]*id="today-needs-title"[^>]*>Needs you/);
+  // ObjectOS's overdue maintenance and the reminder are in the same list, the more pressing first.
+  assert.ok(html.indexOf("Replace nozzle is overdue") < html.indexOf("Still lent out"));
+  assert.match(html, /Workshop printer/);
+  assert.match(html, />ObjectOS<\/span>/);
+  assert.match(html, />Reminder<\/span>/);
+  assert.match(html, />Activity log<\/button>/, "the activity log is still one click away");
+  assert.ok(html.indexOf("Your day") < html.indexOf("Where you left off"), "the day comes first");
+});
+
+test("the day: a quiet one says so, and is shown before the scan is even on", () => {
+  const quiet = render({ ...ready, day: { agenda: null, objects: null, autopilot: null, todos: [], standups: [] } });
+  assert.match(quiet, /Nothing planned today/);
+  assert.match(quiet, /Nothing is waiting on you: no reminders due, no maintenance overdue, no Autopilot run asking\./);
+  assert.doesNotMatch(quiet, /id="today-todos"|id="today-history"/, "no empty TODO or history cards");
+  const off = render({ status: { enabled: false, scanning: false, repositories: 0 }, report: null, repositories: [], projects: [], day });
+  assert.match(off, /Your day/);
+  assert.match(off, /Replace nozzle is overdue/);
+});
+
+test("open TODOs can be seen: by project, each with its file and line", () => {
+  const html = render({ ...ready, day });
+  assert.match(html, /id="today-todos"/);
+  assert.match(html, /<details class="today-todos"><summary>/);
+  assert.match(html, /<span class="technical today-todos__place">src\/api\.ts:3<\/span><span>retry on 429<\/span>/);
+  assert.ok(html.indexOf("src/api.ts:3") < html.indexOf("src/router.ts:12"), "by file, then line");
+});
+
+test("history: what was put right, and the Standups before this one", () => {
+  const resolved = { id: "history:resolved:x", section: "History", title: "Resolved failing check", summary: "lint passes again", lifecycle: "RESOLVED", evidence: [], sortKey: "a" };
+  const current = report({ sections: [...report().sections.filter((s) => s.kind !== "History"), { kind: "History", items: [resolved] }] });
+  const earlier = report({ id: "rpt_earlier", generatedAt: "2026-06-29T08:00:00.000Z" });
+  const html = render({ ...ready, report: current, day: { ...day, standups: [current, earlier] } });
+  assert.match(html, /id="today-history"/);
+  assert.match(html, /Resolved failing check/);
+  assert.match(html, /lint passes again/);
+  assert.match(html, /Earlier Standups/);
+  assert.match(html, /29 Jun 2026, 08:00/);
+});
+
+test("the bell counts what needs you and opens Today; Calendar shows the day's timetable; a bill can go to the Calendar", () => {
+  const shell = readSource(join(desktop, "src/renderer/main.tsx"));
+  assert.match(shell, /setNeedsCount\(needsYou\(\{ agenda, objects, autopilot \}\)\.length\)/);
+  assert.match(shell, /onClick=\{\(\) => void navigate\("today"\)\}/);
+  assert.match(shell, /\}, \[activeView\]\);/, "read when the view changes, not on a timer");
+  assert.match(shell, /timetableBlocksOn\(timetableBlocks, parseLocalDateInput\(selectedDate\)\)/);
+  assert.match(shell, /onAction\("calendar\.create_event", "module_ui", recurringCalendarEvent\(r\)\)/);
+  const preload = readSource(join(desktop, "src/main/preload.ts"));
+  assert.match(preload, /getTodayAgenda: \(\) => ipcRenderer\.invoke\("dexnest:get-today-agenda"\)/);
+});

@@ -3404,3 +3404,52 @@ kbd {
   width: 2px;
   background: var(--warning);
 }
+
+/* The bell's count of things that need the owner. */
+.shell-bell-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 1.1rem;
+  padding: 0 0.25rem;
+  border-radius: 999px;
+  background: var(--warning);
+  color: var(--bg);
+  font-family: var(--font-tech);
+  font-size: 0.625rem;
+  font-weight: 600;
+  line-height: 1.1rem;
+  text-align: center;
+}
+
+/* Calendar: the selected day's timetable blocks, under its events. */
+.calendar-day-blocks {
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.calendar-day-blocks__title {
+  margin: 0 0 var(--space-2);
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.calendar-day-block {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+}
+
+.calendar-day-blocks__open {
+  margin-top: var(--space-2);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-timetable);
+  font-size: 0.75rem;
+  cursor: pointer;
+}

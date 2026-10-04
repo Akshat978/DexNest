@@ -151,6 +151,9 @@ contextBridge.exposeInMainWorld("dexNest", {
   devIntelligenceUpdateSettings: (settings: unknown) => ipcRenderer.invoke("dexnest:dev-intelligence-update-settings", settings),
   devIntelligenceScan: () => ipcRenderer.invoke("dexnest:dev-intelligence-scan"),
   devIntelligenceRepositories: () => ipcRenderer.invoke("dexnest:dev-intelligence-repositories"),
+  devIntelligenceTodos: () => ipcRenderer.invoke("dexnest:dev-intelligence-todos"),
+  // The one agenda (calendar, timetable, nudges), as the phone already gets it.
+  getTodayAgenda: () => ipcRenderer.invoke("dexnest:get-today-agenda"),
   standupGenerate: (input?: { forceNew?: boolean }) => ipcRenderer.invoke("dexnest:standup-generate", input),
   standupLatest: () => ipcRenderer.invoke("dexnest:standup-latest"),
   standupList: (limit?: number) => ipcRenderer.invoke("dexnest:standup-list", limit),

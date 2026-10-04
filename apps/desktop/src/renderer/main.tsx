@@ -58,6 +58,7 @@ import { AutopilotView } from "./views/AutopilotView";
 import { SkillConstellationView, type SkillConstellationBridge } from "./views/SkillConstellationView";
 import { RealityRpgView, type RealityRpgBridge } from "./views/RealityRpgView";
 import { TodayView, type TodayBridge } from "./views/TodayView";
+import { bellBadge, needsYou } from "./views/todayDayModel";
 import { GhostOsView, type GhostOsBridge } from "./views/GhostOsView";
 import { ObjectOsView, type ObjectOsBridge } from "./views/ObjectOsView";
 import { ProjectsView } from "./views/projects/ProjectsView";
@@ -5630,6 +5631,22 @@ function DexNestApp() {
     }
   }
 
+  // How many things need the owner, for the bell: reminders due, ObjectOS, Autopilot.
+  // Read when the view changes, not on a timer: the bell costs nothing while nothing happens.
+  const [needsCount, setNeedsCount] = useState(0);
+  useEffect(() => {
+    let live = true;
+    const bridge = getBridge();
+    Promise.all([
+      bridge.getTodayAgenda?.().catch(() => null) ?? null,
+      bridge.objectOsAttention?.().catch(() => null) ?? null,
+      bridge.autopilotAttention?.().catch(() => null) ?? null
+    ]).then(([agenda, objects, autopilot]) => {
+      if (live) setNeedsCount(needsYou({ agenda, objects, autopilot }).length);
+    }).catch(() => undefined);
+    return () => { live = false; };
+  }, [activeView]);
+
   async function refreshShellData(): Promise<void> {
     // Coalesce: if a refresh is already running, mark one more pass and return.
     // Self-healing: if a previous refresh got stuck (e.g. a bridge call that
@@ -6112,11 +6129,13 @@ function DexNestApp() {
 
             <button
               type="button"
-              title="Audit log"
-              onClick={() => void navigate("audit")}
+              title={needsCount > 0 ? `${needsCount} ${needsCount === 1 ? "thing needs" : "things need"} you: open Today` : "Nothing needs you. Open Today"}
+              aria-label={needsCount > 0 ? `${needsCount} ${needsCount === 1 ? "thing needs" : "things need"} you` : "Nothing needs you"}
+              onClick={() => void navigate("today")}
               className="relative flex h-10 w-10 items-center justify-center rounded-xl border border-[#262626] bg-[#0d0d0d] text-[#A3A3A3] transition-colors hover:text-[#F5F5F5]"
             >
               <Bell className="h-4 w-4" />
+              {bellBadge(needsCount) && <span className="shell-bell-badge">{bellBadge(needsCount)}</span>}
             </button>
 
             <button
@@ -6363,6 +6382,7 @@ function DexNestApp() {
           )}
           {activeView === "calendar" && (
             <CalendarView
+              timetableBlocks={timetableState.activeTemplate?.blocks ?? []}
               calendarState={calendarState}
               initialView={calendarInitialView}
               speechState={speechState}
@@ -11825,7 +11845,14 @@ const CALENDAR_VIEW_MODES = [
   { value: "month", label: "Month" }
 ] as const;
 
+/** The timetable blocks that fall on a date's weekday, earliest first. */
+function timetableBlocksOn(blocks: readonly TimetableBlock[], date: Date): TimetableBlock[] {
+  const weekday = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"][date.getDay()];
+  return blocks.filter((block) => block.day === weekday).sort((a, b) => a.startTime.localeCompare(b.startTime));
+}
+
 function CalendarView({
+  timetableBlocks,
   calendarState,
   initialView,
   speechState,
@@ -11839,6 +11866,8 @@ function CalendarView({
   onAction,
   onRefresh
 }: {
+  /** The active timetable's blocks, shown on the selected day so one screen has the whole day. */
+  timetableBlocks: readonly TimetableBlock[];
   calendarState: CalendarState;
   initialView: "day" | "week" | "month";
   speechState: SpeechServiceState;
@@ -12555,6 +12584,26 @@ function CalendarView({
                 ))}
               </div>
             )}
+            {(() => {
+              // The same day in the Timetable: shown here, changed there.
+              const blocks = timetableBlocksOn(timetableBlocks, parseLocalDateInput(selectedDate));
+              if (blocks.length === 0) return null;
+              return (
+                <div className="calendar-day-blocks">
+                  <p className="calendar-day-blocks__title">Timetable · {blocks.length} block{blocks.length === 1 ? "" : "s"}</p>
+                  <div className="space-y-1">
+                    {blocks.map((b) => (
+                      <div key={b.id} className="calendar-day-block">
+                        <span className="font-mono text-xs text-[#A3A3A3]">{b.startTime} – {b.endTime}</span>
+                        <span className="h-4 w-[2px] rounded-full" style={{ background: b.accent || "var(--accent-timetable)" }} />
+                        <span className="min-w-0 flex-1 truncate text-sm text-[#F5F5F5]">{b.title}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <button type="button" className="calendar-day-blocks__open" onClick={() => void onAction("timetable.open", "module_ui", {})}>Open Timetable</button>
+                </div>
+              );
+            })()}
           </GlassCard>
 
           <GlassCard hover={false}>
@@ -12707,6 +12756,16 @@ const emptyFinanceRecurringForm = {
 // Adaptive spend trend for the selected period: weekly buckets for short spans
 // (month / short custom), monthly buckets otherwise (quarter / year / all / long
 // custom), capped to the most recent 12. A single day returns [] (no line).
+/** A recurring bill as a calendar event on its due date, repeating as the bill does. Sent once, on a click. */
+function recurringCalendarEvent(r: FinanceRecurringExpense): Record<string, unknown> {
+  const recurrence = r.frequency === "monthly" || r.frequency === "yearly" || r.frequency === "weekly" ? r.frequency : null;
+  return { title: `${r.name} due`, date: r.nextDueDate, allDay: true, sourceModule: "finance", sourceId: r.id, recurrence, notes: "A recurring bill, sent from Finance." };
+}
+
+function recurrenceWords(frequency: FinanceRecurringFrequency): string {
+  return frequency === "weekly" ? "repeating every week" : frequency === "monthly" ? "repeating every month" : frequency === "yearly" ? "repeating every year" : "on its due date";
+}
+
 function buildFinanceTrend(txns: Array<{ date: string; amount: number }>, startStr: string, endStr: string): Array<{ d: string; v: number }> {
   const dates = txns.map((t) => t.date).sort();
   const start = startStr || dates[0] || "";
@@ -13111,10 +13170,26 @@ function FinanceView({
             {financeState.recurring.length === 0 ? <p className="text-xs text-[#525252]">No recurring expenses.</p> : (
               <div className="space-y-1">
                 {financeState.recurring.slice(0, 8).map((r) => (
-                  <button key={r.id} type="button" onClick={() => loadRecurring(r)} className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-[#0f0f0f]">
-                    <span className="truncate text-[#F5F5F5]">{r.name}{r.active ? "" : " · inactive"}</span>
-                    <span className="font-mono text-xs text-[#A3A3A3]">{money(r.amount, r.currency)} · {r.frequency}</span>
-                  </button>
+                  <div key={r.id} className="flex items-center gap-1">
+                    <button type="button" onClick={() => loadRecurring(r)} className="flex min-w-0 flex-1 items-center justify-between rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-[#0f0f0f]">
+                      <span className="truncate text-[#F5F5F5]">{r.name}{r.active ? "" : " · inactive"}</span>
+                      <span className="font-mono text-xs text-[#A3A3A3]">{money(r.amount, r.currency)} · {r.frequency}</span>
+                    </button>
+                    {r.active && r.nextDueDate && (
+                      <button
+                        type="button"
+                        title={`Put "${r.name}" in the Calendar on its due date`}
+                        aria-label={`Add ${r.name} to Calendar`}
+                        className="min-h-0 rounded-md border border-[#262626] bg-transparent px-2 py-1 text-[10px] text-[#A3A3A3] hover:border-[#14B8A6]/40 hover:text-[#14B8A6]"
+                        onClick={async () => {
+                          const result = await onAction("calendar.create_event", "module_ui", recurringCalendarEvent(r));
+                          showToast(result.ok ? `${r.name} is in the Calendar, ${recurrenceWords(r.frequency)}.` : result.error ?? "Could not add it to the Calendar.", result.ok ? "success" : "error");
+                        }}
+                      >
+                        <CalendarPlus className="h-3 w-3" />
+                      </button>
+                    )}
+                  </div>
                 ))}
               </div>
             )}

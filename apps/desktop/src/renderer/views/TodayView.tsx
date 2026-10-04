@@ -56,6 +56,7 @@ import {
   type TodaySettings,
   type TodayStatus
 } from "./todayModel";
+import { DayCards, HistoryCard, TodoCard, useDay, type DayData, type TodayDayBridge } from "./TodayDay";
 import "./Today.css";
 
 // Today: the morning screen.
@@ -66,7 +67,7 @@ import "./Today.css";
 // Developer Intelligence last wrote, and a scan happens only when asked for.
 
 /** The preload methods this view uses. */
-export interface TodayBridge {
+export interface TodayBridge extends TodayDayBridge {
   devIntelligenceStatus(): Promise<TodayStatus>;
   devIntelligenceSettings(): Promise<TodaySettings>;
   devIntelligenceUpdateSettings(settings: TodaySettings): Promise<TodaySettings>;
@@ -94,7 +95,7 @@ export interface TodayViewProps {
   /** Runs a registered action (dev.scan_repositories, standup.generate, projects.open_vscode). */
   onAction(actionId: string, params?: Record<string, unknown>): Promise<unknown>;
   /** Tests only: start from a known state instead of loading. */
-  initial?: Partial<Loaded> & { error?: string | null };
+  initial?: Partial<Loaded> & { error?: string | null; day?: Partial<DayData> };
 }
 
 const EMPTY: Loaded = { status: null, report: null, repositories: [], projects: [], watched: null };
@@ -191,6 +192,7 @@ export function TodayView({ bridge, onAction, initial }: TodayViewProps) {
 
   const { status, report, repositories, projects, watched } = data;
   const state = viewState({ loading, error, status, report });
+  const day = useDay(bridge, report?.id ?? null, initial ? (initial.day ?? {}) : undefined);
   const labels = repoLabels(repositories, projects);
   const following = watchedProjects(projects);
   const extras = extraFolders(watched, projects);
@@ -257,6 +259,9 @@ export function TodayView({ bridge, onAction, initial }: TodayViewProps) {
       {state === "loading" && <LoadingState label="Reading your Standup" rows={4} />}
       {state === "error" && <ErrorState title="Today could not be read" message="DexNest could not read the Standup report." detail={error} onRetry={() => void load()} />}
 
+      {/* The day first, whatever state the Standup is in: it does not depend on the scan. */}
+      {state !== "loading" && state !== "error" && <DayCards day={day} open={(actionId) => void run(actionId, {}, false)} />}
+
       {state === "off" && (
         <EmptyState
           icon={<Sunrise />}
@@ -306,7 +311,7 @@ export function TodayView({ bridge, onAction, initial }: TodayViewProps) {
         </EmptyState>
       )}
 
-      {state === "ready" && report && <Report report={report} status={status} labels={labels} projects={projects} following={following} extras={extras} emptyFolders={emptyWatchedFolders(extras, repositories)} busy={busy !== null} run={run} onStopWatching={stopWatching} />}
+      {state === "ready" && report && <Report day={day} report={report} status={status} labels={labels} projects={projects} following={following} extras={extras} emptyFolders={emptyWatchedFolders(extras, repositories)} busy={busy !== null} run={run} onStopWatching={stopWatching} />}
     </section>
   );
 }
@@ -321,8 +326,10 @@ function Report({
   emptyFolders,
   busy,
   run,
-  onStopWatching
+  onStopWatching,
+  day
 }: {
+  day: DayData;
   following: readonly WatchedProject[];
   extras: readonly ExtraFolder[];
   onStopWatching(path: string): Promise<void>;
@@ -421,6 +428,8 @@ function Report({
               )}
             </Card>
 
+            <TodoCard todos={day.todos} nameOf={(id) => repoName(labels, id) ?? "A repository"} />
+
             <Card aria-labelledby="today-changed">
               <SectionTitle id="today-changed" count={sectionTotal(report, "Changed")}>Changed since the last Standup</SectionTitle>
               {changed.length === 0 ? (
@@ -468,6 +477,7 @@ function Report({
                 />
               )}
             </Card>
+            <HistoryCard report={report} standups={day.standups} />
             <Card aria-labelledby="today-watching">
               <SectionTitle id="today-watching">Watching</SectionTitle>
               <p className="today-note">
