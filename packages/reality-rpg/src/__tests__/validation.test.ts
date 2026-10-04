@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { LIMITS, namedTypes, parseAchievement, parseQuest, parseRule } from '../domain/validation.ts';
-import { STARTER_ACHIEVEMENTS, STARTER_RULES } from '../domain/data/starter-pack.ts';
+import { STARTER_ACHIEVEMENTS, STARTER_INFO, STARTER_QUESTS, STARTER_RULES } from '../domain/data/starter-pack.ts';
+import { levelFor } from '../domain/levels.ts';
 import { rule } from './fixtures.ts';
 
 const good = { id: 'commit-observed', name: 'Commit observed', enabled: true, match: { types: ['dev.commit.observed'], stream: 'dev' }, award: { xp: 5, stat: 'Craft' }, dailyCap: 20 };
@@ -108,6 +109,49 @@ describe('starter pack', () => {
       if (parsed.ok && parsed.value.condition.kind !== 'xp') {
         for (const ruleId of parsed.value.condition.ruleIds) expect(ids.has(ruleId), ruleId).toBe(true);
       }
+    }
+  });
+
+  it('is a real set: many rules across projects, DexNest and day to day, each said in plain words', () => {
+    const rules = STARTER_RULES.map((r) => parseRule(r)).flatMap((p) => (p.ok ? [p.value] : []));
+    expect(rules.length).toBeGreaterThanOrEqual(15);
+    expect(new Set(rules.map((r) => r.id)).size).toBe(rules.length);
+    for (const rule of rules) {
+      const info = STARTER_INFO[rule.id];
+      expect(info, `${rule.id} has no plain-word description`).toBeDefined();
+      expect(info!.when.length).toBeGreaterThan(10);
+      expect(rule.name, 'a name a person would say, not an event type').not.toMatch(/[._]/);
+      expect(rule.dailyCap, `${rule.id} is capped, so one busy day cannot run away`).toBeGreaterThan(0);
+    }
+    expect(new Set(Object.values(STARTER_INFO).map((i) => i.group))).toEqual(new Set(['projects', 'dexnest', 'life']));
+    expect(Object.keys(STARTER_INFO).sort()).toEqual(rules.map((r) => r.id).sort());
+    expect(Object.values(STARTER_INFO).filter((i) => i.recommended).length).toBeGreaterThanOrEqual(5);
+  });
+
+  it('names nothing from vault, finance or journal, even where an action touches them', () => {
+    const text = JSON.stringify(STARTER_RULES);
+    for (const word of ['vault', 'finance', 'journal']) expect(text, word).not.toContain(word);
+  });
+
+  it('achievements come in tiers, and the level ones sit on the level curve', () => {
+    const byId = new Map(STARTER_ACHIEVEMENTS.map((a) => [(a as { id: string }).id, a as { condition: { kind: string; target: number } }]));
+    expect([byId.get('commits-10'), byId.get('commits-100'), byId.get('commits-1000')].map((a) => a?.condition.target)).toEqual([10, 100, 1000]);
+    expect([byId.get('committed-week'), byId.get('committed-month'), byId.get('committed-hundred')].map((a) => a?.condition.target)).toEqual([7, 30, 100]);
+    expect(levelFor(byId.get('level-5')!.condition.target)).toBe(5);
+    expect(levelFor(byId.get('level-5')!.condition.target - 1)).toBe(4);
+    expect(levelFor(byId.get('level-10')!.condition.target)).toBe(10);
+    expect(levelFor(byId.get('level-20')!.condition.target)).toBe(20);
+    expect(STARTER_ACHIEVEMENTS.length).toBeGreaterThanOrEqual(20);
+  });
+
+  it('every quest is valid, measurable, and counts a rule that exists', () => {
+    const ids = new Set(STARTER_RULES.map((r) => (r as { id: string }).id));
+    expect(STARTER_QUESTS.length).toBeGreaterThanOrEqual(6);
+    for (const q of STARTER_QUESTS) {
+      const parsed = parseQuest({ id: q.id, title: q.title, condition: q.condition, window: q.window, status: 'active', createdAt: '2026-06-01T00:00:00.000Z' });
+      expect(parsed.ok, JSON.stringify(parsed)).toBe(true);
+      expect(ids.has(q.needs), q.needs).toBe(true);
+      if (parsed.ok && parsed.value.condition.kind !== 'xp') expect(parsed.value.condition.ruleIds).toEqual([q.needs]);
     }
   });
 });

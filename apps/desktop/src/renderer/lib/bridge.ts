@@ -409,7 +409,7 @@ export const fallbackBridge: DexNestBridge = {
     recentAwards: [],
     lastRun: null,
     invalid: { rules: [], achievements: [], quests: [] },
-    starter: { rules: [], achievements: [] }
+    starter: { rules: [], achievements: [], quests: [], info: {} }
   }),
   realityRpgHistory: async () => [],
   realityRpgSettings: async () => ({ ...fallbackRpgSettings }),

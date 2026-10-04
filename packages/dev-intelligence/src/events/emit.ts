@@ -26,6 +26,7 @@ import type {
   WorkingTreeChangedPayload,
 } from '@dexnest/dev-intelligence-contracts';
 import {
+  fingerprintFromParts,
   fingerprintBranchChanged,
   fingerprintCommitObserved,
   fingerprintConflictObserved,
@@ -213,6 +214,26 @@ export async function emitBranchChangedIfNeeded(
       ctx.sourceIdentity,
     ),
   );
+}
+
+/**
+ * A repository that had uncommitted changes at the last scan and has none
+ * now: the work was committed, stashed or put away. Said as its own event,
+ * with no payload, so something that only reads event types (Reality RPG)
+ * can tell "left it tidy" from every other change to the working tree.
+ * Never on a first inspection: there is no "before" to have tidied.
+ */
+export async function emitWorkingTreeCleanedIfNeeded(
+  ctx: EmitContext,
+  repositoryId: string,
+  previous: GitState | undefined,
+  current: GitState,
+): Promise<boolean> {
+  if (!previous || previous.workingTree.isClean || !current.workingTree.isClean) return false;
+  const at = new Date().toISOString();
+  // One per tidy-up: keyed on the commit it was left at and the day, so the same state seen twice is one event.
+  const fp = fingerprintFromParts('dev.working_tree.cleaned', repositoryId, current.headSha ?? '', at.slice(0, 10));
+  return ctx.events.append(envelope('dev.working_tree.cleaned', repositoryId, fp, {}, at, ctx.sourceIdentity));
 }
 
 export async function emitWorkingTreeChangedIfNeeded(

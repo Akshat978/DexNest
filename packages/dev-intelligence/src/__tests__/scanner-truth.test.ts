@@ -220,6 +220,27 @@ describe('scans', () => {
     expect(capped.commits.map((c) => c.subject)).toEqual(['pages: commit 7', 'pages: commit 6', 'pages: commit 5', 'pages: commit 4', 'pages: commit 3', 'pages: commit 2']);
   });
 
+  it('leaving a project with nothing uncommitted is its own event, once, and never on a first look', async () => {
+    const { repo, persistence, scan } = await setup('di-truth-clean-', 'tidy', 1);
+    const first = await scan();
+    const id = first.repositories[0]!.id;
+    const cleaned = async () => (await persistence.events.listByRepository(id, { type: 'dev.working_tree.cleaned' })).length;
+    expect(await cleaned(), 'clean when first seen: nothing was tidied').toBe(0);
+
+    await writeFile(join(repo.path, 'wip.txt'), 'half done\n', 'utf8');
+    await scan();
+    expect(await cleaned(), 'still dirty').toBe(0);
+
+    gitIn(repo.path, ['add', 'wip.txt']);
+    gitIn(repo.path, ['commit', '-m', 'tidy: finish it']);
+    await scan();
+    expect(await cleaned()).toBe(1);
+    await scan();
+    expect(await cleaned(), 'seen clean again: still one').toBe(1);
+    const [event] = await persistence.events.listByRepository(id, { type: 'dev.working_tree.cleaned' });
+    expect(event!.payload, 'no payload: the type says it all').toEqual({});
+  });
+
   it('a push and a pull are seen from the reflog, however they were made; none during the baseline', async () => {
     const { repo, persistence, scan } = await setup('di-truth-xfer-', 'work', 1);
     const remote = join(workspace, 'remote.git');

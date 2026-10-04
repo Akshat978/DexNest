@@ -56,8 +56,11 @@ import {
   viewState,
   type QuestForm,
   type RuleForm,
+  formFromTemplate,
+  starterGroups,
   type Tab
 } from "./realityRpgModel";
+import { BuiltInSet, FirstXp, StartPicker } from "./RealityRpgStart";
 import "./RealityRpg.css";
 
 /** The preload methods this view uses. */
@@ -74,7 +77,7 @@ export interface RealityRpgViewProps {
   /** Runs a registered reality_rpg.* action through the action registry. */
   onAction(actionId: string, params?: Record<string, unknown>): Promise<unknown>;
   /** Tests only: start from a known state instead of loading. */
-  initial?: { snapshot: RealityRpgSnapshot | null; error?: string | null; tab?: Tab; confirm?: Confirm | null; today?: string };
+  initial?: { snapshot: RealityRpgSnapshot | null; error?: string | null; tab?: Tab; confirm?: Confirm | null; today?: string; picks?: { ruleIds: string[]; questIds: string[] } };
 }
 
 /** A change that asks first: deleting a rule, abandoning a quest. */
@@ -152,7 +155,7 @@ export function RealityRpgView({ bridge, onAction, initial }: RealityRpgViewProp
             {snapshot?.enabled && <Button disabled={busy} onClick={() => void run("reality_rpg.refresh")}>Refresh</Button>}
             {snapshot?.enabled ? (
               <Button variant="ghost" disabled={busy} onClick={() => void run("reality_rpg.disable")}>Turn off</Button>
-            ) : (
+            ) : state.kind === "off" ? null : (
               <Button variant="primary" disabled={busy} onClick={() => void run("reality_rpg.enable")}>Turn on</Button>
             )}
           </>
@@ -180,21 +183,13 @@ export function RealityRpgView({ bridge, onAction, initial }: RealityRpgViewProp
 
       {state.kind === "error" && <ErrorState title="Reality RPG could not load" message={state.message} onRetry={() => void load()} />}
 
-      {state.kind === "off" && (
-        <EmptyState
-          icon={<Swords />}
-          title="Reality RPG is off"
-        >
-          <p>Reality RPG turns what you already do in DexNest into XP, achievements and quests, by rules you write. It reads only the event types your rules name, never vault, finance or journal activity, and never the content of an event.</p>
-          <p>Start with a rule: open Rules below and add one from the starter set, or write your own.</p>
-        </EmptyState>
-      )}
+      {state.kind === "off" && snapshot && <StartPicker snapshot={snapshot} busy={busy} run={run} {...(initial?.picks ? { initial: initial.picks } : {})} />}
 
-      {(state.kind === "ready" || state.kind === "off") && snapshot && (
+      {state.kind === "ready" && snapshot && (
         <>
           <Tabs label="Reality RPG sections" idPrefix="rpg" value={tab} onChange={setTab} tabs={TABS.map((t) => ({ id: t, label: TAB_LABELS[t] }))} />
           <TabPanel idPrefix="rpg" id={tab}>
-            {tab === "character" && <CharacterPanel snapshot={snapshot} today={initial?.today ?? localToday()} off={state.kind === "off"} onOpen={setTab} />}
+            {tab === "character" && <CharacterPanel snapshot={snapshot} today={initial?.today ?? localToday()} onOpen={setTab} />}
             {tab === "quests" && <QuestsPanel snapshot={snapshot} busy={busy} run={run} ask={setConfirm} />}
             {tab === "achievements" && <AchievementsPanel snapshot={snapshot} />}
             {tab === "history" && <HistoryPanel snapshot={snapshot} bridge={bridge} />}
@@ -208,16 +203,8 @@ export function RealityRpgView({ bridge, onAction, initial }: RealityRpgViewProp
 
 const STAT_TONES = ["accent", "info", "success", "warning"] as const;
 
-function CharacterPanel({ snapshot, today, off, onOpen }: { snapshot: RealityRpgSnapshot; today: string; off: boolean; onOpen(tab: Tab): void }) {
+function CharacterPanel({ snapshot, today, onOpen }: { snapshot: RealityRpgSnapshot; today: string; onOpen(tab: Tab): void }) {
   const { sheet } = snapshot;
-  if (off) {
-    // The explanation above already says what this is; don't add an empty sheet under it.
-    return (
-      <EmptyNote>
-        Nothing earned yet. Add a rule in <Button size="sm" variant="ghost" onClick={() => onOpen("rules")}>Rules</Button>, then turn Reality RPG on.
-      </EmptyNote>
-    );
-  }
   const pct = levelProgress(sheet);
   const stats = rankedStats(sheet.stats);
   const days = xpByDay(snapshot.recentAwards, 14, today);
@@ -235,7 +222,7 @@ function CharacterPanel({ snapshot, today, off, onOpen }: { snapshot: RealityRpg
       </Hero>
 
       {stats.length === 0 ? (
-        <EmptyNote>No XP yet. Switch on a rule and do the thing it names.</EmptyNote>
+        <FirstXp snapshot={snapshot} onOpenRules={() => onOpen("rules")} />
       ) : (
         <StatGrid columns={stats.length >= 4 ? 4 : stats.length === 3 ? 3 : 2}>
           {stats.slice(0, 4).map((s, i) => (
@@ -310,7 +297,7 @@ function CharacterPanel({ snapshot, today, off, onOpen }: { snapshot: RealityRpg
 
 function AchievementsPanel({ snapshot }: { snapshot: RealityRpgSnapshot }) {
   const views = orderAchievements(snapshot.achievements);
-  if (views.length === 0) return <EmptyNote>No achievements defined. The starter set in Rules has a few.</EmptyNote>;
+  if (views.length === 0) return <EmptyNote>No achievements yet. The built-in set in Rules has tiers for commits, pushes, routine and levels.</EmptyNote>;
   const unlockedCount = views.filter((v) => v.unlocked).length;
   return (
     <div className="rpg-achievements">
@@ -477,17 +464,14 @@ function HistoryPanel({ snapshot, bridge }: { snapshot: RealityRpgSnapshot; brid
 
 function RulesPanel({ snapshot, busy, run, ask }: { snapshot: RealityRpgSnapshot; busy: boolean; run(actionId: string, params?: Record<string, unknown>): Promise<boolean>; ask: Ask }) {
   const [form, setForm] = useState<RuleForm>(EMPTY_RULE_FORM);
-  const existing = new Set(snapshot.rules.map((r) => r.id));
-  const templates = snapshot.starter.rules.filter((r) => !existing.has(r.id));
-  const achievementIds = new Set(snapshot.achievements.map((a) => a.achievement.id));
-  const achievementTemplates = snapshot.starter.achievements.filter((a) => !achievementIds.has(a.id));
+  const [choice, setChoice] = useState("");
   const invalid = snapshot.invalid.rules.length + snapshot.invalid.achievements.length + snapshot.invalid.quests.length;
 
   return (
     <div className="rpg-rules">
       {invalid > 0 && <InlineError>{invalid} saved definition{invalid === 1 ? " is" : "s are"} no longer valid and {invalid === 1 ? "is" : "are"} being ignored.</InlineError>}
       {snapshot.rules.length === 0 ? (
-        <EmptyNote>No rules yet. Add one from the starter set or write your own.</EmptyNote>
+        <EmptyNote>No rules yet. Add one from the built-in set below, or write your own.</EmptyNote>
       ) : (
         <ul className="rpg-list">
           {snapshot.rules.map((rule) => (
@@ -496,50 +480,50 @@ function RulesPanel({ snapshot, busy, run, ask }: { snapshot: RealityRpgSnapshot
         </ul>
       )}
 
-      {(templates.length > 0 || achievementTemplates.length > 0) && (
-        <section aria-labelledby="rpg-starter">
-          <h3 id="rpg-starter">Starter set</h3>
-          <p className="rpg-hint">Added switched off. Switch a rule on when you want it to count - it counts from then on.</p>
-          <ul className="rpg-list">
-            {templates.map((t) => (
-              <li key={t.id} className="rpg-item">
-                <p className="rpg-item__title">{t.name}</p>
-                <p className="technical">{t.match.types.join(", ")}{t.match.actionIds ? ` · ${t.match.actionIds.join(", ")}` : ""} · +{t.award.xp} {t.award.stat}</p>
-                <Button size="sm" disabled={busy} onClick={() => void run("reality_rpg.rule.save", { rule: { ...t, enabled: false } })} aria-label={`Add rule ${t.name}`}>Add</Button>
-              </li>
-            ))}
-            {achievementTemplates.map((a) => (
-              <li key={a.id} className="rpg-item">
-                <p className="rpg-item__title">{a.name}</p>
-                <p className="rpg-hint">{a.description}</p>
-                <Button size="sm" disabled={busy} onClick={() => void run("reality_rpg.achievement.save", { achievement: a })} aria-label={`Add achievement ${a.name}`}>Add</Button>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
+      <BuiltInSet snapshot={snapshot} busy={busy} run={run} />
 
       <form
         className="rpg-form"
         aria-label="New rule"
         onSubmit={(e) => {
           e.preventDefault();
-          void run("reality_rpg.rule.save", { rule: ruleFromForm(form) }).then((ok) => ok && setForm(EMPTY_RULE_FORM));
+          void run("reality_rpg.rule.save", { rule: ruleFromForm(form) }).then((ok) => { if (ok) { setForm(EMPTY_RULE_FORM); setChoice(""); } });
         }}
       >
-        <h3>New rule</h3>
-        <p className="rpg-hint">A rule names exact event types. It can never name vault, finance or journal activity, and it only reads an event's type, module, action and status - never its content.</p>
+        <h3>A rule of your own</h3>
+        <p className="rpg-hint">Choose what should earn XP, then how much. A rule only sees that something happened - never its content - and can never count vault, finance or journal activity.</p>
         <Field label="Name"><TextInput value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></Field>
-        <Field label="Event types"><TextInput className="technical" value={form.types} placeholder="action_executed" onChange={(e) => setForm({ ...form, types: e.target.value })} required /></Field>
-        <Field label="Action ids (optional)"><TextInput className="technical" value={form.actionIds} placeholder="standup.generate" onChange={(e) => setForm({ ...form, actionIds: e.target.value })} /></Field>
-        <Field label="Stream (optional)"><TextInput className="technical" value={form.stream} placeholder="audit" onChange={(e) => setForm({ ...form, stream: e.target.value })} /></Field>
-        <Field label="Status">
-          <Select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as RuleForm["status"] })}>
-            <option value="">Any</option>
-            <option value="success">Success</option>
-            <option value="failed">Failed</option>
+        <Field label="What earns it">
+          <Select
+            value={choice}
+            onChange={(e) => {
+              setChoice(e.target.value);
+              setForm(formFromTemplate(form, snapshot.starter.rules.find((r) => r.id === e.target.value)));
+            }}
+          >
+            <option value="">Choose…</option>
+            {starterGroups(snapshot.starter).map((group) => (
+              <optgroup key={group.id} label={group.label}>
+                {group.rules.map(({ rule, when }) => <option key={rule.id} value={rule.id}>{`When ${when}`}</option>)}
+              </optgroup>
+            ))}
+            <option value="custom">Something else (name the events yourself)</option>
           </Select>
         </Field>
+        <details className="rpg-advanced" open={choice === "custom"}>
+          <summary>The event names behind it</summary>
+          <p className="rpg-hint">Filled in from your choice above. Change them only if you know the event you want.</p>
+          <Field label="Event types"><TextInput className="technical" value={form.types} placeholder="action_executed" onChange={(e) => setForm({ ...form, types: e.target.value })} required /></Field>
+          <Field label="Action ids (optional)"><TextInput className="technical" value={form.actionIds} placeholder="standup.generate" onChange={(e) => setForm({ ...form, actionIds: e.target.value })} /></Field>
+          <Field label="Stream (optional)"><TextInput className="technical" value={form.stream} placeholder="audit" onChange={(e) => setForm({ ...form, stream: e.target.value })} /></Field>
+          <Field label="Status">
+            <Select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as RuleForm["status"] })}>
+              <option value="">Any</option>
+              <option value="success">Success</option>
+              <option value="failed">Failed</option>
+            </Select>
+          </Field>
+        </details>
         <Field label="XP"><TextInput type="number" min={1} max={500} value={form.xp} onChange={(e) => setForm({ ...form, xp: e.target.value })} /></Field>
         <Field label="Stat"><TextInput value={form.stat} placeholder="Craft" onChange={(e) => setForm({ ...form, stat: e.target.value })} required /></Field>
         <Field label="Most per day (optional)"><TextInput type="number" min={1} value={form.dailyCap} onChange={(e) => setForm({ ...form, dailyCap: e.target.value })} /></Field>

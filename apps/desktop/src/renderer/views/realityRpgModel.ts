@@ -257,3 +257,76 @@ export function questProgressText(quest: Pick<QuestView["quest"], "condition" | 
   const closed = quest.window.kind === "fixed" && !progress.open ? " · window closed" : "";
   return `${progressText(progress.current, progress.target, conditionUnit(quest.condition.kind))}${window}${closed}`;
 }
+
+// --- the built-in set, in plain words ------------------------------------------------
+
+type Starter = RealityRpgSnapshot["starter"];
+
+export interface StarterGroupView {
+  id: string;
+  label: string;
+  rules: { rule: Rule; when: string; recommended: boolean }[];
+}
+
+/** The built-in rules under their group headings, in the order the set lists them. */
+export function starterGroups(starter: Starter): StarterGroupView[] {
+  const groups: StarterGroupView[] = [];
+  for (const rule of starter.rules) {
+    const info = starter.info[rule.id];
+    if (!info) continue;
+    let group = groups.find((g) => g.id === info.group);
+    if (!group) groups.push((group = { id: info.group, label: info.groupLabel, rules: [] }));
+    group.rules.push({ rule, when: info.when, recommended: info.recommended });
+  }
+  return groups;
+}
+
+/** What is ticked when the game is first turned on: the recommended rules, and the recommended quests they make possible. */
+export function defaultStarterPicks(starter: Starter): { ruleIds: string[]; questIds: string[] } {
+  const ruleIds = starter.rules.filter((r) => starter.info[r.id]?.recommended).map((r) => r.id);
+  return { ruleIds, questIds: starter.quests.filter((q) => q.recommended && ruleIds.includes(q.needs)).map((q) => q.id) };
+}
+
+/** The turn-on button: "Turn on with 8 rules and 4 quests". */
+export function starterSummary(rules: number, quests: number): string {
+  if (rules === 0) return "Pick at least one thing";
+  const r = `${rules} ${rules === 1 ? "rule" : "rules"}`;
+  return quests > 0 ? `Turn on with ${r} and ${quests} ${quests === 1 ? "quest" : "quests"}` : `Turn on with ${r}`;
+}
+
+export function questWindowText(kind: "none" | "fixed" | "daily" | "weekly"): string {
+  return kind === "daily" ? "every day" : kind === "weekly" ? "every week" : kind === "fixed" ? "between two dates" : "until done";
+}
+
+export interface FirstXpStep {
+  id: string;
+  title: string;
+  when: string;
+  reward: string;
+}
+
+/** The rules that are on, as things to go and do, biggest reward first. */
+export function firstXpSteps(snapshot: Pick<RealityRpgSnapshot, "rules" | "starter">): FirstXpStep[] {
+  return snapshot.rules
+    .filter((r) => r.enabled)
+    .sort((a, b) => b.award.xp - a.award.xp || a.name.localeCompare(b.name))
+    .map((rule) => {
+      const info = snapshot.starter.info[rule.id];
+      return { id: rule.id, title: rule.name, when: info ? `When ${info.when}` : "When the events this rule names happen", reward: `+${rule.award.xp} ${rule.award.stat}` };
+    });
+}
+
+/** A rule form filled from a built-in rule: picking "what earns it" from a list, not typing event names. */
+export function formFromTemplate(form: RuleForm, template: Rule | undefined): RuleForm {
+  if (!template) return form;
+  return {
+    ...form,
+    name: form.name.trim() ? form.name : template.name,
+    types: template.match.types.join(", "),
+    stream: template.match.stream ?? "",
+    actionIds: (template.match.actionIds ?? []).join(", "),
+    status: template.match.status ?? "",
+    stat: form.stat.trim() ? form.stat : template.award.stat,
+    xp: form.xp.trim() && form.xp !== EMPTY_RULE_FORM.xp ? form.xp : String(template.award.xp)
+  };
+}

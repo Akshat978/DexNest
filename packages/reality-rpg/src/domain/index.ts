@@ -10,5 +10,5 @@ export { LEVEL_THRESHOLDS } from './data/levels.ts';
 export * from './progress.ts';
 export * from './settings.ts';
 export * from './events.ts';
-export { STARTER_RULES, STARTER_ACHIEVEMENTS } from './data/starter-pack.ts';
+export { STARTER_RULES, STARTER_ACHIEVEMENTS, STARTER_QUESTS, STARTER_INFO, STARTER_GROUP_LABELS, type StarterGroup, type StarterInfo } from './data/starter-pack.ts';
 export { stableHash } from './hash.ts';

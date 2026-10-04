@@ -156,15 +156,25 @@ export async function runRealityRpgAction(module: RealityRpgModule, actionId: st
     case "reality_rpg.refresh": {
       const outcome = await module.refresh();
       const message = outcome.status === "completed"
-        ? `+${outcome.run.xp} XP from ${outcome.committed.inserted.length} event(s).`
+        ? `+${outcome.run.xp} XP from ${outcome.committed.inserted.length === 1 ? "1 thing you did" : `${outcome.committed.inserted.length} things you did`}.`
         : outcome.status === "skipped" && outcome.reason === "no_rules"
           ? "No rule is switched on, so nothing was read."
           : "Nothing new since the last refresh.";
       return { ok: true, message, status: outcome.status };
     }
-    case "reality_rpg.enable":
+    case "reality_rpg.enable": {
+      // With a selection from the built-in set: the picked rules, their quests and achievements, then on.
+      if (params.starter !== undefined) {
+        const started = module.enableWith(params.starter);
+        if (!started.ok) return { ok: false, error: started.errors.join("; ") };
+        const { rules, quests } = started.value;
+        const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+        const withWhat = [rules > 0 ? count(rules, "rule", "rules") : "", quests > 0 ? count(quests, "quest", "quests") : ""].filter(Boolean).join(" and ");
+        return { ok: true, message: `Reality RPG is on${withWhat ? ` with ${withWhat}` : ""}. What you do from now on earns XP.`, value: started.value };
+      }
       module.enable();
       return { ok: true, message: "Reality RPG is on. New activity is processed every few minutes." };
+    }
     case "reality_rpg.disable":
       module.disable();
       return { ok: true, message: "Reality RPG is off. Your character, awards and quests are kept." };

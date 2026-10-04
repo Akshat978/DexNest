@@ -253,8 +253,77 @@ describe('Reality RPG module', () => {
     expect(snap.recentAwards[0]).toMatchObject({ ruleName: 'Commit observed', xp: 60 });
     expect(snap.starter.rules.length).toBeGreaterThan(0);
     expect(snap.starter.rules.every((r) => !r.enabled)).toBe(true);
+    // The built-in set comes with what each rule means and which group it is in.
+    expect(snap.starter.info['commit-observed']).toMatchObject({ group: 'projects', groupLabel: 'Your projects', recommended: true });
+    expect(snap.starter.info['commit-observed']!.when).toMatch(/^you make a commit/);
+    expect(snap.starter.quests.find((q) => q.id === 'commit-5-days')).toMatchObject({ title: 'Commit on 5 days this week', needs: 'commit-observed', window: { kind: 'weekly' } });
     module.deleteRule('commits');
     expect(module.snapshot().recentAwards[0]!.ruleName).toBeNull();
+  });
+});
+
+describe('turning on with a selection', () => {
+  let w: World;
+  afterEach(() => w?.dispose());
+
+  function setup() {
+    w = createWorld();
+    let stored: RealityRpgSettings = defaultRealityRpgSettings();
+    return createRealityRpgModule({
+      database: w.handle.db,
+      events: w.log,
+      scheduler: capturing(),
+      settings: { read: () => stored, write: (s) => (stored = s) },
+      timeZone: 'UTC',
+      now: () => w.clock.now,
+    });
+  }
+  const later = (ms: number) => { w.clock.now = new Date(w.clock.now.getTime() + ms); };
+  const commit = (payload: unknown = {}) => w.moduleEvent({ type: 'dev.commit.observed', stream: 'dev', module: 'developer_intelligence', payload });
+
+  it('one step: the picked rules are on, their quests and achievements exist, and the game is on', () => {
+    const module = setup();
+    const started = module.enableWith({ ruleIds: ['commit-observed', 'backup-completed'], questIds: ['commit-5-days', 'push-3-week'] });
+    expect(started.ok && started.value).toMatchObject({ rules: 2, quests: 1 });
+    const snap = module.snapshot();
+    expect(snap.enabled).toBe(true);
+    expect(snap.rules.map((r) => [r.id, r.enabled]).sort()).toEqual([['backup-completed', true], ['commit-observed', true]]);
+    // A quest whose rule was not picked is not created: nothing could ever count toward it.
+    expect(snap.quests.map((q) => q.quest.id)).toEqual(['commit-5-days']);
+    const achievements = snap.achievements.map((a) => a.achievement.id);
+    expect(achievements).toEqual(expect.arrayContaining(['first-steps', 'level-5', 'commits-10', 'commits-1000', 'backups-5']));
+    expect(achievements, 'no achievement for a rule that is off').not.toContain('pushes-10');
+    expect(achievements).not.toContain('blocks-10');
+  });
+
+  it('nothing from before the game was turned on earns, and history never does (item 43)', async () => {
+    const module = setup();
+    commit(); // made before turning on
+    later(60_000);
+    expect(module.enableWith({ ruleIds: ['commit-observed'], questIds: [] }).ok).toBe(true);
+    later(60_000);
+    // A repository's old commits, read by the scan after the rule exists: marked as history.
+    for (let i = 0; i < 40; i += 1) commit({ baseline: true });
+    await module.refresh();
+    expect(module.snapshot().sheet.totalXp, 'old commits earn nothing').toBe(0);
+    commit(); // a commit made now
+    await module.refresh();
+    const snap = module.snapshot();
+    expect(snap.sheet.totalXp).toBe(5);
+    expect(snap.achievements.find((a) => a.achievement.id === 'first-steps')?.unlocked).not.toBeNull();
+  });
+
+  it('is safe to do twice, keeps what the owner already had, and refuses nonsense', () => {
+    const module = setup();
+    module.saveRule({ id: 'commit-observed', name: 'My commit rule', enabled: false, match: { types: ['dev.commit.observed'] }, award: { xp: 50, stat: 'Craft' } });
+    const first = module.enableWith({ ruleIds: ['commit-observed', 'block-done'], questIds: ['blocks-3-day'] });
+    expect(first.ok && first.value).toMatchObject({ rules: 2, quests: 1 });
+    const mine = module.snapshot().rules.find((r) => r.id === 'commit-observed');
+    expect(mine, 'their rule is switched on, not replaced').toMatchObject({ name: 'My commit rule', enabled: true, award: { xp: 50 } });
+    const again = module.enableWith({ ruleIds: ['commit-observed', 'block-done'], questIds: ['blocks-3-day'] });
+    expect(again.ok && again.value).toMatchObject({ rules: 0, quests: 0, achievements: 0 });
+    expect(module.enableWith('everything').ok).toBe(false);
+    expect(module.enableWith({ ruleIds: ['no-such-rule'], questIds: 7 })).toMatchObject({ ok: true, value: { rules: 0, quests: 0 } });
   });
 });
 

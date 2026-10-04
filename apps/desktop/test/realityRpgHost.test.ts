@@ -160,7 +160,7 @@ test("every registered reality_rpg action but open is handled, and they work end
   legacy("clipboard", "clipboard.copy", new Date(Date.now() + 1000).toISOString());
   legacy("vault", "vault.secure.copy_secret", new Date(Date.now() + 1000).toISOString());
   const refreshed = await runRealityRpgAction(m, "reality_rpg.refresh", {});
-  assert.deepEqual(refreshed, { ok: true, message: "+10 XP from 1 event(s).", status: "completed" });
+  assert.deepEqual(refreshed, { ok: true, message: "+10 XP from 1 thing you did.", status: "completed" });
 
   const bad = await runRealityRpgAction(m, "reality_rpg.rule.save", { rule: { ...rule, id: "bad", match: { types: ["action_executed"], module: "finance" } } });
   assert.deepEqual(bad, { ok: false, error: "rules may not name vault, finance or journal activity" });

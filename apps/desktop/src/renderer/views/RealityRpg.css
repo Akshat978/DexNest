@@ -277,3 +277,113 @@
   outline-offset: 2px;
   box-shadow: 0 0 0 4px var(--focus-ring);
 }
+
+/* --- Starting: pick what counts, then one button ---------------------------------------- */
+.rpg-start {
+  display: grid;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--accent-rpg) 25%, var(--border));
+  background: color-mix(in srgb, var(--accent-rpg) 4%, var(--surface));
+}
+
+.rpg-start__head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+}
+
+.rpg-start__head h2 {
+  margin: 0 0 var(--space-1);
+  font-size: 1.25rem;
+}
+
+.rpg-start__head p {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.rpg-start__icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: var(--radius-md);
+  color: var(--accent-rpg);
+  background: color-mix(in srgb, var(--accent-rpg) 12%, transparent);
+}
+
+.rpg-start__group {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.rpg-start__group legend {
+  margin-bottom: var(--space-2);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.rpg-pick {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: color-mix(in srgb, var(--surface-2) 60%, transparent);
+  cursor: pointer;
+}
+
+.rpg-pick--off {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.rpg-pick__text {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+}
+
+.rpg-pick__name {
+  color: var(--text);
+}
+
+.rpg-pick__xp {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.rpg-start__go {
+  display: grid;
+  gap: var(--space-2);
+  justify-items: start;
+}
+
+.rpg-builtin h4 {
+  margin: var(--space-3) 0 var(--space-2);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.rpg-advanced summary {
+  color: var(--accent-rpg);
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
+.rpg-advanced[open] summary {
+  margin-bottom: var(--space-2);
+}

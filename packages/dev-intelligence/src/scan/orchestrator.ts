@@ -33,6 +33,7 @@ import {
   emitTodoObserved,
   emitTodoResolved,
   emitWorkingTreeChangedIfNeeded,
+  emitWorkingTreeCleanedIfNeeded,
   type EmitContext,
 } from '../events/emit.js';
 import { mapPool } from './concurrency.js';
@@ -387,6 +388,12 @@ export class ScanOrchestrator {
               snapshot.git,
             );
             await emitWorkingTreeChangedIfNeeded(
+              emitCtx,
+              repo.id,
+              previousSnap?.git,
+              snapshot.git,
+            );
+            await emitWorkingTreeCleanedIfNeeded(
               emitCtx,
               repo.id,
               previousSnap?.git,

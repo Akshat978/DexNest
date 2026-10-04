@@ -64,7 +64,29 @@ const base = {
   ],
   lastRun: { id: "r", occurrenceId: "o", trigger: "scheduled", status: "completed", startedAt: "2026-06-03T09:05:00.000Z", finishedAt: "2026-06-03T09:05:01.000Z", fromSeq: 0, toSeq: 9, awards: 1, xp: 5, error: null },
   invalid: { rules: [], achievements: [], quests: [] },
-  starter: { rules: [{ ...rule, id: "backup-completed", name: "Backup completed", enabled: false }], achievements: [] }
+  starter: {
+    rules: [
+      { ...rule, id: "commit-observed", name: "Made a commit", enabled: false },
+      { ...rule, id: "push-observed", name: "Pushed your work", enabled: false, match: { types: ["dev.push.observed"], stream: "dev" }, award: { xp: 8, stat: "Craft" }, dailyCap: 10 },
+      { ...rule, id: "backup-completed", name: "Made a backup", enabled: false, match: { types: ["backup_created"], stream: "audit", actionIds: ["backup.create"], status: "success" }, award: { xp: 15, stat: "Order" }, dailyCap: 1 },
+      { ...rule, id: "block-done", name: "Finished a timetable block", enabled: false, match: { types: ["timetable_mark_done"], stream: "audit", actionIds: ["timetable.mark_done"], status: "success" }, award: { xp: 5, stat: "Focus" }, dailyCap: 12 }
+    ],
+    achievements: [
+      { id: "level-5", name: "Level 5", description: "Reach level 5 (1,000 XP).", condition: { kind: "xp", target: 1000 } },
+      { id: "backups-5", name: "Five backups", description: "Make 5 backups.", condition: { kind: "count", ruleIds: ["backup-completed"], target: 5 } },
+      { id: "commits-10", name: "Ten commits", description: "Make 10 commits.", condition: { kind: "count", ruleIds: ["commits"], target: 10 } }
+    ],
+    quests: [
+      { id: "commit-5-days", title: "Commit on 5 days this week", needs: "commit-observed", recommended: true, condition: { kind: "days", ruleIds: ["commit-observed"], target: 5 }, window: { kind: "weekly" } },
+      { id: "blocks-3-day", title: "Finish 3 timetable blocks today", needs: "block-done", recommended: true, condition: { kind: "count", ruleIds: ["block-done"], target: 3 }, window: { kind: "daily" } }
+    ],
+    info: {
+      "commit-observed": { group: "projects", groupLabel: "Your projects", when: "you make a commit in a project the scan follows", recommended: true },
+      "push-observed": { group: "projects", groupLabel: "Your projects", when: "you push, from DexNest, an editor or the command line", recommended: true },
+      "backup-completed": { group: "dexnest", groupLabel: "Things done in DexNest", when: "you make a backup", recommended: true },
+      "block-done": { group: "life", groupLabel: "Day to day", when: "you mark a timetable block done", recommended: false }
+    }
+  }
 };
 const off = { ...base, enabled: false, sheet: { totalXp: 0, level: 1, xpIntoLevel: 0, xpToNextLevel: 100, stats: [] }, rules: [], achievements: [], quests: [], recentAwards: [], lastRun: null };
 
@@ -84,11 +106,41 @@ test("error: an alert with the reason and a retry", () => {
   assert.match(html, />Try again</);
 });
 
-test("off: explains what it reads and what it never reads, and offers to turn on", () => {
+test("off: one screen and one step - what counts is ticked from the built-in set, and one button turns it on", () => {
   const html = render({ initial: { snapshot: off } });
-  assert.match(html, /never vault, finance or journal activity, and never the content of an event/);
-  assert.match(html, />Turn on</);
-  assert.match(html, /role="tablist"/);
+  assert.match(html, /<section class="rpg-start" aria-labelledby="rpg-start-title">/);
+  assert.match(html, /<h2 id="rpg-start-title">Turn what you already do into XP<\/h2>/);
+  assert.match(html, /nothing you did before counts\./);
+  assert.match(html, /never vault, finance or journal activity, and never the content of anything/);
+  // Grouped, in plain words, with what each is worth; recommended ones ticked.
+  assert.match(html, /<legend>Your projects<\/legend>/);
+  assert.match(html, /<legend>Things done in DexNest<\/legend>/);
+  assert.match(html, /<legend>Day to day<\/legend>/);
+  assert.match(html, /<input type="checkbox" checked=""\/><span class="rpg-pick__text"><span class="rpg-pick__name">Made a commit<\/span><span class="rpg-hint">When you make a commit in a project the scan follows\.<\/span><\/span><span class="rpg-pick__xp technical">\+5 Craft each time, at most 20 a day<\/span>/);
+  assert.match(html, /<input type="checkbox"\/><span class="rpg-pick__text"><span class="rpg-pick__name">Finished a timetable block<\/span>/, "not recommended: offered, not ticked");
+  assert.doesNotMatch(html, /dev\.commit\.observed|backup_created/, "no event names on the first screen");
+  // Quests: one whose rule is ticked is ticked; one whose rule is not is offered but waits for it.
+  assert.match(html, /<legend>Quests to start with<\/legend>/);
+  assert.match(html, /<label class="rpg-pick"><input type="checkbox" checked=""\/><span class="rpg-pick__text"><span class="rpg-pick__name">Commit on 5 days this week<\/span><\/span><span class="rpg-pick__xp">every week<\/span>/);
+  assert.match(html, /<label class="rpg-pick rpg-pick--off"><input type="checkbox" disabled=""\/><span class="rpg-pick__text"><span class="rpg-pick__name">Finish 3 timetable blocks today<\/span><span class="rpg-hint">Needs “Finished a timetable block” ticked above\.<\/span>/);
+  assert.match(html, /<button type="button" class="kit-button kit-button--primary kit-button--md">Turn on with 3 rules and 1 quest<\/button>/);
+  // Said once: no second "is off" card, no empty character sheet, no tabs to wander into.
+  assert.doesNotMatch(html, /Reality RPG is off|Nothing earned yet|role="tablist"|kit-hero/);
+  assert.equal(html.split(">Turn on").length - 1, 1, "one way to turn it on");
+});
+
+test("on with nothing earned yet: how to earn the first XP, from the rules that are on", () => {
+  const fresh = { ...base, sheet: { totalXp: 0, level: 1, xpIntoLevel: 0, xpToNextLevel: 100, stats: [] }, recentAwards: [], rules: [{ ...rule, id: "commit-observed", name: "Made a commit" }, { ...rule, id: "backup-completed", name: "Made a backup", award: { xp: 15, stat: "Order" } }, offRule] };
+  const html = render({ initial: { snapshot: fresh, today: "2026-06-03" } });
+  assert.match(html, /How to earn your first XP/);
+  // Biggest reward first; a rule that is off is not a way to earn.
+  assert.ok(html.indexOf("Made a backup") < html.indexOf("Made a commit"));
+  assert.match(html, /When you make a backup/);
+  assert.match(html, /\+15 Order/);
+  assert.doesNotMatch(html.slice(html.indexOf("How to earn"), html.indexOf("XP · last 14 days")), /Standup generated/);
+  assert.match(html, /Project activity is seen at the next repository scan\./);
+  const none = render({ initial: { snapshot: { ...fresh, rules: [offRule] }, today: "2026-06-03" } });
+  assert.match(none, /No rule is switched on, so nothing can earn yet\./);
 });
 
 test("character sheet: a hero with the level ring, stat tiles strongest first, XP by day, quests, recent XP, next achievement", () => {
@@ -158,7 +210,7 @@ test("history: what earned the XP, never what the event said; deleted rules say 
 test("off: no Refresh while processing is off", () => {
   const html = render({ initial: { snapshot: off } });
   assert.doesNotMatch(html, />Refresh</);
-  assert.match(html, />Turn on</);
+  assert.match(html, />Turn on with /);
 });
 
 test("deleting a rule and abandoning a quest ask first, in a modal", () => {
@@ -188,9 +240,26 @@ test("rules: on/off, backfill only for rules that are on, delete, starter set, i
   assert.match(html, /aria-label="Switch on Standup generated"/);
   assert.match(html, /aria-label="Apply Commit observed to past activity"/);
   assert.doesNotMatch(html, /Apply Standup generated to past activity/);
-  assert.match(html, /aria-label="Add rule Backup completed"/);
   assert.match(html, /1 saved definition is no longer valid/);
-  assert.match(html, /can never name vault, finance or journal activity/);
+  assert.match(html, /can never count vault, finance or journal activity/);
+  // The built-in set: grouped, in plain words, with no event names.
+  assert.match(html, /<h3 id="rpg-starter">Built-in rules, quests and achievements<\/h3>/);
+  assert.match(html, /<h4>Things done in DexNest<\/h4><ul class="rpg-list"><li class="rpg-item"><p class="rpg-item__title">Made a backup<\/p><p class="rpg-hint">When you make a backup\. \+15 Order each time, at most 1 a day\.<\/p><button[^>]*aria-label="Add rule Made a backup">Add<\/button>/);
+  // An achievement is offered when a rule it counts is there, or it is about XP; a quest when its rule is there.
+  assert.match(html, /aria-label="Add achievement Level 5"/);
+  assert.match(html, /aria-label="Add achievement Ten commits"/);
+  assert.doesNotMatch(html, /aria-label="Add achievement Five backups"/, "its rule has not been added");
+  assert.doesNotMatch(html, /aria-label="Start quest /, "no quest until its rule is added");
+});
+
+test("a rule of your own: what earns it is picked from a list in plain words; event names are tucked away", () => {
+  const html = render({ initial: { snapshot: base, tab: "rules" } });
+  assert.match(html, /<h3>A rule of your own<\/h3>/);
+  assert.match(html, /What earns it/);
+  assert.match(html, /<optgroup label="Your projects"><option value="commit-observed">When you make a commit in a project the scan follows<\/option><option value="push-observed">When you push, from DexNest, an editor or the command line<\/option><\/optgroup>/);
+  assert.match(html, /<option value="custom">Something else \(name the events yourself\)<\/option>/);
+  // The event names are still there for whoever wants them, closed until asked for.
+  assert.match(html, /<details class="rpg-advanced"><summary>The event names behind it<\/summary>/);
 });
 
 test("design tokens only: no literal colours; fonts from tokens; the module accent", () => {
@@ -211,5 +280,4 @@ test("character sheet: a quiet fortnight says so instead of an empty chart; off 
   assert.doesNotMatch(quiet, /class="kit-bars"/);
   const html = render({ initial: { snapshot: off } });
   assert.doesNotMatch(html, /kit-hero/);
-  assert.match(html, /Nothing earned yet\. Add a rule in/);
 });

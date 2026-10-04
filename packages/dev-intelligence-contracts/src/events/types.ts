@@ -11,6 +11,7 @@ export type DeveloperEventType =
   | 'dev.push.observed'
   | 'dev.pull.observed'
   | 'dev.working_tree.changed'
+  | 'dev.working_tree.cleaned'
   | 'dev.conflict.observed'
   | 'dev.git_operation.started'
   | 'dev.git_operation.resolved'

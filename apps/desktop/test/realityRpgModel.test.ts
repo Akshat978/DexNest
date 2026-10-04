@@ -36,7 +36,7 @@ function snapshot(extra: Partial<RealityRpgSnapshot> = {}): RealityRpgSnapshot {
     sheet: { totalXp: 0, level: 1, xpIntoLevel: 0, xpToNextLevel: 100, stats: [] },
     rules: [], achievements: [], quests: [], recentAwards: [], lastRun: null,
     invalid: { rules: [], achievements: [], quests: [] },
-    starter: { rules: [], achievements: [] },
+    starter: { rules: [], achievements: [], quests: [], info: {} },
     ...extra
   };
 }
@@ -178,4 +178,48 @@ test("a quest's progress reads as one line, with its window", () => {
 test("the hero line groups thousands", () => {
   const sheet = { totalXp: 48210, level: 42, xpIntoLevel: 100, xpToNextLevel: 4300, stats: [] };
   assert.equal(heroLine({ sheet, achievements: [] }), "4,300 XP to level 43");
+});
+
+test("the built-in set, as the screen reads it", async () => {
+  const { defaultStarterPicks, firstXpSteps, formFromTemplate, questWindowText, starterGroups, starterSummary } = await import("../src/renderer/views/realityRpgModel.ts");
+  const r = (id: string, name: string, xp: number, extra: Record<string, unknown> = {}) =>
+    ({ id, version: 1, name, enabled: false, match: { types: ["dev.commit.observed"], stream: "dev" }, award: { xp, stat: "Craft" }, effectiveFrom: "1970-01-01T00:00:00.000Z", ...extra }) as unknown as RealityRpgSnapshot["rules"][number];
+  const starter = {
+    rules: [r("commit-observed", "Made a commit", 5), r("backup-completed", "Made a backup", 15, { match: { types: ["backup_created"], stream: "audit", actionIds: ["backup.create"], status: "success" } }), r("push-observed", "Pushed your work", 8), r("no-info", "Unknown", 1)],
+    achievements: [],
+    quests: [
+      { id: "commit-5-days", title: "Commit on 5 days this week", needs: "commit-observed", recommended: true, condition: { kind: "days", ruleIds: ["commit-observed"], target: 5 }, window: { kind: "weekly" } },
+      { id: "push-3-week", title: "Push 3 times this week", needs: "push-observed", recommended: true, condition: { kind: "count", ruleIds: ["push-observed"], target: 3 }, window: { kind: "weekly" } },
+      { id: "backup-week", title: "Back up this week", needs: "backup-completed", recommended: false, condition: { kind: "count", ruleIds: ["backup-completed"], target: 1 }, window: { kind: "weekly" } }
+    ],
+    info: {
+      "commit-observed": { group: "projects", groupLabel: "Your projects", when: "you make a commit", recommended: true },
+      "push-observed": { group: "projects", groupLabel: "Your projects", when: "you push", recommended: false },
+      "backup-completed": { group: "dexnest", groupLabel: "Things done in DexNest", when: "you make a backup", recommended: true }
+    }
+  } as unknown as RealityRpgSnapshot["starter"];
+
+  const groups = starterGroups(starter);
+  assert.deepEqual(groups.map((g) => [g.label, g.rules.map((x) => x.rule.id)]), [["Your projects", ["commit-observed", "push-observed"]], ["Things done in DexNest", ["backup-completed"]]]);
+  // Ticked by default: the recommended rules, and the recommended quests those rules make possible.
+  assert.deepEqual(defaultStarterPicks(starter), { ruleIds: ["commit-observed", "backup-completed"], questIds: ["commit-5-days"] });
+  assert.equal(starterSummary(8, 4), "Turn on with 8 rules and 4 quests");
+  assert.equal(starterSummary(1, 1), "Turn on with 1 rule and 1 quest");
+  assert.equal(starterSummary(2, 0), "Turn on with 2 rules");
+  assert.equal(starterSummary(0, 0), "Pick at least one thing");
+  assert.deepEqual(["daily", "weekly", "none", "fixed"].map((k) => questWindowText(k as never)), ["every day", "every week", "until done", "between two dates"]);
+
+  const on = { rules: [{ ...r("commit-observed", "Made a commit", 5), enabled: true }, { ...r("backup-completed", "Made a backup", 15), enabled: true }, { ...r("mine", "My own", 9), enabled: true }, r("push-observed", "Pushed", 8)], starter };
+  assert.deepEqual(firstXpSteps(on), [
+    { id: "backup-completed", title: "Made a backup", when: "When you make a backup", reward: "+15 Craft" },
+    { id: "mine", title: "My own", when: "When the events this rule names happen", reward: "+9 Craft" },
+    { id: "commit-observed", title: "Made a commit", when: "When you make a commit", reward: "+5 Craft" }
+  ]);
+
+  // Picking "what earns it" fills the event names; a name, stat or XP already typed is kept.
+  const picked = formFromTemplate(EMPTY_RULE_FORM, starter.rules[1]);
+  assert.deepEqual([picked.name, picked.types, picked.stream, picked.actionIds, picked.status, picked.xp, picked.stat], ["Made a backup", "backup_created", "audit", "backup.create", "success", "15", "Craft"]);
+  const kept = formFromTemplate({ ...EMPTY_RULE_FORM, name: "Friday backup", xp: "40", stat: "Care" }, starter.rules[1]);
+  assert.deepEqual([kept.name, kept.xp, kept.stat, kept.types], ["Friday backup", "40", "Care", "backup_created"]);
+  assert.deepEqual(formFromTemplate(EMPTY_RULE_FORM, undefined), EMPTY_RULE_FORM);
 });
