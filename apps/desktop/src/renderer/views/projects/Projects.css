@@ -126,7 +126,6 @@
   font-weight: 600;
 }
 .projects-card__name {
-  display: block;
   width: 100%;
   overflow: hidden;
   padding: 0;
@@ -135,9 +134,26 @@
   color: var(--text);
   font: inherit;
   text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* A long name wraps to a second line before it is cut; the full name is the tooltip. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow-wrap: anywhere;
   cursor: pointer;
+}
+.projects-card--list .projects-card__name {
+  -webkit-line-clamp: 1;
+}
+.projects-card__branches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.125rem var(--space-3);
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+.projects-card__live {
+  color: var(--success);
 }
 .projects-card__name:hover {
   color: var(--accent-dev);

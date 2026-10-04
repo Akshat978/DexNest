@@ -69,6 +69,8 @@ export interface ReadOptions {
   signal?: AbortSignal;
   /** Compare every branch with the default branch, not just the most recent ones. */
   allBranches?: boolean;
+  /** The branch the owner marked as deployed; local branches are compared with it too. */
+  deployedBranch?: string | null;
 }
 
 export interface HistoryEntry {
@@ -197,16 +199,41 @@ export function createGitReader(options: GitReaderOptions): GitReader {
         refRows.find((r) => r.refname.startsWith("refs/remotes/") && r.refname.endsWith(`/${defaultBranch}`) && !r.symref) ??
         null;
 
+    // A local default branch that is only behind its upstream is an old copy
+    // of it. Measured against that, every branch looks further ahead than it
+    // is (and merged branches look unmerged), so the upstream is the base then.
+    let defaultBase = defaultRef;
+    if (defaultRef?.refname === `refs/heads/${defaultBranch}` && defaultRef.upstream && defaultRef.track && !defaultRef.track.gone && defaultRef.track.ahead === 0 && defaultRef.track.behind > 0) {
+      defaultBase = refRows.find((r) => r.refname === defaultRef.upstream && !r.symref) ?? defaultRef;
+    }
+    const shortRef = (refname: string) => refname.replace(/^refs\/(heads|remotes)\//, "");
+
+    // The deployed branch: its remote-tracking copy when there is one (what was pushed is what can be live), else the local branch.
+    const deployedName = read.deployedBranch?.trim() || null;
+    const deployedLocal = deployedName ? refRows.find((r) => r.refname === `refs/heads/${deployedName}`) : undefined;
+    const deployedRef = deployedName
+      ? (deployedLocal?.upstream ? refRows.find((r) => r.refname === deployedLocal.upstream && !r.symref) : undefined) ??
+        refRows.find((r) => r.refname === `refs/remotes/origin/${deployedName}`) ??
+        deployedLocal ??
+        null
+      : null;
+
     const byRecent = (a: RefRow, b: RefRow) => (b.committedAt ?? "").localeCompare(a.committedAt ?? "");
     const localRows = refRows.filter((r) => r.refname.startsWith("refs/heads/")).sort(byRecent);
     const remoteRows = refRows.filter((r) => r.refname.startsWith("refs/remotes/") && !r.symref && !r.refname.endsWith("/HEAD")).sort(byRecent);
 
     const compared = new Set<string>([...localRows, ...remoteRows].slice(0, read.allBranches ? Infinity : branchLimit * 2).map((r) => r.refname));
-    const toCompare = defaultRef ? [...localRows, ...remoteRows].filter((r) => compared.has(r.refname)) : [];
+    const toCompare = defaultBase ? [...localRows, ...remoteRows].filter((r) => compared.has(r.refname)) : [];
     const counts = new Map<string, Counts | null>();
     await mapLimit(toCompare, concurrency, async (row) => {
-      counts.set(row.refname, await compare(path, defaultRef!.sha, row.sha, read));
+      counts.set(row.refname, await compare(path, defaultBase!.sha, row.sha, read));
     });
+    const deployedCounts = new Map<string, Counts | null>();
+    if (deployedRef) {
+      await mapLimit(localRows.filter((r) => compared.has(r.refname) && r.sha !== deployedRef.sha), concurrency, async (row) => {
+        deployedCounts.set(row.refname, await compare(path, deployedRef.sha, row.sha, read));
+      });
+    }
 
     const elsewhere = new Map<string, Worktree>();
     for (const wt of worktrees) if (!wt.isCurrent && wt.branch) elsewhere.set(wt.branch, wt);
@@ -234,6 +261,7 @@ export function createGitReader(options: GitReaderOptions): GitReader {
         lastSubject: row.subject,
         vsDefault: vs,
         mergedIntoDefault: isDefault ? null : vs ? vs.ahead === 0 : null,
+        ...(deployedRef ? { vsDeployed: deployedCounts.get(row.refname) ?? null } : {}),
         checkedOutElsewhere: other ? { path: other.path, owner: other.owner } : null
       };
     });
@@ -242,7 +270,7 @@ export function createGitReader(options: GitReaderOptions): GitReader {
       const short = row.refname.slice("refs/remotes/".length);
       const remote = remoteNames.find((name) => short.startsWith(`${name}/`)) ?? short.split("/")[0];
       const name = short.slice(remote.length + 1);
-      const isDefault = defaultRef?.refname === row.refname;
+      const isDefault = defaultBase?.refname === row.refname;
       const vs = isDefault ? null : counts.get(row.refname) ?? null;
       return {
         remote,
@@ -287,6 +315,8 @@ export function createGitReader(options: GitReaderOptions): GitReader {
       isRepo: true,
       head: { branch: st.head, sha: st.oid, detached: st.detached, unborn: st.unborn },
       defaultBranch,
+      defaultBase: defaultBase ? shortRef(defaultBase.refname) : null,
+      ...(deployedName ? { deployed: { branch: deployedName, base: deployedRef ? shortRef(deployedRef.refname) : null } } : {}),
       remotes,
       branches,
       remoteBranches,

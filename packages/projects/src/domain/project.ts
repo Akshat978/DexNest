@@ -6,6 +6,8 @@
 // 1-65535, omitted fields keep the stored value, commandList ids kept when
 // valid. Stream Deck cards address commands by those ids, so they never move.
 
+import { checkBranchName } from "./names.ts";
+
 export const COMMAND_SLOTS = ["start", "build", "test", "typecheck", "custom"] as const;
 export type CommandSlot = (typeof COMMAND_SLOTS)[number];
 
@@ -85,6 +87,12 @@ export interface Project {
   logCommand: string;
   logPath: string;
   dockerCompose: boolean;
+  /**
+   * The branch the owner says is deployed, for a project that is deployed at
+   * all; null otherwise. Only a name they chose: DexNest cannot see a server,
+   * so it does not know whether a given commit has gone live.
+   */
+  deployedBranch: string | null;
   git: ProjectGitFacts;
   tooling: ProjectTooling;
   createdAt: string;
@@ -120,6 +128,8 @@ export interface ProjectInput {
   logCommand?: string;
   logPath?: string;
   dockerCompose?: boolean;
+  /** A branch name, or null / "" to say the project has no deployed branch. */
+  deployedBranch?: string | null;
   git?: Partial<ProjectGitFacts>;
   tooling?: Partial<ProjectTooling>;
 }
@@ -237,6 +247,17 @@ export function normaliseProjectInput(input: ProjectInput, ctx: NormaliseContext
   const projectType =
     input.projectType === undefined ? prev?.projectType ?? null : isProjectType(input.projectType) ? input.projectType : null;
 
+  let deployedBranch = prev?.deployedBranch ?? null;
+  if (input.deployedBranch !== undefined) {
+    const name = input.deployedBranch === null ? "" : String(input.deployedBranch).trim();
+    if (name === "") deployedBranch = null;
+    else {
+      const check = checkBranchName(name);
+      if (!check.ok) return { ok: false, error: `Deployed branch: ${check.reason}` };
+      deployedBranch = name;
+    }
+  }
+
   const links = input.links === undefined
     ? prev?.links ?? []
     : input.links
@@ -275,6 +296,7 @@ export function normaliseProjectInput(input: ProjectInput, ctx: NormaliseContext
     logCommand: trimmed(input.logCommand, prev?.logCommand ?? ""),
     logPath: trimmed(input.logPath, prev?.logPath ?? ""),
     dockerCompose: input.dockerCompose ?? prev?.dockerCompose ?? false,
+    deployedBranch,
     git: { ...(prev?.git ?? emptyGitFacts()), ...(input.git ?? {}) },
     tooling: { ...(prev?.tooling ?? emptyTooling()), ...(input.tooling ?? {}) },
     createdAt: prev?.createdAt ?? ctx.now,

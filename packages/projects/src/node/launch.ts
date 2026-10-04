@@ -69,6 +69,14 @@ export function powershellSetLocation(path: string): string {
   return `Set-Location -LiteralPath '${path.replace(/'/g, "''")}'`;
 }
 
+/** What to call the terminal that was started, from its program file. */
+export function terminalProgramName(file: string): string {
+  const base = (file.split(/[\\/]/).pop() ?? file).toLowerCase();
+  if (base === "wt.exe" || base === "wt") return "Windows Terminal";
+  if (base === "powershell.exe" || base === "pwsh.exe" || base === "powershell" || base === "pwsh") return "PowerShell";
+  return base.replace(/\.exe$/, "") || "a terminal";
+}
+
 export function terminalCommand(env: LaunchEnv, choice: TerminalChoice, folder: string): LaunchCommand | null {
   const { join } = pathsOf(env);
   if (env.platform === "win32") {

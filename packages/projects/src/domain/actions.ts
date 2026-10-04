@@ -43,6 +43,8 @@ export const PROJECTS_ACTIONS: readonly ProjectsActionContract[] = [
   { id: "projects.git.fetch_all", title: "Fetch all projects", safety: "normal", triggers: DECK, network: true },
   { id: "projects.git.pull", title: "Pull (fast-forward only)", safety: "normal", triggers: COMMAND_UI, network: true },
   { id: "projects.git.pull_all", title: "Pull all clean projects", safety: "normal", triggers: COMMAND_UI, network: true },
+  // The module previews it and asks first when it is the default branch moving to another branch.
+  { id: "projects.git.fast_forward", title: "Move a branch forward without switching to it", safety: "normal", triggers: UI, network: false },
   { id: "projects.git.push", title: "Push", safety: "normal", triggers: COMMAND_UI, network: true },
   { id: "projects.git.push_current", title: "Push current project", safety: "normal", triggers: DECK, network: true },
   { id: "projects.git.commit", title: "Commit", safety: "normal", triggers: UI, network: false },

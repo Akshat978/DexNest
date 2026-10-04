@@ -156,6 +156,62 @@ test("branches: the comparison table, Autopilot's branch locked with the reason,
   assert.match(html, /Compare all branches with main/);
 });
 
+test("branches: a stale local main is said so, can be updated in place, and brought up to the branch you are on", () => {
+  const develop = branch("develop", { isCurrent: true, vsDefault: { ahead: 6, behind: 0 }, mergedIntoDefault: false });
+  const state = repo({
+    head: { branch: "develop", sha: develop.tipSha, detached: false, unborn: false },
+    defaultBase: "origin/main",
+    branches: [develop, branch("main", { upstream: { ref: "origin/main", remote: "origin", branch: "main", gone: false, counts: { ahead: 0, behind: 26 } } })],
+    remoteBranches: [remoteBranch("main", { trackedBy: "main" }), remoteBranch("develop", { trackedBy: "develop" })]
+  });
+  const asked = [];
+  const html = render(tabs.BranchesTab, { project: project("derm"), state, now: NOW, staleDays: 30, allBranches: false, onShowAll: noop, onAsk: (r) => asked.push(r), onOpenGithub: noop, onSetDeployed: noop });
+  assert.match(html, /<th scope="col">vs origin\/main<\/th>/, "the column says what it compares with");
+  assert.match(html, /main on this PC is 26 commits behind origin\/main, so branches are compared with origin\/main\./);
+  assert.match(html, /Compare all branches with origin\/main/);
+  const mainRow = html.split("<tr").find((r) => r.includes(">main</span></th>"));
+  assert.match(mainRow, />Update<\/button>/);
+  assert.match(mainRow, /title="Move main forward to origin\/main, without switching to it"/);
+  assert.match(mainRow, />Bring up to develop<\/button>/);
+  const developRow = html.split("<tr").find((r) => r.includes(">develop</span></th>"));
+  assert.doesNotMatch(developRow, />Update<\/button>|Bring up to/, "the branch you are on is moved by Pull, not here");
+  assert.doesNotMatch(html, /vs live/, "no deployed branch marked: no live column");
+});
+
+test("branches: the deployed branch is chosen here, badged, and every branch says how far it is from live", () => {
+  const develop = branch("develop", { isCurrent: true, vsDefault: { ahead: 6, behind: 0 }, mergedIntoDefault: false, vsDeployed: null });
+  const state = repo({
+    head: { branch: "develop", sha: develop.tipSha, detached: false, unborn: false },
+    deployed: { branch: "develop", base: "origin/develop" },
+    branches: [develop, branch("main", { vsDeployed: { ahead: 0, behind: 6 } })],
+    remoteBranches: [remoteBranch("main", { trackedBy: "main" }), remoteBranch("develop", { trackedBy: "develop" })]
+  });
+  const props = { state, now: NOW, staleDays: 30, allBranches: false, onShowAll: noop, onAsk: noop, onOpenGithub: noop, onSetDeployed: noop };
+  const html = render(tabs.BranchesTab, { ...props, project: project("derm", { deployedBranch: "develop" }) });
+  assert.match(html, /<label for="projects-deployed-branch">Deployed branch<\/label>/);
+  assert.match(html, /<option value="">Not deployed<\/option>/);
+  assert.match(html, /<option value="develop" selected="">develop<\/option>/);
+  assert.match(html, /Compared with origin\/develop: what was pushed of it\. DexNest can&#x27;t see your server, so this is the branch, not the deploy\./);
+  assert.match(html, /<th scope="col">vs live<\/th>/);
+  const developRow = html.split("<tr").find((r) => r.includes(">develop</span></th>"));
+  assert.match(developRow, /<td>live<\/td>/);
+  assert.match(developRow, /kit-badge--success[^>]*>.*?deployed<\/span>/s);
+  const mainRow = html.split("<tr").find((r) => r.includes(">main</span></th>"));
+  assert.match(mainRow, /<td>6 behind<\/td>/);
+  assert.doesNotMatch(mainRow, />deployed</);
+
+  // Not a deployed project: the choice is offered, nothing is compared.
+  const none = render(tabs.BranchesTab, { ...props, state: repo(), project: project("lib") });
+  assert.match(none, /<option value="" selected="">Not deployed<\/option>/);
+  assert.match(none, /For a project that is live: the branch it is deployed from\./);
+  assert.doesNotMatch(none, /vs live/);
+
+  // The marked branch was deleted since: said, and still selectable to change.
+  const gone = render(tabs.BranchesTab, { ...props, state: repo({ deployed: { branch: "release", base: null } }), project: project("old", { deployedBranch: "release" }) });
+  assert.match(gone, /There is no branch called release any more\./);
+  assert.match(gone, /<option value="release" selected="">release \(missing\)<\/option>/);
+});
+
 test("changes: grouped files with line counts, conflicts sent to the editor, commit needs a message, discard needs a selection", () => {
   const state = repo({ workingTree: tree({ conflicted: ["c.ts"], staged: [{ path: "s.ts", status: "added" }], unstaged: [{ path: "u.ts", status: "modified" }], untracked: ["new file.ts"] }), stashes: [stash(0)] });
   const html = render(tabs.ChangesTab, { state, stat: { staged: [{ path: "s.ts", added: 10, deleted: 0 }], unstaged: [{ path: "u.ts", added: 2, deleted: 3 }] }, onAsk: noop, onOpenVsCode: noop });

@@ -46,7 +46,7 @@ import {
   type SaveResult,
   type Suggestion
 } from "../inspect/inspect.ts";
-import { findVsCode, terminalCommand, vsCodeCommand, type LaunchCommand, type LaunchEnv } from "../node/launch.ts";
+import { findVsCode, terminalCommand, terminalProgramName, vsCodeCommand, type LaunchCommand, type LaunchEnv } from "../node/launch.ts";
 import {
   legacyChangedSinceImport,
   migrateLegacyProjects,
@@ -280,7 +280,7 @@ export function createProjectsModule(options: ProjectsModuleOptions): ProjectsMo
   async function repoState(projectId: string, readOptions: { allBranches?: boolean } = {}): Promise<RepoState> {
     const project = mustGet(projectId);
     if (options.isSensitive(project.path)) return { isRepo: false, reason: "This folder is inside DexNest's own data folder.", readAt: now() };
-    const state = await options.reader.readRepoState(project.path, readOptions);
+    const state = await options.reader.readRepoState(project.path, { ...readOptions, deployedBranch: project.deployedBranch });
     // Facts the home screen sorts and filters by, kept current as a side effect of looking.
     if (state.isRepo) {
       const recorded = store.fetchState(projectId)?.lastFetchAt ?? null;
@@ -351,6 +351,7 @@ export function createProjectsModule(options: ProjectsModuleOptions): ProjectsMo
       store.touch(projectId, now());
       return { ok: true, message: `Opened ${project.name} on GitHub.`, data: { url } };
     }
+    let terminalName = "a terminal";
     const path = allowedPath(project, opts.path);
     if (!path) return { ok: false, message: "That folder isn't one of this project's folders." };
     if (options.isSensitive(path)) return { ok: false, message: "That folder is inside DexNest's own data folder." };
@@ -368,10 +369,14 @@ export function createProjectsModule(options: ProjectsModuleOptions): ProjectsMo
       if (!command) return { ok: false, message: "No terminal was found. Choose one in Projects settings." };
       const spawned = options.launch.spawnDetached(command);
       if (!spawned.ok) return { ok: false, message: `The terminal didn't start: ${spawned.error}` };
+      terminalName = terminalProgramName(command.file);
     }
     store.touch(projectId, now());
     const words = { folder: "folder", vscode: "in VS Code", terminal: "terminal" } as const;
-    return { ok: true, message: target === "folder" ? `Opened ${project.name} folder.` : target === "vscode" ? `Opened ${project.name} ${words.vscode}.` : `Opened a terminal for ${project.name}.` };
+    // A terminal is started, not shown: Windows may open it behind DexNest, and
+    // DexNest has no way to see the window. Say what was done and where to look.
+    const terminalWords = `Started ${terminalName} in ${project.name}. If it didn't come to the front, it's in the taskbar.`;
+    return { ok: true, message: target === "folder" ? `Opened ${project.name} folder.` : target === "vscode" ? `Opened ${project.name} ${words.vscode}.` : terminalWords };
   }
 
   function mostRecentlyOpened(): Project | null {
@@ -383,6 +388,7 @@ export function createProjectsModule(options: ProjectsModuleOptions): ProjectsMo
   const GIT_ACTION_KIND: Record<string, string> = {
     "projects.git.fetch": "fetch",
     "projects.git.pull": "pull",
+    "projects.git.fast_forward": "fast_forward",
     "projects.git.push": "push",
     "projects.git.commit": "commit",
     "projects.git.stash": "stash",

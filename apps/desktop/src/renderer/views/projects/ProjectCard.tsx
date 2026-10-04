@@ -6,7 +6,7 @@ import { Code2, Download, RefreshCw, SquareTerminal, Star, Upload } from "lucide
 
 import { Badge, Button, Card, Technical } from "../../components/ui/kit";
 import { fetchedAgoText } from "@dexnest/projects/domain";
-import { badgeFor, branchLine, projectTypeLabel, quickActions, relativeTime, type QuickActionId, type ViewEntry } from "./projectsModel";
+import { badgeFor, branchLine, branchSummary, deployedSummary, projectTypeLabel, quickActions, relativeTime, type QuickActionId, type ViewEntry } from "./projectsModel";
 
 const QUICK_ICONS: Record<QuickActionId, React.ReactNode> = {
   vscode: <Code2 />,
@@ -38,6 +38,8 @@ export function ProjectCard({ entry, layout, now, tabbable, nameRef, onOpen, onQ
   const fetched = state?.isRepo && state.remotes.length > 0 ? fetchedAgoText(state.lastFetchAt, now) : null;
   const headingId = `project-${project.id}-name`;
   const typeLabel = projectTypeLabel(project.projectType);
+  const others = branchSummary(state);
+  const live = deployedSummary(state, project.deployedBranch);
   return (
     <Card accent={project.accent} interactive className={`projects-card projects-card--${layout}`} aria-labelledby={headingId}>
       <div className="projects-card__head">
@@ -47,6 +49,7 @@ export function ProjectCard({ entry, layout, now, tabbable, nameRef, onOpen, onQ
             type="button"
             className="projects-card__name"
             tabIndex={tabbable ? 0 : -1}
+            title={project.name}
             onClick={() => onOpen(entry)}
             onKeyDown={onKeyDownName}
           >
@@ -68,6 +71,12 @@ export function ProjectCard({ entry, layout, now, tabbable, nameRef, onOpen, onQ
 
       <div className="projects-card__meta">
         {branch && <Technical className="projects-card__branch">{branch}</Technical>}
+        {(others || live) && (
+          <p className="projects-card__branches">
+            {live && <span className="projects-card__live">{live}</span>}
+            {others && <span>{others}</span>}
+          </p>
+        )}
         {last && (
           <p className="projects-card__commit" title={last.subject}>
             <span className="projects-card__subject">{last.subject}</span>

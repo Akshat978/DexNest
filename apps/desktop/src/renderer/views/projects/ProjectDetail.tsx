@@ -123,6 +123,16 @@ export function ProjectDetail(props: ProjectDetailProps) {
     props.onToast(outcome.ok ? "success" : "error", outcome.message);
   };
 
+  /** Marks the deployed branch (or none). A project setting, not a git operation: nothing in the repository changes. */
+  const setDeployed = async (branch: string | null) => {
+    const result = await bridge.projectsUpdate(project.id, { deployedBranch: branch });
+    if (result.ok) {
+      props.onToast("success", branch ? `${branch} is marked as the deployed branch.` : "No branch is marked as deployed.");
+      props.onChanged();
+      void read();
+    } else props.onToast("error", result.reason);
+  };
+
   const run = async (actionId: string, params: Record<string, unknown> = {}) => {
     setRunning((r) => new Set(r).add(actionId));
     try {
@@ -221,7 +231,7 @@ export function ProjectDetail(props: ProjectDetailProps) {
       <TabPanel idPrefix="project-detail" id={tab}>
         {tab === "overview" && <OverviewTab project={project} state={state} leftOff={leftOff} operations={operationLines(ops)} now={now} onAsk={ask} />}
         {tab === "branches" && (
-          <BranchesTab project={project} state={state} now={now} staleDays={props.staleDays} allBranches={allBranches} onShowAll={() => setAllBranches(true)} onAsk={ask} onOpenGithub={(branch, base) => void open("github", { branch, base })} />
+          <BranchesTab project={project} state={state} now={now} staleDays={props.staleDays} allBranches={allBranches} onShowAll={() => setAllBranches(true)} onAsk={ask} onOpenGithub={(branch, base) => void open("github", { branch, base })} onSetDeployed={(branch) => void setDeployed(branch)} />
         )}
         {tab === "changes" && <ChangesTab state={state} stat={stat} onAsk={ask} onOpenVsCode={() => void open("vscode")} />}
         {tab === "history" && <HistoryTab entries={history ?? []} now={now} loading={history === null} />}

@@ -130,6 +130,102 @@ export function planPull(state: RepoStateOk): PlanResult {
   });
 }
 
+/**
+ * Move a branch forward without checking it out.
+ *
+ * Two forms, both forward-only:
+ *   - to its upstream: local `main` catches up with `origin/main` as of the
+ *     last fetch. Nothing is downloaded.
+ *   - the default branch up to another local branch: `main` moves to where
+ *     `develop` is, when everything on `main` is already on `develop`.
+ *
+ * The branch must not be checked out, here or in another worktree: moving a
+ * checked-out branch changes files, and that is what Pull and Switch are for.
+ * Git refuses anything that is not a fast-forward on its own; the plan
+ * refuses first, in words.
+ */
+export function planFastForward(state: RepoStateOk, request: Extract<OperationRequest, { kind: "fast_forward" }>): PlanResult {
+  const kind = "fast_forward";
+  const blocked = commonBlockers(state, kind, { allowDetached: true });
+  if (blocked) return blocked;
+  const check = checkBranchName(request.branch);
+  if (!check.ok) return refuse(kind, "invalid_name", check.reason);
+  const branch = state.branches.find((b) => b.name === request.branch);
+  if (!branch) return refuse(kind, "not_found", `There is no local branch called ${request.branch}.`);
+  if (branch.isCurrent || (!state.head.detached && state.head.branch === branch.name)) {
+    return refuse(kind, "current_branch", `You're on ${branch.name}. Use Pull to bring it up to date; this is for a branch you are not on.`, ["pull"]);
+  }
+  const elsewhere = elsewhereRefusal(kind, branch);
+  if (elsewhere) return elsewhere;
+
+  const base = { kind: "fast_forward" as const, network: false, undo: null, branch: branch.name, expectHead: state.head.sha };
+  const nothingLost = "The branch only moves forward: nothing on it is lost, and none of your files change.";
+
+  if (request.from === undefined) {
+    const upstream = branch.upstream;
+    if (!upstream) return refuse(kind, "no_upstream", `${branch.name} has no upstream branch to catch up with.`);
+    if (upstream.gone) return refuse(kind, "upstream_gone", `${upstream.ref} no longer exists on the remote.`);
+    const tip = state.remoteBranches.find((b) => b.ref === upstream.ref)?.tipSha;
+    const counts = upstream.counts;
+    if (!tip || !counts) return refuse(kind, "stale_state", `DexNest can't see where ${upstream.ref} is. Fetch first.`, ["fetch"]);
+    if (counts.behind === 0) return refuse(kind, "nothing_to_do", `${branch.name} already has everything on ${upstream.ref}, as of the last fetch.`, ["fetch"]);
+    if (counts.ahead > 0) {
+      return refuse(
+        kind,
+        "diverged",
+        `${branch.name} has ${plural(counts.ahead, "commit")} that ${upstream.ref} doesn't, and is ${plural(counts.behind, "commit")} behind it - they have diverged. DexNest won't merge or rebase for you; open a terminal here.`,
+        ["open_terminal"]
+      );
+    }
+    return plan({
+      ...base,
+      safety: "normal",
+      title: "Update branch",
+      summary: `Move ${branch.name} forward ${plural(counts.behind, "commit")} to ${upstream.ref}, without switching to it.`,
+      details: [nothingLost, `Uses what the last fetch downloaded; nothing is fetched now.`],
+      confirm: { kind: "none" },
+      steps: [{ op: "ff_branch", branch: branch.name, source: `refs/remotes/${upstream.ref}`, expectSha: branch.tipSha, toSha: tip }],
+      counts: { commits: counts.behind }
+    });
+  }
+
+  const fromCheck = checkBranchName(request.from);
+  if (!fromCheck.ok) return refuse(kind, "invalid_name", fromCheck.reason);
+  if (request.from === branch.name) return refuse(kind, "nothing_to_do", `${branch.name} is already where ${branch.name} is.`);
+  const source = state.branches.find((b) => b.name === request.from);
+  if (!source) return refuse(kind, "not_found", `There is no local branch called ${request.from}.`);
+  // How far one branch is from another is only known against the default
+  // branch, so that is the only branch this form moves.
+  if (!state.defaultBranch || branch.name !== state.defaultBranch) {
+    return refuse(kind, "invalid_request", `DexNest only brings the default branch${state.defaultBranch ? ` (${state.defaultBranch})` : ""} up to another branch.`);
+  }
+  if (source.tipSha === branch.tipSha) return refuse(kind, "nothing_to_do", `${branch.name} and ${source.name} are at the same commit already.`);
+  const vs = source.vsDefault;
+  if (!vs) return refuse(kind, "stale_state", `DexNest hasn't compared ${source.name} with ${branch.name}. Open the Branches tab and compare all branches first.`, ["refresh"]);
+  if (vs.behind > 0) {
+    return refuse(
+      kind,
+      "diverged",
+      `${branch.name} has ${plural(vs.behind, "commit")} that ${source.name} doesn't, so it can't simply move forward to it. DexNest won't merge for you; open a terminal here.`,
+      ["open_terminal"]
+    );
+  }
+  if (vs.ahead === 0) return refuse(kind, "nothing_to_do", `${source.name} has nothing that ${branch.name} doesn't.`);
+  const behindRemote = branch.upstream?.counts?.ahead === 0 && (branch.upstream?.counts?.behind ?? 0) > 0;
+  const details = [nothingLost, `Only this PC changes. ${branch.name} is not pushed until you push it.`];
+  if (behindRemote) details.push(`${branch.name} is also behind ${branch.upstream!.ref}; ${source.name} already contains those commits, so this covers them too.`);
+  return plan({
+    ...base,
+    safety: "caution",
+    title: `Bring ${branch.name} up to ${source.name}`,
+    summary: `Move ${branch.name} forward to where ${source.name} is, without switching to it.`,
+    details,
+    confirm: { kind: "dialog" },
+    steps: [{ op: "ff_branch", branch: branch.name, source: `refs/heads/${source.name}`, expectSha: branch.tipSha, toSha: source.tipSha }],
+    counts: { commits: vs.ahead }
+  });
+}
+
 export function planPush(state: RepoStateOk, request: Extract<OperationRequest, { kind: "push" }>): PlanResult {
   const blocked = commonBlockers(state, "push");
   if (blocked) return blocked;
@@ -597,6 +693,8 @@ export function planOperation(state: RepoState, request: OperationRequest): Plan
       return planFetch(state, request);
     case "pull":
       return planPull(state);
+    case "fast_forward":
+      return planFastForward(state, request);
     case "push":
       return planPush(state, request);
     case "commit":

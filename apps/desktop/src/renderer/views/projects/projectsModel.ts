@@ -409,6 +409,14 @@ export interface BranchRowView {
   stale: boolean;
   elsewhere: "autopilot" | "other" | null;
   remote: string | null;
+  /** The branch the owner marked as deployed. */
+  deployed: boolean;
+  /** How far from what is live; "" when no branch is marked as deployed. */
+  vsDeployed: string;
+  /** Catch up with its upstream without switching to it; null when that does not apply. */
+  update: OperationRequestLike | null;
+  /** Bring the default branch up to the branch you are on; null on every other row. */
+  bringUp: { request: OperationRequestLike; label: string } | null;
 }
 
 function counts(c: { ahead: number; behind: number } | null): string {
@@ -417,10 +425,52 @@ function counts(c: { ahead: number; behind: number } | null): string {
   return [c.ahead > 0 ? `${c.ahead} ahead` : "", c.behind > 0 ? `${c.behind} behind` : ""].filter(Boolean).join(" · ");
 }
 
+/** What "vs main" was measured against: `origin/main` when the local main is only an old copy of it. */
+export function defaultBaseLabel(state: RepoState | null): string {
+  if (!state?.isRepo) return "default";
+  return state.defaultBase ?? state.defaultBranch ?? "default";
+}
+
+/** Says so when branches were compared with the remote's default branch because the local one is behind it. */
+export function staleDefaultNote(state: RepoState | null): string | null {
+  if (!state?.isRepo || !state.defaultBranch || !state.defaultBase || state.defaultBase === state.defaultBranch) return null;
+  const behind = state.branches.find((b) => b.name === state.defaultBranch)?.upstream?.counts?.behind ?? 0;
+  if (behind <= 0) return null;
+  return `${state.defaultBranch} on this PC is ${behind} commit${behind === 1 ? "" : "s"} behind ${state.defaultBase}, so branches are compared with ${state.defaultBase}.`;
+}
+
+/** A card's line about the other branches: how many, and which is furthest ahead. null with one branch or none. */
+export function branchSummary(state: RepoState | null): string | null {
+  if (!state?.isRepo || state.branches.length < 2) return null;
+  const base = defaultBaseLabel(state);
+  let furthest: { name: string; ahead: number } | null = null;
+  for (const b of state.branches) {
+    const ahead = b.vsDefault?.ahead ?? 0;
+    if (b.name !== state.defaultBranch && ahead > 0 && (!furthest || ahead > furthest.ahead)) furthest = { name: b.name, ahead };
+  }
+  const total = `${state.branches.length} branches`;
+  return furthest ? `${total} · ${furthest.name} ${furthest.ahead} ahead of ${base}` : total;
+}
+
+/**
+ * What a card says about the deployed branch: which it is, and how many
+ * commits on the branch you are on are not on it. null when none is marked.
+ */
+export function deployedSummary(state: RepoState | null, deployedBranch: string | null): string | null {
+  if (!deployedBranch) return null;
+  if (!state?.isRepo || !state.deployed?.base) return `live: ${deployedBranch}`;
+  const current = state.branches.find((b) => b.isCurrent);
+  const ahead = current?.vsDeployed?.ahead ?? 0;
+  return ahead > 0 ? `live: ${deployedBranch} · ${ahead} not live` : `live: ${deployedBranch}`;
+}
+
 /** Local branches (current first, then by recency), then remote branches no local branch tracks. */
 export function branchRows(state: RepoState | null, now: string, staleDays: number): BranchRowView[] {
   if (!state?.isRepo) return [];
   const stale = (at: string | null) => Boolean(at) && Date.parse(now) - Date.parse(at as string) > staleDays * 86_400_000;
+  const deployedName = state.deployed?.branch ?? null;
+  const compared = Boolean(state.deployed?.base);
+  const onBranch = state.head.detached ? null : state.head.branch;
   const locals: BranchRowView[] = state.branches.map((b) => ({
     key: `l:${b.name}`,
     kind: "local",
@@ -434,7 +484,15 @@ export function branchRows(state: RepoState | null, now: string, staleDays: numb
     subject: b.lastSubject,
     stale: stale(b.lastCommitAt),
     elsewhere: b.checkedOutElsewhere ? (b.checkedOutElsewhere.owner === "autopilot" ? "autopilot" : "other") : null,
-    remote: b.upstream?.remote ?? null
+    remote: b.upstream?.remote ?? null,
+    deployed: b.name === deployedName,
+    // On the deployed branch, commits not pushed yet are not live either.
+    vsDeployed: !compared ? "" : b.vsDeployed ? counts(b.vsDeployed) : b.name === deployedName ? "live" : "same as live",
+    update: !b.isCurrent && b.upstream && !b.upstream.gone && (b.upstream.counts?.behind ?? 0) > 0 ? { kind: "fast_forward", branch: b.name } : null,
+    bringUp:
+      b.name === state.defaultBranch && !b.isCurrent && onBranch && onBranch !== b.name
+        ? { request: { kind: "fast_forward", branch: b.name, from: onBranch }, label: `Bring up to ${onBranch}` }
+        : null
   }));
   locals.sort((a, b) => Number(b.current) - Number(a.current) || (b.lastCommitAt ?? "").localeCompare(a.lastCommitAt ?? ""));
   const remotes: BranchRowView[] = state.remoteBranches
@@ -452,7 +510,11 @@ export function branchRows(state: RepoState | null, now: string, staleDays: numb
       subject: r.lastSubject,
       stale: stale(r.lastCommitAt),
       elsewhere: null,
-      remote: r.remote
+      remote: r.remote,
+      deployed: false,
+      vsDeployed: "",
+      update: null,
+      bringUp: null
     }));
   remotes.sort((a, b) => (b.lastCommitAt ?? "").localeCompare(a.lastCommitAt ?? ""));
   return [...locals, ...remotes];

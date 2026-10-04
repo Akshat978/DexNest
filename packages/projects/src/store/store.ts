@@ -107,6 +107,7 @@ interface ProjectRow {
   archived_at: string | null;
   notes: string;
   health_url: string;
+  deployed_branch: string | null;
   stop_command: string;
   log_command: string;
   log_path: string;
@@ -274,6 +275,7 @@ export function createProjectsStore(db: SqlDatabase): ProjectsStore {
         logCommand: row.log_command,
         logPath: row.log_path,
         dockerCompose: row.docker_compose === 1,
+        deployedBranch: row.deployed_branch ?? null,
         git: {
           isRepo: row.is_git === null ? null : row.is_git === 1,
           remoteName: row.remote_name,
@@ -309,12 +311,12 @@ export function createProjectsStore(db: SqlDatabase): ProjectsStore {
         id, name, path, real_path, remote_identity, description, accent, project_type, group_id, favourite, pinned,
         archived_at, notes, health_url, stop_command, log_command, log_path, docker_compose, is_git, remote_name,
         remote_url, hosting_owner, hosting_repo, default_branch, package_manager, framework, workspace_file,
-        created_at, updated_at, last_opened_at, last_activity_at, legacy_json
+        created_at, updated_at, last_opened_at, last_activity_at, legacy_json, deployed_branch
       ) VALUES (
         :id, :name, :path, :real_path, :remote_identity, :description, :accent, :project_type, :group_id, :favourite, :pinned,
         :archived_at, :notes, :health_url, :stop_command, :log_command, :log_path, :docker_compose, :is_git, :remote_name,
         :remote_url, :hosting_owner, :hosting_repo, :default_branch, :package_manager, :framework, :workspace_file,
-        :created_at, :updated_at, :last_opened_at, :last_activity_at, :legacy_json
+        :created_at, :updated_at, :last_opened_at, :last_activity_at, :legacy_json, :deployed_branch
       )
       ON CONFLICT (id) DO UPDATE SET
         name = excluded.name, path = excluded.path, real_path = excluded.real_path, remote_identity = excluded.remote_identity,
@@ -327,7 +329,8 @@ export function createProjectsStore(db: SqlDatabase): ProjectsStore {
         default_branch = excluded.default_branch, package_manager = excluded.package_manager,
         framework = excluded.framework, workspace_file = excluded.workspace_file, created_at = excluded.created_at,
         updated_at = excluded.updated_at, last_opened_at = excluded.last_opened_at,
-        last_activity_at = excluded.last_activity_at, legacy_json = excluded.legacy_json
+        last_activity_at = excluded.last_activity_at, legacy_json = excluded.legacy_json,
+        deployed_branch = excluded.deployed_branch
     `).run({
       id: p.id,
       name: p.name,
@@ -343,6 +346,7 @@ export function createProjectsStore(db: SqlDatabase): ProjectsStore {
       archived_at: p.archivedAt,
       notes: p.notes,
       health_url: p.healthUrl,
+      deployed_branch: p.deployedBranch,
       stop_command: p.stopCommand,
       log_command: p.logCommand,
       log_path: p.logPath,

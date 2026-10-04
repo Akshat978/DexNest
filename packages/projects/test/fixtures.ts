@@ -67,6 +67,7 @@ export function repo(overrides: Partial<RepoStateOk> = {}): RepoStateOk {
     isRepo: true,
     head: { branch: "main", sha: main.tipSha, detached: false, unborn: false },
     defaultBranch: "main",
+    defaultBase: "main",
     remotes: [{ name: "origin", url: "https://github.com/me/app.git" }],
     branches: [main],
     remoteBranches: [remoteBranch("main", { tipSha: main.tipSha, trackedBy: "main", mergedIntoDefault: null })],

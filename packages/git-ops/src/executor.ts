@@ -252,6 +252,18 @@ export function createGitOps(options: GitOpsOptions): GitOps {
               break;
             }
           }
+          if (step.op === "ff_branch") {
+            // The preview said "move this branch from here to there". If either
+            // end moved since, the owner approved something else.
+            const tip = await revParse(input.path, `refs/heads/${step.branch}`);
+            const target = await revParse(input.path, step.source);
+            if (tip !== step.expectSha || target !== step.toSha) {
+              outcome = "failed";
+              errorCode = "stale_state";
+              message = `${step.branch} or the branch it was moving to changed since the preview. Nothing was moved.`;
+              break;
+            }
+          }
           if (step.op === "reset_soft" && (await revParse(input.path, "HEAD")) !== step.expectHead) {
             outcome = "failed";
             errorCode = "stale_state";

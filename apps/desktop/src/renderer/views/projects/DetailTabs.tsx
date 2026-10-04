@@ -13,6 +13,7 @@ import {
   availability,
   branchRows,
   changeRows,
+  defaultBaseLabel,
   formFromProject,
   formProblems,
   inputFromForm,
@@ -20,6 +21,7 @@ import {
   operationLabel,
   relativeTime,
   runCommands,
+  staleDefaultNote,
   stripAnsi,
   type ChangeRowView,
   type LifecycleAction,
@@ -214,7 +216,8 @@ export function BranchesTab({
   allBranches,
   onShowAll,
   onAsk,
-  onOpenGithub
+  onOpenGithub,
+  onSetDeployed
 }: {
   project: Project;
   state: RepoState | null;
@@ -224,6 +227,8 @@ export function BranchesTab({
   onShowAll(): void;
   onAsk: Ask;
   onOpenGithub(branch: string, base?: string): void;
+  /** Marks which branch is deployed, or none. */
+  onSetDeployed?(branch: string | null): void;
 }) {
   const [newBranch, setNewBranch] = useState("");
   const rows = branchRows(state, now, staleDays);
@@ -232,6 +237,11 @@ export function BranchesTab({
   const defaultBranch = repo?.defaultBranch ?? null;
   if (!repo) return <p className="projects-muted">{state && !state.isRepo ? state.reason : "Reading git state…"}</p>;
   const create = availability(state, { kind: "create_branch", name: newBranch.trim() || "x", switchTo: true });
+  const base = defaultBaseLabel(state);
+  const baseNote = staleDefaultNote(state);
+  const deployed = project.deployedBranch;
+  const deployedMissing = deployed !== null && repo.deployed?.base === null;
+  const showLive = Boolean(repo.deployed?.base);
   return (
     <div className="projects-branches">
       <form
@@ -247,6 +257,26 @@ export function BranchesTab({
           Create and switch
         </Button>
       </form>
+      {onSetDeployed && (
+        <div className="projects-inline-form">
+          <label htmlFor="projects-deployed-branch">Deployed branch</label>
+          <select id="projects-deployed-branch" className="kit-tech" value={deployed ?? ""} onChange={(e) => onSetDeployed(e.target.value || null)}>
+            <option value="">Not deployed</option>
+            {deployed && !repo.branches.some((b) => b.name === deployed) && <option value={deployed}>{deployed} (missing)</option>}
+            {repo.branches.map((b) => (
+              <option key={b.name} value={b.name}>{b.name}</option>
+            ))}
+          </select>
+          <span className="projects-muted">
+            {deployedMissing
+              ? `There is no branch called ${deployed} any more.`
+              : deployed
+                ? `Compared with ${repo.deployed?.base ?? deployed}: what was pushed of it. DexNest can't see your server, so this is the branch, not the deploy.`
+                : "For a project that is live: the branch it is deployed from."}
+          </span>
+        </div>
+      )}
+      {baseNote && <p className="projects-muted">{baseNote}</p>}
       <div className="projects-table-wrap">
         <table className="projects-table">
           <caption className="kit-visually-hidden">Branches</caption>
@@ -255,7 +285,8 @@ export function BranchesTab({
               <th scope="col">Branch</th>
               <th scope="col">Upstream</th>
               <th scope="col">vs upstream</th>
-              <th scope="col">vs {defaultBranch ?? "default"}</th>
+              <th scope="col">vs {base}</th>
+              {showLive && <th scope="col">vs live</th>}
               <th scope="col">Last commit</th>
               <th scope="col">State</th>
               <th scope="col">
@@ -277,6 +308,7 @@ export function BranchesTab({
                   <td>{row.upstream ? <Technical>{row.upstream}</Technical> : <span className="projects-muted">-</span>}</td>
                   <td>{row.vsUpstream}</td>
                   <td>{row.vsDefault}</td>
+                  {showLive && <td>{row.vsDeployed}</td>}
                   <td>
                     <span className="projects-ellipsis" title={row.subject ?? undefined}>
                       {row.subject}
@@ -286,6 +318,7 @@ export function BranchesTab({
                   <td className="projects-table__state">
                     <span>
                     {row.current && <Badge tone="accent">current</Badge>}
+                    {row.deployed && <Badge tone="success">deployed</Badge>}
                     {row.kind === "remote" && <Badge tone="info">remote only</Badge>}
                     {row.merged === true && !row.current && <Badge tone="success">merged</Badge>}
                     {row.merged === false && <Badge tone="neutral">not merged</Badge>}
@@ -295,6 +328,16 @@ export function BranchesTab({
                   </td>
                   <td className="projects-table__actions">
                     <span>
+                    {row.update && (
+                      <Button size="sm" variant="secondary" disabledReason={availability(state, row.update)} title={`Move ${row.name} forward to ${row.upstream}, without switching to it`} onClick={() => onAsk(row.update as OperationRequestLike)}>
+                        Update
+                      </Button>
+                    )}
+                    {row.bringUp && (
+                      <Button size="sm" variant="ghost" disabledReason={availability(state, row.bringUp.request)} title={`Move ${row.name} forward to where you are, without switching to it`} onClick={() => onAsk((row.bringUp as { request: OperationRequestLike }).request)}>
+                        {row.bringUp.label}
+                      </Button>
+                    )}
                     {!row.current && (
                       <Button size="sm" variant="ghost" disabledReason={availability(state, switchReq)} onClick={() => onAsk(switchReq)}>
                         {local ? "Switch" : "Check out"}
@@ -323,7 +366,7 @@ export function BranchesTab({
       </div>
       {!allBranches && (
         <Button size="sm" variant="ghost" onClick={onShowAll}>
-          Compare all branches with {defaultBranch ?? "the default branch"}
+          Compare all branches with {base === "default" ? "the default branch" : base}
         </Button>
       )}
       <p className="projects-muted">Remote branches are as of the last fetch. A branch checked out in another worktree (Autopilot's) is never switched, pushed or deleted.</p>

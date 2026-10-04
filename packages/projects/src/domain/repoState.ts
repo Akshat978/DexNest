@@ -34,10 +34,16 @@ export interface LocalBranch {
   upstream: UpstreamInfo | null;
   lastCommitAt: string | null;
   lastSubject: string | null;
-  /** vs the default branch; null when this is the default branch or it is unknown. */
+  /** vs the default branch, measured against `RepoStateOk.defaultBase`; null when this is the default branch or it is unknown. */
   vsDefault: Counts | null;
   /** null when unknown (no default branch). */
   mergedIntoDefault: boolean | null;
+  /**
+   * vs the branch the owner marked as deployed (`RepoStateOk.deployed`): how
+   * far this branch is from what is live. null when no branch is marked, when
+   * this is that branch and it matches what was pushed, or when not compared.
+   */
+  vsDeployed?: Counts | null;
   /** Checked out in a worktree other than the one DexNest operates in. */
   checkedOutElsewhere: WorktreeRef | null;
 }
@@ -117,6 +123,21 @@ export interface RepoStateOk {
   isRepo: true;
   head: HeadState;
   defaultBranch: string | null;
+  /**
+   * What "vs the default branch" was measured against: `main`, or
+   * `origin/main` when the local default branch is only behind it. A local
+   * `main` that has not been pulled for months would make every branch look
+   * further ahead than it is; the remote's copy is the newer truth then.
+   */
+  defaultBase: string | null;
+  /**
+   * The branch the owner marked as the one that is deployed, and the ref it
+   * was compared at (`origin/develop`, or `develop` when there is no remote
+   * copy; null when the branch no longer exists). null when none is marked.
+   * DexNest only knows the name: whether a commit has reached the server is
+   * not something it can see.
+   */
+  deployed?: { branch: string; base: string | null } | null;
   remotes: RemoteInfo[];
   branches: LocalBranch[];
   remoteBranches: RemoteBranch[];

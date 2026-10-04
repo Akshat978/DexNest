@@ -53,7 +53,7 @@ function prefixEnd(args: readonly string[]): number {
 }
 
 /** Exact shapes, after the prefix. `B` is a checked branch name, `S` a full sha, `R` a remote, `P` a path. */
-type Token = string | { kind: "branch" | "sha" | "remote" | "refspec" | "message" | "label" | "stashref" | "remoteref" };
+type Token = string | { kind: "branch" | "sha" | "remote" | "refspec" | "ffspec" | "message" | "label" | "stashref" | "remoteref" };
 
 function matchShape(rest: readonly string[], shape: readonly Token[], tail?: "paths"): boolean {
   if (tail === "paths") {
@@ -85,6 +85,19 @@ function matchShape(rest: readonly string[], shape: readonly Token[], tail?: "pa
         if (!(isFullSha(m[1]) || (checkBranchName(m[1]).ok && m[1] === m[2]))) return false;
         break;
       }
+      case "ffspec": {
+        // refs/heads/<branch>:refs/heads/<branch> or refs/remotes/<remote>/<branch>:refs/heads/<branch>.
+        // Full ref names on both sides and no leading '+': git itself then refuses anything but a fast-forward.
+        const m = /^(refs\/heads\/|refs\/remotes\/)([^:]+):refs\/heads\/(.+)$/.exec(got);
+        if (!m || !checkBranchName(m[3]).ok) return false;
+        if (m[1] === "refs/heads/") {
+          if (!checkBranchName(m[2]).ok || m[2] === m[3]) return false;
+        } else {
+          const slash = m[2].indexOf("/");
+          if (slash < 1 || !checkRemoteName(m[2].slice(0, slash)).ok || !checkBranchName(m[2].slice(slash + 1)).ok) return false;
+        }
+        break;
+      }
       case "message":
         if (got.length === 0 || got.includes("\0")) return false;
         break;
@@ -111,6 +124,7 @@ const B = { kind: "branch" } as const;
 const S = { kind: "sha" } as const;
 const R = { kind: "remote" } as const;
 const REFSPEC = { kind: "refspec" } as const;
+const FFSPEC = { kind: "ffspec" } as const;
 const MSG = { kind: "message" } as const;
 const LABEL = { kind: "label" } as const;
 const STASHREF = { kind: "stashref" } as const;
@@ -119,6 +133,10 @@ const SHAPES: ReadonlyArray<{ shape: readonly Token[]; tail?: "paths"; allow?: r
   { shape: ["fetch", "--prune", "--all"], allow: ["--prune", "--all"] },
   { shape: ["fetch", "--prune", R], allow: ["--prune"] },
   { shape: ["pull", "--ff-only", "--no-rebase", R, B] },
+  // A fetch from this repository into itself: the one way to move a branch that
+  // is not checked out, and only forward. No remote is contacted, FETCH_HEAD is
+  // left alone (it is how "last fetched" is known), and no tags are touched.
+  { shape: ["fetch", "--no-tags", "--no-write-fetch-head", ".", FFSPEC] },
   { shape: ["push", R, REFSPEC] },
   { shape: ["push", "--set-upstream", R, REFSPEC] },
   { shape: ["push", R, "--delete", B], allow: ["--delete"] },
@@ -175,6 +193,8 @@ export function stepToArgv(step: GitStep, context: { opId: string; stashRef?: st
       return { args: step.remote === null ? [...p, "fetch", "--prune", "--all"] : [...p, "fetch", "--prune", step.remote], network: true };
     case "pull_ff":
       return { args: [...p, "pull", "--ff-only", "--no-rebase", step.remote, step.branch], network: true };
+    case "ff_branch":
+      return { args: [...p, "fetch", "--no-tags", "--no-write-fetch-head", ".", `${step.source}:refs/heads/${step.branch}`], network: false };
     case "push":
       return {
         args: step.setUpstream

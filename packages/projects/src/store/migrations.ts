@@ -133,5 +133,13 @@ CREATE TABLE IF NOT EXISTS proj_meta (
   updated_at TEXT NOT NULL
 );
 `
+  },
+  {
+    // The branch the owner marked as deployed. NULL for a project that is not deployed.
+    version: 2,
+    name: "deployed-branch",
+    sql: `
+ALTER TABLE proj_projects ADD COLUMN deployed_branch TEXT;
+`
   }
 ];

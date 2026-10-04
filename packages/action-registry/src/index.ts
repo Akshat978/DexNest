@@ -1265,6 +1265,24 @@ export const seededActions = [
     status: "available"
   },
   {
+    id: "projects.git.fast_forward",
+    title: "Move a branch forward without switching to it",
+    moduleId: "projects",
+    module: "projects",
+    description: "Move a branch that is not checked out forward to its upstream, or the default branch up to another branch. Forward only; never merges, rebases or forces.",
+    category: "project",
+    dangerLevel: "caution",
+    requiresConfirmation: false,
+    confirmationRule: null,
+    reversible: false,
+    undoActionId: null,
+    handlerType: "internal_function",
+    handlerRef: "projects.git.fast_forward",
+    allowedTriggers: ["module_ui"],
+    enabled: true,
+    status: "available"
+  },
+  {
     id: "projects.git.pull_all",
     title: "Pull all clean projects",
     moduleId: "projects",

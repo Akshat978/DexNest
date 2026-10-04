@@ -12,7 +12,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { normaliseProjectInput } from "@dexnest/projects/domain";
-import { NOW, repo, withCounts } from "../../../packages/projects/test/fixtures.ts";
+import { NOW, repo, withCounts, branch } from "../../../packages/projects/test/fixtures.ts";
 
 const desktop = fileURLToPath(new URL("..", import.meta.url));
 const repoRoot = resolve(desktop, "../..");
@@ -329,6 +329,21 @@ test("250 projects: every card renders, one card name is in the tab order, the C
   assert.ok(took < 3000, `rendered in ${Math.round(took)} ms`);
   const css = readFileSync(join(desktop, "src/renderer/views/projects/Projects.css"), "utf8");
   assert.match(css, /\.projects-grid > li,\s*\.projects-list > li \{\s*content-visibility: auto;/);
+});
+
+test("a card: the other branches in a line, the live branch when one is marked, the full name as its tooltip", () => {
+  const develop = branch("develop", { isCurrent: true, vsDefault: { ahead: 6, behind: 0 }, mergedIntoDefault: false, vsDeployed: { ahead: 6, behind: 0 } });
+  const state = repo({
+    head: { branch: "develop", sha: develop.tipSha, detached: false, unborn: false },
+    defaultBase: "origin/main",
+    deployed: { branch: "main", base: "origin/main" },
+    branches: [develop, branch("main"), branch("staging")]
+  });
+  const html = home([{ project: project("a-project-with-a-very-long-name-indeed", { deployedBranch: "main" }), state }]);
+  assert.match(html, /<p class="projects-card__branches"><span class="projects-card__live">live: main · 6 not live<\/span><span>3 branches · develop 6 ahead of origin\/main<\/span><\/p>/);
+  assert.match(html, /class="projects-card__name" tabindex="0" title="a-project-with-a-very-long-name-indeed"/);
+  // One branch and not deployed: the line is not there at all.
+  assert.doesNotMatch(home([{ project: project("plain"), state: repo() }]), /projects-card__branches/);
 });
 
 test("F37: a card shows the project type next to its tags", () => {

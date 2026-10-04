@@ -10,6 +10,7 @@ import { neverRuleForFlag, neverRuleForKind, type ConfirmationNeed, type SafetyC
 export const OPERATION_KINDS = [
   "fetch",
   "pull",
+  "fast_forward",
   "push",
   "commit",
   "stash",
@@ -26,6 +27,12 @@ export type OperationKind = (typeof OPERATION_KINDS)[number];
 export type OperationRequest =
   | { kind: "fetch"; remote?: string }
   | { kind: "pull" }
+  /**
+   * Move a branch that is not checked out forward, without switching to it:
+   * to its upstream (`from` omitted), or the default branch up to another
+   * local branch (`from` named). Forward only; nothing is merged or rewritten.
+   */
+  | { kind: "fast_forward"; branch: string; from?: string }
   | { kind: "push"; branch?: string; remote?: string; setUpstream?: boolean }
   | { kind: "commit"; message: string; files: "all" | string[] }
   | { kind: "stash"; includeUntracked?: boolean }
@@ -40,6 +47,11 @@ export type OperationRequest =
 export type GitStep =
   | { op: "fetch"; remote: string | null; prune: true }
   | { op: "pull_ff"; remote: string; branch: string }
+  /**
+   * `source` is a full ref (refs/remotes/<remote>/<branch> or refs/heads/<branch>).
+   * Both tips are the ones the plan saw; git-ops refuses to run if either moved.
+   */
+  | { op: "ff_branch"; branch: string; source: string; expectSha: string; toSha: string }
   | { op: "push"; remote: string; branch: string; setUpstream: boolean }
   | { op: "push_sha"; remote: string; sha: string; branch: string }
   | { op: "push_delete"; remote: string; branch: string }
@@ -140,6 +152,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 const ALLOWED_FIELDS: Record<OperationKind, readonly string[]> = {
   fetch: ["remote"],
   pull: [],
+  fast_forward: ["branch", "from"],
   push: ["branch", "remote", "setUpstream"],
   commit: ["message", "files"],
   stash: ["includeUntracked"],
@@ -194,6 +207,9 @@ export function parseOperationRequest(input: unknown): ParseResult {
       return optionalString(input.remote) ? { ok: true, request: { kind: "fetch", remote: input.remote } } : bad("remote must be text.");
     case "pull":
       return { ok: true, request: { kind: "pull" } };
+    case "fast_forward":
+      if (typeof input.branch !== "string" || !optionalString(input.from)) return bad("Which branch?");
+      return { ok: true, request: { kind: "fast_forward", branch: input.branch, from: input.from } };
     case "push":
       if (!optionalString(input.branch) || !optionalString(input.remote)) return bad("branch and remote must be text.");
       if (input.setUpstream !== undefined && typeof input.setUpstream !== "boolean") return bad("setUpstream must be true or false.");
