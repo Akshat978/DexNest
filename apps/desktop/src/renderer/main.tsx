@@ -35,7 +35,8 @@ import { accentStyle, ErrorState, LoadingState, PageHeader as KitPageHeader, Seg
 import { previewForUi, formatBytes, formatDate, formatDuration } from "./lib/format";
 import { accentTint, MODULE_META, SIDEBAR_VIEWS, SIDEBAR_HIDDEN_VIEWS, type ViewId } from "./lib/moduleMeta";
 import { viewForSearchSource } from "./lib/searchSources";
-import { NAVIGATE_EVENT, RecordLinkChips, RecordLinksList, useRecordLinks, type RecordLinkChip } from "./views/RecordLinks";
+import { NAVIGATE_EVENT, RecordLinkChips, RecordLinksList, useRecordFocus, useRecordLinks, type RecordLinkChip } from "./views/RecordLinks";
+import { focusMarker } from "./views/recordFocus";
 import { moduleName } from "./lib/activityLabels";
 import { arrangeSidebar, canHide, EMPTY_SIDEBAR_PREFS, moveSidebarView, normalizeSidebarPrefs, setSidebarHidden, type SidebarPrefs } from "./lib/sidebarLayout";
 import { getPerfStats, subscribePerf, recordModuleSwitch, recordModuleDataLoaded } from "./lib/perf";
@@ -9196,6 +9197,7 @@ function VaultView({
   onRefresh: () => Promise<void>;
 }) {
   const vaultLinks = useRecordLinks(getBridge(), "vault", vaultState);
+  const vaultFocus = useRecordFocus("vault");
   const [selectedFiles, setSelectedFiles] = useState<ToolsSelectedFile[]>([]);
   const [category, setCategory] = useState("Other");
   const [tags, setTags] = useState("");
@@ -9370,6 +9372,12 @@ function VaultView({
     .slice(0, 5);
   const expirySoon = expiryItems.filter((e) => e.days <= 30).length;
   const detailDoc = detailDocId ? vaultState.documents.find((d) => d.id === detailDocId) ?? null : null;
+  // A link chip elsewhere asked for this document: open it.
+  useEffect(() => {
+    if (!vaultFocus.id || !vaultState.documents.some((d) => d.id === vaultFocus.id)) return;
+    setDetailDocId(vaultFocus.id);
+    vaultFocus.shown();
+  }, [vaultFocus.id, vaultState.documents]);
   const isEditing = Boolean(detailDoc && editingDocumentId === detailDoc.id);
 
   return (
@@ -10237,6 +10245,13 @@ function JournalView({
   onRefresh: () => Promise<void>;
 }) {
   const journalLinks = useRecordLinks(getBridge(), "journal", journalState);
+  const journalFocus = useRecordFocus("journal");
+  useEffect(() => {
+    const wanted = journalFocus.id ? journalState.entries.find((entry) => entry.id === journalFocus.id) : undefined;
+    if (!wanted) return;
+    loadEntry(wanted);
+    journalFocus.shown();
+  }, [journalFocus.id, journalState.entries]);
   const [entryId, setEntryId] = useState<string | undefined>(journalState.todayEntry?.id);
   const [date, setDate] = useState(journalState.today);
   const [title, setTitle] = useState(journalState.todayEntry?.title ?? "");
@@ -10450,7 +10465,7 @@ function JournalView({
             {journalState.entries.length === 0 ? <p className="text-xs text-[#525252]">No entries yet.</p> : (
               <div className="space-y-1.5">
                 {journalState.entries.slice(0, 8).map((entry) => (
-                  <div key={entry.id} className="glass-card flex w-full items-center gap-3 p-2.5">
+                  <div key={entry.id} data-record={focusMarker("journal", entry.id)} className="glass-card flex w-full items-center gap-3 p-2.5">
                     <button type="button" onClick={() => loadEntry(entry)} className="flex min-w-0 flex-1 items-center gap-3 text-left" title="Load this entry to edit">
                       <span className="font-mono text-xs text-[#A3A3A3]">{formatLocalDate(entry.date)}</span>
                       {entry.mood && <StatusChip tone="info" dot={false} style={{ color: ACCENT_JOURNAL, borderColor: `${ACCENT_JOURNAL}33`, background: `${ACCENT_JOURNAL}12` }}>{entry.mood}</StatusChip>}
@@ -12060,6 +12075,14 @@ function CalendarView({
   onRefresh: () => Promise<void>;
 }) {
   const calendarLinks = useRecordLinks(getBridge(), "calendar", calendarState);
+  const calendarFocus = useRecordFocus("calendar");
+  useEffect(() => {
+    const wanted = calendarFocus.id ? calendarState.events.find((event) => event.id === calendarFocus.id) : undefined;
+    if (!wanted) return;
+    // The same as clicking it: the calendar moves to the event's day and the event is selected.
+    if (isProviderEvent(wanted)) { setSelectedDate(wanted.date); setSelectedEventId(wanted.id); } else loadEvent(wanted);
+    calendarFocus.shown();
+  }, [calendarFocus.id, calendarState.events]);
   const [editingId, setEditingId] = useState<string | undefined>();
   const [title, setTitle] = useState("");
   const [date, setDate] = useState(calendarState.today);
@@ -12841,8 +12864,7 @@ function CalendarView({
                       onKeyDown={(event) => { if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); open(); } }}
                     >
                       <div className="flex h-8 w-8 items-center justify-center rounded-lg" style={{ background: `${ACCENT_CAL}14`, color: ACCENT_CAL }}>{bday ? <Cake className="h-4 w-4" /> : <CalendarDays className="h-4 w-4" />}</div>
-                      <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{e.title}</p><p className="font-mono text-[10px] text-[#525252]">{formatLocalDate(e.date)} / {e.allDay ? "all-day" : e.startTime || "-"}</p></div>
-                      <RecordLinkChips chips={calendarLinks} recordId={e.id} />
+                      <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{e.title}</p><p className="font-mono text-[10px] text-[#525252]">{formatLocalDate(e.date)} / {e.allDay ? "all-day" : e.startTime || "-"}</p><RecordLinkChips chips={calendarLinks} recordId={e.id} /></div>
                       <PinButton input={{ type: "event", module: "calendar", entityId: e.id, title: e.title, subtitle: formatLocalDate(e.date) }} />
                       <span className="font-mono text-[10px] text-[#14B8A6]">{e.sourceModule}</span>
                     </div>
@@ -13011,6 +13033,17 @@ function FinanceView({
   onRefresh: () => Promise<void>;
 }) {
   const financeLinks = useRecordLinks(getBridge(), "finance", financeState);
+  const financeFocus = useRecordFocus("finance");
+  const [financeFocused, setFinanceFocused] = useState<string | null>(null);
+  useEffect(() => {
+    if (!financeFocus.id) return;
+    const entry = financeState.transactions.find((item) => item.id === financeFocus.id);
+    const bill = entry ? undefined : financeState.recurring.find((item) => item.id === financeFocus.id);
+    if (!entry && !bill) return;
+    if (entry) loadTransaction(entry); else if (bill) loadRecurring(bill);
+    setFinanceFocused(financeFocus.id);
+    financeFocus.shown();
+  }, [financeFocus.id, financeState.transactions, financeState.recurring]);
   const [transactionForm, setTransactionForm] = useState(emptyFinanceTransactionForm);
   const [recurringForm, setRecurringForm] = useState(emptyFinanceRecurringForm);
   const [toast, setToast] = useState<{ message: string; tone: "success" | "error" } | null>(null);
@@ -13313,7 +13346,7 @@ function FinanceView({
             {financeState.transactions.length === 0 ? <p className="text-xs text-[#525252]">No transactions yet.</p> : periodTransactions.length === 0 ? <p className="text-xs text-[#525252]">No transactions in {period.label}. Try a wider period.</p> : (
               <LimitedList items={periodTransactions} step={25}>
                 {(t) => (
-                  <button key={t.id} type="button" onClick={() => {
+                  <button key={t.id} type="button" data-record={focusMarker("finance", t.id)} onClick={() => {
                     // An auto-posted recurring transaction opens its recurring rule
                     // for editing; a normal expense opens the expense form.
                     if (t.sourceRecurringId) {
@@ -13351,7 +13384,7 @@ function FinanceView({
           {financeLinks.length > 0 && (
             <GlassCard hover={false}>
               <SectionTitle>Linked entries</SectionTitle>
-              <RecordLinksList chips={financeLinks} />
+              <RecordLinksList chips={financeLinks} module="finance" focusId={financeFocused} />
             </GlassCard>
           )}
 
@@ -13522,6 +13555,13 @@ function CaptureView({
   onRefresh: () => Promise<void>;
 }) {
   const captureLinks = useRecordLinks(getBridge(), "capture", captureState);
+  const captureFocus = useRecordFocus("capture");
+  const [captureFocused, setCaptureFocused] = useState<string | null>(null);
+  useEffect(() => {
+    if (!captureFocus.id || !captureLinks.some((chip) => chip.recordId === captureFocus.id)) return;
+    setCaptureFocused(captureFocus.id);
+    captureFocus.shown();
+  }, [captureFocus.id, captureLinks]);
   const [form, setForm] = useState(emptyCaptureForm);
   const [toast, setToast] = useState<{ message: string; tone: "success" | "error" } | null>(null);
 
@@ -13810,7 +13850,7 @@ function CaptureView({
           {captureLinks.length > 0 && (
             <GlassCard hover={false}>
               <SectionTitle>Sent on</SectionTitle>
-              <RecordLinksList chips={captureLinks} />
+              <RecordLinksList chips={captureLinks} module="capture" focusId={captureFocused} />
             </GlassCard>
           )}
 

@@ -91,3 +91,36 @@ export function chipsFor(links: readonly RecordLink[], module: string): RecordLi
   }
   return chips;
 }
+
+/** A Calendar event as the back-fill needs it. */
+export interface SourcedEvent {
+  id: string;
+  title: string;
+  sourceModule: string;
+  sourceId?: string | null;
+  createdAt?: string;
+}
+
+/**
+ * Links for events that were sent to the Calendar before links were kept. An
+ * event has always recorded where it came from, so the pair can be made
+ * after the fact when that record still exists. `resolve` returns the source
+ * record with its title as it is now, or null. Events the Calendar made
+ * itself, and pairs already linked, add nothing.
+ */
+export function backfillFromCalendar(
+  links: readonly RecordLink[],
+  events: readonly SourcedEvent[],
+  resolve: (module: string, id: string) => RecordRef | null,
+  now: string,
+  newId: () => string
+): RecordLink[] {
+  let next = [...links];
+  for (const event of events) {
+    if (!event.sourceId || event.sourceModule === "calendar" || !LINK_MODULES.includes(event.sourceModule)) continue;
+    const origin = resolve(event.sourceModule, event.sourceId);
+    if (!origin) continue;
+    next = addLink(next, origin, { module: "calendar", id: event.id, title: event.title }, event.createdAt ?? now, newId);
+  }
+  return next;
+}

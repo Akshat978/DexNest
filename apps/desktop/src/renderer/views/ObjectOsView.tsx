@@ -61,7 +61,7 @@ import {
 } from "./objectOsModel";
 import { LocatePanel, WhereaboutsCard, type LocateInitial, type ObjectOsLocateBridge } from "./ObjectOsLocate";
 import "./ObjectOs.css";
-import { RecordLinkChips, useRecordLinks, type RecordLinksBridge } from "./RecordLinks";
+import { RecordLinkChips, useRecordFocus, useRecordLinks, type RecordLinksBridge } from "./RecordLinks";
 
 /** The preload methods this view uses. Every change is an object_os.* action. */
 export interface ObjectOsBridge extends ObjectOsLocateBridge {
@@ -264,6 +264,14 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
     },
     [bridge, loadHistory, tab]
   );
+
+  // A link chip elsewhere asked for this object: open it.
+  const focus = useRecordFocus("object");
+  useEffect(() => {
+    if (!focus.id || !objects.some((o) => o.id === focus.id)) return;
+    void openObject(focus.id);
+    focus.shown();
+  }, [focus.id, objects]);
 
   const run: Run = useCallback(
     async (actionId, params = {}) => {

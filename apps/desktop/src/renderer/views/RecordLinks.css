@@ -56,3 +56,9 @@
   color: var(--text);
   font-size: 0.85rem;
 }
+
+/* The record a link chip pointed at, outlined for a moment after the screen opens. Nothing animates. */
+.record-focus {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}

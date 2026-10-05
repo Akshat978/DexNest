@@ -21,7 +21,7 @@ import { PDFDocument } from "pdf-lib";
 import { Jimp } from "jimp";
 import { decodeHeicFile, isHeicPath, toBgra } from "./heic.js";
 import { DECISION_MODEL, looksLikeOpenRouterKey, normalizeOutsideAiSettings, outcomeInWords, routeCommand, suggestCaptureRoute, type CaptureOutcome, type OutsideAiSettings, type OutsideAiSurface, type RouteOutcome } from "./outsideAi.js";
-import { addLink, chipsFor, normalizeLinks, pruneLinks, type RecordLink, type RecordRef } from "./recordLinks.js";
+import { addLink, backfillFromCalendar, chipsFor, normalizeLinks, pruneLinks, type RecordLink, type RecordRef } from "./recordLinks.js";
 import { ghostRecords, LIVE_SEARCH_SOURCES, objectRecords, reminderRecords, rpgRecords, skillRecords, timetableRecords, type ModuleSearchRecord } from "./moduleSearch.js";
 import { createActionRegistry, createStreamDeckActionCatalog, seededActions, streamDeckCatalogItems } from "@dexnest/action-registry";
 import { createLocalDb } from "@dexnest/local-db";
@@ -19693,8 +19693,27 @@ function linkRecords(from: RecordRef, to: RecordRef): void {
   }
 }
 
+let recordLinksBackfilled = false;
+
+/**
+ * Once per start: events sent to the Calendar before links were kept get
+ * theirs. Nothing is read that the Calendar did not already record.
+ */
+function backfillRecordLinks(): void {
+  if (recordLinksBackfilled) return;
+  recordLinksBackfilled = true;
+  try {
+    const links = loadRecordLinks();
+    const next = backfillFromCalendar(links, loadCalendarEvents(), linkedRecordTitle, new Date().toISOString(), () => createId("link"));
+    if (next.length !== links.length) writeJsonFile(recordLinksPath, next);
+  } catch (error) {
+    console.warn("[DexNest] Links for earlier Calendar events were not filled in.", error);
+  }
+}
+
 /** The links one screen shows, with the ones whose other end was deleted dropped for good. */
 function recordLinkChips(module: string) {
+  backfillRecordLinks();
   const links = loadRecordLinks();
   const live = pruneLinks(links, linkedRecordExists);
   if (live.length !== links.length) writeJsonFile(recordLinksPath, live);
