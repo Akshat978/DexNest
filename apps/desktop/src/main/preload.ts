@@ -125,6 +125,7 @@ contextBridge.exposeInMainWorld("dexNest", {
   deleteProject: (projectId: string) => ipcRenderer.invoke("dexnest:delete-project", projectId),
   listEvents: () => ipcRenderer.invoke("dexnest:list-events"),
   listActivity: (query: { stream?: string; limit?: number }) => ipcRenderer.invoke("dexnest:list-activity", query),
+  getHeatmapActivity: () => ipcRenderer.invoke("dexnest:heatmap-activity"),
   runAction: (payload: { actionId: string; source?: string; params?: unknown }) =>
     ipcRenderer.invoke("dexnest:run-action", payload),
   logActionResult: (payload: {

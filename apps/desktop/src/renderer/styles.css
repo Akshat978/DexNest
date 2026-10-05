@@ -3633,3 +3633,20 @@ kbd {
   outline-offset: 1px;
   border-radius: var(--radius-md, 8px);
 }
+
+/* Heatmap: what was done in DexNest. Same grid as the window heatmap, in the Heatmap accent, so the two read side by side. */
+.heatmap-overlay__hint {
+  margin: 0 0 var(--space-2, 8px);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+.heatmap-overlay__cell {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border-radius: 2px;
+  background: var(--surface-2, var(--border));
+}
+.heatmap-overlay__cell[data-on="true"] {
+  background: var(--accent-heatmap, var(--accent));
+}

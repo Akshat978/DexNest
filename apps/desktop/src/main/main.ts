@@ -21,6 +21,7 @@ import { PDFDocument } from "pdf-lib";
 import { Jimp } from "jimp";
 import { decodeHeicFile, isHeicFile, toBgra } from "./heic.js";
 import { createThumbnailer, fitWithin, mayBePicture } from "./thumbnails.js";
+import { buildActivityOverlay, OVERLAY_READ_LIMIT } from "./activityOverlay.js";
 import { clearGhost, clearObjects, clearProjects, countGhost, countObjects, countProjects, type ClearOutcome } from "./moduleClear.js";
 import { DECISION_MODEL, looksLikeOpenRouterKey, normalizeOutsideAiSettings, outcomeInWords, routeCommand, suggestCaptureRoute, type CaptureOutcome, type OutsideAiSettings, type OutsideAiSurface, type RouteOutcome } from "./outsideAi.js";
 import { addLink, backfillFromCalendar, chipsFor, normalizeLinks, pruneLinks, type RecordLink, type RecordRef } from "./recordLinks.js";
@@ -20872,6 +20873,11 @@ async function runExternalDevicesAction(action: DexNestActionDefinition, source:
   return null;
 }
 
+/** Whether a request from this source may run the action at all. Only the Deck's endpoint is limited here. */
+function deckEndpointMayRun(action: Pick<DexNestActionDefinition, "allowedTriggers">, source: DexNestActionTrigger): boolean {
+  return source !== "stream_deck_http" || action.allowedTriggers.includes("deck");
+}
+
 async function runRegisteredAction(actionId: string, source: DexNestActionTrigger, payload: unknown = {}) {
   const startedAt = Date.now();
   const action = findAction(actionId);
@@ -20892,6 +20898,22 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
       actionId,
       error: `Unknown DexNest action: ${actionId}`
     };
+  }
+
+  // The Deck's HTTP endpoint is the one way in that is not DexNest's own window: it runs only
+  // the actions the registry marks for the Deck. Without this, anything registered could be
+  // run through it by a request that also said it was confirmed.
+  if (!deckEndpointMayRun(action, source)) {
+    localDb.appendActionEvent({
+      module: action.module,
+      actionId,
+      eventType: "action_rejected",
+      status: "failed",
+      source,
+      summary: `${action.title} is not available from the Stream Deck endpoint.`,
+      metadataJson: { reason: "not_marked_for_deck" }
+    });
+    return { ok: false, actionId, status: "not_allowed", error: "That action is not available from the Stream Deck. Run it in DexNest.", message: "That action is not available from the Stream Deck. Run it in DexNest." };
   }
 
   const params = typeof payload === "object" && payload !== null ? (payload as { confirmedDangerous?: boolean }) : {};
@@ -22740,7 +22762,8 @@ function startActionEndpoint(): void {
         ok: true,
         status: "success",
         message: "DexNest actions listed.",
-        actions: [...actionRegistry.list(), ...getProjectActionDefinitions()].map(deckActionSummary)
+        // Only what the endpoint will run: an action it would refuse is not offered.
+        actions: [...actionRegistry.list(), ...getProjectActionDefinitions()].filter((action) => deckEndpointMayRun(action, "stream_deck_http")).map(deckActionSummary)
       });
       return;
     }
@@ -23703,6 +23726,16 @@ function registerIpcHandlers(): void {
   // The activity log: every stream, newest first. The envelope of each event,
   // and for an action's own row the short fields it wrote (which action, how it
   // went, its fixed summary line). No other payload leaves the main process.
+  // What was done in DexNest, by weekday and hour, for the Heatmap. Counted when asked for; counts only.
+  ipcMain.handle("dexnest:heatmap-activity", () => {
+    const text = (value: unknown) => (typeof value === "string" && value.length > 0 ? value.slice(0, 60) : null);
+    const events = localDb.getEventLog().query({ orderBy: "recorded", order: "desc", limit: OVERLAY_READ_LIMIT }).map((event) => {
+      const payload = event.stream === "audit" && typeof event.payload === "object" && event.payload !== null ? event.payload as Record<string, unknown> : {};
+      return { at: event.recordedAt, source: text(payload.source) ?? event.source ?? null, module: event.module ?? text(payload.module) };
+    });
+    return buildActivityOverlay(events, new Date(), { limit: OVERLAY_READ_LIMIT });
+  });
+
   ipcMain.handle("dexnest:list-activity", (_event, query: unknown) => {
     const input = typeof query === "object" && query !== null ? query as { stream?: unknown; limit?: unknown } : {};
     const stream = typeof input.stream === "string" && /^[a-z_]{1,20}$/.test(input.stream) ? input.stream : undefined;

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Activity, Clock, Cpu, EyeOff } from "lucide-react";
 import { getLocalTodayDateString } from "@dexnest/shared-types";
 import { GlassCard, SectionTitle } from "../components/ui/GlassCard";
@@ -6,6 +6,28 @@ import { StatusChip } from "../components/ui/StatusChip";
 import { ToastStack } from "../components/shared";
 import { formatDuration } from "../lib/format";
 import type { HeatmapState, HeatmapGoal } from "../main";
+import { getBridge } from "../lib/bridge";
+import { moduleName } from "../lib/activityLabels";
+
+/** What was done in DexNest, by weekday and hour: counts from the activity log. */
+export interface ActivityOverlay {
+  grid: number[][];
+  total: number;
+  byModule: Array<{ module: string; count: number }>;
+  days: number;
+  partial: boolean;
+}
+
+/** A cell's strength for a count, 0 to 1, against the busiest cell. */
+export function overlayStrength(count: number, max: number): number {
+  if (!(count > 0) || !(max > 0)) return 0;
+  return Math.min(1, 0.2 + (count / max) * 0.8);
+}
+
+/** "12 things in DexNest on Tue at 14:00" for a cell's tooltip. */
+export function overlayCellTitle(day: string, hour: number, count: number): string {
+  return `${day} ${hour}:00 · ${count === 0 ? "nothing" : count === 1 ? "1 thing" : `${count} things`} done in DexNest`;
+}
 
 export function HeatmapView({
   heatmapState,
@@ -24,6 +46,14 @@ export function HeatmapView({
   const [goalForm, setGoalForm] = useState({ id: "", name: "", targetHoursPerWeek: "5", keyword: "", active: true });
   const [showGoalModal, setShowGoalModal] = useState(false);
   const [toast, setToast] = useState<{ message: string; tone: "success" | "error" } | null>(null);
+  // Read when the Heatmap is opened, and again when it is refreshed. Nothing runs while it is closed.
+  const [overlay, setOverlay] = useState<ActivityOverlay | null>(null);
+  useEffect(() => {
+    let live = true;
+    const bridge = getBridge() as { getHeatmapActivity?: () => Promise<ActivityOverlay> };
+    void (bridge.getHeatmapActivity?.() ?? Promise.resolve(null)).then((next) => { if (live) setOverlay(next); }).catch(() => undefined);
+    return () => { live = false; };
+  }, [heatmapState]);
 
   function showToast(message: string, tone: "success" | "error" = "success"): void {
     setToast({ message, tone });
@@ -154,7 +184,7 @@ export function HeatmapView({
                 ))}
               </div>
               {weekGrid.map((row, day) => (
-                <div key={day} className="flex items-center gap-[3px]">
+                <div key={day} className="flex items-center gap-[3px]" data-heatmap-row="windows">
                   <span className="w-7 font-mono text-[10px] text-[#525252]">{weekdayLabels[day]}</span>
                   {row.map((seconds, hour) => (
                     <span key={hour} className="h-[14px] w-[14px] rounded-[2px]" style={{ background: heatCellColor(seconds) }} title={`${weekdayLabels[day]} ${hour}:00 · ${formatDuration(seconds)}`} />
@@ -163,6 +193,32 @@ export function HeatmapView({
               ))}
             </div>
           </GlassCard>
+
+          {overlay && (
+            <GlassCard hover={false} className="heatmap-overlay">
+              <SectionTitle>Done in DexNest · last {overlay.days} days</SectionTitle>
+              <p className="heatmap-overlay__hint">
+                The grid above is which windows were in front. This one is what you set off in DexNest itself: {overlay.total === 0 ? "nothing yet" : overlay.total === 1 ? "1 thing" : `${overlay.total} things`}, counted from the activity log.
+                {overlay.partial ? " The log holds more than was read, so busy weeks may be undercounted." : ""}
+              </p>
+              <div className="space-y-[3px] overflow-x-auto pt-1" role="img" aria-label={`What you did in DexNest by weekday and hour, ${overlay.total} in the last ${overlay.days} days`}>
+                {overlay.grid.map((row, day) => {
+                  const max = Math.max(1, ...overlay.grid.flat());
+                  return (
+                    <div key={day} className="flex items-center gap-[3px]" data-heatmap-row="dexnest">
+                      <span className="w-7 font-mono text-[10px] text-[#525252]">{weekdayLabels[day]}</span>
+                      {row.map((count, hour) => (
+                        <span key={hour} className="heatmap-overlay__cell" style={{ opacity: count > 0 ? overlayStrength(count, max) : undefined }} data-on={count > 0 ? "true" : undefined} title={overlayCellTitle(weekdayLabels[day]!, hour, count)} />
+                      ))}
+                    </div>
+                  );
+                })}
+              </div>
+              {overlay.byModule.length > 0 && (
+                <p className="heatmap-overlay__hint">Most used: {overlay.byModule.map((m) => `${moduleName(m.module)} (${m.count})`).join(", ")}.</p>
+              )}
+            </GlassCard>
+          )}
         </div>
 
         <div className="space-y-5 lg:col-span-4">
