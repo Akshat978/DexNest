@@ -1,7 +1,7 @@
 // What Search can find in the newer modules.
 //
-// ObjectOS, Skills, GhostOS, Reality RPG, the Timetable and reminders are asked
-// when a search is run; nothing of theirs is copied into the index file. A GhostOS
+// ObjectOS, the Standup, Skills, GhostOS, Reality RPG, the Timetable and
+// reminders are asked when a search is run; nothing of theirs is copied into the index file. A GhostOS
 // entry that is deleted is therefore gone from Search at once, and the index
 // under the data root holds no second copy of any of them.
 //
@@ -28,7 +28,7 @@ export interface ModuleSearchRecord {
 }
 
 /** The screens these records open in, in the order Search lists them. */
-export const LIVE_SEARCH_SOURCES: readonly string[] = ["object", "skills", "ghost", "rpg", "timetable", "reminders"];
+export const LIVE_SEARCH_SOURCES: readonly string[] = ["object", "today", "skills", "ghost", "rpg", "timetable", "reminders"];
 
 function record(sourceModule: string, entityType: string, entityId: string, title: string, at: string, now: string, rest: { preview?: string; tags?: string[]; category?: string; text?: string } = {}): ModuleSearchRecord {
   return {
@@ -73,6 +73,47 @@ export function objectRecords(items: readonly ObjectLike[], now: string): Module
     }),
     updatedAt: item.updatedAt || item.createdAt || now
   }));
+}
+
+export interface StandupLike {
+  generatedAt: string;
+  sections: ReadonlyArray<{ kind: string; items: ReadonlyArray<{ id: string; title: string; summary?: string }> }>;
+}
+
+const INTERNAL_ID = /repo_[0-9A-Za-z]{6,}/;
+
+const STANDUP_SECTIONS: Record<string, string> = {
+  Continue: "Where you left off",
+  Changed: "Changed since the last Standup",
+  NeedsAttention: "Needs attention",
+  RepositoryState: "Repositories",
+  History: "History"
+};
+
+/**
+ * The lines of the latest Standup, as Today shows them. Only the latest: an
+ * earlier Standup is history, and Today lists those itself. A line found here
+ * opens Today.
+ */
+export function standupRecords(report: StandupLike | null | undefined, now: string): ModuleSearchRecord[] {
+  if (!report) return [];
+  const seen = new Set<string>();
+  const out: ModuleSearchRecord[] = [];
+  for (const section of report.sections) {
+    const label = STANDUP_SECTIONS[section.kind] ?? section.kind;
+    for (const item of section.items) {
+      if (seen.has(item.id)) continue;
+      seen.add(item.id);
+      // A summary that still carries an internal repository id is left out: Today swaps those for project names, and Search shows no ids.
+      const summary = item.summary && !INTERNAL_ID.test(item.summary) ? item.summary : "";
+      out.push(record("today", "standup_line", item.id, item.title, report.generatedAt, now, {
+        preview: `Standup · ${label}${summary ? ` · ${summary}` : ""}`,
+        tags: ["standup", label],
+        category: label
+      }));
+    }
+  }
+  return out;
 }
 
 export interface SkillLike {

@@ -55,7 +55,7 @@ test("a GhostOS hit keeps the words searched for, and none of the entry's text",
 
 test("the newer modules are searched live and never written to the index file", () => {
   const main = read("src/main/main.ts");
-  assert.deepEqual([...LIVE_SEARCH_SOURCES], ["object", "skills", "ghost", "rpg", "timetable", "reminders"]);
+  assert.deepEqual([...LIVE_SEARCH_SOURCES], ["object", "today", "skills", "ghost", "rpg", "timetable", "reminders"]);
   const drill = objectRecords([{ id: "7K3F9QXM", itemName: "Cordless drill", location: "shed", room: "garage", container: null, notes: "", tags: ["tool"], status: "at_home", createdAt: NOW, updatedAt: NOW }], NOW)[0]!;
   assert.deepEqual([drill.sourceModule, drill.title, drill.textPreview, drill.category], ["object", "Cordless drill", "shed · garage", "garage"]);
   assert.match(main, /records: SearchIndexRecord\[\] = \[\.\.\.loadSearchIndex\(\), \.\.\.liveModuleRecords\(queryInput\.query \?\? ""\)\]/);

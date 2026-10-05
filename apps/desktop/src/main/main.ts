@@ -23,7 +23,7 @@ import { decodeHeicFile, isHeicFile, toBgra } from "./heic.js";
 import { createThumbnailer, fitWithin, mayBePicture } from "./thumbnails.js";
 import { DECISION_MODEL, looksLikeOpenRouterKey, normalizeOutsideAiSettings, outcomeInWords, routeCommand, suggestCaptureRoute, type CaptureOutcome, type OutsideAiSettings, type OutsideAiSurface, type RouteOutcome } from "./outsideAi.js";
 import { addLink, backfillFromCalendar, chipsFor, normalizeLinks, pruneLinks, type RecordLink, type RecordRef } from "./recordLinks.js";
-import { ghostRecords, LIVE_SEARCH_SOURCES, objectRecords, reminderRecords, rpgRecords, skillRecords, timetableRecords, type ModuleSearchRecord } from "./moduleSearch.js";
+import { ghostRecords, LIVE_SEARCH_SOURCES, objectRecords, reminderRecords, standupRecords, type StandupLike, rpgRecords, skillRecords, timetableRecords, type ModuleSearchRecord } from "./moduleSearch.js";
 import { createActionRegistry, createStreamDeckActionCatalog, seededActions, streamDeckCatalogItems } from "@dexnest/action-registry";
 import { createLocalDb } from "@dexnest/local-db";
 import { createAutopilotHost, type AutopilotHost } from "./autopilotHost.js";
@@ -13139,6 +13139,21 @@ function scheduleSearchReindex(): void {
  * What the newer modules hold, asked for at the moment of a search and never
  * written to the index file. A module that is off, or fails, adds nothing.
  */
+/**
+ * The latest Standup, kept for Search. Reading it is asynchronous and a search
+ * is not, so it is refreshed just before a search is run from the Search
+ * screen; it holds what Today shows and nothing more, and is never written out.
+ */
+let standupForSearch: StandupLike | null = null;
+
+async function refreshStandupForSearch(): Promise<void> {
+  try {
+    standupForSearch = devIntelligenceHost ? await devIntelligenceHost.module.latestStandup() : null;
+  } catch {
+    standupForSearch = null;
+  }
+}
+
 function liveModuleRecords(query = ""): ModuleSearchRecord[] {
   const now = new Date().toISOString();
   const from = (read: () => ModuleSearchRecord[]): ModuleSearchRecord[] => {
@@ -13146,6 +13161,7 @@ function liveModuleRecords(query = ""): ModuleSearchRecord[] {
   };
   return [
     ...from(() => objectRecords(loadFinderItems(), now)),
+    ...from(() => standupRecords(standupForSearch, now)),
     ...from(() => skillConstellationHost ? skillRecords(skillConstellationHost.module.constellation().skills, now) : []),
     ...from(() => {
       if (!ghostOsHost || !query.trim()) return [];
@@ -20186,6 +20202,7 @@ async function runSearchAction(action: DexNestActionDefinition, source: DexNestA
     }
 
     if (action.id === "search.run_query") {
+      await refreshStandupForSearch();
       const results = runSearchQuery(input);
       logSearchEvent(
         action.id,

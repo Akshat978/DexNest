@@ -35,6 +35,7 @@ import { accentStyle, ErrorState, LoadingState, PageHeader as KitPageHeader, Seg
 import { previewForUi, formatBytes, formatDate, formatDuration } from "./lib/format";
 import { accentTint, MODULE_META, SIDEBAR_VIEWS, SIDEBAR_HIDDEN_VIEWS, type ViewId } from "./lib/moduleMeta";
 import { viewForSearchSource } from "./lib/searchSources";
+import { spokenAnswer, type SpokenAnswerKind } from "./lib/spokenAnswers";
 import { Thumbnail, type ThumbnailBridge } from "./views/Thumbnail";
 import { NAVIGATE_EVENT, RecordLinkChips, RecordLinksList, useRecordFocus, useRecordLinks, type RecordLinkChip } from "./views/RecordLinks";
 import { focusMarker } from "./views/recordFocus";
@@ -2267,13 +2268,14 @@ const moduleCards = [
  * Things said as a question that a screen answers. DexNest opens the screen
  * and the answer is read there: nothing a module holds is spoken or sent on.
  */
-const voiceScreenQuestions: readonly { pattern: RegExp; module: ViewId; actionId: string; explanation: string }[] = [
-  { pattern: /\b(what|anything|does anything)\b.*\bneeds? (me|my attention|attention)\b/i, module: "today", actionId: "standup.open", explanation: "Opens Today, which lists what needs you." },
+const voiceScreenQuestions: readonly { pattern: RegExp; module: ViewId; actionId: string; explanation: string; answer?: SpokenAnswerKind }[] = [
+  { pattern: /\b(what|anything|does anything)\b.*\bneeds? (me|my attention|attention)\b/i, module: "today", actionId: "standup.open", explanation: "Opens Today and says how many things need you.", answer: "needs" },
   { pattern: /\b(where did i leave off|where was i|what was i working on)\b/i, module: "today", actionId: "standup.open", explanation: "Opens Today, which shows where you left off." },
-  { pattern: /\b(what are|what's|whats|show)\b.*\bmy (top |best |strongest )?skills\b/i, module: "skills", actionId: "skill_constellation.open", explanation: "Opens Skills." },
-  { pattern: /\b(what is|what's|whats|show)\b.*\bmy (level|xp|quests|achievements)\b/i, module: "rpg", actionId: "reality_rpg.open", explanation: "Opens Reality RPG, which shows your level, quests and achievements." },
+  { pattern: /\b(what are|what's|whats|show)\b.*\bmy (top |best |strongest )?skills\b/i, module: "skills", actionId: "skill_constellation.open", explanation: "Opens Skills and names your strongest ones.", answer: "skills" },
+  { pattern: /\b(what is|what's|whats|show)\b.*\bmy (level|xp)\b/i, module: "rpg", actionId: "reality_rpg.open", explanation: "Opens Reality RPG and says your level.", answer: "level" },
+  { pattern: /\b(what are|what is|what's|whats|show)\b.*\bmy (quests|achievements)\b/i, module: "rpg", actionId: "reality_rpg.open", explanation: "Opens Reality RPG, which shows your quests and achievements." },
   { pattern: /\b(what is|what's|whats|show)\b.*\bmy (timeline|history)\b/i, module: "ghost", actionId: "ghost_os.open", explanation: "Opens GhostOS, which keeps your timeline." },
-  { pattern: /\b(what|which)\b.*\b(maintenance|warrant(y|ies))\b.*\b(due|ending|expir)/i, module: "object", actionId: "object_os.open", explanation: "Opens ObjectOS, which lists maintenance due and warranties ending." }
+  { pattern: /\b(what|which)\b.*\b(maintenance|warrant(y|ies))\b.*\b(due|ending|expir)/i, module: "object", actionId: "object_os.open", explanation: "Opens ObjectOS and says how much maintenance is due and how many warranties are ending.", answer: "things" }
 ];
 
 function viewFromAction(action?: ActionDefinition): ViewId | null {
@@ -3077,7 +3079,8 @@ function routeVoiceCommand(input: string, actions: ActionDefinition[], workflowS
       intent: "open_module",
       targetModule: screenQuestion.module,
       actionId: screenQuestion.actionId,
-      params: {},
+      // What to say once the screen is open. A name from DexNest's own list, not anything the service or the speaker supplied.
+      params: screenQuestion.answer ? { answer: screenQuestion.answer } : {},
       confidence: "high",
       requiresConfirmation: false,
       sensitivity: "none",
@@ -7053,8 +7056,12 @@ function AskDexNest({
     if (smartResults.some((item) => item.sensitive)) {
       void onSecurityChange();
     }
+    // A question a screen answers also gets a short answer, said and shown: a count, a level, skill names.
+    const said = result.ok === false ? null : await spokenAnswer(route.params.answer, getBridge()).catch(() => null);
     const answerText = result.ok === false
       ? (result.error ?? "DexNest could not complete that.")
+      : said
+        ? said
       : result.message
         ? result.message
       : route.intent === "finder_search"
@@ -7064,7 +7071,7 @@ function AskDexNest({
           : assistantAnswerText(route, smartResults, resultCount);
     // Phase 23.11: show the short spoken line in chat for device/system/error
     // replies so the visible text matches what DexNest says aloud.
-    const shortReply = spokenTemplate(route, result.ok !== false, resultCount, answerText);
+    const shortReply = said ?? spokenTemplate(route, result.ok !== false, resultCount, answerText);
     const useSpokenInChat = Boolean(route.actionId?.startsWith("external.govee.")) || Boolean(route.actionId?.startsWith("system.performance.")) || result.ok === false;
     updateAssistantMessage(messageId, {
       awaitingConfirm: false,
@@ -7102,7 +7109,7 @@ function AskDexNest({
       lastSource: commandSource
     });
     void onAmbientVoiceChange();
-    await speakDexNestResponse(spokenTemplate(route, result.ok !== false, resultCount, answerText), {
+    await speakDexNestResponse(said ?? spokenTemplate(route, result.ok !== false, resultCount, answerText), {
       sensitivity: route.sensitivity,
       source: commandSource,
       actionId: route.actionId,
