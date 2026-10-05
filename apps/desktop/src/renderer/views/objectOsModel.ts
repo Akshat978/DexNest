@@ -22,7 +22,7 @@ import type {
   TimelineItem,
   TimelineKind
 } from "@dexnest/object-os";
-import { dayLabel, dayTimeLabel } from "../lib/dates.ts";
+import { dayKey, dayLabel, dayTimeLabel } from "../lib/dates.ts";
 
 // --- lists and labels ---------------------------------------------------------
 
@@ -371,7 +371,7 @@ export function warrantyCalendarEvent(o: Pick<ObjectRecord, "id" | "name">, purc
 /** The Calendar event for a schedule's next due day. Only time schedules have a day. */
 export function scheduleCalendarEvent(o: Pick<ObjectRecord, "id" | "name">, title: string, status: DueStatus): Record<string, unknown> | null {
   if (status.state === "inactive" || status.state === "no_reading" || status.kind !== "time") return null;
-  return { title: `${title}: ${o.name}`, date: status.dueAt.slice(0, 10), allDay: true, sourceModule: "object", sourceId: o.id, notes: "Maintenance due. Sent from ObjectOS." };
+  return { title: `${title}: ${o.name}`, date: dayKey(status.dueAt) ?? status.dueAt.slice(0, 10), allDay: true, sourceModule: "object", sourceId: o.id, notes: "Maintenance due. Sent from ObjectOS." };
 }
 
 /** The Finance entry for a purchase. Null until it has both a price and a day. */

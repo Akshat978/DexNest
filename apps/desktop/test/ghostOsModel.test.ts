@@ -27,6 +27,10 @@ import {
   TYPE_LABELS,
   viewState
 } from "../src/renderer/views/ghostOsModel.ts";
+import { setDisplayTimeZone } from "../src/renderer/lib/dates.ts";
+
+// Dates are shown in the viewer's time zone; these tests assert exact wording, so they name one.
+setDisplayTimeZone("UTC");
 
 const NOW = "2026-06-30T12:00:00.000Z";
 

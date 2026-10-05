@@ -13,10 +13,13 @@ export const WARRANTY_ENDING_DAYS = 30;
 
 export type WarrantyState = 'none' | 'active' | 'ending' | 'expired';
 
-/** `until` is the last covered day (YYYY-MM-DD). */
-export function warrantyState(until: string | null, now: string): { state: WarrantyState; daysLeft: number | null } {
+/**
+ * `until` is the last covered day (YYYY-MM-DD). `today` is the owner's
+ * calendar day; without it the day is read off `now` in UTC.
+ */
+export function warrantyState(until: string | null, now: string, today: string = now.slice(0, 10)): { state: WarrantyState; daysLeft: number | null } {
   if (!until) return { state: 'none', daysLeft: null };
-  const daysLeft = daysBetween(now.slice(0, 10) + 'T00:00:00.000Z', `${until}T00:00:00.000Z`);
+  const daysLeft = daysBetween(`${today}T00:00:00.000Z`, `${until}T00:00:00.000Z`);
   if (daysLeft < 0) return { state: 'expired', daysLeft };
   return { state: daysLeft <= WARRANTY_ENDING_DAYS ? 'ending' : 'active', daysLeft };
 }
@@ -46,6 +49,8 @@ export interface AttentionInput {
   purchases: readonly Purchase[];
   parts: readonly Part[];
   now: string;
+  /** The owner's calendar day (YYYY-MM-DD), for counting days to a warranty's end. */
+  today?: string;
 }
 
 export function attention(input: AttentionInput): AttentionSummary {
@@ -78,7 +83,7 @@ export function attention(input: AttentionInput): AttentionSummary {
   }
   for (const p of input.purchases) {
     if (!live.has(p.objectId)) continue;
-    const w = warrantyState(p.warrantyUntil, input.now);
+    const w = warrantyState(p.warrantyUntil, input.now, input.today);
     // Only recently expired ones need attention; an old expiry is just history.
     if (w.state === 'ending' || (w.state === 'expired' && (w.daysLeft ?? 0) >= -WARRANTY_ENDING_DAYS)) {
       items.push({ kind: 'warranty', objectId: p.objectId, state: w.state, daysLeft: w.daysLeft ?? 0 });

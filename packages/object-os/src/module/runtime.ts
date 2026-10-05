@@ -21,7 +21,7 @@ import { REMINDER_INTERVAL_MS } from '../domain/settings.ts';
 import { diffSettings, type SettingsDiff } from '../domain/settings-diff.ts';
 import type { TimelineItem } from '../domain/timeline.ts';
 import { TIMELINE_PAGE } from '../domain/timeline.ts';
-import { normalizeTimestamp } from '../domain/time.ts';
+import { normalizeTimestamp, localDay } from '../domain/time.ts';
 import type { FileRecord, MaintenanceEntry, Measurement, Modification, ObjectRecord, ObjectStatus, Part, Purchase, Schedule, SettingsSnapshot, StateFact } from '../domain/types.ts';
 import { CATEGORIES, STATUSES } from '../domain/types.ts';
 import {
@@ -60,6 +60,8 @@ export interface ObjectOsModuleOptions {
   /** A light notification. The text is counts only. */
   notify?(title: string, body: string): void;
   now?: () => Date;
+  /** The owner's time zone, for "today". Defaults to this computer's. */
+  timeZone?: string;
   newToken?: () => string;
   randomBytes: (n: number) => ArrayLike<number>;
 }
@@ -156,6 +158,9 @@ const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !
 export function createObjectOsModule(options: ObjectOsModuleOptions): ObjectOsModule {
   const now = options.now ?? (() => new Date());
   const iso = () => now().toISOString();
+  const timeZone = options.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  /** The owner's calendar day at `at`. */
+  const dayOf = (at: string) => localDay(at, timeZone) ?? at.slice(0, 10);
   const token = options.newToken ?? (() => globalThis.crypto.randomUUID());
   const store = openObjectStore(options.database, { now: iso() });
   const engine = createObjectEngine({ store, files: options.files, newToken: token, randomBytes: options.randomBytes });
@@ -191,7 +196,7 @@ export function createObjectOsModule(options: ObjectOsModuleOptions): ObjectOsMo
   function reminders(occurrence: Pick<JobOccurrence, 'occurrenceId' | 'trigger'>): ReminderOutcome {
     const at = iso();
     const outcome = store.transaction(() => {
-      const o = engine.runReminders({ occurrenceId: occurrence.occurrenceId, trigger: occurrence.trigger, now: at });
+      const o = engine.runReminders({ occurrenceId: occurrence.occurrenceId, trigger: occurrence.trigger, now: at, today: dayOf(at) });
       if (o.status === 'completed' && o.counts) {
         appendObjectEvent(ev, 'object.reminder_checked', { subject: null, at, idempotencyKey: reminderKey(o.occurrenceId), payload: { ...o.counts, occurrenceId: o.occurrenceId } });
       }
@@ -676,7 +681,7 @@ export function createObjectOsModule(options: ObjectOsModuleOptions): ObjectOsMo
         parts: store.parts(id),
         measurements,
         purchase,
-        warranty: warrantyState(purchase?.warrantyUntil ?? null, at),
+        warranty: warrantyState(purchase?.warrantyUntil ?? null, at, dayOf(at)),
         files: store.files(id),
       },
     };
@@ -697,7 +702,8 @@ export function createObjectOsModule(options: ObjectOsModuleOptions): ObjectOsMo
   }
 
   function attentionView(): AttentionView {
-    const summary = store.attention(iso());
+    const at = iso();
+    const summary = store.attention(at, dayOf(at));
     const names: Record<string, string> = {};
     // Each object, part and object's schedules read once, however many items name them.
     const scheduleTitles = new Map<string, Map<string, string>>();

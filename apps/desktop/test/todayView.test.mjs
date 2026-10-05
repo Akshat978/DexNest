@@ -15,6 +15,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 const desktop = fileURLToPath(new URL("..", import.meta.url));
+// Dates are shown in the viewer's time zone; these tests assert exact wording, so they name one.
+globalThis.__dexnestDisplayTimeZone = "UTC";
 const readSource = (path) => readFileSync(path, "utf8").replace(/\r\n/g, "\n");
 let scratch = "";
 let View;

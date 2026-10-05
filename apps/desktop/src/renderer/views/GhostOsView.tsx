@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { todayKey } from "../lib/dates";
 import type { EntityDetail, EntityType, GhostOsSettings, GhostOsStatus, Observation, Parsed, SearchHit, TimelineItem } from "@dexnest/ghost-os";
 import { BookOpen, Brain, CalendarDays, Eye, FileText, FolderGit2, Ghost, GitFork, MapPin, MessageSquare, Network, Plug, Repeat, Sparkles, Trash2, Unlink, User, Users } from "lucide-react";
 import { Button, ConfirmDialog, EmptyNote, EmptyState, ErrorState, InlineError, LoadingState, Notice, PageHeader, Select, StatGrid, StatTile, TabPanel, Tabs, TextArea, TextInput, accentStyle } from "../components/ui/kit";
@@ -244,7 +245,7 @@ export function GhostOsView({ bridge, onAction, initial }: GhostOsViewProps) {
   }
 
   const state = viewState({ loading, error, status });
-  const today = initial?.today ?? new Date().toISOString().slice(0, 10);
+  const today = initial?.today ?? todayKey();
   const di = status?.adapters.find((a) => a.id === "developer_intelligence");
   const anySourceOn = status?.adapters.some((a) => a.enabled) ?? false;
 

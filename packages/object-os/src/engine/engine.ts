@@ -73,7 +73,7 @@ export interface ObjectEngine {
   /** After a crash: removes bytes that a pending marker names and no row claims. */
   recoverPending(): { removed: number; kept: number; failed: number };
   deleteObject(objectId: string, now: string, alsoInTransaction?: (out: DeletedObject) => void): Parsed<DeletedObject>;
-  runReminders(input: { occurrenceId: string; trigger: RunTrigger; now: string }): ReminderOutcome;
+  runReminders(input: { occurrenceId: string; trigger: RunTrigger; now: string; today?: string }): ReminderOutcome;
   exportBundle(objectIds: readonly string[] | 'all', now: string): Parsed<ExportBundle>;
   importArchive(archive: ImportArchive, alsoInTransaction?: (plan: ImportPlan) => void): Promise<Parsed<ImportPlan>>;
 }
@@ -209,12 +209,12 @@ export function createObjectEngine(options: ObjectEngineOptions): ObjectEngine {
     return out;
   }
 
-  function runReminders(input: { occurrenceId: string; trigger: RunTrigger; now: string }): ReminderOutcome {
+  function runReminders(input: { occurrenceId: string; trigger: RunTrigger; now: string; today?: string }): ReminderOutcome {
     const base: ReminderOutcome = { status: 'skipped', reason: null, occurrenceId: input.occurrenceId, counts: null, text: null };
     if (!store.getModuleSettings().reminders.enabled && input.trigger !== 'manual') return { ...base, reason: 'reminders are off' };
     const run = store.claimRun({ id: `run_${options.newToken()}`, occurrenceId: input.occurrenceId, kind: 'reminders', trigger: input.trigger, now: input.now });
     if (!run) return { ...base, reason: 'this occurrence already ran' };
-    const summary = store.attention(input.now);
+    const summary = store.attention(input.now, input.today);
     store.finishRun(run.id, 'completed', input.now, { ...summary.counts });
     return { status: 'completed', reason: null, occurrenceId: input.occurrenceId, counts: summary.counts, text: reminderText(summary.counts) };
   }

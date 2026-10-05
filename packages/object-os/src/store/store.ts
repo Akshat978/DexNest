@@ -182,7 +182,7 @@ export interface ObjectStore {
   deleteRecord(kind: Exclude<RecordKind, 'file'>, id: string): { objectId: string | null } | undefined;
 
   timeline(objectId: string, options?: { limit?: number; before?: { at: string; refId: string } | null }): TimelineItem[];
-  attention(now: string): AttentionSummary;
+  attention(now: string, today?: string): AttentionSummary;
 
   exportRows(objectIds: readonly string[] | 'all', now: string): ObjectExport;
   importRows(data: ObjectExport, alsoInTransaction?: (plan: ImportPlan) => void): ImportPlan;
@@ -205,7 +205,7 @@ export interface ObjectReadApi {
   getObject(id: string): PublicObject | undefined;
   components(id: string): PublicObject[];
   /** Ids and states only. */
-  attention(now: string): AttentionSummary;
+  attention(now: string, today?: string): AttentionSummary;
 }
 
 // ---------------------------------------------------------------------------
@@ -815,7 +815,7 @@ export function openObjectStore(db: SqlDatabase, options: { now?: string } = {})
       : all('SELECT * FROM obj_parts ORDER BY name COLLATE NOCASE, id')
     ).map(toPart);
 
-  function computeAttention(now: string): AttentionSummary {
+  function computeAttention(now: string, today?: string): AttentionSummary {
     // Only what a schedule can use: the latest reading per usage key, and the readings around completions.
     const schedules = allSchedules();
     const pairs = new Map<string, [string, string]>();
@@ -832,6 +832,7 @@ export function openObjectStore(db: SqlDatabase, options: { now?: string } = {})
       purchases: all('SELECT * FROM obj_purchase WHERE warranty_until IS NOT NULL').map(toPurchase),
       parts: all('SELECT * FROM obj_parts WHERE low_stock_at IS NOT NULL').map(toPart),
       now,
+      ...(today ? { today } : {}),
     });
   }
 
@@ -1140,6 +1141,6 @@ export function createObjectReadApi(store: Pick<ObjectStore, 'listObjects' | 'ge
       return o ? toPublicObject(o) : undefined;
     },
     components: (id) => store.components(id).map(toPublicObject),
-    attention: (now) => store.attention(now),
+    attention: (now, today) => store.attention(now, today),
   };
 }

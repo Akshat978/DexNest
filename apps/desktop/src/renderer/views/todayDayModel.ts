@@ -5,7 +5,7 @@
 
 import type { AgendaItem, TodayAgenda } from "@dexnest/today";
 import type { StandupReport } from "@dexnest/dev-intelligence-contracts";
-import { dayTimeLabel } from "../lib/dates.ts";
+import { momentLabel } from "../lib/dates.ts";
 import { sectionItems, sectionTotal } from "./todayModel.ts";
 
 export interface DayRow {
@@ -174,7 +174,7 @@ export function earlierStandups(reports: readonly StandupReport[], currentId: st
       const attention = sectionTotal(r, "NeedsAttention");
       return {
         id: r.id,
-        when: dayTimeLabel(r.generatedAt),
+        when: momentLabel(r.generatedAt),
         line: [`${changes} ${changes === 1 ? "change" : "changes"}`, attention > 0 ? `${attention} needed attention` : "nothing needed attention"].join(" · ")
       };
     });

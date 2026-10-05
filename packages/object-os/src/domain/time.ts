@@ -47,6 +47,26 @@ export function addInterval(at: string, every: number, unit: IntervalUnit): stri
 export const DAY_MS = 86_400_000;
 
 /** Whole days from `from` to `to` (negative when `to` is earlier), rounding toward the past. */
+const dayFormatters = new Map<string, Intl.DateTimeFormat>();
+
+/**
+ * The calendar day (YYYY-MM-DD) an instant falls on for someone in
+ * `timeZone`. "Today" for the owner is this, not the UTC day: late in the
+ * evening west of UTC the two differ. Null for an unparseable timestamp.
+ */
+export function localDay(iso: string, timeZone: string): string | null {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return null;
+  let f = dayFormatters.get(timeZone);
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
+    dayFormatters.set(timeZone, f);
+  }
+  const parts = f.formatToParts(new Date(t));
+  const part = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+  return `${part('year')}-${part('month')}-${part('day')}`;
+}
+
 export function daysBetween(from: string, to: string): number {
   return Math.floor((Date.parse(to) - Date.parse(from)) / DAY_MS);
 }

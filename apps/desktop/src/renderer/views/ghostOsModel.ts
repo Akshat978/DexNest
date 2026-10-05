@@ -5,7 +5,7 @@
 // them equal.
 
 import type { EntityDetail, EntityType, Evidence, GhostOsStatus, Provenance, SearchHit, TimelineItem } from "@dexnest/ghost-os";
-import { dayKey, dayLabel, dayTimeLabel } from "../lib/dates.ts";
+import { dayKey, dayLabel, momentLabel } from "../lib/dates.ts";
 
 export const ENTITY_TYPE_LIST: readonly EntityType[] = [
   "person", "project", "skill", "knowledge", "memory", "event", "habit", "decision", "file", "conversation", "place"
@@ -163,8 +163,9 @@ export function shortDate(iso: string): string {
   return dayLabel(iso);
 }
 
+/** For commits and syncs, which are always moments. */
 export function shortDateTime(iso: string): string {
-  return dayTimeLabel(iso);
+  return momentLabel(iso);
 }
 
 export function timelineLabel(item: TimelineItem): string {
@@ -261,8 +262,9 @@ export function formFromDetail(detail: EntityDetail): EntityForm {
     title: e.title,
     notes: e.notes,
     tags: e.tags.join(", "),
-    when: str(d.occurredAt ?? d.decidedAt ?? e.startedAt).slice(0, 10),
-    endedAt: str(d.endedAt ?? e.endedAt).slice(0, 10),
+    // The day it was where you are, so saving an entry unchanged does not move it.
+    when: dayKey(str(d.occurredAt ?? d.decidedAt ?? e.startedAt)) ?? "",
+    endedAt: dayKey(str(d.endedAt ?? e.endedAt)) ?? "",
     ongoing: !str(d.endedAt ?? e.endedAt),
     text: str(d.text),
     choice: str(d.choice),

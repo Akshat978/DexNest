@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { attention, isLowStock, reminderText, warrantyState, type Part, type Purchase } from '../domain/index.ts';
+import { attention, isLowStock, localDay, reminderText, warrantyState, type Part, type Purchase } from '../domain/index.ts';
 import { OBJ, schedule, T0 } from './fixtures.ts';
 
 const NOW = '2026-06-30T12:00:00.000Z';
@@ -58,5 +58,39 @@ describe('needs attention', () => {
   it('turns into a counts-only reminder, or nothing', () => {
     expect(reminderText({ overdue: 2, dueSoon: 1, warrantyEnding: 0, lowStock: 1 })).toBe('2 maintenance tasks overdue, 1 maintenance task due soon, 1 part low on stock');
     expect(reminderText({ overdue: 0, dueSoon: 0, warrantyEnding: 0, lowStock: 0 })).toBeNull();
+  });
+});
+
+describe('the owner\'s day', () => {
+  // Ten at night on 30 June in Saskatchewan (UTC-6) is already 1 July in UTC.
+  const LATE = '2026-07-01T04:00:00.000Z';
+
+  it('is the calendar day where the owner is, not the UTC day', () => {
+    expect(localDay(LATE, 'America/Regina')).toBe('2026-06-30');
+    expect(localDay(LATE, 'UTC')).toBe('2026-07-01');
+    expect(localDay('2026-06-30T13:00:00.000Z', 'Pacific/Auckland')).toBe('2026-07-01');
+    expect(localDay('2026-06-30T19:00:00.000Z', 'Asia/Kolkata')).toBe('2026-07-01');
+    expect(localDay('not a time', 'UTC')).toBeNull();
+  });
+
+  it('counts the days left on a warranty from that day', () => {
+    // Without a day, the UTC one is used, as before.
+    expect(warrantyState('2026-07-01', LATE)).toEqual({ state: 'ending', daysLeft: 0 });
+    // For the owner it is still the 30th: a day is left.
+    expect(warrantyState('2026-07-01', LATE, '2026-06-30')).toEqual({ state: 'ending', daysLeft: 1 });
+    // A warranty whose last day is today has not expired tonight.
+    expect(warrantyState('2026-06-30', LATE)).toEqual({ state: 'expired', daysLeft: -1 });
+    expect(warrantyState('2026-06-30', LATE, '2026-06-30')).toEqual({ state: 'ending', daysLeft: 0 });
+  });
+
+  it('is what "needs attention" counts from', () => {
+    const input = { objects: [{ id: OBJ, status: 'active' as const }], schedules: [], log: [], readings: [], purchases: [purchase('2026-07-30')], parts: [], now: LATE };
+    // 29 days in UTC, 30 for the owner: ending either way, with the owner's count.
+    expect(attention(input).items).toEqual([{ kind: 'warranty', objectId: OBJ, state: 'ending', daysLeft: 29 }]);
+    expect(attention({ ...input, today: '2026-06-30' }).items).toEqual([{ kind: 'warranty', objectId: OBJ, state: 'ending', daysLeft: 30 }]);
+    // 31 days out for the owner is not yet "ending", though UTC would say it is.
+    const edge = { ...input, purchases: [purchase('2026-07-31')] };
+    expect(attention(edge).items).toHaveLength(1);
+    expect(attention({ ...edge, today: '2026-06-30' }).items).toEqual([]);
   });
 });

@@ -33,7 +33,8 @@ afterEach(() => {
 let n = 0;
 let seed = 0;
 
-function harness(): Harness {
+// The zone is named so "today" is the same on every machine that runs these.
+function harness(timeZone = 'UTC'): Harness {
   const base = assertSafeTestPath(mkdtempSync(join(tmpdir(), 'obj-module-')));
   const dataRoot = join(base, 'dexnest-data');
   const home = join(base, 'home');
@@ -69,6 +70,7 @@ function harness(): Harness {
     },
     notify: (title, body) => notes.push({ title, body }),
     now: () => clock.now,
+    timeZone,
     newToken: () => `00000000-0000-4000-8000-${String(++n).padStart(12, '0')}`,
     randomBytes: (len) => {
       seed += 1;
@@ -364,5 +366,25 @@ describe('reads', () => {
     expect(ok(h.module.listObjects({ search: 'print' })).map((o) => o.id)).toEqual([p.id]);
     expect(h.module.listObjects({ category: 'boat' }).ok).toBe(false);
     expect(h.module.objectDetail('nope').ok).toBe(false);
+  });
+});
+
+describe('the owner\'s day', () => {
+  it('a warranty that ends today has not expired late in the evening west of UTC', () => {
+    // 22:00 on 30 June in Saskatchewan; 04:00 on 1 July in UTC.
+    const late = new Date('2026-07-01T04:00:00.000Z');
+    const there = harness('America/Regina');
+    there.clock.now = late;
+    const o = ok(there.module.saveObject({ name: 'Printer', category: 'tool' }));
+    ok(there.module.savePurchase({ objectId: o.id, shop: 'Shop', warrantyUntil: '2026-06-30' }));
+    expect(ok(there.module.objectDetail(o.id)).warranty).toEqual({ state: 'ending', daysLeft: 0 });
+    expect(there.module.attentionView().summary.items).toEqual([{ kind: 'warranty', objectId: o.id, state: 'ending', daysLeft: 0 }]);
+
+    // The same moment read in UTC, which is what every owner used to get.
+    const utc = harness('UTC');
+    utc.clock.now = late;
+    const p = ok(utc.module.saveObject({ name: 'Printer', category: 'tool' }));
+    ok(utc.module.savePurchase({ objectId: p.id, shop: 'Shop', warrantyUntil: '2026-06-30' }));
+    expect(ok(utc.module.objectDetail(p.id)).warranty).toEqual({ state: 'expired', daysLeft: -1 });
   });
 });
