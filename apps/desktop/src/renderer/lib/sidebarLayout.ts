@@ -80,6 +80,22 @@ export function moveSidebarView<T extends ViewLike>(views: readonly T[], prefs: 
   return { order: [...next, ...hidden].map((v) => v.id), hidden: prefs.hidden };
 }
 
+/**
+ * Puts a shown module where another one is (dragging it there): it takes
+ * that place and the ones between shift by one. Dropping a module on itself,
+ * or naming one that is not in the rail, changes nothing.
+ */
+export function placeSidebarView<T extends ViewLike>(views: readonly T[], prefs: SidebarPrefs, id: string, targetId: string): SidebarPrefs {
+  const { shown, hidden } = arrangeSidebar(views, prefs);
+  const from = shown.findIndex((v) => v.id === id);
+  const to = shown.findIndex((v) => v.id === targetId);
+  if (from < 0 || to < 0 || from === to) return prefs;
+  const next = [...shown];
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved!);
+  return { order: [...next, ...hidden].map((v) => v.id), hidden: prefs.hidden };
+}
+
 export function setSidebarHidden(prefs: SidebarPrefs, id: string, hidden: boolean): SidebarPrefs {
   if (NEVER_HIDDEN.includes(id)) return prefs;
   const without = prefs.hidden.filter((x) => x !== id);

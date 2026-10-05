@@ -75,7 +75,7 @@ test("a chip asks for the record, and every linked screen answers", () => {
   assert.match(read("src/renderer/views/ObjectOsView.tsx"), /if \(!focus\.id \|\| !objects\.some\(\(o\) => o\.id === focus\.id\)\) return;\s*void openObject\(focus\.id\);\s*focus\.shown\(\);/);
   // A record that is not there is left alone: no screen opens something else in its place.
   assert.match(shell, /if \(!vaultFocus\.id \|\| !vaultState\.documents\.some\(\(d\) => d\.id === vaultFocus\.id\)\) return;/);
-  assert.match(read("src/renderer/views/RecordLinks.css"), /\.record-focus \{\s*outline: 2px solid var\(--focus-ring\);/);
+  assert.match(read("src/renderer/views/RecordLinks.css"), /\.record-focus \{\s*outline: 2px solid var\(--focus-outline\);/, "a solid outline, as the design rule asks; not the faint ring");
 });
 
 const ids = () => { let n = 0; return () => `link-${++n}`; };

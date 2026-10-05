@@ -40,7 +40,7 @@ import { Thumbnail, type ThumbnailBridge } from "./views/Thumbnail";
 import { NAVIGATE_EVENT, RecordLinkChips, RecordLinksList, useRecordFocus, useRecordLinks, type RecordLinkChip } from "./views/RecordLinks";
 import { focusMarker } from "./views/recordFocus";
 import { moduleName } from "./lib/activityLabels";
-import { arrangeSidebar, canHide, EMPTY_SIDEBAR_PREFS, moveSidebarView, normalizeSidebarPrefs, setSidebarHidden, type SidebarPrefs } from "./lib/sidebarLayout";
+import { arrangeSidebar, canHide, EMPTY_SIDEBAR_PREFS, moveSidebarView, normalizeSidebarPrefs, placeSidebarView, setSidebarHidden, type SidebarPrefs } from "./lib/sidebarLayout";
 import { getPerfStats, subscribePerf, recordModuleSwitch, recordModuleDataLoaded } from "./lib/perf";
 import {
   emptyCommandStats, defaultPerformanceModeSettings, defaultPerformanceModeState, defaultExternalDevicesState,
@@ -5738,6 +5738,9 @@ function DexNestApp() {
     getBridge().getSidebarPrefs?.().then((raw) => { if (live) setSidebarPrefs(normalizeSidebarPrefs(raw)); }).catch(() => undefined);
     return () => { live = false; };
   }, []);
+  // Dragging a sidebar entry onto another: which one is held, and which one it is over.
+  const [sidebarDrag, setSidebarDrag] = useState<{ id: string; over: string | null } | null>(null);
+
   function arrangeSidebarTo(next: SidebarPrefs): void {
     setSidebarPrefs(next);
     void getBridge().saveSidebarPrefs?.(next).catch(() => undefined);
@@ -6162,7 +6165,31 @@ function DexNestApp() {
             const Icon = meta.icon;
             const active = activeView === view.id;
             return (
-              <div key={view.id} className="sidebar-row">
+              <div
+                key={view.id}
+                className="sidebar-row"
+                draggable={!sidebarCollapsed}
+                data-dragging={sidebarDrag?.id === view.id ? "true" : undefined}
+                data-drop-target={sidebarDrag && sidebarDrag.over === view.id && sidebarDrag.id !== view.id ? "true" : undefined}
+                onDragStart={(event) => {
+                  event.dataTransfer.effectAllowed = "move";
+                  event.dataTransfer.setData("text/plain", view.label);
+                  setSidebarDrag({ id: view.id, over: null });
+                }}
+                onDragOver={(event) => {
+                  if (!sidebarDrag) return;
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                  if (sidebarDrag.over !== view.id) setSidebarDrag({ id: sidebarDrag.id, over: view.id });
+                }}
+                onDrop={(event) => {
+                  if (!sidebarDrag) return;
+                  event.preventDefault();
+                  arrangeSidebarTo(placeSidebarView(railViews, sidebarPrefs, sidebarDrag.id, view.id));
+                  setSidebarDrag(null);
+                }}
+                onDragEnd={() => setSidebarDrag(null)}
+              >
                 <button
                   type="button"
                   title={view.label}

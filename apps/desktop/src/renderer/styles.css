@@ -3620,3 +3620,16 @@ kbd {
   overflow: hidden;
   line-height: 1.25;
 }
+
+/* Dragging a sidebar entry: the one held is dimmed, the one it will take the place of is outlined. Nothing animates. */
+.sidebar-row[draggable="true"] {
+  cursor: grab;
+}
+.sidebar-row[data-dragging="true"] {
+  opacity: 0.45;
+}
+.sidebar-row[data-drop-target="true"] {
+  outline: 2px solid var(--focus-outline);
+  outline-offset: 1px;
+  border-radius: var(--radius-md, 8px);
+}

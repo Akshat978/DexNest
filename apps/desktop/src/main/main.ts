@@ -21,6 +21,7 @@ import { PDFDocument } from "pdf-lib";
 import { Jimp } from "jimp";
 import { decodeHeicFile, isHeicFile, toBgra } from "./heic.js";
 import { createThumbnailer, fitWithin, mayBePicture } from "./thumbnails.js";
+import { clearGhost, clearObjects, clearProjects, countGhost, countObjects, countProjects, type ClearOutcome } from "./moduleClear.js";
 import { DECISION_MODEL, looksLikeOpenRouterKey, normalizeOutsideAiSettings, outcomeInWords, routeCommand, suggestCaptureRoute, type CaptureOutcome, type OutsideAiSettings, type OutsideAiSurface, type RouteOutcome } from "./outsideAi.js";
 import { addLink, backfillFromCalendar, chipsFor, normalizeLinks, pruneLinks, type RecordLink, type RecordRef } from "./recordLinks.js";
 import { ghostRecords, LIVE_SEARCH_SOURCES, objectRecords, reminderRecords, standupRecords, type StandupLike, rpgRecords, skillRecords, timetableRecords, type ModuleSearchRecord } from "./moduleSearch.js";
@@ -3284,6 +3285,34 @@ interface DataManagementCategory {
    */
   tablePrefixes?: string[];
   special?: "audit" | "appHealth" | "secureVault" | "credentials";
+  /** Cleared through the module's own calls (see moduleClear.ts), not by emptying tables. */
+  module?: "ghost" | "object" | "projects";
+}
+
+/** How many records a module-cleared category holds; 0 while the module is not running. */
+function countModuleCategory(module: NonNullable<DataManagementCategory["module"]>): number {
+  try {
+    if (module === "ghost") return ghostOsHost ? countGhost(ghostOsHost.module) : 0;
+    if (module === "object") return objectOsHost ? countObjects(objectOsHost.module) : 0;
+    return projectsHost ? countProjects(projectsHost.module) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function clearModuleCategory(module: NonNullable<DataManagementCategory["module"]>): ClearOutcome {
+  if (module === "ghost") {
+    if (!ghostOsHost) throw new Error("GhostOS is not running, so it cannot be cleared.");
+    return clearGhost(ghostOsHost.module);
+  }
+  if (module === "object") {
+    if (!objectOsHost) throw new Error("ObjectOS is not running, so it cannot be cleared.");
+    const outcome = clearObjects(objectOsHost.module);
+    scheduleSearchReindex();
+    return outcome;
+  }
+  if (!projectsHost) throw new Error("Projects is not running, so it cannot be cleared.");
+  return clearProjects(projectsHost.module);
 }
 
 /** The tables a module owns, by prefix. Names come from the database, never from input. */
@@ -3330,6 +3359,9 @@ function dataManagementCatalog(): DataManagementCategory[] {
     { id: "scan", label: "Repository scan and Standups", description: "What the scan recorded about your repositories (commits seen, TODOs, technologies) and every Standup. Your repositories themselves are not touched; the next scan reads them again.", sensitive: false, recordFiles: [], fileRoots: [], tablePrefixes: ["dev_", "standup_"] },
     { id: "skills", label: "Skills", description: "The constellation, its evidence and its strength history. Rebuilt from the repository scan the next time you press Rebuild. Keeps Skills settings.", sensitive: false, recordFiles: [], fileRoots: [], tablePrefixes: ["skill_"] },
     { id: "rpg", label: "Reality RPG", description: "XP, level, rules, quests and achievements. The game starts again from nothing.", sensitive: false, recordFiles: [], fileRoots: [], tablePrefixes: ["rpg_"] },
+    { id: "ghost", label: "GhostOS", description: "Every entry, connection and observation, and the link to your repositories is turned off. Connect them again on its Sources tab to bring those entries back; what you entered by hand is gone. An entry you deleted earlier stays deleted.", sensitive: true, recordFiles: [], fileRoots: [], module: "ghost" },
+    { id: "object", label: "ObjectOS", description: "Every object with its maintenance, purchases, readings and attached files, and every part. The files DexNest copied in are deleted from disk. Calendar events and Finance entries you sent from ObjectOS are not touched.", sensitive: true, recordFiles: [], fileRoots: [], module: "object" },
+    { id: "projects", label: "Projects", description: "Every project leaves DexNest's list, with its commands and history here. Your folders and repositories are not touched. Folder watching is switched off.", sensitive: false, recordFiles: [], fileRoots: [], module: "projects" },
     { id: "deck", label: "Deck routines/export status", description: "Deck routines and export status records.", sensitive: false, recordFiles: [routinesPath], fileRoots: [] },
     { id: "timetable", label: "Timetable", description: "Timetable blocks, weekly status, and templates. Defaults are recreated after deletion.", sensitive: false, recordFiles: [timetablePath], fileRoots: [] },
     { id: "utilities", label: "Utilities history/timers/world clocks", description: "Utilities recent results, timers, stopwatch, and world clocks. Default Utilities settings are recreated after deletion.", sensitive: false, recordFiles: [utilitiesPath], fileRoots: [] },
@@ -3426,7 +3458,7 @@ function loadDataManagementStatus(): DataManagementStatus {
 function dataManagementState() {
   return {
     categories: dataManagementCatalog().map((category) => {
-      const records = category.special === "audit" ? localDb.countEvents() : category.recordFiles.reduce((sum, file) => sum + countRecordEntries(file), 0) + (category.tablePrefixes ? countModuleRows(category.tablePrefixes) : 0);
+      const records = category.special === "audit" ? localDb.countEvents() : category.recordFiles.reduce((sum, file) => sum + countRecordEntries(file), 0) + (category.tablePrefixes ? countModuleRows(category.tablePrefixes) : 0) + (category.module ? countModuleCategory(category.module) : 0);
       const files = category.fileRoots.reduce((sum, root) => sum + countDirFiles(root), 0);
       return {
         id: category.id,
@@ -3446,7 +3478,7 @@ function previewDataDeletion(categoryIds: string[]) {
   const catalog = dataManagementCatalog();
   const selected = catalog.filter((category) => categoryIds.includes(category.id));
   const items = selected.map((category) => {
-    const records = category.special === "audit" ? localDb.countEvents() : category.recordFiles.reduce((sum, file) => sum + countRecordEntries(file), 0) + (category.tablePrefixes ? countModuleRows(category.tablePrefixes) : 0);
+    const records = category.special === "audit" ? localDb.countEvents() : category.recordFiles.reduce((sum, file) => sum + countRecordEntries(file), 0) + (category.tablePrefixes ? countModuleRows(category.tablePrefixes) : 0) + (category.module ? countModuleCategory(category.module) : 0);
     const files = category.fileRoots.reduce((sum, root) => sum + countDirFiles(root), 0);
     return {
       id: category.id,
@@ -3506,6 +3538,13 @@ function executeDataDeletion(categoryIds: string[], source: DexNestActionTrigger
           filesDeleted += emptyManagedDir(root);
         }
         if (category.tablePrefixes) recordsCleared += clearModuleRows(category.tablePrefixes);
+        if (category.module) {
+          const outcome = clearModuleCategory(category.module);
+          recordsCleared += outcome.records;
+          filesDeleted += outcome.files;
+          // Some of it went and some did not: say so, rather than report a clean sweep.
+          if (outcome.problems.length > 0) throw new Error(`${outcome.records} removed, but not everything: ${outcome.problems.join(" ")}`);
+        }
       }
 
       if (category.special === "secureVault") {
@@ -21364,6 +21403,13 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
   }
 
   if (action.id === "system.data.execute_delete") {
+    // The registry lists this for the command bar and the window only. That list is not
+    // enforced for every action, so it is enforced here: a request from the Deck endpoint,
+    // the phone, voice or a routine cannot delete data, whatever it says about confirmation.
+    if (source !== "module_ui" && source !== "command") {
+      logActionEvent(action, "failed", source, "Data deletion was refused: it is done from DexNest's own window.", {});
+      return { ok: false, actionId, error: "Data is deleted from DexNest's own window, not from here." };
+    }
     const categoryIds = Array.isArray(dp.categoryIds) ? (dp.categoryIds as unknown[]).filter((id): id is string => typeof id === "string") : [];
     const confirmText = typeof dp.confirmText === "string" ? dp.confirmText : "";
     const createBackupFirst = dp.createBackupFirst === true;
