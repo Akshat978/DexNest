@@ -20,6 +20,7 @@ import { startSlotHook, stopSlotHook, isSlotHookRunning } from "./clipboardSlotH
 import { PDFDocument } from "pdf-lib";
 import { Jimp } from "jimp";
 import { decodeHeicFile, isHeicPath, toBgra } from "./heic.js";
+import { DECISION_MODEL, looksLikeOpenRouterKey, normalizeOutsideAiSettings, outcomeInWords, routeCommand, type OutsideAiSettings, type OutsideAiSurface, type RouteOutcome } from "./outsideAi.js";
 import { addLink, chipsFor, normalizeLinks, pruneLinks, type RecordLink, type RecordRef } from "./recordLinks.js";
 import { ghostRecords, LIVE_SEARCH_SOURCES, objectRecords, reminderRecords, rpgRecords, skillRecords, timetableRecords, type ModuleSearchRecord } from "./moduleSearch.js";
 import { createActionRegistry, createStreamDeckActionCatalog, seededActions, streamDeckCatalogItems } from "@dexnest/action-registry";
@@ -190,6 +191,7 @@ const pinnedActionsPath = join(settingsRoot, "pinned-actions.json");
 // The sidebar as the owner arranged it: order and what is hidden.
 const sidebarPrefsPath = join(settingsRoot, "sidebar.json");
 const recordLinksPath = join(settingsRoot, "record-links.json");
+const outsideAiSettingsPath = join(settingsRoot, "outside-ai.json");
 const clipboardHistoryPath = join(settingsRoot, "clipboard-history.json");
 const clipboardSnippetsPath = join(settingsRoot, "clipboard-snippets.json");
 const clipboardSettingsPath = join(settingsRoot, "clipboard-settings.json");
@@ -4290,6 +4292,119 @@ function setIntegrationCredential(provider: string, label: string, value: string
   };
   saveIntegrationKeychain(existing ? items.map((item) => (item.id === existing.id ? credential : item)) : [credential, ...items]);
   return { id: credential.id, storageMethod };
+}
+
+// --- Outside AI (see AGENTS.md, "Outside AI") ---
+// Off until the user turns it on. The key sits in the keychain above and is
+// read only at the moment a request goes out; it is never logged and never
+// sent to the renderer. Every request writes one line to the event log with
+// counts and the outcome, and never the words that were sent.
+const OUTSIDE_AI_PROVIDER = "openrouter";
+
+/**
+ * Tests point the request at a stand-in on this computer. Only a loopback
+ * address is honoured, so the variable cannot be used to send the key elsewhere.
+ */
+function outsideAiTestUrl(): { url?: string } {
+  const url = process.env.DEXNEST_OUTSIDE_AI_URL ?? "";
+  return /^http:\/\/127\.0\.0\.1:\d{2,5}\/[\w/.-]*$/.test(url) ? { url } : {};
+}
+
+function loadOutsideAiSettings(): OutsideAiSettings {
+  return normalizeOutsideAiSettings(readJsonFile<unknown>(outsideAiSettingsPath, {}));
+}
+
+function outsideAiState() {
+  const credential = findIntegrationCredential(OUTSIDE_AI_PROVIDER);
+  return {
+    settings: loadOutsideAiSettings(),
+    hasKey: Boolean(credential),
+    keySavedAt: credential?.updatedAt ?? null,
+    canStoreKey: integrationKeychainAvailableMethod() !== null,
+    model: DECISION_MODEL,
+    settingsPath: outsideAiSettingsPath
+  };
+}
+
+function logOutsideAi(actionId: string, eventType: string, status: "success" | "failed" | "skipped", source: DexNestActionTrigger, summary: string, metadata: Record<string, unknown>): void {
+  localDb.appendActionEvent({ module: "settings", actionId, eventType, status, source, summary, metadataJson: metadata });
+}
+
+function saveOutsideAiKey(value: unknown): { ok: boolean; error?: string; state?: ReturnType<typeof outsideAiState> } {
+  if (!looksLikeOpenRouterKey(value)) {
+    return { ok: false, error: "That does not look like an OpenRouter key. They start with sk-or-." };
+  }
+  try {
+    const saved = setIntegrationCredential(OUTSIDE_AI_PROVIDER, "OpenRouter", value.trim());
+    logOutsideAi("outside_ai.set_key", "outside_ai_key_saved", "success", "module_ui", "Saved an OpenRouter key for Outside AI.", { storageMethod: saved.storageMethod });
+    return { ok: true, state: outsideAiState() };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "The key could not be saved.";
+    logOutsideAi("outside_ai.set_key", "outside_ai_key_saved", "failed", "module_ui", "An OpenRouter key could not be saved.", {});
+    return { ok: false, error: message };
+  }
+}
+
+/** One question to the service. The log line has the length of what was sent, never the words. */
+async function askOutsideAi(text: string, surface: OutsideAiSurface, actionId: string): Promise<RouteOutcome> {
+  const settings = loadOutsideAiSettings();
+  if (settings.enabled && performanceModePauses("assistant")) {
+    return { ok: false, reason: "off", latencyMs: 0 };
+  }
+  const outcome = await routeCommand(text, surface, {
+    fetch: (url, init) => fetch(url, init),
+    key: () => getIntegrationCredentialValue(OUTSIDE_AI_PROVIDER),
+    settings,
+    ...outsideAiTestUrl()
+  });
+  // "Off" is the everyday case and sends nothing: it is not worth a line each time.
+  if (outcome.ok || outcome.reason !== "off") {
+    const sent = outcome.ok || ["timeout", "network", "http", "bad_answer"].includes(outcome.reason);
+    logOutsideAi(actionId, sent ? "outside_ai_request" : "outside_ai_not_sent", outcome.ok ? "success" : sent ? "failed" : "skipped", "module_ui", outcomeInWords(outcome), {
+      service: "openrouter",
+      model: outcome.ok ? outcome.decision.model : DECISION_MODEL,
+      surface,
+      sent,
+      textLength: text.trim().length,
+      latencyMs: outcome.latencyMs,
+      ...(outcome.ok
+        ? { intent: outcome.decision.intent, confidence: outcome.decision.intentConfidence, screen: outcome.decision.screen, used: outcome.used, inputTokens: outcome.decision.inputTokens, cost: outcome.decision.cost }
+        : { reason: outcome.reason, detail: outcome.detail ?? null, httpStatus: outcome.status ?? null })
+    });
+  }
+  return outcome;
+}
+
+async function runOutsideAiAction(actionId: string, source: DexNestActionTrigger, params: Record<string, unknown>) {
+  if (source !== "module_ui") return { ok: false, actionId, error: "Outside AI is changed in Settings, in DexNest's own window." };
+  if (actionId === "outside_ai.update_settings") {
+    const before = loadOutsideAiSettings();
+    const next = normalizeOutsideAiSettings({ ...before, ...(typeof params.settings === "object" && params.settings !== null ? params.settings : {}) });
+    writeJsonFile(outsideAiSettingsPath, next);
+    logOutsideAi(actionId, "outside_ai_settings_changed", "success", source, next.enabled ? "Outside AI is on." : "Outside AI is off.", { enabled: next.enabled, voice: next.surfaces.voice, typed: next.surfaces.typed, minConfidence: next.minConfidence });
+    return { ok: true, actionId, state: outsideAiState() };
+  }
+  if (actionId === "outside_ai.clear_key") {
+    const credential = findIntegrationCredential(OUTSIDE_AI_PROVIDER);
+    if (credential) saveIntegrationKeychain(loadIntegrationKeychain().filter((item) => item.id !== credential.id));
+    // With no key nothing can be sent, so the switch goes off with it.
+    writeJsonFile(outsideAiSettingsPath, { ...loadOutsideAiSettings(), enabled: false });
+    logOutsideAi(actionId, "outside_ai_key_removed", "success", source, "Removed the OpenRouter key and turned Outside AI off.", {});
+    return { ok: true, actionId, state: outsideAiState() };
+  }
+  if (actionId === "outside_ai.test") {
+    // A fixed, harmless phrase, sent whatever the switches say: the user pressed Test.
+    const settings = loadOutsideAiSettings();
+    const outcome = await routeCommand("open the settings screen", "typed", {
+      fetch: (url, init) => fetch(url, init),
+      key: () => getIntegrationCredentialValue(OUTSIDE_AI_PROVIDER),
+      settings: { ...settings, enabled: true, surfaces: { voice: true, typed: true } },
+      ...outsideAiTestUrl()
+    });
+    logOutsideAi(actionId, "outside_ai_test", outcome.ok ? "success" : "failed", source, `Outside AI test: ${outcomeInWords(outcome)}`, { service: "openrouter", model: DECISION_MODEL, latencyMs: outcome.latencyMs, ...(outcome.ok ? { intent: outcome.decision.intent, confidence: outcome.decision.intentConfidence } : { reason: outcome.reason, httpStatus: outcome.status ?? null }) });
+    return { ok: outcome.ok, actionId, message: outcomeInWords(outcome), ...(outcome.ok ? { intent: outcome.decision.intent, screen: outcome.decision.screen, confidence: outcome.decision.intentConfidence, latencyMs: outcome.latencyMs } : { error: outcomeInWords(outcome) }) };
+  }
+  return { ok: false, actionId, error: "Unknown Outside AI action." };
 }
 
 function getIntegrationCredentialValue(provider: string, id?: string | null): string | null {
@@ -20765,6 +20880,10 @@ async function runRegisteredAction(actionId: string, source: DexNestActionTrigge
     }
   }
 
+  if (actionId.startsWith("outside_ai.")) {
+    return runOutsideAiAction(actionId, source, typeof payload === "object" && payload !== null ? payload as Record<string, unknown> : {});
+  }
+
   if (actionId.startsWith("object_os.") && actionId !== "object_os.open") {
     if (!objectOsHost) return { ok: false, actionId: action.id, error: "ObjectOS is not running." };
     const params = typeof payload === "object" && payload !== null ? payload as Record<string, unknown> : {};
@@ -22969,6 +23088,17 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("dexnest:list-pinned-actions", () => loadPinnedActions());
   ipcMain.handle("dexnest:get-sidebar-prefs", () => readJsonFile<unknown>(sidebarPrefsPath, {}));
+  ipcMain.handle("dexnest:outside-ai-state", () => outsideAiState());
+  // The key comes in once and never goes back out.
+  ipcMain.handle("dexnest:outside-ai-set-key", (_event, value: unknown) => saveOutsideAiKey(value));
+  ipcMain.handle("dexnest:outside-ai-route", async (_event, input: { text?: unknown; surface?: unknown }) => {
+    const text = typeof input?.text === "string" ? input.text : "";
+    const surface: OutsideAiSurface = input?.surface === "voice" ? "voice" : "typed";
+    const outcome = await askOutsideAi(text, surface, "outside_ai.route_command");
+    return outcome.ok
+      ? { ok: true, used: outcome.used, intent: outcome.decision.intent, screen: outcome.decision.screen, confidence: outcome.decision.intentConfidence }
+      : { ok: false, reason: outcome.reason };
+  });
   ipcMain.handle("dexnest:record-links", (_event, module: unknown) => (typeof module === "string" ? recordLinkChips(module) : []));
   ipcMain.handle("dexnest:save-sidebar-prefs", (_event, prefs: unknown) => {
     // Two short lists of module ids; anything else is dropped before it is written.

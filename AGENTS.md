@@ -13,11 +13,12 @@ DexNest is an offline-first personal command center for Windows, Android, and St
 - Do not store documents, vault data, receipts, captures, indexes, or SQLite databases in C drive AppData.
 - `local-data/` must stay gitignored.
 - DexNest itself has no cloud, no login, no accounts, and no telemetry. It never runs a
-  server of its own, and never phones home.
+  server of its own, and never phones home. The only requests it makes to an AI service
+  are the ones the user has switched on, described under Autopilot and Outside AI below.
 - No Google Calendar OAuth, bank APIs, or other third-party data integrations that would
   pull private accounts into DexNest.
-- Autopilot is the one approved exception to "no external AI" — see the Autopilot
-  section below. Everything outside Autopilot stays local.
+- External AI is allowed in two places only, both off until the user turns them on:
+  Autopilot and Outside AI. See their sections below. Everything else stays local.
 - Heavy workers must be lazy and on-demand only.
 - Idle CPU should stay near zero. An active, user-started Autopilot run is foreground
   work and is exempt while it runs; idle behaviour must be unchanged.
@@ -58,6 +59,42 @@ Autopilot lives in `packages/autopilot-runtime` (zero Electron imports — platf
 capability is injected through ports) with views under
 `apps/desktop/src/renderer/views/`. Do not create `modules/autopilot`; `modules/*` is
 not a live registration system.
+
+## Outside AI
+
+Outside AI lets DexNest ask a service on the internet for help, using the user's own
+OpenRouter key. It is an approved, narrow exception, not a general licence to call
+external services. The code is `apps/desktop/src/main/outsideAi.ts`.
+
+- Off by default. Nothing is sent until the user has saved a key, turned Outside AI on,
+  and turned on the place it is used (spoken commands, typed commands). Each is a
+  separate switch in Settings.
+- The key is the user's own. It is stored encrypted in the integration keychain, read
+  only at the moment a request is made, never logged, and never sent to the renderer.
+- What may be sent is listed in code, per use. Today that is one thing: the words of a
+  command the local rules could not place (300 characters at most), so a decision model
+  can pick one intent from a fixed list. DexNest builds the action itself; the service
+  never names an action or a parameter, and what it suggests waits for a confirmation.
+- Never sent: anything from the Vault, Finance or Journal; files, documents or OCR text;
+  the clipboard; search results; captures; repository contents, paths or names; anything
+  under `local-data/`; secrets of any kind. A command that looks private (credentials,
+  identity documents, money, long numbers, emails, links) is not sent and is handled
+  locally.
+- Every request writes one line to the shared event log: the service, the model, where
+  it was used, how long the text was, how long it took and what was decided. The text
+  itself is not logged.
+- The local path always remains. Outside AI is asked only when the local rules are
+  unsure, an answer below the confidence the user set is ignored, and any failure
+  (no network, no credit, a changed API) falls back to the local path without an error
+  the user has to deal with.
+- Requests ask the provider not to retain or train on the data. That is a request, not a
+  guarantee DexNest can enforce; say so in the interface.
+- No telemetry is added because Outside AI exists.
+- A new use of Outside AI (a new kind of content sent, a new module) needs the user's
+  explicit approval and its own switch. Do not widen what is sent to make a feature work.
+
+Do not describe DexNest as fully offline while Outside AI is on. With it off, which is
+the default, nothing in this section sends anything.
 
 ## Sensitive Data Boundary
 

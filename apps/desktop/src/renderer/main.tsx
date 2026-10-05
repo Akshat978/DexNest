@@ -64,6 +64,7 @@ import { RealityRpgView, type RealityRpgBridge } from "./views/RealityRpgView";
 import { TodayView, type TodayBridge } from "./views/TodayView";
 import { bellBadge, dayRows, needsYou } from "./views/todayDayModel";
 import { ModuleSettings } from "./views/ModuleSettings";
+import { OutsideAiSettings, type OutsideAiState } from "./views/OutsideAiSettings";
 import type { ActivityRow } from "./lib/activityLabels";
 import { GhostOsView, type GhostOsBridge } from "./views/GhostOsView";
 import { ObjectOsView, type ObjectOsBridge } from "./views/ObjectOsView";
@@ -1096,7 +1097,7 @@ interface VoiceRouteResult {
   suggestions?: string[];
 }
 
-type AssistantRouterUsed = "fast_path" | "rules" | "local-llm" | "fallback";
+type AssistantRouterUsed = "fast_path" | "rules" | "local-llm" | "outside-ai" | "fallback";
 
 interface AssistantSettings {
   localIntentEngineEnabled: boolean;
@@ -2076,6 +2077,9 @@ export interface DexNestBridge extends SkillConstellationBridge, RealityRpgBridg
   listPinnedActions: () => Promise<string[]>;
   getSidebarPrefs: () => Promise<unknown>;
   getRecordLinks?: (module: string) => Promise<RecordLinkChip[]>;
+  getOutsideAiState?: () => Promise<OutsideAiState>;
+  setOutsideAiKey?: (value: string) => Promise<{ ok: boolean; error?: string; state?: OutsideAiState }>;
+  outsideAiRoute?: (payload: { text: string; surface: "voice" | "typed" }) => Promise<{ ok: boolean; used?: boolean; intent?: string; screen?: string | null; confidence?: number; reason?: string }>;
   saveSidebarPrefs: (prefs: { order: string[]; hidden: string[] }) => Promise<unknown>;
   savePinnedActions: (actionIds: string[]) => Promise<string[]>;
   getPins: () => Promise<{ pins: DexNestPin[]; pinsPath: string }>;
@@ -4230,6 +4234,31 @@ function maxSensitivity(a: VoiceSensitivity, b: VoiceSensitivity): VoiceSensitiv
 // Validate a raw LLM intent object against the registered action list and the
 // allowed intent enum. The LLM's actionId/params are intentionally discarded;
 // only the intent category (plus a sensitivity hint) is trusted.
+/**
+ * A route from what Outside AI decided. The service only names an intent and,
+ * for opening a screen, which one; the action and its parameters are built
+ * here from DexNest's own tables, and it always waits for a confirmation.
+ */
+function routeFromOutsideDecision(intent: string | undefined, screen: string | null | undefined, text: string, actions: ActionDefinition[], workflowSettings = defaultVoiceWorkflowSettings): VoiceRouteResult | null {
+  if (!intent || intent === "unknown" || intent === "smart_lookup") return null;
+  if (intent === "open_module") {
+    const target = screen && Object.hasOwn(voiceModuleAliases, screen) ? voiceModuleAliases[screen] : undefined;
+    if (!target || !actions.some((action) => action.id === target.actionId)) return null;
+    return {
+      intent: "open_module",
+      targetModule: target.module,
+      actionId: target.actionId,
+      params: {},
+      confidence: "medium",
+      requiresConfirmation: true,
+      sensitivity: "none",
+      explanation: `Outside AI read this as: open ${screen}.`
+    };
+  }
+  const built = validateLlmIntent({ intent }, text, actions, workflowSettings);
+  return built ? { ...built, requiresConfirmation: true } : null;
+}
+
 function validateLlmIntent(raw: Record<string, unknown> | undefined, text: string, actions: ActionDefinition[], workflowSettings = defaultVoiceWorkflowSettings): VoiceRouteResult | null {
   if (!raw) {
     return null;
@@ -7112,7 +7141,7 @@ function AskDexNest({
     return null;
   }
 
-  async function sendAssistant(rawText = voiceInput, commandSource = "voice"): Promise<void> {
+  async function sendAssistant(rawText = voiceInput, commandSource = "voice", surface: "voice" | "typed" = "voice"): Promise<void> {
     // Strip the leading wake phrase from wake-triggered commands ("Hey Jarvis,
     // turn off lights" → "turn off lights"). The phrase depends on the engine mode.
     const wakePhraseText = ambientVoiceState.settings.wakePhraseMode === "hey_jarvis"
@@ -7229,7 +7258,23 @@ function AskDexNest({
         && assistantSettings.localIntentEngineEnabled
         && ruleRoute.intent !== "external_device_control"
         && (ruleRoute.intent === "unknown" || ruleRoute.confidence !== "high");
-      if (engineEligible) {
+      // Outside AI, when the user has turned it on: asked only about a command
+      // the rules could not place, and never about one they marked sensitive.
+      // The main process decides whether anything is sent at all.
+      const unsure = !fastRoute
+        && ruleRoute.intent !== "external_device_control"
+        && ruleRoute.sensitivity !== "sensitive"
+        && (ruleRoute.intent === "unknown" || ruleRoute.confidence !== "high");
+      if (unsure) {
+        const outside = await (getBridge().outsideAiRoute?.({ text, surface }) ?? Promise.resolve(null)).catch(() => null);
+        const decided = outside?.ok && outside.used ? routeFromOutsideDecision(outside.intent, outside.screen, text, actions, voiceWorkflowSettings) : null;
+        if (decided) {
+          route = decided;
+          routerUsed = "outside-ai";
+        }
+      }
+
+      if (engineEligible && routerUsed !== "outside-ai") {
         const llm = await getBridge().assistantLlmIntent({ query: text });
         if (llm.ok) {
           const validated = validateLlmIntent(llm.intent, text, actions, voiceWorkflowSettings);
@@ -7369,7 +7414,8 @@ function AskDexNest({
       }
 
       const assistantId = createClientId("assistant-reply");
-      const needsConfirm = route.intent !== "unknown" && Boolean(route.actionId) && assistantNeedsConfirm(route, actions);
+      // What an outside service suggested is never acted on until the user says yes.
+      const needsConfirm = route.intent !== "unknown" && Boolean(route.actionId) && (routerUsed === "outside-ai" || assistantNeedsConfirm(route, actions));
       if (route.intent === "finder_add") {
         const candidate = parseFinderAddPhrase(text);
         if (candidate) {
@@ -7381,7 +7427,7 @@ function AskDexNest({
       const initialText = route.intent === "unknown"
         ? "I’m not sure what to do yet. Here are some things you can ask."
         : needsConfirm
-          ? assistantPendingText(route)
+          ? (routerUsed === "outside-ai" ? `Outside AI suggests: ${assistantPendingText(route)}` : assistantPendingText(route))
           : "Working on it…";
 
       appendAssistantMessage({
@@ -7711,7 +7757,7 @@ function AskDexNest({
                 {message.route?.intent === "unknown" && (message.route.suggestions ?? []).length > 0 && (
                   <div className="assistant__suggestions">
                     {(message.route.suggestions ?? []).map((suggestion) => (
-                      <button type="button" key={suggestion} disabled={assistantBusy} onClick={() => void sendAssistant(suggestion.replace(/^Try:\s*/i, ""))}>{suggestion}</button>
+                      <button type="button" key={suggestion} disabled={assistantBusy} onClick={() => void sendAssistant(suggestion.replace(/^Try:\s*/i, ""), "voice", "typed")}>{suggestion}</button>
                     ))}
                   </div>
                 )}
@@ -7751,13 +7797,13 @@ function AskDexNest({
           onKeyDown={(event) => {
             if (event.key === "Enter") {
               event.preventDefault();
-              void sendAssistant();
+              void sendAssistant(undefined, "voice", "typed");
             }
           }}
           placeholder="Ask DexNest… e.g. What is my work permit number?"
           aria-label="Ask DexNest"
         />
-        <button type="button" disabled={assistantBusy || !voiceInput.trim()} onClick={() => void sendAssistant()}>Send</button>
+        <button type="button" disabled={assistantBusy || !voiceInput.trim()} onClick={() => void sendAssistant(undefined, "voice", "typed")}>Send</button>
       </div>
       {assistantBusy && <p className="inline-status"><Spinner size="sm" /> Thinking…</p>}
       {!assistantBusy && micStatus && <p className="inline-status">{voiceListening && <Spinner size="sm" />} {micStatus}</p>}
@@ -14969,6 +15015,7 @@ function SettingsView({
     { id: "startup", label: "Startup & Tray", icon: Power, accent: "#A855F7" },
     { id: "nudges", label: "Reminders & Nudges", icon: Bell, accent: "#14B8A6" },
     { id: "modules", label: "Modules", icon: LayoutGrid, accent: "var(--accent-skills)" },
+    { id: "outside-ai", label: "Outside AI", icon: Sparkles, accent: "var(--accent-search)" },
     { id: "weather", label: "Weather", icon: CloudSun, accent: "var(--accent-weather)" },
     { id: "news", label: "News", icon: Newspaper, accent: "var(--accent-news)" },
     { id: "tools", label: "Tools & Dependencies", icon: Wrench, accent: "#F97316" },
@@ -17310,6 +17357,9 @@ function SettingsView({
 
           {settingsSection === "modules" && (
             <ModuleSettings bridge={getBridge()} onAction={(actionId) => onAction(actionId, "module_ui", {})} />
+          )}
+          {settingsSection === "outside-ai" && (
+            <OutsideAiSettings bridge={getBridge()} onAction={(actionId, params) => onAction(actionId, "module_ui", params ?? {})} />
           )}
           {settingsSection === "data" && (
             <div className="space-y-4">
