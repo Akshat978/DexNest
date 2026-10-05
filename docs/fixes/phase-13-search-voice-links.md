@@ -11,7 +11,7 @@ Thirteenth phase of the fixes found in hands-on testing on 3 October 2026.
 | A result with no file had no way to be opened | Every result has **Open**, which opens the module it belongs to |
 | Sources and results were labelled `tools_ocr`, `dev`, `finance_transaction` | They are named as the sidebar names them |
 | Voice knew only the older screens | "Open skills / projects / Reality RPG / GhostOS / ObjectOS / Autopilot / today / activity log", and questions a screen answers: "what needs me", "where did I leave off", "what are my skills", "what's my level", "which warranties are ending" |
-| The Stream Deck export had no button for the newer screens, nor for Vault, Capture or Tools | A **Screens** group: ten buttons that open a screen |
+| The Stream Deck export had no button for Projects, Vault, Capture, Tools or the activity log | A **Screens** group: five buttons that open a screen |
 | A capture sent to Finance did not know its entry, and the entry did not know its capture | Both show a chip: "Sent to Finance: …" and "From Capture: …". Clicking it opens the other module |
 | ObjectOS could send to Calendar and Finance but not the Vault | **Send to Vault** on each attached file |
 
@@ -32,12 +32,12 @@ Thirteenth phase of the fixes found in hands-on testing on 3 October 2026.
 
 - Voice opens the screen; the answer is read there. Nothing a module holds is
   spoken or sent anywhere.
-- The five `*.open` actions for Today, Skills, Reality RPG, GhostOS and
-  ObjectOS now allow the `deck` and `voice` triggers. Opening changes the
-  screen on the desktop and returns nothing. **No other action of those
-  modules is offered to the Deck**, and ObjectOS still refuses every change
-  that does not come from DexNest's own window. Three tests that pinned "not
-  Deck-exposed" now pin exactly this.
+- Today, Skills, Reality RPG, GhostOS and ObjectOS stay off the Stream Deck,
+  as they were built: seven tests across those modules hold that nothing of
+  theirs is offered to it. Voice opens their screens from the desktop, which
+  never needed the Deck. (This phase first allowed their "open" actions on
+  the Deck and narrowed three of those tests; that was reversed in the finish
+  phase, the tests restored as they were, and the five buttons removed.)
 - The sidebar marks the open screen with `aria-current`.
 
 ### Links
@@ -73,22 +73,20 @@ Thirteenth phase of the fixes found in hands-on testing on 3 October 2026.
 - The Standup's own text is not searched. Projects are, as before.
 - ObjectOS does not show Finance or Vault items inside itself (the reverse
   direction of item 87); it shows the links.
-- The Deck buttons were checked through the action registry with the `deck`
-  trigger, not over HTTP: the installed DexNest holds the port.
+- No Deck button opens Today, Skills, Reality RPG, GhostOS or ObjectOS. That
+  needs a decision to change how those modules were built, not a code change
+  alone.
 
 ## Tests
 
 - `apps/desktop/test/searchVoiceLinks.test.ts`: the search records, live and
   not indexed; names and screens; voice names and questions; what the Deck
   may run; links; Send to Vault.
-- Updated: `objectOsHost.test.ts`, `todayView.test.mjs` (open only on the
-  Deck), `objectOsModel.test.ts` (the Finance entry names its object).
+- Updated: `objectOsModel.test.ts` (the Finance entry names its object).
 - Checked in the real app on a scratch data root, 32 checks: each kind of
   result found; a GhostOS entry found by its notes without the notes in the
   result, and gone after deletion; nothing of the newer modules in the index
-  file; four phrases typed into Ask DexNest each opening the right screen; a
-  Deck-triggered open working while Deck-triggered changes to ObjectOS,
-  GhostOS and the Vault were refused; links from Capture to Finance, Calendar
+  file; four phrases typed into Ask DexNest each opening the right screen; Deck-triggered changes to ObjectOS, GhostOS and the Vault refused; links from Capture to Finance, Calendar
   and Journal and from ObjectOS to Calendar, Finance and the Vault, seen on
   screen from both ends; a manual copied to the Vault with ObjectOS keeping
   its own; a deleted Finance entry taking its link with it.

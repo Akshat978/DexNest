@@ -97,23 +97,24 @@ test("voice opens the newer screens by name and by question", () => {
   assert.match(read("src/main/main.ts"), /targetModule must be one of: .*Today, Projects, Skills, Reality RPG, GhostOS, ObjectOS, Autopilot, Unknown\./);
 });
 
-test("the Deck can open the newer screens, and is given nothing else of theirs", () => {
+test("the Deck gets buttons for the older screens, and the newer modules stay off it", () => {
+  // Today, Skills, Reality RPG, GhostOS and ObjectOS were built not to be
+  // offered to the Deck, and each module's own tests hold that. Voice opens
+  // them from the desktop without it.
   const opens = ["standup.open", "skill_constellation.open", "reality_rpg.open", "ghost_os.open", "object_os.open"];
   for (const id of opens) {
     const action = actionCatalog.find((item) => item.id === id);
     assert.ok(action, id);
-    assert.deepEqual(action.allowedTriggers, ["command", "deck", "voice", "module_ui"], id);
-    assert.match(action.handlerRef, /^desktop\.view\./, `${id} only changes the screen`);
+    assert.deepEqual(action.allowedTriggers, ["command", "module_ui"], id);
   }
-  const prefixes = ["standup.", "skill_constellation.", "reality_rpg.", "ghost_os.", "object_os."];
-  const exposed = actionCatalog.filter((item) => prefixes.some((p) => item.id.startsWith(p)) && item.allowedTriggers.includes("deck")).map((item) => item.id).sort();
-  // "standup.generate" was Deck-allowed before this: it starts a scan and returns no report.
-  assert.deepEqual(exposed, [...opens, "standup.generate"].sort(), "no other action of these modules is offered to the Deck");
+  const prefixes = ["skill_constellation.", "reality_rpg.", "ghost_os.", "object_os."];
+  assert.deepEqual(actionCatalog.filter((item) => prefixes.some((p) => item.id.startsWith(p)) && item.allowedTriggers.includes("deck")).map((item) => item.id), []);
 
   const buttons = streamDeckCatalogItems(createStreamDeckActionCatalog([], []));
   const screens = buttons.filter((button) => button.category === "Screens");
-  assert.deepEqual(screens.map((button) => button.actionId), ["standup.open", "dev.open_dashboard", "skill_constellation.open", "reality_rpg.open", "ghost_os.open", "object_os.open", "vault.open", "capture.open", "tools.open", "audit.open_history"]);
-  for (const button of screens) assert.ok(actionCatalog.some((item) => item.id === button.actionId), button.actionId);
+  assert.deepEqual(screens.map((button) => button.actionId), ["dev.open_dashboard", "vault.open", "capture.open", "tools.open", "audit.open_history"]);
+  for (const button of screens) assert.ok(actionCatalog.find((item) => item.id === button.actionId)?.allowedTriggers.includes("deck"), button.actionId);
+  assert.equal(buttons.some((button) => opens.includes(button.actionId ?? "")), false, "no Deck button for a module that is not offered to it");
 });
 
 const ids = () => { let n = 0; return () => `link-${++n}`; };

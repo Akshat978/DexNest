@@ -199,14 +199,9 @@ const baseStreamDeckCatalog: StreamDeckCatalogGroup[] = [
   {
     id: "screens",
     title: "Screens",
-    description: "Open a DexNest screen on the desktop. Opening is all a button does: nothing a screen holds is sent to the Deck.",
+    description: "Open a DexNest screen on the desktop. Today, Skills, Reality RPG, GhostOS and ObjectOS are not here on purpose: those modules are not offered to the Deck.",
     items: [
-      { category: "Screens", file: "open-today", title: "Open Today", actionId: "standup.open", params: {}, description: "Open Today." },
       { category: "Screens", file: "open-projects", title: "Open Projects", actionId: "dev.open_dashboard", params: {}, description: "Open Projects." },
-      { category: "Screens", file: "open-skills", title: "Open Skills", actionId: "skill_constellation.open", params: {}, description: "Open Skills." },
-      { category: "Screens", file: "open-reality-rpg", title: "Open Reality RPG", actionId: "reality_rpg.open", params: {}, description: "Open Reality RPG." },
-      { category: "Screens", file: "open-ghostos", title: "Open GhostOS", actionId: "ghost_os.open", params: {}, description: "Open GhostOS." },
-      { category: "Screens", file: "open-objectos", title: "Open ObjectOS", actionId: "object_os.open", params: {}, description: "Open ObjectOS." },
       { category: "Screens", file: "open-vault", title: "Open Vault", actionId: "vault.open", params: {}, description: "Open the Vault. It stays locked until you unlock it at the desktop." },
       { category: "Screens", file: "open-capture", title: "Open Capture", actionId: "capture.open", params: {}, description: "Open Capture." },
       { category: "Screens", file: "open-tools", title: "Open Tools", actionId: "tools.open", params: {}, description: "Open Tools." },
@@ -653,9 +648,8 @@ export const seededActions = [
     enabled: true,
     status: "available"
   },
-  // Today is a reading of the latest Standup. A Standup names local
-  // repositories and paths, so nothing of it goes to the phone or the Deck:
-  // voice and a Deck button may open the screen on the desktop, and no more.
+  // Today is a reading of the latest Standup. Not phone- or Deck-exposed: a
+  // Standup names local repositories and paths.
   {
     id: "standup.open",
     title: "Open Today",
@@ -670,14 +664,13 @@ export const seededActions = [
     undoActionId: null,
     handlerType: "internal_function",
     handlerRef: "desktop.view.today",
-    allowedTriggers: ["command", "deck", "voice", "module_ui"],
+    allowedTriggers: ["command", "module_ui"],
     enabled: true,
     status: "available"
   },
   // Skill Constellation reads only what Developer Intelligence already
-  // recorded and writes only its own skill_ tables. Its evidence names local
-  // repositories and paths, so none of it goes to the phone or the Deck:
-  // voice and a Deck button may open the screen, and no more.
+  // recorded and writes only its own skill_ tables. Not phone- or
+  // Deck-exposed: its evidence names local repositories and paths.
   {
     id: "skill_constellation.open",
     title: "Open Skill Constellation",
@@ -692,7 +685,7 @@ export const seededActions = [
     undoActionId: null,
     handlerType: "internal_function",
     handlerRef: "desktop.view.skills",
-    allowedTriggers: ["command", "deck", "voice", "module_ui"],
+    allowedTriggers: ["command", "module_ui"],
     enabled: true,
     status: "available"
   },
@@ -752,9 +745,8 @@ export const seededActions = [
   },
   // Reality RPG: XP, achievements and quests from rules the user writes.
   // It reads only event types a rule names, never vault, finance or journal
-  // activity. Nothing of it goes to the phone or the Deck; voice and a Deck
-  // button may open the screen. Editing actions take their input from the
-  // Reality RPG view, so they are module_ui only.
+  // activity. Not phone- or Deck-exposed. Editing actions take their input
+  // from the Reality RPG view, so they are module_ui only.
   {
     id: "reality_rpg.open",
     title: "Open Reality RPG",
@@ -769,7 +761,7 @@ export const seededActions = [
     undoActionId: null,
     handlerType: "internal_function",
     handlerRef: "desktop.view.rpg",
-    allowedTriggers: ["command", "deck", "voice", "module_ui"],
+    allowedTriggers: ["command", "module_ui"],
     enabled: true,
     status: "available"
   },
@@ -4738,8 +4730,7 @@ export const seededActions = [
   },
   // GhostOS: a local, evidence-backed model of you. It reads only what you
   // enter and, when you turn it on, Developer Intelligence's records and commit
-  // events. Nothing of it goes to the phone or the Deck; voice and a Deck button
-  // may open the screen. Forget and turning a source off delete
+  // events. Not phone- or Deck-exposed. Forget and turning a source off delete
   // data, so they are caution with a confirmation.
   {
     id: "ghost_os.open",
@@ -4755,7 +4746,7 @@ export const seededActions = [
     undoActionId: null,
     handlerType: "internal_function",
     handlerRef: "desktop.view.ghost",
-    allowedTriggers: ["command", "deck", "voice", "module_ui"],
+    allowedTriggers: ["command",  "module_ui"],
     enabled: true,
     status: "available"
   },
@@ -4941,8 +4932,7 @@ export const seededActions = [
   },
   // ObjectOS: a persistent identity for each physical thing you own. It reads
   // only what you enter and the files you choose to attach (copied into
-  // DexNest; never from DexNest's own data). Nothing of it goes to the phone or the Deck;
-  // voice and a Deck button may open the screen.
+  // DexNest; never from DexNest's own data). Not phone- or Deck-exposed.
   // Deleting an object, a file or a record is caution with a confirmation.
   {
     id: "object_os.open",
@@ -4958,7 +4948,7 @@ export const seededActions = [
     undoActionId: null,
     handlerType: "internal_function",
     handlerRef: "desktop.view.object",
-    allowedTriggers: ["command", "deck", "voice", "module_ui"],
+    allowedTriggers: ["command",  "module_ui"],
     enabled: true,
     status: "available"
   },
