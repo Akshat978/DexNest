@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld("dexNest", {
   listPinnedActions: () => ipcRenderer.invoke("dexnest:list-pinned-actions"),
   getSidebarPrefs: () => ipcRenderer.invoke("dexnest:get-sidebar-prefs"),
   getRecordLinks: (module: string) => ipcRenderer.invoke("dexnest:record-links", module),
+  getImageThumbnail: (request: { module: "drop" | "capture"; id: string }) => ipcRenderer.invoke("dexnest:image-thumbnail", request),
   getOutsideAiState: () => ipcRenderer.invoke("dexnest:outside-ai-state"),
   setOutsideAiKey: (value: string) => ipcRenderer.invoke("dexnest:outside-ai-set-key", value),
   outsideAiRoute: (payload: { text: string; surface: "voice" | "typed" }) => ipcRenderer.invoke("dexnest:outside-ai-route", payload),

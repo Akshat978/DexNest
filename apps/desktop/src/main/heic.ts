@@ -9,14 +9,37 @@
 //
 // Electron-free: the callers turn the pixels into whatever they need.
 
-import { readFileSync } from "node:fs";
+import { closeSync, openSync, readFileSync, readSync } from "node:fs";
 import { extname } from "node:path";
 
 export const HEIC_EXTENSIONS: readonly string[] = [".heic", ".heif"];
 
-/** By extension. A HEIC renamed to .jpg is caught by `looksLikeHeic` on its bytes. */
+/** By extension alone. `isHeicFile` also looks inside. */
 export function isHeicPath(filePath: string): boolean {
   return HEIC_EXTENSIONS.includes(extname(filePath).toLowerCase());
+}
+
+/**
+ * Whether the file is a HEIC or HEIF photo, whatever it is called. A phone
+ * photo saved or renamed as .jpg is still HEIC inside, and nothing that
+ * trusts the name can open it. Reads sixteen bytes; a file that cannot be
+ * read is simply not one.
+ */
+export function isHeicFile(filePath: string): boolean {
+  if (isHeicPath(filePath)) return true;
+  let handle: number | null = null;
+  try {
+    handle = openSync(filePath, "r");
+    const head = new Uint8Array(16);
+    const read = readSync(handle, head, 0, head.length, 0);
+    return looksLikeHeic(head.subarray(0, read));
+  } catch {
+    return false;
+  } finally {
+    if (handle !== null) {
+      try { closeSync(handle); } catch { /* already closed */ }
+    }
+  }
 }
 
 const BRANDS = new Set(["heic", "heix", "hevc", "hevx", "heim", "heis", "hevm", "hevs", "mif1", "msf1", "heif"]);

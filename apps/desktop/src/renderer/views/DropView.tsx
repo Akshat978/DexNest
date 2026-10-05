@@ -6,6 +6,7 @@ import { StatusChip } from "../components/ui/StatusChip";
 import { ActionButton } from "../components/ui/ActionButton";
 import { ToastStack } from "../components/shared";
 import { getBridge } from "../lib/bridge";
+import { Thumbnail, type ThumbnailBridge } from "./Thumbnail";
 import { formatBytes, formatDate } from "../lib/format";
 import type { DropState } from "../main";
 
@@ -396,7 +397,7 @@ export function DropView({
                   const couldBeReceipt = item.type === "file" && /\.(png|jpe?g|webp|heic|pdf)$/i.test(name);
                   return (
                     <div key={item.id} className="glass-card flex items-center gap-3 p-2.5">
-                      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#38BDF8]/12 text-[#38BDF8]"><Icon className="h-4 w-4" /></div>
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#38BDF8]/12 text-[#38BDF8]">{item.type === "file" ? <Thumbnail bridge={getBridge() as ThumbnailBridge} module="drop" id={item.id} fallback={<Icon className="h-4 w-4" />} /> : <Icon className="h-4 w-4" />}</div>
                       <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{item.type === "text" ? (item.preview || "Text") : (item.originalName ?? item.fileName ?? "File")}</p><p className="font-mono text-[10px] text-[#525252]">{formatBytes(item.byteLength)} · from phone · {formatDate(item.createdAt)}</p></div>
                       <div className="flex shrink-0 items-center gap-1">
                         {item.type === "text"
@@ -440,7 +441,7 @@ export function DropView({
                     ))}
                     {dropState.outgoingFiles.map((item) => (
                       <div key={item.id} className="glass-card flex items-center gap-3 p-2.5">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#38BDF8]/12 text-[#38BDF8]"><FileText className="h-4 w-4" /></div>
+                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#38BDF8]/12 text-[#38BDF8]"><Thumbnail bridge={getBridge() as ThumbnailBridge} module="drop" id={item.id} fallback={<FileText className="h-4 w-4" />} /></div>
                         <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{item.originalName ?? item.fileName ?? "Outgoing file"}</p><p className="font-mono text-[10px] text-[#525252]">{formatBytes(item.byteLength)} · to phone</p></div>
                         <button type="button" onClick={() => void removeOutgoingFile(item.id)} title="Remove from the outgoing shelf" aria-label="Remove from shelf" className="flex h-7 shrink-0 items-center gap-1 rounded-md border border-[#262626] px-2 text-[11px] font-medium text-[#A3A3A3] transition-colors hover:border-[#EF4444]/50 hover:bg-[#EF4444]/10 hover:text-[#EF4444]"><Trash2 className="h-3.5 w-3.5" />Remove</button>
                       </div>

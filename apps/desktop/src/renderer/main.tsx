@@ -35,6 +35,7 @@ import { accentStyle, ErrorState, LoadingState, PageHeader as KitPageHeader, Seg
 import { previewForUi, formatBytes, formatDate, formatDuration } from "./lib/format";
 import { accentTint, MODULE_META, SIDEBAR_VIEWS, SIDEBAR_HIDDEN_VIEWS, type ViewId } from "./lib/moduleMeta";
 import { viewForSearchSource } from "./lib/searchSources";
+import { Thumbnail, type ThumbnailBridge } from "./views/Thumbnail";
 import { NAVIGATE_EVENT, RecordLinkChips, RecordLinksList, useRecordFocus, useRecordLinks, type RecordLinkChip } from "./views/RecordLinks";
 import { focusMarker } from "./views/recordFocus";
 import { moduleName } from "./lib/activityLabels";
@@ -13775,7 +13776,7 @@ function CaptureView({
                   return (
                     <GlassCard key={item.id} accent={ACCENT_CAPTURE} hover={false} className="p-3.5">
                       <div className="flex items-start gap-3">
-                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg" style={{ background: `${m.c}14`, color: m.c }}><Icon className="h-4 w-4" /></div>
+                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg" style={{ background: `${m.c}14`, color: m.c }}>{item.filePath ? <Thumbnail bridge={getBridge() as ThumbnailBridge} module="capture" id={item.id} fallback={<Icon className="h-4 w-4" />} /> : <Icon className="h-4 w-4" />}</div>
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-medium text-[#F5F5F5]">{item.title || previewForUi(item.text || item.url || "Capture")}</p>
                           <div className="mt-1 flex items-center gap-2 text-[10px] text-[#525252]">

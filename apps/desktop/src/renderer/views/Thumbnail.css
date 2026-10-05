@@ -1,0 +1,17 @@
+/* A picture preview inside a row's icon box. It fills the box and takes its rounded corners. */
+
+.thumbnail {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: inherit;
+}
+
+.thumbnail-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}

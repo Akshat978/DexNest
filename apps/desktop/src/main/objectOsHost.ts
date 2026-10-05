@@ -29,6 +29,7 @@ import {
 } from "@dexnest/object-os";
 import { createObjectFileStore, type ObjectFileStore } from "./objectOsFiles.ts";
 import { openZip, writeZip, ZipRefused, type ZipSource } from "./objectOsZip.ts";
+import { isHeicFile } from "./heic.ts";
 
 /** The parts of Electron's ipcMain this host uses. `ipcMain` satisfies it. */
 export interface ObjectIpcMain {
@@ -189,11 +190,13 @@ async function photoDataUrl(module: ObjectOsModule, files: ObjectFileStore, file
   const file = module.store.getFile(fileId);
   if (!file) return null;
   const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
-  const heic = extension === "heic" || extension === "heif";
+  const named = extension === "heic" || extension === "heif";
   const mime = INLINE_IMAGE_TYPES[extension];
-  if (!mime && !(heic && heicPhoto)) return null;
+  if (!mime && !(named && heicPhoto)) return null;
   const path = files.resolveStored(file.objectId, file.storedName);
   if (!path) return null;
+  // A phone photo attached under a .jpg name is still HEIC inside: sent as it is, it would show as a broken picture.
+  const heic = named || isHeicFile(path);
   if (statSync(path).size > MAX_INLINE_PHOTO_BYTES) return null;
   // A phone photo is decoded on the way out; the stored file stays as it was attached.
   if (heic && heicPhoto) return heicPhoto(path).catch(() => null);

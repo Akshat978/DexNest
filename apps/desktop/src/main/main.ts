@@ -19,7 +19,8 @@ import AdmZip from "adm-zip";
 import { startSlotHook, stopSlotHook, isSlotHookRunning } from "./clipboardSlotHook.js";
 import { PDFDocument } from "pdf-lib";
 import { Jimp } from "jimp";
-import { decodeHeicFile, isHeicPath, toBgra } from "./heic.js";
+import { decodeHeicFile, isHeicFile, toBgra } from "./heic.js";
+import { createThumbnailer, fitWithin, mayBePicture } from "./thumbnails.js";
 import { DECISION_MODEL, looksLikeOpenRouterKey, normalizeOutsideAiSettings, outcomeInWords, routeCommand, suggestCaptureRoute, type CaptureOutcome, type OutsideAiSettings, type OutsideAiSurface, type RouteOutcome } from "./outsideAi.js";
 import { addLink, backfillFromCalendar, chipsFor, normalizeLinks, pruneLinks, type RecordLink, type RecordRef } from "./recordLinks.js";
 import { ghostRecords, LIVE_SEARCH_SOURCES, objectRecords, reminderRecords, rpgRecords, skillRecords, timetableRecords, type ModuleSearchRecord } from "./moduleSearch.js";
@@ -15936,14 +15937,14 @@ async function splitPdf(paths: string[], range: string): Promise<ToolsOutputItem
  * goes straight to Electron.
  */
 async function readImageFile(filePath: string): Promise<Electron.NativeImage> {
-  if (!isHeicPath(filePath)) return nativeImage.createFromPath(filePath);
+  if (!isHeicFile(filePath)) return nativeImage.createFromPath(filePath);
   const decoded = await decodeHeicFile(filePath);
   return nativeImage.createFromBitmap(Buffer.from(toBgra(decoded.data)), { width: decoded.width, height: decoded.height });
 }
 
 /** The same for code that needs a file a command-line tool can open: a HEIC becomes a PNG beside the other temp files. */
 async function heicAsPng(filePath: string, tempFolder: string): Promise<string> {
-  if (!isHeicPath(filePath)) return filePath;
+  if (!isHeicFile(filePath)) return filePath;
   const pngPath = join(tempFolder, `${basename(filePath, extname(filePath))}-from-heic.png`);
   writeFileSync(pngPath, (await readImageFile(filePath)).toPNG());
   return pngPath;
@@ -15951,7 +15952,50 @@ async function heicAsPng(filePath: string, tempFolder: string): Promise<string> 
 
 /** And for Jimp, which takes a path or the bytes of a format it knows. */
 async function jimpSource(filePath: string): Promise<string | Buffer> {
-  return isHeicPath(filePath) ? (await readImageFile(filePath)).toPNG() : filePath;
+  return isHeicFile(filePath) ? (await readImageFile(filePath)).toPNG() : filePath;
+}
+
+// --- Previews for lists (Drop, Capture) ---
+const THUMBNAIL_PIXELS = 96;
+const THUMBNAIL_MAX_BYTES = 60 * 1024 * 1024;
+
+const thumbnailer = createThumbnailer(async (filePath) => {
+  const image = await readImageFile(filePath);
+  if (image.isEmpty()) return null;
+  const size = image.getSize();
+  const fit = fitWithin(size.width, size.height, THUMBNAIL_PIXELS);
+  if (fit.width === 0) return null;
+  return `data:image/jpeg;base64,${image.resize({ width: fit.width, height: fit.height, quality: "good" }).toJPEG(72).toString("base64")}`;
+});
+
+/**
+ * A small preview of one Drop or Capture item's picture. The item is named by
+ * its id, never by a path: the file read is the one DexNest already holds for
+ * that item. Null for anything that is not a picture, and for everything
+ * while Performance Mode is on.
+ */
+async function imageThumbnail(request: { module?: unknown; id?: unknown } | null | undefined): Promise<string | null> {
+  if (loadPerformanceModeSettings().performanceModeEnabled) return null;
+  const id = typeof request?.id === "string" ? request.id : "";
+  if (!id) return null;
+  let filePath: string | null = null;
+  let name = "";
+  if (request?.module === "drop") {
+    const item = loadDropShelf().find((entry) => entry.id === id);
+    if (item?.type === "file") { filePath = item.path; name = item.originalName || item.fileName; }
+  } else if (request?.module === "capture") {
+    const item = loadCaptureItems().find((entry) => entry.id === id && entry.status !== "deleted");
+    if (item?.filePath) { filePath = item.filePath; name = item.originalFileName ?? basename(item.filePath); }
+  }
+  if (!filePath) return null;
+  try {
+    const stat = statSync(filePath);
+    if (!stat.isFile() || stat.size === 0 || stat.size > THUMBNAIL_MAX_BYTES) return null;
+    if (!mayBePicture(name) && !mayBePicture(filePath) && !isHeicFile(filePath)) return null;
+    return await thumbnailer.get({ path: filePath, version: `${stat.mtimeMs}:${stat.size}` });
+  } catch {
+    return null;
+  }
 }
 
 async function imagesToPdf(paths: string[]): Promise<ToolsOutputItem> {
@@ -23140,6 +23184,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("dexnest:list-pinned-actions", () => loadPinnedActions());
   ipcMain.handle("dexnest:get-sidebar-prefs", () => readJsonFile<unknown>(sidebarPrefsPath, {}));
+  ipcMain.handle("dexnest:image-thumbnail", (_event, request: { module?: unknown; id?: unknown }) => imageThumbnail(request));
   ipcMain.handle("dexnest:outside-ai-state", () => outsideAiState());
   // The key comes in once and never goes back out.
   ipcMain.handle("dexnest:outside-ai-set-key", (_event, value: unknown) => saveOutsideAiKey(value));
