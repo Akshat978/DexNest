@@ -170,3 +170,8 @@ test("leftovers: quick action titles wrap, a huge change reads in words, Command
   assert.match(shell, /<CommandDay refreshKey=/);
   assert.match(shell, /const rows = dayRows\(agenda\);/);
 });
+
+test("a second DexNest starts even when the first holds the Deck port", () => {
+  const main = read("src/main/main.ts");
+  assert.match(main, /actionServer\.on\("error", \(error\) => \{[\s\S]{0,200}actionServer = null;\n  \}\);\n  actionServer\.listen\(actionPort, "0\.0\.0\.0"\);/);
+});

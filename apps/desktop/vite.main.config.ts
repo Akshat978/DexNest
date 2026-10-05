@@ -24,7 +24,10 @@ export default defineConfig({
         main: resolve(currentDir, "src/main/main.ts"),
         preload: resolve(currentDir, "src/main/preload.ts")
       },
-      external: ["electron", "better-sqlite3"],
+      // heic-decode (and libheif-js under it) stays a separate module: it is
+      // several megabytes loaded only when a HEIC photo is opened, and its
+      // LGPL licence asks that it can be swapped without rebuilding DexNest.
+      external: ["electron", "better-sqlite3", "heic-decode"],
       output: {
         entryFileNames: "[name].cjs",
         format: "cjs"

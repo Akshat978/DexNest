@@ -19,6 +19,7 @@ import AdmZip from "adm-zip";
 import { startSlotHook, stopSlotHook, isSlotHookRunning } from "./clipboardSlotHook.js";
 import { PDFDocument } from "pdf-lib";
 import { Jimp } from "jimp";
+import { decodeHeicFile, isHeicPath, toBgra } from "./heic.js";
 import { createActionRegistry, createStreamDeckActionCatalog, seededActions, streamDeckCatalogItems } from "@dexnest/action-registry";
 import { createLocalDb } from "@dexnest/local-db";
 import { createAutopilotHost, type AutopilotHost } from "./autopilotHost.js";
@@ -549,6 +550,14 @@ function startObjectOsHost(): void {
         try {
           if (Notification.isSupported()) new Notification({ title, body, silent: true }).show();
         } catch { /* a notification is not worth an error */ }
+      },
+      // A phone's HEIC photo, shown as a JPEG no wider than the panel needs.
+      heicPhoto: async (path) => {
+        const image = await readImageFile(path);
+        if (image.isEmpty()) return null;
+        const { width } = image.getSize();
+        const shown = width > 1600 ? image.resize({ width: 1600, quality: "good" }) : image;
+        return `data:image/jpeg;base64,${shown.toJPEG(85).toString("base64")}`;
       },
       audit: (summary, metadata, status) => {
         localDb.appendActionEvent({
@@ -3854,7 +3863,7 @@ function saveVaultOcrJobs(jobs: VaultOcrJob[]): VaultOcrJob[] {
 }
 
 function isVaultOcrSupported(fileType: string): boolean {
-  return [".png", ".jpg", ".jpeg", ".webp", ".pdf"].includes(fileType.toLowerCase());
+  return [".png", ".jpg", ".jpeg", ".webp", ".heic", ".heif", ".pdf"].includes(fileType.toLowerCase());
 }
 
 function updateVaultDocumentOcr(documentId: string, patch: Partial<VaultDocumentRecord>): void {
@@ -15734,6 +15743,30 @@ async function splitPdf(paths: string[], range: string): Promise<ToolsOutputItem
   return recordToolsOutput(output.path, "split_pdf");
 }
 
+/**
+ * A picture from disk. HEIC and HEIF (what phones save) are decoded here,
+ * locally, because neither Electron nor Jimp can read them; everything else
+ * goes straight to Electron.
+ */
+async function readImageFile(filePath: string): Promise<Electron.NativeImage> {
+  if (!isHeicPath(filePath)) return nativeImage.createFromPath(filePath);
+  const decoded = await decodeHeicFile(filePath);
+  return nativeImage.createFromBitmap(Buffer.from(toBgra(decoded.data)), { width: decoded.width, height: decoded.height });
+}
+
+/** The same for code that needs a file a command-line tool can open: a HEIC becomes a PNG beside the other temp files. */
+async function heicAsPng(filePath: string, tempFolder: string): Promise<string> {
+  if (!isHeicPath(filePath)) return filePath;
+  const pngPath = join(tempFolder, `${basename(filePath, extname(filePath))}-from-heic.png`);
+  writeFileSync(pngPath, (await readImageFile(filePath)).toPNG());
+  return pngPath;
+}
+
+/** And for Jimp, which takes a path or the bytes of a format it knows. */
+async function jimpSource(filePath: string): Promise<string | Buffer> {
+  return isHeicPath(filePath) ? (await readImageFile(filePath)).toPNG() : filePath;
+}
+
 async function imagesToPdf(paths: string[]): Promise<ToolsOutputItem> {
   if (paths.length === 0) {
     throw new Error("Select one or more images.");
@@ -15741,7 +15774,7 @@ async function imagesToPdf(paths: string[]): Promise<ToolsOutputItem> {
 
   const pdf = await PDFDocument.create();
   for (const filePath of paths) {
-    const image = nativeImage.createFromPath(filePath);
+    const image = await readImageFile(filePath);
     if (image.isEmpty()) {
       throw new Error(`Could not read image: ${basename(filePath)}`);
     }
@@ -15757,12 +15790,12 @@ async function imagesToPdf(paths: string[]): Promise<ToolsOutputItem> {
   return recordToolsOutput(output.path, "images_to_pdf");
 }
 
-function processImages(
+async function processImages(
   actionId: string,
   paths: string[],
   operation: "compress_image" | "resize_image" | "convert_image",
   options: Record<string, unknown>
-): ToolsOutputItem[] {
+): Promise<ToolsOutputItem[]> {
   if (paths.length === 0) {
     throw new Error("Select one or more images.");
   }
@@ -15774,7 +15807,7 @@ function processImages(
   const height = Number(options.height ?? 0);
 
   for (const filePath of paths) {
-    let image = nativeImage.createFromPath(filePath);
+    let image = await readImageFile(filePath);
     if (image.isEmpty()) {
       throw new Error(`Could not read image: ${basename(filePath)}`);
     }
@@ -15913,8 +15946,8 @@ function safeOcrDevice(value: unknown): "gpu" | "cpu" {
 
 function assertOcrImagePath(filePath: string): void {
   const extension = extname(filePath).toLowerCase();
-  if (![".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"].includes(extension)) {
-    throw new Error(`Unsupported OCR image type: ${extension || "unknown"}. Use PNG, JPG, JPEG, or WebP where supported by local Tesseract.`);
+  if (![".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".heif"].includes(extension)) {
+    throw new Error(`Unsupported OCR image type: ${extension || "unknown"}. Use PNG, JPG, JPEG, WebP or HEIC.`);
   }
 }
 
@@ -15956,7 +15989,9 @@ function ocrPreprocessOptions(params: Record<string, unknown>): OcrPreprocessOpt
   };
 }
 
-async function prepareOcrImage(inputPath: string, options: OcrPreprocessOptions, tempFolder: string): Promise<string> {
+async function prepareOcrImage(originalPath: string, options: OcrPreprocessOptions, tempFolder: string): Promise<string> {
+  // A phone photo is turned into a PNG first: the OCR engine cannot open HEIC.
+  const inputPath = await heicAsPng(originalPath, tempFolder);
   const shouldProcess = options.upscale || options.grayscale || options.contrast || options.sharpen || options.threshold || Boolean(options.rotateDegrees);
   if (!shouldProcess) {
     return inputPath;
@@ -16481,7 +16516,7 @@ async function cleanScanImages(paths: string[], options: Record<string, unknown>
 
   for (const filePath of paths) {
     assertOcrImagePath(filePath);
-    const image = await Jimp.read(filePath);
+    const image = await Jimp.read(await jimpSource(filePath));
     if (shouldGrayscale) {
       image.greyscale();
     }
@@ -16630,7 +16665,7 @@ async function runToolsAction(action: DexNestActionDefinition, source: DexNestAc
 
     if (action.id === "tools.compress_image" || action.id === "tools.resize_image" || action.id === "tools.convert_image") {
       const operation = action.id.replace("tools.", "") as "compress_image" | "resize_image" | "convert_image";
-      const outputs = processImages(action.id, paths, operation, params);
+      const outputs = await processImages(action.id, paths, operation, params);
       logToolsEvent(action.id, "success", source, `Processed ${outputs.length} image${outputs.length === 1 ? "" : "s"}.`, {
         fileCount: paths.length,
         outputSize: outputs.reduce((total, item) => total + item.byteLength, 0),
@@ -22532,6 +22567,12 @@ function startActionEndpoint(): void {
     }
   });
 
+  // Another DexNest already holding the port must not stop this one starting:
+  // without a listener the failure is an uncaught exception and a blocking dialog.
+  actionServer.on("error", (error) => {
+    console.warn(`[DexNest] Deck and Drop endpoint did not start on port ${actionPort}: ${error.message}`);
+    actionServer = null;
+  });
   actionServer.listen(actionPort, "0.0.0.0");
 }
 
@@ -22539,8 +22580,8 @@ async function selectToolsFiles(kind: "pdf" | "image" | "any"): Promise<ToolsSel
   const filters = kind === "pdf"
     ? [{ name: "PDF files", extensions: ["pdf"] }]
     : kind === "image"
-      ? [{ name: "Image files", extensions: ["png", "jpg", "jpeg", "webp"] }]
-      : [{ name: "DexNest Tools files", extensions: ["pdf", "png", "jpg", "jpeg", "webp", "mp4", "mov", "mkv", "mp3", "wav", "m4a", "docx", "pptx"] }];
+      ? [{ name: "Image files", extensions: ["png", "jpg", "jpeg", "webp", "heic", "heif"] }]
+      : [{ name: "DexNest Tools files", extensions: ["pdf", "png", "jpg", "jpeg", "webp", "heic", "heif", "mp4", "mov", "mkv", "mp3", "wav", "m4a", "docx", "pptx"] }];
   const options: OpenDialogOptions = {
     title: "Select DexNest Tools files",
     properties: ["openFile", "multiSelections"],
@@ -22558,7 +22599,7 @@ async function selectVaultFiles(): Promise<ToolsSelectedFile[]> {
   const options: OpenDialogOptions = {
     title: "Select DexNest Vault documents",
     properties: ["openFile", "multiSelections"],
-    filters: [{ name: "Documents and files", extensions: ["pdf", "docx", "pptx", "png", "jpg", "jpeg", "webp", "txt", "md", "xlsx", "csv", "zip"] }]
+    filters: [{ name: "Documents and files", extensions: ["pdf", "docx", "pptx", "png", "jpg", "jpeg", "webp", "heic", "heif", "txt", "md", "xlsx", "csv", "zip"] }]
   };
   const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
   if (result.canceled) {
@@ -22572,7 +22613,7 @@ async function selectFinanceReceipt(): Promise<ToolsSelectedFile[]> {
   const options: OpenDialogOptions = {
     title: "Select DexNest Finance receipt",
     properties: ["openFile"],
-    filters: [{ name: "Receipt files", extensions: ["pdf", "png", "jpg", "jpeg", "webp", "heic", "txt", "docx"] }]
+    filters: [{ name: "Receipt files", extensions: ["pdf", "png", "jpg", "jpeg", "webp", "heic", "heif", "txt", "docx"] }]
   };
   const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
   if (result.canceled) {
@@ -22586,7 +22627,7 @@ async function selectCaptureFile(): Promise<ToolsSelectedFile[]> {
   const options: OpenDialogOptions = {
     title: "Select DexNest Capture file",
     properties: ["openFile"],
-    filters: [{ name: "Capture files", extensions: ["pdf", "docx", "pptx", "png", "jpg", "jpeg", "webp", "heic", "txt", "md", "xlsx", "csv", "zip", "mp3", "wav", "m4a"] }]
+    filters: [{ name: "Capture files", extensions: ["pdf", "docx", "pptx", "png", "jpg", "jpeg", "webp", "heic", "heif", "txt", "md", "xlsx", "csv", "zip", "mp3", "wav", "m4a"] }]
   };
   const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
   if (result.canceled) {

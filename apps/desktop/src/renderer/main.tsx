@@ -9249,7 +9249,7 @@ function VaultView({
   }
 
   function documentOcrStatus(document: VaultDocumentRecord): string {
-    return document.ocrStatus ?? ([".png", ".jpg", ".jpeg", ".webp", ".pdf"].includes(document.fileType) ? "not_ocred" : "unsupported");
+    return document.ocrStatus ?? ([".png", ".jpg", ".jpeg", ".webp", ".heic", ".heif", ".pdf"].includes(document.fileType.toLowerCase()) ? "not_ocred" : "unsupported");
   }
 
   const ACCENT_VAULT = "#10B981";
@@ -13412,7 +13412,7 @@ function CaptureView({
     const files = await getBridge().selectCaptureFile();
     const file = files[0];
     if (file) {
-      setForm((current) => ({ ...current, filePath: file.path, type: file.extension.match(/\.(png|jpg|jpeg|webp|heic)$/i) ? "image" : "file" }));
+      setForm((current) => ({ ...current, filePath: file.path, type: file.extension.match(/\.(png|jpg|jpeg|webp|heic|heif)$/i) ? "image" : "file" }));
       showToast("Capture file selected.");
     }
   }

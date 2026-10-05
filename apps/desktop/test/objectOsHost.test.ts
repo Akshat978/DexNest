@@ -373,7 +373,7 @@ test("a stored file replaced by a link, or a folder replaced by one, is never op
   assert.deepEqual(s.opened, []);
   assert.deepEqual(s.shown, []);
   // Its photo is not handed out either.
-  assert.equal(s.call(OBJECT_CHANNELS.photo, trusted, f.id), null);
+  assert.equal(await s.call(OBJECT_CHANNELS.photo, trusted, f.id), null);
 });
 
 test("photos: a stored image of a known type is inlined; other types and untrusted callers get nothing", async () => {
@@ -385,9 +385,9 @@ test("photos: a stored image of a known type is inlined; other types and untrust
   writeFileSync(svg, "<svg/>");
   const p = await s.attach(o.id, png, "photo");
   const v = await s.attach(o.id, svg, "photo");
-  assert.equal(s.call(OBJECT_CHANNELS.photo, trusted, p.id), `data:image/png;base64,${Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString("base64")}`);
-  assert.equal(s.call(OBJECT_CHANNELS.photo, trusted, v.id), null);
-  assert.equal(s.call(OBJECT_CHANNELS.photo, trusted, "fil_nope"), null);
+  assert.equal(await s.call(OBJECT_CHANNELS.photo, trusted, p.id), `data:image/png;base64,${Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString("base64")}`);
+  assert.equal(await s.call(OBJECT_CHANNELS.photo, trusted, v.id), null);
+  assert.equal(await s.call(OBJECT_CHANNELS.photo, trusted, "fil_nope"), null);
   assert.throws(() => s.call(OBJECT_CHANNELS.photo, { sender: {}, senderFrame: mainFrame }, p.id));
 });
 

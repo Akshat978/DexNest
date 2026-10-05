@@ -76,6 +76,12 @@ export interface ObjectOsHostOptions {
   audit(summary: string, metadata: Record<string, unknown>, status: "success" | "failure"): void;
   /** A light notification (counts only). */
   notify(title: string, body: string): void;
+  /**
+   * Turns a HEIC or HEIF photo into a JPEG data URL the view can show.
+   * Without it, such a photo is attached and opened like any file but not
+   * shown inline. Given the stored file's path; returns null when it cannot.
+   */
+  heicPhoto?(path: string): Promise<string | null>;
   /** Tests only: resolve links. Production uses fs.realpathSync.native. */
   realpath?: (path: string) => string;
   now?: () => Date;
@@ -161,7 +167,7 @@ export function createObjectOsHost(options: ObjectOsHostOptions): ObjectOsHost {
   handle(OBJECT_CHANNELS.rooms, () => module.rooms());
   handle(OBJECT_CHANNELS.whereabouts, (id) => module.whereabouts(id));
   // A photo for the view: only a stored image of a known type, still inside its folder, and small enough to inline.
-  handle(OBJECT_CHANNELS.photo, (fileId) => photoDataUrl(module, files, fileId));
+  handle(OBJECT_CHANNELS.photo, (fileId) => photoDataUrl(module, files, fileId, options.heicPhoto));
 
   module.start();
 
@@ -178,15 +184,19 @@ export function createObjectOsHost(options: ObjectOsHostOptions): ObjectOsHost {
   };
 }
 
-function photoDataUrl(module: ObjectOsModule, files: ObjectFileStore, fileId: unknown): string | null {
+async function photoDataUrl(module: ObjectOsModule, files: ObjectFileStore, fileId: unknown, heicPhoto?: (path: string) => Promise<string | null>): Promise<string | null> {
   if (typeof fileId !== "string") return null;
   const file = module.store.getFile(fileId);
   if (!file) return null;
-  const mime = INLINE_IMAGE_TYPES[file.name.split(".").pop()?.toLowerCase() ?? ""];
-  if (!mime) return null;
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  const heic = extension === "heic" || extension === "heif";
+  const mime = INLINE_IMAGE_TYPES[extension];
+  if (!mime && !(heic && heicPhoto)) return null;
   const path = files.resolveStored(file.objectId, file.storedName);
   if (!path) return null;
   if (statSync(path).size > MAX_INLINE_PHOTO_BYTES) return null;
+  // A phone photo is decoded on the way out; the stored file stays as it was attached.
+  if (heic && heicPhoto) return heicPhoto(path).catch(() => null);
   return `data:${mime};base64,${readFileSync(path).toString("base64")}`;
 }
 

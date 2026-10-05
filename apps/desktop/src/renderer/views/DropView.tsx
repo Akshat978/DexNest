@@ -362,7 +362,7 @@ export function DropView({
               <div className="space-y-1.5">
                 {pendingFiles.map((path) => {
                   const name = path.split(/[\\/]/).pop() || path;
-                  const isImage = /\.(png|jpe?g|gif|webp|bmp|heic)$/i.test(name);
+                  const isImage = /\.(png|jpe?g|gif|webp|bmp|heic|heif)$/i.test(name);
                   const Icon = isImage ? ImageIcon : FileText;
                   return (
                     <div key={path} className="glass-card flex items-center gap-3 p-2.5">
@@ -389,7 +389,7 @@ export function DropView({
                   <div className="flex flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-[#1f1f1f] py-8 text-center"><Inbox className="h-5 w-5 text-[#525252]" /><p className="text-xs text-[#525252]">No incoming files</p></div>
                 ) : dropState.incoming.slice(0, 30).map((item) => {
                   const name = item.originalName ?? item.fileName ?? "";
-                  const Icon = item.type === "text" ? ClipboardCopy : name.match(/\.(png|jpe?g|gif|webp|bmp)$/i) ? ImageIcon : FileText;
+                  const Icon = item.type === "text" ? ClipboardCopy : name.match(/\.(png|jpe?g|gif|webp|bmp|heic|heif)$/i) ? ImageIcon : FileText;
                   // Offered for the shapes a receipt actually arrives in - a
                   // photo or a PDF. Every file would put an expense button
                   // beside things that are plainly not one.
