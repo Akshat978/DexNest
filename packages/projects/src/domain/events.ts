@@ -23,7 +23,7 @@ export const PROJECTS_EVENT_TYPES = [
 ] as const;
 export type ProjectsEventType = (typeof PROJECTS_EVENT_TYPES)[number];
 
-export type ProjectSource = "wizard" | "suggestion" | "clone" | "import" | "folder_import" | "legacy_form" | "edit";
+export type ProjectSource = "wizard" | "suggestion" | "clone" | "import" | "folder_import" | "watched_folder" | "legacy_form" | "edit";
 
 export type OpOutcome = "succeeded" | "failed" | "refused" | "auth_needed" | "cancelled" | "timed_out" | "busy";
 

@@ -393,6 +393,9 @@ export function availability(state: RepoState | null, request: OperationRequestL
   if (!state.isRepo) return state.reason;
   const result = planOperation(state, request as Parameters<typeof planOperation>[1]);
   if (!result.refused) return null;
+  // Two branches other than the default one are compared when the dialog opens, not on every read:
+  // the button stays live and the dialog says what it found.
+  if (result.code === "stale_state" && request.kind === "fast_forward" && typeof request.from === "string") return null;
   return result.offers.some((o) => o === "stash_and_switch" || o === "push_set_upstream") ? null : result.reason;
 }
 
@@ -418,7 +421,7 @@ export interface BranchRowView {
   vsDeployed: string;
   /** Catch up with its upstream without switching to it; null when that does not apply. */
   update: OperationRequestLike | null;
-  /** Bring the default branch up to the branch you are on; null on every other row. */
+  /** Bring this branch up to the branch you are on; null on the row you are on, and on a branch another working copy has checked out. */
   bringUp: { request: OperationRequestLike; label: string } | null;
 }
 
@@ -493,7 +496,7 @@ export function branchRows(state: RepoState | null, now: string, staleDays: numb
     vsDeployed: !compared ? "" : b.vsDeployed ? counts(b.vsDeployed) : b.name === deployedName ? "live" : "same as live",
     update: !b.isCurrent && b.upstream && !b.upstream.gone && (b.upstream.counts?.behind ?? 0) > 0 ? { kind: "fast_forward", branch: b.name } : null,
     bringUp:
-      b.name === state.defaultBranch && !b.isCurrent && onBranch && onBranch !== b.name
+      !b.isCurrent && !b.checkedOutElsewhere && onBranch && onBranch !== b.name
         ? { request: { kind: "fast_forward", branch: b.name, from: onBranch }, label: `Bring up to ${onBranch}` }
         : null
   }));
@@ -648,3 +651,56 @@ export function operationLabel(kind: string): string {
   const words = kind.replace(/_/g, " ").trim();
   return words ? words[0].toUpperCase() + words.slice(1) : "Operation";
 }
+
+// --- watched folders -----------------------------------------------------------------
+
+/** What to tell the owner after a look in the watched folders; null when there is nothing to say. */
+export function watchCheckMessage(check: { ran: boolean; added: ReadonlyArray<{ name: string }>; truncated: boolean } | null | undefined): string | null {
+  if (!check || !check.ran || check.added.length === 0) return null;
+  const names = check.added.map((p) => p.name);
+  const listed = names.length <= 3 ? names.join(", ") : `${names.slice(0, 3).join(", ")} and ${names.length - 3} more`;
+  const what = names.length === 1 ? `Added 1 new project from a watched folder: ${listed}.` : `Added ${names.length} new projects from watched folders: ${listed}.`;
+  return check.truncated ? `${what} The folder is large, so some may have been missed; use Import projects to see all of it.` : what;
+}
+
+/** The watched list with one folder switched on or off. */
+export function toggleWatched(watched: readonly string[], root: string, on: boolean): string[] {
+  const rest = watched.filter((r) => r !== root);
+  return on ? [...rest, root] : rest;
+}
+
+// --- secrets git is already tracking ----------------------------------------------
+
+export interface TrackedSecretsNote {
+  title: string;
+  paths: string[];
+  /** How many more there are than the ones listed. */
+  more: number;
+  lines: string[];
+  /** A command for a terminal that stops git tracking the first file and leaves the file where it is. */
+  command: string;
+}
+
+/**
+ * What to say when git is tracking files that look like secrets. Ignoring
+ * such a file changes nothing while it is tracked, and DexNest does not
+ * untrack files itself, so this says what is so and what to run.
+ */
+export function trackedSecretsNote(state: RepoState | null): TrackedSecretsNote | null {
+  const found = state?.isRepo ? state.trackedSecrets : undefined;
+  if (!found || found.paths.length === 0) return null;
+  const total = found.paths.length + found.more;
+  const first = found.paths[0] as string;
+  return {
+    title: total === 1 ? "Git is tracking a file that looks like a secret" : `Git is tracking ${total} files that look like secrets`,
+    paths: found.paths,
+    more: found.more,
+    lines: [
+      "Adding a tracked file to .gitignore does not stop git following it: every commit still carries its changes.",
+      "To stop tracking it and keep the file on this PC, run the command below in a terminal here, commit, then add it to .gitignore.",
+      "What is already in the history stays there. If these are real passwords or keys and the repository has been pushed, change them."
+    ],
+    command: `git rm --cached -- "${first.replace(/"/g, '\\"')}"`
+  };
+}
+

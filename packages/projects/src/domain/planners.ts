@@ -205,14 +205,17 @@ export function planFastForward(state: RepoStateOk, request: Extract<OperationRe
   if (request.from === branch.name) return refuse(kind, "nothing_to_do", `${branch.name} is already where ${branch.name} is.`);
   const source = state.branches.find((b) => b.name === request.from);
   if (!source) return refuse(kind, "not_found", `There is no local branch called ${request.from}.`);
-  // How far one branch is from another is only known against the default
-  // branch, so that is the only branch this form moves.
-  if (!state.defaultBranch || branch.name !== state.defaultBranch) {
-    return refuse(kind, "invalid_request", `DexNest only brings the default branch${state.defaultBranch ? ` (${state.defaultBranch})` : ""} up to another branch.`);
-  }
   if (source.tipSha === branch.tipSha) return refuse(kind, "nothing_to_do", `${branch.name} and ${source.name} are at the same commit already.`);
-  const vs = source.vsDefault;
-  if (!vs) return refuse(kind, "stale_state", `DexNest hasn't compared ${source.name} with ${branch.name}. Open the Branches tab and compare all branches first.`, ["refresh"]);
+  // How far the source is from the default branch is part of every read. For
+  // any other pair it is measured when the operation is previewed and run.
+  const isDefault = Boolean(state.defaultBranch) && branch.name === state.defaultBranch;
+  const measured = state.between && state.between.branch === branch.name && state.between.from === source.name ? state.between : null;
+  const vs = isDefault ? source.vsDefault : measured ? { ahead: measured.ahead, behind: measured.behind } : null;
+  if (!vs) {
+    return isDefault
+      ? refuse(kind, "stale_state", `DexNest hasn't compared ${source.name} with ${branch.name}. Open the Branches tab and compare all branches first.`, ["refresh"])
+      : refuse(kind, "stale_state", `DexNest hasn't compared ${source.name} with ${branch.name} yet.`, ["refresh"]);
+  }
   if (vs.behind > 0) {
     return refuse(
       kind,

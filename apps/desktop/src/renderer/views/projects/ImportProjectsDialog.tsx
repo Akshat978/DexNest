@@ -54,6 +54,8 @@ export function doneSummary(result: AddManyResult): string {
 export function ImportBody({
   step,
   rememberedRoots,
+  watchedRoots = [],
+  onWatch,
   pasted,
   onPasted,
   onPick,
@@ -65,6 +67,9 @@ export function ImportBody({
 }: {
   step: ImportStep;
   rememberedRoots: readonly string[];
+  /** The remembered folders DexNest checks for new repositories when Projects is opened. */
+  watchedRoots?: readonly string[];
+  onWatch?(root: string, on: boolean): void;
   pasted: string;
   onPasted(value: string): void;
   onPick(): void;
@@ -118,6 +123,21 @@ export function ImportBody({
                 </Button>
               )}
             </div>
+            {onWatch && (
+              <div className="projects-import__watch" role="group" aria-label="Folders to watch">
+                <p className="projects-wizard__muted">
+                  Watch a folder and DexNest adds any new repository it finds there whenever you open Projects. It never checks in the background, and a project you remove is not added back.
+                </p>
+                {rememberedRoots.map((root) => (
+                  <label key={root} className="projects-import__watch-row">
+                    <input type="checkbox" checked={watchedRoots.includes(root)} onChange={(e) => onWatch(root, e.target.checked)} />
+                    <span>
+                      Watch <Technical>{root}</Technical>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            )}
           </section>
         )}
         <p className="projects-wizard__muted">
@@ -218,6 +238,8 @@ export function ImportProjectsDialog({
   bridge,
   initialRoots,
   rememberedRoots,
+  watchedRoots,
+  onWatch,
   dragging,
   onClose,
   onImported
@@ -226,6 +248,8 @@ export function ImportProjectsDialog({
   /** Folders dropped on the window: scanned straight away. */
   initialRoots?: readonly string[] | null;
   rememberedRoots: readonly string[];
+  watchedRoots?: readonly string[];
+  onWatch?(root: string, on: boolean): void;
   dragging?: boolean;
   onClose(): void;
   onImported(message: string): void;
@@ -303,6 +327,8 @@ export function ImportProjectsDialog({
       <ImportBody
         step={step}
         rememberedRoots={rememberedRoots}
+        watchedRoots={watchedRoots}
+        onWatch={onWatch}
         pasted={pasted}
         onPasted={setPasted}
         onPick={async () => {

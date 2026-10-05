@@ -148,6 +148,19 @@ export interface RepoStateOk {
    * not something it can see.
    */
   deployed?: { branch: string; base: string | null } | null;
+  /**
+   * How two local branches stand to each other, read only when an operation
+   * asks for it: `ahead` is what `from` has that `branch` does not, `behind`
+   * what `branch` has that `from` does not. Absent on an ordinary read.
+   */
+  between?: { branch: string; from: string; ahead: number; behind: number } | null;
+  /**
+   * Files git is tracking whose names look like secrets (`.env`, a key
+   * file). Read only when asked for. Adding such a file to .gitignore does
+   * not stop git tracking it, which is why they are worth pointing out.
+   * `more` is how many were left off the list.
+   */
+  trackedSecrets?: { paths: string[]; more: number };
   remotes: RemoteInfo[];
   branches: LocalBranch[];
   remoteBranches: RemoteBranch[];

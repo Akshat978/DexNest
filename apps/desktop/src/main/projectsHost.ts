@@ -192,7 +192,7 @@ export function createProjectsHost(options: ProjectsHostOptions): ProjectsHost {
   });
   handle("dexnest:projects-delete-group", (groupId) => projects.deleteGroup(id(groupId)));
   handle("dexnest:projects-repo-state", (projectId, o) =>
-    projects.repoState(id(projectId), { allBranches: opt(o).allBranches === true, measureUntracked: opt(o).measureUntracked === true, includeIgnored: opt(o).includeIgnored === true })
+    projects.repoState(id(projectId), { allBranches: opt(o).allBranches === true, measureUntracked: opt(o).measureUntracked === true, includeIgnored: opt(o).includeIgnored === true, trackedSecrets: opt(o).trackedSecrets === true })
   );
   handle("dexnest:projects-repo-states", (ids) => projects.repoStates(Array.isArray(ids) ? ids.filter((x): x is string => typeof x === "string") : undefined));
   handle("dexnest:projects-history", (projectId, limit) => projects.history(id(projectId), typeof limit === "number" ? limit : 50));
@@ -212,6 +212,7 @@ export function createProjectsHost(options: ProjectsHostOptions): ProjectsHost {
   const paths = (value: unknown): string[] => (Array.isArray(value) ? value.filter((x): x is string => typeof x === "string").slice(0, 500) : []);
   handle("dexnest:projects-scan-folders", (roots) => projects.scanFolders(paths(roots)));
   handle("dexnest:projects-import-folders", (chosen) => projects.importFolders(paths(chosen)));
+  handle("dexnest:projects-check-watched", (o) => projects.checkWatchedFolders({ force: opt(o).force === true }));
   handle("dexnest:projects-clone", (input) => {
     const i = opt(input);
     return projects.clone({ url: String(i.url ?? ""), parentDir: String(i.parentDir ?? ""), folderName: typeof i.folderName === "string" ? i.folderName : undefined, onOutput: (line) => sendOutput("", line) }, "module_ui");

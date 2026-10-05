@@ -187,3 +187,120 @@ test("without a walk, scanning says so instead of pretending nothing was found",
     b.dispose();
   }
 });
+
+// --- watched folders ---------------------------------------------------------------
+
+test("watching: off unless asked for, and only a remembered folder can be watched", () => {
+  assert.deepEqual(normaliseProjectsSettings({}).watchedRoots, []);
+  assert.deepEqual(normaliseProjectsSettings(null).watchSkipped, []);
+  const s = normaliseProjectsSettings({ importRoots: ["D:\code", "D:\work"], watchedRoots: ["D:\code", "C:\Windows", "d:\WORK\\", "D:\code", 7, ""] });
+  assert.deepEqual(s.watchedRoots, ["D:\code", "d:\WORK\\"], "a folder that is not remembered is dropped; case and a trailing slash do not matter");
+  // Forgetting the folder stops the watching.
+  assert.deepEqual(normaliseProjectsSettings({ importRoots: ["D:\work"], watchedRoots: ["D:\code"] }).watchedRoots, []);
+  assert.deepEqual(normaliseProjectsSettings({ watchSkipped: ["a", "a", " b ", 3] }).watchSkipped, ["a", "b"]);
+});
+
+test("watching: a look adds the repositories that are new, each with an event that says where it came from", async () => {
+  const r = rig();
+  const a = repo(r, "alpha");
+  const b = repo(r, "beta");
+  r.found.set(r.code, [a, b]);
+  await r.module.add({ path: a }, "wizard");
+
+  // Nothing is watched: nothing is walked.
+  let check = await r.module.checkWatchedFolders({ force: true });
+  assert.deepEqual([check.ran, check.added.length, r.scans.length], [false, 0, 0]);
+
+  await r.module.scanFolders([r.code]);
+  r.module.updateSettings({ watchedRoots: [r.code] });
+  r.scans.length = 0;
+  check = await r.module.checkWatchedFolders();
+  assert.equal(check.ran, true);
+  assert.deepEqual(check.added.map((p) => p.name), ["beta"], "alpha was a project already");
+  assert.deepEqual(r.scans, [[r.code]]);
+  assert.deepEqual(r.module.list().map((p) => p.project.name).sort(), ["alpha", "beta"]);
+  const event = r.events.query({ stream: "projects" }).filter((e) => e.type === "projects.project.added").pop();
+  assert.deepEqual([event?.source, (event?.payload as { source?: string }).source], ["system", "watched_folder"]);
+});
+
+test("watching: not repeated within ten minutes unless asked, so opening Projects again costs nothing", async () => {
+  const r = rig();
+  r.found.set(r.code, [repo(r, "alpha")]);
+  await r.module.scanFolders([r.code]);
+  r.module.updateSettings({ watchedRoots: [r.code] });
+  r.scans.length = 0;
+  assert.equal((await r.module.checkWatchedFolders()).ran, true);
+  const again = await r.module.checkWatchedFolders();
+  assert.deepEqual([again.ran, again.added.length], [false, 0]);
+  assert.equal(r.scans.length, 1, "the second look walked nothing");
+  assert.equal((await r.module.checkWatchedFolders({ force: true })).ran, true, "\"Check now\" looks anyway");
+  assert.equal(r.scans.length, 2);
+});
+
+test("watching: a project you remove is not added back, and an archived one is left alone", async () => {
+  const r = rig();
+  const a = repo(r, "alpha");
+  const b = repo(r, "beta");
+  const c = repo(r, "gamma");
+  r.found.set(r.code, [a, b, c]);
+  await r.module.scanFolders([r.code]);
+  r.module.updateSettings({ watchedRoots: [r.code] });
+  const first = await r.module.checkWatchedFolders({ force: true });
+  assert.equal(first.added.length, 3);
+
+  const alpha = first.added.find((p) => p.name === "alpha")!;
+  const beta = first.added.find((p) => p.name === "beta")!;
+  // Removing asks for the project to be archived first; a refused removal remembers nothing.
+  assert.throws(() => r.module.remove(alpha.id), /Archive a project before removing it/);
+  assert.deepEqual(normaliseProjectsSettings(r.settings.value).watchSkipped, []);
+  r.module.archive(alpha.id);
+  r.module.remove(alpha.id);
+  r.module.archive(beta.id);
+  assert.equal(normaliseProjectsSettings(r.settings.value).watchSkipped.length, 1);
+
+  const second = await r.module.checkWatchedFolders({ force: true });
+  assert.deepEqual(second.added, [], "neither comes back");
+  assert.equal(second.skipped, 1, "the removed one was seen and left out");
+  assert.deepEqual(r.module.list({ includeArchived: true }).map((p) => p.project.name).sort(), ["beta", "gamma"]);
+
+  // Adding it again by hand still works: the skip list only stops the automatic add.
+  assert.equal((await r.module.add({ path: a }, "wizard")).ok, true);
+});
+
+test("watching: a project removed from a folder that is not watched is not remembered", async () => {
+  const r = rig();
+  const a = repo(r, "alpha");
+  const added = await r.module.add({ path: a }, "wizard");
+  assert.equal(added.ok, true);
+  if (added.ok) {
+    r.module.archive(added.project.id);
+    r.module.remove(added.project.id);
+  }
+  assert.deepEqual(normaliseProjectsSettings(r.settings.value).watchSkipped, []);
+});
+
+test("watching: without a walk it does nothing, and says so by not running", async () => {
+  const b = sandbox("dexnest-import-nowatch-");
+  const db = createTestDatabase("dexnest-import-nowatch-db-");
+  try {
+    runFoundationMigrations(db.db);
+    let stored: unknown = { importRoots: [b.root], watchedRoots: [b.root] };
+    const module = createProjectsModule({
+      database: db.db,
+      events: createEventLog(db.db),
+      reader: b.reader(),
+      gitOps: { preview: async () => ({ refused: true, refusal: { refused: true, kind: "x", code: "invalid_request", reason: "no", offers: [] } }), execute: async () => { throw new Error("no"); }, cancel: () => false, isBusy: () => false, fetchAll: async () => [], pullAll: async () => ({ pulled: [], skipped: [] }), recoverInterrupted: () => [], clone: async () => ({ status: "refused", reason: "no" }) },
+      inspectFs: createNodeInspectFs(),
+      isSensitive: () => false,
+      launch: { env: () => ({ platform: process.platform, env: {}, exists: () => false }), openPath: async () => null, openExternal: async () => undefined, spawnDetached: () => ({ ok: true }) },
+      scheduler: { schedule: () => () => undefined, runNow: async () => undefined },
+      settings: { read: () => stored, write: (value) => { stored = value; } },
+      legacy: createLegacyFileSource({ file: join(b.root, "projects.json"), backupDir: join(b.root, "backups") })
+    });
+    assert.equal((await module.checkWatchedFolders({ force: true })).ran, false);
+    module.stop();
+  } finally {
+    db.dispose();
+    b.dispose();
+  }
+});

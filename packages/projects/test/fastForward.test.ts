@@ -123,12 +123,48 @@ test("up to another branch: only when the default branch can simply move forward
   assert.equal(no(planFastForward(onDevelop(), { kind: "fast_forward", branch: "main", from: "main" })).code, "nothing_to_do");
 });
 
-test("up to another branch: only the default branch moves this way", () => {
+test("up to another branch: any branch you are not on moves this way, once the two have been compared", () => {
   const state = onDevelop();
-  const withFeature: RepoStateOk = { ...state, branches: [...state.branches, branch("feature/x", { vsDefault: { ahead: 1, behind: 0 } })] };
-  const r = no(planFastForward(withFeature, { kind: "fast_forward", branch: "feature/x", from: "develop" }));
-  assert.equal(r.code, "invalid_request");
-  assert.match(r.reason, /only brings the default branch \(main\) up to another branch/);
+  const feature = branch("feature/x", { vsDefault: { ahead: 1, behind: 0 } });
+  const withFeature: RepoStateOk = { ...state, branches: [...state.branches, feature] };
+  const request = { kind: "fast_forward", branch: "feature/x", from: "develop" } as const;
+
+  // An ordinary read does not compare two non-default branches: it will not guess.
+  let r = no(planFastForward(withFeature, request));
+  assert.equal(r.code, "stale_state");
+  assert.match(r.reason, /hasn't compared develop with feature\/x yet/);
+  // How feature/x stands to main says nothing about how it stands to develop.
+  assert.equal(no(planFastForward({ ...withFeature, between: null }, request)).code, "stale_state");
+  // A comparison of some other pair is not this one.
+  assert.equal(no(planFastForward({ ...withFeature, between: { branch: "main", from: "develop", ahead: 6, behind: 0 } }, request)).code, "stale_state");
+  assert.equal(no(planFastForward({ ...withFeature, between: { branch: "develop", from: "feature/x", ahead: 4, behind: 0 } }, request)).code, "stale_state", "nor the same two the other way round");
+
+  // develop has four commits feature/x lacks, and feature/x none of its own: it can simply move forward.
+  const plan = ok(planFastForward({ ...withFeature, between: { branch: "feature/x", from: "develop", ahead: 4, behind: 0 } }, request));
+  assert.equal(plan.title, "Bring feature/x up to develop");
+  assert.equal(plan.summary, "Move feature/x forward to where develop is, without switching to it.");
+  assert.equal(plan.safety, "caution");
+  assert.equal(plan.branch, "feature/x");
+  assert.equal(plan.network, false);
+  assert.equal(plan.undo, null);
+  assert.equal(plan.steps.length, 1);
+  assert.deepEqual({ op: plan.steps[0]!.op, branch: (plan.steps[0] as { branch: string }).branch, expectSha: (plan.steps[0] as { expectSha: string }).expectSha, toSha: (plan.steps[0] as { toSha: string }).toSha }, { op: "ff_branch", branch: "feature/x", expectSha: feature.tipSha, toSha: state.branches[0]!.tipSha });
+
+  // feature/x has work develop lacks: that needs a merge, and DexNest does not merge.
+  r = no(planFastForward({ ...withFeature, between: { branch: "feature/x", from: "develop", ahead: 4, behind: 2 } }, request));
+  assert.equal(r.code, "diverged");
+  assert.match(r.reason, /feature\/x has 2 commits that develop doesn't/);
+  // develop has nothing feature/x lacks.
+  assert.equal(no(planFastForward({ ...withFeature, between: { branch: "feature/x", from: "develop", ahead: 0, behind: 3 } }, request)).code, "diverged");
+  assert.equal(no(planFastForward({ ...withFeature, between: { branch: "feature/x", from: "develop", ahead: 0, behind: 0 } }, request)).code, "nothing_to_do");
+
+  // The branch you are on, and one another working copy has checked out, still do not move.
+  assert.equal(no(planFastForward({ ...withFeature, between: { branch: "develop", from: "feature/x", ahead: 1, behind: 0 } }, { kind: "fast_forward", branch: "develop", from: "feature/x" })).code, "current_branch");
+  const held: RepoStateOk = { ...state, branches: [...state.branches, { ...feature, checkedOutElsewhere: { path: "D:/other", owner: "other" } }], between: { branch: "feature/x", from: "develop", ahead: 4, behind: 0 } };
+  assert.equal(planFastForward(held, request).refused, true);
+
+  // The default branch still goes by the comparison every read makes, whatever `between` says.
+  assert.equal(planFastForward({ ...state, between: { branch: "main", from: "develop", ahead: 0, behind: 9 } }, { kind: "fast_forward", branch: "main", from: "develop" }).refused, false);
 });
 
 test("the shared blockers apply: an unfinished merge or conflicts stop it", () => {

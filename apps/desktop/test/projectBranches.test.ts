@@ -47,12 +47,24 @@ test("a branch behind its upstream that you are not on can be updated in place; 
   assert.equal(row(state, "staging").update, null, "in sync with its upstream");
 });
 
-test("the default branch can be brought up to the branch you are on, and only it", () => {
+test("any branch you are not on can be brought up to the one you are on; the one you are on cannot", () => {
   const state = dermassist();
   assert.deepEqual(row(state, "main").bringUp, { request: { kind: "fast_forward", branch: "main", from: "develop" }, label: "Bring up to develop" });
   assert.equal(availability(state, row(state, "main").bringUp!.request), null);
-  assert.equal(row(state, "staging").bringUp, null);
+  // Not only the default branch any more. Two other branches are compared when the dialog
+  // opens, so the button is live and the dialog says what it found.
+  assert.deepEqual(row(state, "staging").bringUp, { request: { kind: "fast_forward", branch: "staging", from: "develop" }, label: "Bring up to develop" });
+  assert.equal(availability(state, row(state, "staging").bringUp!.request), null);
   assert.equal(row(state, "develop").bringUp, null);
+  // A branch another working copy has checked out is not offered.
+  const held = dermassist();
+  held.branches[2] = { ...held.branches[2]!, checkedOutElsewhere: { path: "D:/other", owner: "other" } };
+  assert.equal(row(held, "staging").bringUp, null);
+  // With the comparison in hand, the screen says the same as the dialog will.
+  const measured = { ...dermassist(), between: { branch: "staging", from: "develop", ahead: 6, behind: 0 } };
+  assert.equal(availability(measured, row(measured, "staging").bringUp!.request), null);
+  const apart = { ...dermassist(), between: { branch: "staging", from: "develop", ahead: 6, behind: 3 } };
+  assert.match(availability(apart, row(apart, "staging").bringUp!.request) ?? "", /staging has 3 commits that develop doesn't/);
   // On the default branch itself there is nothing to bring it up to.
   assert.equal(row(repo(), "main").bringUp, null);
   // When main has commits develop lacks, the button says why it cannot.

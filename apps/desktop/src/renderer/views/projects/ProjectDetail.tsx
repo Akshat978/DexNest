@@ -62,7 +62,7 @@ export function ProjectDetail(props: ProjectDetailProps) {
   const read = useCallback(async () => {
     try {
       // Sizes of new files and folders are measured here, where a commit is made; the home screen does not need them.
-      const [s, o] = await Promise.all([bridge.projectsRepoState(project.id, { allBranches, measureUntracked: true, includeIgnored: showIgnored }), bridge.projectsOperations(project.id)]);
+      const [s, o] = await Promise.all([bridge.projectsRepoState(project.id, { allBranches, measureUntracked: true, includeIgnored: showIgnored, trackedSecrets: true }), bridge.projectsOperations(project.id)]);
       setState(s);
       setOps(o);
     } catch (e) {

@@ -18,9 +18,18 @@ export interface ProjectsSettings {
   layout: HomeLayout;
   /** Folders "Import projects" last looked in, newest first, so a re-check is one click. */
   importRoots: string[];
+  /**
+   * The ones among them the owner asked DexNest to watch: a repository that
+   * appears inside one is added as a project the next time Projects is opened
+   * (or "Check now" is pressed). Never on a timer. Empty by default.
+   */
+  watchedRoots: string[];
+  /** Repositories in a watched folder the owner removed, so they are not added back. */
+  watchSkipped: string[];
 }
 
 export const MAX_IMPORT_ROOTS = 5;
+export const MAX_WATCH_SKIPPED = 500;
 
 export const SCHEDULED_FETCH_MIN_MINUTES = 15;
 
@@ -32,7 +41,9 @@ export const DEFAULT_PROJECTS_SETTINGS: ProjectsSettings = {
   terminal: "auto",
   vscodePath: null,
   layout: "grid",
-  importRoots: []
+  importRoots: [],
+  watchedRoots: [],
+  watchSkipped: []
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -46,8 +57,14 @@ function intIn(value: unknown, min: number, max: number, fallback: number): numb
 /** Accepts anything read back from disk; unknown or out-of-range values fall back to defaults. */
 export function normaliseProjectsSettings(raw: unknown): ProjectsSettings {
   const d = DEFAULT_PROJECTS_SETTINGS;
-  if (!isRecord(raw)) return { ...d, scheduledFetch: { ...d.scheduledFetch }, importRoots: [] };
+  if (!isRecord(raw)) return { ...d, scheduledFetch: { ...d.scheduledFetch }, importRoots: [], watchedRoots: [], watchSkipped: [] };
   const fetch = isRecord(raw.scheduledFetch) ? raw.scheduledFetch : {};
+  const strings = (value: unknown, max: number): string[] =>
+    Array.isArray(value) ? [...new Set(value.filter((r): r is string => typeof r === "string" && r.trim().length > 0).map((r) => r.trim()))].slice(0, max) : [];
+  const importRoots = strings(raw.importRoots, MAX_IMPORT_ROOTS);
+  // Only a folder that is still remembered can be watched: forgetting it stops the watching.
+  const key = (path: string) => path.replace(/[\\/]+$/, "").toLowerCase();
+  const remembered = new Set(importRoots.map(key));
   return {
     schemaVersion: 1,
     staleDays: intIn(raw.staleDays, 1, 3650, d.staleDays),
@@ -59,8 +76,8 @@ export function normaliseProjectsSettings(raw: unknown): ProjectsSettings {
     terminal: raw.terminal === "windows_terminal" || raw.terminal === "powershell" ? raw.terminal : "auto",
     vscodePath: typeof raw.vscodePath === "string" && raw.vscodePath.trim() ? raw.vscodePath.trim() : null,
     layout: raw.layout === "list" ? "list" : "grid",
-    importRoots: Array.isArray(raw.importRoots)
-      ? [...new Set(raw.importRoots.filter((r): r is string => typeof r === "string" && r.trim().length > 0).map((r) => r.trim()))].slice(0, MAX_IMPORT_ROOTS)
-      : []
+    importRoots,
+    watchedRoots: strings(raw.watchedRoots, MAX_IMPORT_ROOTS).filter((root) => remembered.has(key(root))),
+    watchSkipped: strings(raw.watchSkipped, MAX_WATCH_SKIPPED)
   };
 }

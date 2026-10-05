@@ -22,7 +22,8 @@ import type {
   FolderScanResult,
   HistoryEntry,
   DiffStat,
-  LegacyReimportResult
+  LegacyReimportResult,
+  WatchCheck
 } from "@dexnest/projects";
 
 export type OpenTarget = "vscode" | "terminal" | "folder" | "github";
@@ -41,7 +42,7 @@ export interface ProjectsBridge {
   projectsGroups(): Promise<ProjectGroup[]>;
   projectsSaveGroup(group: { id: string; name: string; position?: number }): Promise<ProjectGroup[]>;
   projectsDeleteGroup(groupId: string): Promise<ProjectGroup[]>;
-  projectsRepoState(projectId: string, options?: { allBranches?: boolean; measureUntracked?: boolean; includeIgnored?: boolean }): Promise<RepoState>;
+  projectsRepoState(projectId: string, options?: { allBranches?: boolean; measureUntracked?: boolean; includeIgnored?: boolean; trackedSecrets?: boolean }): Promise<RepoState>;
   projectsRepoStates(projectIds?: string[]): Promise<Record<string, RepoState | { error: string }>>;
   projectsHistory(projectId: string, limit?: number): Promise<HistoryEntry[]>;
   projectsDiffStat(projectId: string): Promise<DiffStat>;
@@ -61,6 +62,8 @@ export interface ProjectsBridge {
   /** Every repository under these folders (Developer Intelligence's walk), new or already added. */
   projectsScanFolders(roots: string[]): Promise<FolderScanResult>;
   projectsImportFolders(paths: string[]): Promise<AddManyResult>;
+  /** Looks in the watched folders and adds what is new. Absent on a bridge that predates it. */
+  projectsCheckWatched?(options?: { force?: boolean }): Promise<WatchCheck>;
   projectsClone(input: { url: string; parentDir: string; folderName?: string }): Promise<CloneResult & { inspection?: InspectResult }>;
   projectsImportLegacy(): Promise<LegacyReimportResult>;
   projectsLegacyChanged(): Promise<boolean>;
@@ -79,8 +82,8 @@ const unavailable = "The desktop app isn't connected.";
 export const fallbackProjectsBridge: ProjectsBridge = {
   projectsList: async () => [],
   projectsGet: async () => null,
-  projectsSettings: async () => ({ schemaVersion: 1, staleDays: 30, scheduledFetch: { enabled: false, intervalMinutes: 30 }, fetchConcurrency: 4, terminal: "auto", vscodePath: null, layout: "grid", importRoots: [] }),
-  projectsUpdateSettings: async (s) => ({ schemaVersion: 1, staleDays: 30, scheduledFetch: { enabled: false, intervalMinutes: 30 }, fetchConcurrency: 4, terminal: "auto", vscodePath: null, layout: "grid", importRoots: [], ...s }),
+  projectsSettings: async () => ({ schemaVersion: 1, staleDays: 30, scheduledFetch: { enabled: false, intervalMinutes: 30 }, fetchConcurrency: 4, terminal: "auto", vscodePath: null, layout: "grid", importRoots: [], watchedRoots: [], watchSkipped: [] }),
+  projectsUpdateSettings: async (s) => ({ schemaVersion: 1, staleDays: 30, scheduledFetch: { enabled: false, intervalMinutes: 30 }, fetchConcurrency: 4, terminal: "auto", vscodePath: null, layout: "grid", importRoots: [], watchedRoots: [], watchSkipped: [], ...s }),
   projectsGroups: async () => [],
   projectsSaveGroup: async () => [],
   projectsDeleteGroup: async () => [],

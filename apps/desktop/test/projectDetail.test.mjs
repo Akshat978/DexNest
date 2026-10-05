@@ -287,7 +287,7 @@ test("changes: ignored files are hidden until asked for, then listed with how to
 
 test("changes: the detail measures new files, asks for ignored ones only when shown, and ignores through the logged action", () => {
   const source = readFileSync(join(desktop, "src/renderer/views/projects/ProjectDetail.tsx"), "utf8").replace(/\r\n/g, "\n");
-  assert.match(source, /projectsRepoState\(project\.id, \{ allBranches, measureUntracked: true, includeIgnored: showIgnored \}\)/);
+  assert.match(source, /projectsRepoState\(project\.id, \{ allBranches, measureUntracked: true, includeIgnored: showIgnored, trackedSecrets: true \}\)/);
   assert.match(source, /props\.runAction\("projects\.ignore", \{ projectId: project\.id, paths \}\)/);
   const home = readFileSync(join(desktop, "src/renderer/views/projects/ProjectsView.tsx"), "utf8");
   assert.doesNotMatch(home, /measureUntracked/, "the home screen does not walk folders");

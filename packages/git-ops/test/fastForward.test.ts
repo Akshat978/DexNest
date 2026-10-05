@@ -233,3 +233,83 @@ test("argv: the one shape, and nothing near it", () => {
     assert.throws(() => assertSafeMutatingArgv(stepToArgv({ op: "ff_branch", branch: "main", source, expectSha: SHA, toSha: SHA }, { opId: "op_1" }).args), UnsafeGitArgv, source);
   }
 });
+
+test("any branch you are not on can be brought up to the one you are on: measured when asked, forward only", async () => {
+  const w = w0();
+  const { develop, oldMain } = behindMain(w);
+  // A release branch left behind at the old main.
+  w.b.git(w.app, "branch", "release", oldMain);
+  const mainBefore = head(w, w.app, "refs/heads/main");
+  const request = { kind: "fast_forward", branch: "release", from: "develop" } as const;
+
+  // An ordinary read does not compare the two; the read made for this request does.
+  const reader: GitReader = w.b.reader();
+  const plain = await reader.readRepoState(w.app);
+  assert.equal(plain.isRepo && "between" in plain, false);
+  const asked = await reader.readRepoState(w.app, { between: { branch: "release", from: "develop" } });
+  assert.deepEqual(asked.isRepo && asked.between, { branch: "release", from: "develop", ahead: 3, behind: 0 });
+
+  const preview = await w.ops.preview({ projectId: P, path: w.app, request });
+  assert.equal(preview.refused, false, preview.refused ? preview.refusal.reason : "");
+  if (preview.refused) return;
+  assert.equal(preview.plan.title, "Bring release up to develop");
+
+  const first = await w.ops.execute({ projectId: P, path: w.app, request, source: "module_ui" });
+  assert.equal(first.status, "needs_confirmation");
+  assert.equal(head(w, w.app, "refs/heads/release"), oldMain, "nothing moved before the yes");
+
+  const r = done(await w.ops.execute({ projectId: P, path: w.app, request, source: "module_ui", confirmation: { confirmed: true } }));
+  assert.equal(r.outcome, "succeeded", r.message);
+  assert.equal(head(w, w.app, "refs/heads/release"), develop);
+  assert.equal(head(w, w.app, "refs/heads/main"), mainBefore, "no other branch moved");
+  assert.equal(w.b.git(w.app, "rev-parse", "--abbrev-ref", "HEAD").trim(), "develop");
+  assert.ok(existsSync(join(w.app, "wip.txt")), "the uncommitted work is still there");
+
+  // Again: there is nothing left to bring over.
+  const again = await w.ops.execute({ projectId: P, path: w.app, request, source: "module_ui", confirmation: { confirmed: true } });
+  assert.equal(again.status === "refused" && again.refusal.code, "nothing_to_do");
+});
+
+test("a branch with work of its own is not moved onto another: that needs a merge", async () => {
+  const w = w0();
+  const { oldMain } = behindMain(w);
+  // "side" starts at the old main and gets a commit develop does not have.
+  w.b.git(w.app, "stash", "-q", "--include-untracked");
+  w.b.git(w.app, "switch", "-q", "-c", "side", oldMain);
+  const mine = commitFile(w, w.app, "side.txt", "s", "side work");
+  w.b.git(w.app, "switch", "-q", "develop");
+
+  const reader: GitReader = w.b.reader();
+  const read = await reader.readRepoState(w.app, { between: { branch: "side", from: "develop" } });
+  assert.deepEqual(read.isRepo && read.between, { branch: "side", from: "develop", ahead: 3, behind: 1 });
+
+  const r = await w.ops.execute({ projectId: P, path: w.app, request: { kind: "fast_forward", branch: "side", from: "develop" }, source: "module_ui", confirmation: { confirmed: true } });
+  assert.equal(r.status === "refused" && r.refusal.code, "diverged");
+  assert.equal(head(w, w.app, "refs/heads/side"), mine, "nothing moved");
+
+  // A branch that does not exist is not compared with anything.
+  const missing = await reader.readRepoState(w.app, { between: { branch: "nope", from: "develop" } });
+  assert.equal(missing.isRepo && missing.between, null);
+});
+
+test("tracked files that look like secrets are listed by name, and only when asked", async () => {
+  const w = w0();
+  commitFile(w, w.app, ".env", "TOKEN=abc", "oops");
+  commitFile(w, w.app, "config/.env.production", "KEY=1", "oops again");
+  commitFile(w, w.app, ".env.example", "TOKEN=", "a template, meant to be committed");
+  commitFile(w, w.app, "src/environment.ts", "export {}", "not a secret");
+  w.b.write(join(w.app, "untracked.pem"), "-----BEGIN-----\n");
+
+  const reader: GitReader = w.b.reader();
+  const plain = await reader.readRepoState(w.app);
+  assert.equal(plain.isRepo && "trackedSecrets" in plain, false, "an ordinary read does not list them");
+  const asked = await reader.readRepoState(w.app, { trackedSecrets: true });
+  assert.deepEqual(asked.isRepo && asked.trackedSecrets, { paths: [".env", "config/.env.production"], more: 0 }, "the template, the source file and the untracked key are not on it");
+
+  // Once it is no longer tracked, it is off the list (the file itself stays).
+  w.b.git(w.app, "rm", "-q", "--cached", "--", ".env");
+  w.b.git(w.app, "commit", "-q", "-m", "stop tracking .env");
+  const after = await reader.readRepoState(w.app, { trackedSecrets: true });
+  assert.deepEqual(after.isRepo && after.trackedSecrets, { paths: ["config/.env.production"], more: 0 });
+  assert.ok(existsSync(join(w.app, ".env")));
+});

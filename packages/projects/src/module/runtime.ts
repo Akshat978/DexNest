@@ -30,7 +30,7 @@ import { addIgnorePatterns } from "../domain/gitignore.ts";
 import { githubLinks } from "../domain/remote.ts";
 import type { RepoState } from "../domain/repoState.ts";
 import type { Confirmation } from "../domain/safety.ts";
-import { MAX_IMPORT_ROOTS, normaliseProjectsSettings, type ProjectsSettings } from "../domain/settings.ts";
+import { MAX_IMPORT_ROOTS, MAX_WATCH_SKIPPED, normaliseProjectsSettings, type ProjectsSettings } from "../domain/settings.ts";
 import { GitReadError, type DiffStat, type GitReader, type HistoryEntry } from "../git/reader.ts";
 import {
   addSuggestions,
@@ -154,7 +154,7 @@ export interface ProjectsModule {
   groups(): ProjectGroup[];
   saveGroup(group: ProjectGroup): ProjectGroup[];
   deleteGroup(id: string): ProjectGroup[];
-  repoState(projectId: string, options?: { allBranches?: boolean; measureUntracked?: boolean; includeIgnored?: boolean }): Promise<RepoState>;
+  repoState(projectId: string, options?: { allBranches?: boolean; measureUntracked?: boolean; includeIgnored?: boolean; trackedSecrets?: boolean }): Promise<RepoState>;
   repoStates(projectIds?: readonly string[]): Promise<Record<string, RepoState | { error: string }>>;
   history(projectId: string, limit?: number): Promise<HistoryEntry[]>;
   diffStat(projectId: string): Promise<DiffStat>;
@@ -174,6 +174,12 @@ export interface ProjectsModule {
   scanFolders(roots: readonly string[]): Promise<FolderScanResult>;
   /** Adds the chosen repositories in one go; refusals and duplicates are reported, not fatal. */
   importFolders(paths: readonly string[]): Promise<AddManyResult>;
+  /**
+   * Looks in the watched folders and adds the repositories that are new. It
+   * runs when asked (opening Projects, "Check now"), never by itself, and at
+   * most once in ten minutes unless `force` is set.
+   */
+  checkWatchedFolders(options?: { force?: boolean }): Promise<WatchCheck>;
   clone(input: Omit<CloneRequest, "source">, source: string): Promise<CloneResult & { inspection?: InspectResult }>;
   importLegacy(): LegacyReimportResult;
   legacyChanged(): boolean;
@@ -239,6 +245,29 @@ function fromLegacyInput(input: Record<string, unknown>): ProjectInput {
   return out;
 }
 
+/** What a look in the watched folders found. `ran` is false when it was skipped (nothing watched, or checked moments ago). */
+export interface WatchCheck {
+  checked: string[];
+  added: Array<{ id: string; name: string; path: string }>;
+  /** New repositories that were not added: removed before by the owner, over the limit, or refused. */
+  skipped: number;
+  truncated: boolean;
+  at: string;
+  ran: boolean;
+}
+
+/** A check is not repeated within this long unless forced. */
+export const WATCH_CHECK_MIN_MS = 10 * 60 * 1000;
+/** Repositories added by one check, at most. A folder with more is better imported by hand. */
+export const WATCH_ADD_LIMIT = 50;
+
+/** Whether `path` is `root` or inside it, as the file system compares paths. */
+export function isInside(path: string, root: string, platform: Platform): boolean {
+  const child = comparablePath(path, platform);
+  const parent = comparablePath(root, platform).replace(/[\\/]+$/, "");
+  return child === parent || child.startsWith(`${parent}/`) || child.startsWith(`${parent}\\`);
+}
+
 export function createProjectsModule(options: ProjectsModuleOptions): ProjectsModule {
   const now = options.now ?? (() => new Date().toISOString());
   const newCommandId = options.newCommandId ?? defaultCommandId;
@@ -247,6 +276,8 @@ export function createProjectsModule(options: ProjectsModuleOptions): ProjectsMo
   const store = createProjectsStore(options.database);
   let unschedule: (() => void) | null = null;
   let scheduledFetchRunning = false;
+  /** When the watched folders were last looked in, this run of DexNest. */
+  let lastWatchCheck: string | null = null;
 
   const inspectDeps = () => ({ fs: options.inspectFs, reader: options.reader, isSensitive: options.isSensitive, store, platform });
 
@@ -295,7 +326,7 @@ export function createProjectsModule(options: ProjectsModuleOptions): ProjectsMo
     });
   }
 
-  async function repoState(projectId: string, readOptions: { allBranches?: boolean; measureUntracked?: boolean; includeIgnored?: boolean } = {}): Promise<RepoState> {
+  async function repoState(projectId: string, readOptions: { allBranches?: boolean; measureUntracked?: boolean; includeIgnored?: boolean; trackedSecrets?: boolean } = {}): Promise<RepoState> {
     const project = mustGet(projectId);
     if (options.isSensitive(project.path)) return { isRepo: false, reason: "This folder is inside DexNest's own data folder.", readAt: now() };
     const state = await options.reader.readRepoState(project.path, { ...readOptions, deployedBranch: project.deployedBranch });
@@ -559,7 +590,15 @@ export function createProjectsModule(options: ProjectsModuleOptions): ProjectsMo
       return project;
     },
     remove(projectId) {
+      const leaving = store.get(projectId);
+      // Refuses (and throws) unless the project is archived; nothing below runs then.
       store.remove(projectId);
+      // Removed from a watched folder: remembered, so the next check does not bring it straight back.
+      const current = settings();
+      if (leaving && current.watchedRoots.some((root) => isInside(leaving.path, root, platform))) {
+        const watchSkipped = [leaving.path, ...current.watchSkipped.filter((p) => comparablePath(p, platform) !== comparablePath(leaving.path, platform))].slice(0, MAX_WATCH_SKIPPED);
+        options.settings.write(normaliseProjectsSettings({ ...current, watchSkipped }));
+      }
       emit("projects.project.removed", projectId, "module_ui", projectEventPayload(projectId, "edit"));
     },
     touch(projectId) {
@@ -584,6 +623,21 @@ export function createProjectsModule(options: ProjectsModuleOptions): ProjectsMo
         options.settings.write(normaliseProjectsSettings({ ...settings(), importRoots }));
       }
       return result;
+    },
+    async checkWatchedFolders(check = {}) {
+      const at = now();
+      const current = settings();
+      const none: WatchCheck = { checked: [], added: [], skipped: 0, truncated: false, at, ran: false };
+      if (!options.folderScan || current.watchedRoots.length === 0) return none;
+      if (!check.force && lastWatchCheck !== null && Date.parse(at) - Date.parse(lastWatchCheck) < WATCH_CHECK_MIN_MS) return none;
+      lastWatchCheck = at;
+      const result = await scanFoldersForImport(current.watchedRoots, options.folderScan, { fs: options.inspectFs, isSensitive: options.isSensitive, projects: store.list({ includeArchived: true }), platform });
+      const declined = new Set(current.watchSkipped.map((p) => comparablePath(p, platform)));
+      const fresh = result.candidates.filter((c) => c.existing === null);
+      const wanted = fresh.filter((c) => !declined.has(comparablePath(c.path, platform))).slice(0, WATCH_ADD_LIMIT);
+      const added = wanted.length > 0 ? await addSuggestions(wanted.map((c) => c.path), inspectDeps(), { now: now(), newCommandId }) : { added: [], skipped: [] };
+      for (const project of added.added) emit("projects.project.added", project.id, "system", projectEventPayload(project.id, "watched_folder"));
+      return { checked: result.roots, added: added.added.map((p) => ({ id: p.id, name: p.name, path: p.path })), skipped: fresh.length - wanted.length + added.skipped.length, truncated: result.truncated, at, ran: true };
     },
     async importFolders(paths) {
       const result = await addSuggestions(paths, inspectDeps(), { now: now(), newCommandId });

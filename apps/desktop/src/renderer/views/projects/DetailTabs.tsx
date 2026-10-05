@@ -14,6 +14,7 @@ import {
   branchRows,
   changeRows,
   commitAllWarnings,
+  trackedSecretsNote,
   defaultBaseLabel,
   formFromProject,
   formProblems,
@@ -417,8 +418,20 @@ export function ChangesTab({
   const ignorable = chosen.filter((p) => rows.some((r) => r.path === p && r.group === "untracked"));
   const warnings = chosen.length === 0 ? commitAllWarnings(state) : [];
   const ignored = repo.workingTree.ignored ?? [];
+  const secrets = trackedSecretsNote(state);
   return (
     <div className="projects-changes">
+      {secrets && (
+        <div className="projects-commit__warn" role="note" aria-label="Tracked files that look like secrets">
+          <p><strong>{secrets.title}</strong></p>
+          <ul>
+            {secrets.paths.map((path) => <li key={path}><Technical>{path}</Technical></li>)}
+            {secrets.more > 0 && <li>and {secrets.more} more</li>}
+          </ul>
+          {secrets.lines.map((line) => <p key={line}>{line}</p>)}
+          <p><Technical>{secrets.command}</Technical></p>
+        </div>
+      )}
       {rows.length === 0 && <p className="projects-muted">No uncommitted changes. Everything is committed.</p>}
       {groups.map(({ group, rows: list }) => (
         <section key={group} aria-labelledby={`projects-changes-${group}`}>

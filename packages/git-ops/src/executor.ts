@@ -97,6 +97,11 @@ async function mapLimit<T, R>(items: readonly T[], limit: number, work: (item: T
 }
 
 /** Operations that take whatever is in the folder, so need to know how big the new things are. */
+/** The two branches to compare, when one is being brought up to another. */
+function pairOf(request: OperationRequest): { between?: { branch: string; from: string } } {
+  return request.kind === "fast_forward" && request.from !== undefined ? { between: { branch: request.branch, from: request.from } } : {};
+}
+
 function sweeps(kind: string): boolean {
   return kind === "commit" || kind === "stash";
 }
@@ -198,7 +203,7 @@ export function createGitOps(options: GitOpsOptions): GitOps {
     running.set(input.projectId, { opId, verb: request.kind, controller });
     byOpId.set(opId, controller);
     try {
-      const before = await options.reader.readRepoState(input.path, { signal: controller.signal, measureUntracked: sweeps(request.kind) });
+      const before = await options.reader.readRepoState(input.path, { signal: controller.signal, measureUntracked: sweeps(request.kind), ...pairOf(request) });
       const planned = await planFor(input.projectId, input.path, request, before);
       let refusal: Refusal | null = planned.refused ? planned : null;
       if (!refusal && input.nonInteractive && !planned.refused && planned.confirm.kind !== "none") {
@@ -379,7 +384,7 @@ export function createGitOps(options: GitOpsOptions): GitOps {
     async preview(input) {
       const parsed = parseOperationRequest(input.request);
       if (!parsed.ok) return { refused: true, refusal: parsed.refusal };
-      const state = await options.reader.readRepoState(input.path, { measureUntracked: sweeps(parsed.request.kind) });
+      const state = await options.reader.readRepoState(input.path, { measureUntracked: sweeps(parsed.request.kind), ...pairOf(parsed.request) });
       const planned = await planFor(input.projectId, input.path, parsed.request, state);
       return planned.refused ? { refused: true, refusal: planned } : { refused: false, plan: planned, fingerprint: planFingerprint(planned) };
     },

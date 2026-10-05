@@ -30,7 +30,9 @@ import {
   STATUS_FILTERS,
   type HomeFilters,
   type QuickActionId,
-  type ViewEntry
+  type ViewEntry,
+  toggleWatched,
+  watchCheckMessage
 } from "./projectsModel";
 import "./Projects.css";
 
@@ -344,6 +346,24 @@ export function ProjectsView({ bridge: given, runAction, commandResults, clearCo
     void load();
   }, [load]);
 
+  // Opening Projects is when the watched folders are looked in (not more than every ten minutes, and never on a timer).
+  // Once per opening: the look itself adds the projects, so its answer must not be dropped
+  // (React runs an effect twice in development, and the second look would find nothing new).
+  const watchChecked = useRef(false);
+  useEffect(() => {
+    if (watchChecked.current) return;
+    watchChecked.current = true;
+    void (bridge.projectsCheckWatched?.() ?? Promise.resolve(null)).then(
+      (check) => {
+        const message = watchCheckMessage(check);
+        if (!message) return;
+        push("success", message);
+        void load();
+      },
+      () => undefined
+    );
+  }, [bridge]);
+
   // Window focus: re-read git state, at most once every 2 s. No timers otherwise.
   useEffect(() => {
     let last = 0;
@@ -575,6 +595,8 @@ export function ProjectsView({ bridge: given, runAction, commandResults, clearCo
           bridge={bridge}
           initialRoots={importer.roots}
           rememberedRoots={settings.importRoots ?? []}
+          watchedRoots={settings.watchedRoots ?? []}
+          onWatch={(root, on) => void bridge.projectsUpdateSettings({ watchedRoots: toggleWatched(settings.watchedRoots ?? [], root, on) }).then(setSettings, () => undefined)}
           dragging={dragging}
           onClose={() => setImporter({ open: false, roots: null })}
           onImported={(message) => {

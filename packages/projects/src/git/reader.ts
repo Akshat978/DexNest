@@ -5,7 +5,7 @@
 //
 // Remote state is only as fresh as the last fetch; this engine never fetches.
 
-import type { PathSize } from "../domain/risk.ts";
+import { nameRisk, type PathSize } from "../domain/risk.ts";
 import { isFullSha } from "../domain/names.ts";
 import type { UndoFacts } from "../domain/planners.ts";
 import {
@@ -82,7 +82,14 @@ export interface ReadOptions {
   measureUntracked?: boolean;
   /** Also list what git ignores. */
   includeIgnored?: boolean;
+  /** Also compare these two local branches with each other (for bringing one up to the other). */
+  between?: { branch: string; from: string };
+  /** Also list tracked files whose names look like secrets. */
+  trackedSecrets?: boolean;
 }
+
+/** Tracked secret-looking files listed, at most. */
+export const TRACKED_SECRETS_LIMIT = 20;
 
 /** New paths measured per read, and files counted per path, at most. */
 const MEASURE_PATHS = 60;
@@ -327,6 +334,22 @@ export function createGitReader(options: GitReaderOptions): GitReader {
     const last = parseLog(okOut(lastOut))[0];
     const fetchMs = options.fs.mtimeMs(`${commonDir}/FETCH_HEAD`);
 
+    let trackedSecrets: RepoStateOk["trackedSecrets"];
+    if (read.trackedSecrets) {
+      // Names only: what the files hold is never read.
+      const listed = await run(toplevel, ["ls-files", "-z"], read);
+      const secret = listed.exitCode === 0 ? listed.stdout.split("\0").filter((file) => file && nameRisk(file) === "secret") : [];
+      trackedSecrets = { paths: secret.slice(0, TRACKED_SECRETS_LIMIT), more: Math.max(0, secret.length - TRACKED_SECRETS_LIMIT) };
+    }
+
+    let between: RepoStateOk["between"] = null;
+    if (read.between) {
+      const target = localRows.find((r) => r.refname === `refs/heads/${read.between!.branch}`);
+      const source = localRows.find((r) => r.refname === `refs/heads/${read.between!.from}`);
+      const measured = target && source ? await compare(path, target.sha, source.sha, read) : null;
+      between = measured ? { branch: read.between.branch, from: read.between.from, ahead: measured.ahead, behind: measured.behind } : null;
+    }
+
     if (read.measureUntracked && options.fs.measure) {
       const sizes: Record<string, PathSize> = {};
       for (const entry of st.tree.untracked.slice(0, MEASURE_PATHS)) {
@@ -348,6 +371,8 @@ export function createGitReader(options: GitReaderOptions): GitReader {
       defaultBranch,
       defaultBase: defaultBase ? shortRef(defaultBase.refname) : null,
       ...(deployedName ? { deployed: { branch: deployedName, base: deployedRef ? shortRef(deployedRef.refname) : null } } : {}),
+      ...(read.between ? { between } : {}),
+      ...(trackedSecrets ? { trackedSecrets } : {}),
       remotes,
       branches,
       remoteBranches,
