@@ -1,4 +1,4 @@
-# DexNest 0.4.0: hands-on checklist
+# DexNest 0.5.0: hands-on checklist
 
 For checking the fixes on your own data. Each line is something to try and
 what you should see. Tick what works; anything that does not is worth a note.
@@ -12,7 +12,7 @@ it gets checked on yours.
       included. This version changes the database on first start (below), and
       a backup is the way back.
 - [ ] Close the DexNest that is running, then either install
-      `apps/desktop/release/DexNest Setup 0.4.0.exe` or start it with
+      `apps/desktop/release/DexNest Setup 0.5.0.exe` or start it with
       `pnpm dev`. Both run the same code.
 
 ### What happens once, on first start
@@ -154,6 +154,66 @@ test, so go in this order.
 - [ ] Try your own usual phrases and note which it gets right and wrong.
       That is what decides whether it is worth building on.
 
+## Added after the first fifteen phases
+
+### Dates
+
+- [ ] Something done late in the evening shows that day's date in Skills,
+      Reality RPG, GhostOS and ObjectOS, not tomorrow's.
+- [ ] A day you picked in a form (a GhostOS entry, an ObjectOS job) still
+      shows as the day you picked.
+- [ ] A warranty that ends today reads "ending", not "expired", all day.
+
+### Links
+
+- [ ] Clicking a chip ("Sent to Finance: …") opens that exact entry, object,
+      document or event, not just the screen.
+- [ ] Calendar events you sent from another module before these fixes now
+      show a "From …" chip.
+
+### Photos
+
+- [ ] A phone photo saved under a `.jpg` name opens in Tools and as an
+      object's photo.
+- [ ] Drop and Capture show a small preview for a file that is a picture,
+      once its row is on screen. In Performance Mode they show icons.
+
+### Projects
+
+- [ ] Branches: every branch you are not on has "Bring up to …". A branch
+      with commits of its own is refused, with the reason.
+- [ ] Changes: if git is tracking a file like `.env`, a warning names it and
+      shows what to run. DexNest does not run it.
+- [ ] Import projects: tick **Watch** on a folder, create a new repository in
+      it, open Projects: it is added and a notice says so.
+- [ ] Remove that project: it is not added back.
+
+### Search and voice
+
+- [ ] Searching finds a line of today's Standup, under Today.
+- [ ] "What needs me" opens Today and says a count. "What's my level" says
+      your level. "What are my top skills" names them.
+
+### Sidebar and Clear data
+
+- [ ] Drag a sidebar entry onto another: it takes that place and stays there
+      after a restart.
+- [ ] Settings → Data Management lists GhostOS, ObjectOS and Projects, each
+      saying what goes and what stays. **Do not clear these on your real
+      data to test them**; they were checked on scratch data.
+
+### Heatmap
+
+- [ ] Below the window heatmap there is "Done in DexNest · last 28 days",
+      with cells lit for the hours you used DexNest.
+
+### Stream Deck
+
+- [ ] Your existing Deck buttons still work. (The endpoint now refuses
+      actions that are not meant for the Deck; every button DexNest exports
+      is unaffected. If a button you made by hand stopped working, tell me
+      which.)
+
 ## Things that are known and not done
 
 - No Deck button opens Today, Skills, Reality RPG, GhostOS or ObjectOS.
@@ -163,5 +223,6 @@ test, so go in this order.
 - A HEIC file renamed to `.jpg` is not recognised.
 - Dates in Skills, Reality RPG, GhostOS and ObjectOS use the UTC day, so
   late in the evening something can show tomorrow's date.
-- The Heatmap overlay is not built.
+- The Stream Deck endpoint and "delete data" are limited to what they are
+  meant to run. Voice, hotkeys and routines are not yet limited the same way.
 - Reality RPG does not count journal, finance or vault entries.
