@@ -20,6 +20,8 @@ import { startSlotHook, stopSlotHook, isSlotHookRunning } from "./clipboardSlotH
 import { PDFDocument } from "pdf-lib";
 import { Jimp } from "jimp";
 import { decodeHeicFile, isHeicPath, toBgra } from "./heic.js";
+import { addLink, chipsFor, normalizeLinks, pruneLinks, type RecordLink, type RecordRef } from "./recordLinks.js";
+import { ghostRecords, LIVE_SEARCH_SOURCES, objectRecords, reminderRecords, rpgRecords, skillRecords, timetableRecords, type ModuleSearchRecord } from "./moduleSearch.js";
 import { createActionRegistry, createStreamDeckActionCatalog, seededActions, streamDeckCatalogItems } from "@dexnest/action-registry";
 import { createLocalDb } from "@dexnest/local-db";
 import { createAutopilotHost, type AutopilotHost } from "./autopilotHost.js";
@@ -187,6 +189,7 @@ const commandResultsPath = join(settingsRoot, "project-command-results.json");
 const pinnedActionsPath = join(settingsRoot, "pinned-actions.json");
 // The sidebar as the owner arranged it: order and what is hidden.
 const sidebarPrefsPath = join(settingsRoot, "sidebar.json");
+const recordLinksPath = join(settingsRoot, "record-links.json");
 const clipboardHistoryPath = join(settingsRoot, "clipboard-history.json");
 const clipboardSnippetsPath = join(settingsRoot, "clipboard-snippets.json");
 const clipboardSettingsPath = join(settingsRoot, "clipboard-settings.json");
@@ -11189,7 +11192,7 @@ function assistantIntentPrompt(query: string): string {
     "- calendar_show_today: ask what is on today's calendar or show today's events.",
     "- calendar_show_upcoming: ask for upcoming calendar events, tomorrow, or next event.",
     "- drop_send_clipboard: send clipboard or current file to phone.",
-    "- open_module: open a DexNest module/screen.",
+    "- open_module: open a DexNest module/screen (open Today, Projects, Skills, Reality RPG, GhostOS, ObjectOS, Autopilot, Vault, the activity log), or ask to see one (what needs me, what are my skills, what is my level).",
     "- dev_run_command: run a dev command (typecheck, build, test, start).",
     "- journal_open_today: open today's journal.",
     "- capture_note: save/remember a note, add to inbox.",
@@ -11199,7 +11202,7 @@ function assistantIntentPrompt(query: string): string {
     "Distinctions:",
     "- 'Where is my passport' = finder_search. 'What is my passport number' = smart_lookup. 'Find my passport document' = search_query.",
     "",
-    "targetModule must be one of: Search, Finder, Calendar, Drop, Dev, Journal, Capture, External Devices, Command, Unknown.",
+    "targetModule must be one of: Search, Finder, Calendar, Drop, Dev, Journal, Capture, External Devices, Command, Today, Projects, Skills, Reality RPG, GhostOS, ObjectOS, Autopilot, Unknown.",
     "sensitivity: 'sensitive' for passport/SIN/UCI/work permit/health card numbers or expiry; 'personal' for personal but non-secret; otherwise 'none'.",
     "requiresConfirmation: true for calendar/drop/dev/capture or any sensitive lookup.",
     "",
@@ -12609,7 +12612,8 @@ function searchState(query: SearchQueryInput = {}) {
     savedSearchesPath,
     resultCount: runSearchQuery(query, index).length,
     ocrTextFileCount,
-    sources: [...new Set(index.map((item) => item.sourceModule))].sort(),
+    // The newer modules are searched live, so they are offered as sources whatever the index holds.
+    sources: [...new Set([...index.map((item) => item.sourceModule), ...LIVE_SEARCH_SOURCES])].sort(),
     fileTypes: [...new Set(index.map((item) => item.fileType).filter(Boolean) as string[])].sort()
   };
 }
@@ -12844,26 +12848,6 @@ function buildSearchIndexRecords(): SearchIndexRecord[] {
     });
   }
 
-  for (const item of loadFinderItems()) {
-    records.push({
-      id: `object-${item.id}`,
-      // Objects from ObjectOS, by name and place. "object" is the view they open in.
-      sourceModule: "object",
-      entityType: "object",
-      entityId: item.id,
-      title: item.itemName,
-      filePath: null,
-      fileType: "metadata",
-      sizeBytes: null,
-      textPreview: previewText(textBucket(item.location, item.room, item.container, item.notes)),
-      tags: [...item.tags, item.status].filter(Boolean),
-      category: item.room || item.container || item.location,
-      createdAt: item.createdAt,
-      updatedAt: item.updatedAt,
-      indexedAt
-    });
-  }
-
   for (const transaction of loadFinanceTransactions()) {
     records.push({
       id: `finance-transaction-${transaction.id}`,
@@ -13002,6 +12986,37 @@ function scheduleSearchReindex(): void {
   }, 1200);
 }
 
+/**
+ * What the newer modules hold, asked for at the moment of a search and never
+ * written to the index file. A module that is off, or fails, adds nothing.
+ */
+function liveModuleRecords(query = ""): ModuleSearchRecord[] {
+  const now = new Date().toISOString();
+  const from = (read: () => ModuleSearchRecord[]): ModuleSearchRecord[] => {
+    try { return read(); } catch { return []; }
+  };
+  return [
+    ...from(() => objectRecords(loadFinderItems(), now)),
+    ...from(() => skillConstellationHost ? skillRecords(skillConstellationHost.module.constellation().skills, now) : []),
+    ...from(() => {
+      if (!ghostOsHost || !query.trim()) return [];
+      const hits = ghostOsHost.module.search(query.trim());
+      return hits.ok ? ghostRecords(hits.value, query, now) : [];
+    }),
+    ...from(() => {
+      if (!realityRpgHost) return [];
+      const game = realityRpgHost.module.snapshot();
+      return game.enabled ? rpgRecords(game.quests, game.achievements, now) : [];
+    }),
+    ...from(() => {
+      const file = loadTimetableFile();
+      const active = file.templates.find((template) => template.id === file.activeTemplateId) ?? file.templates[0];
+      return timetableRecords(active?.blocks ?? [], now);
+    }),
+    ...from(() => reminderRecords(loadNudges(), now))
+  ];
+}
+
 function searchMatchScore(record: SearchIndexRecord, query: string): { score: number; reason: string } {
   if (!query) {
     return { score: 1, reason: "filter match" };
@@ -13032,7 +13047,7 @@ function searchMatchScore(record: SearchIndexRecord, query: string): { score: nu
   return { score: 0, reason: "" };
 }
 
-function runSearchQuery(queryInput: SearchQueryInput = {}, records = loadSearchIndex()): SearchResult[] {
+function runSearchQuery(queryInput: SearchQueryInput = {}, records: SearchIndexRecord[] = [...loadSearchIndex(), ...liveModuleRecords(queryInput.query ?? "")]): SearchResult[] {
   const query = (queryInput.query ?? "").trim();
   const sourceModule = queryInput.sourceModule && queryInput.sourceModule !== "all" ? queryInput.sourceModule : "";
   const fileType = queryInput.fileType && queryInput.fileType !== "all" ? queryInput.fileType.toLowerCase() : "";
@@ -15468,6 +15483,30 @@ function runVaultAction(action: DexNestActionDefinition, source: DexNestActionTr
         sourceModule: String(params.sourceModule ?? "DexNest Vault"),
         title: typeof params.title === "string" ? params.title : undefined
       }, source, action.id);
+    }
+
+    if (action.id === "vault.import_from_object") {
+      // The owner sends one attached file, by clicking. The Vault takes its own
+      // copy; ObjectOS keeps its file and reads nothing back.
+      if (source !== "module_ui" && source !== "command") throw new Error("A file is sent to the Vault from DexNest's own window.");
+      if (!objectOsHost) throw new Error("ObjectOS is not running.");
+      const opened = objectOsHost.module.openFile({ fileId: String(params.fileId ?? "") });
+      if (!opened.ok) throw new Error(opened.errors.join(" "));
+      const { path, file } = opened.value;
+      if (!existsSync(path)) throw new Error("That file is no longer in ObjectOS's folder.");
+      const owner = loadFinderItems().find((item) => item.id === file.objectId);
+      const imported = importVaultDocuments({
+        paths: [path],
+        category: "Other",
+        tags: ["objectos", file.role],
+        notes: owner ? `${file.role === "receipt" ? "Receipt" : "Document"} for ${owner.itemName}. Sent from ObjectOS.` : "Sent from ObjectOS.",
+        sourceModule: "DexNest ObjectOS",
+        title: owner ? `${owner.itemName}: ${file.name}` : file.name
+      }, source, action.id);
+      if (imported.ok && owner) {
+        for (const document of imported.documents ?? []) linkRecords({ module: "object", id: owner.id, title: owner.itemName }, { module: "vault", id: document.id, title: document.title });
+      }
+      return imported;
     }
 
     if (action.id === "vault.edit_document_metadata") {
@@ -19014,6 +19053,10 @@ async function runCalendarAction(action: DexNestActionDefinition, source: DexNes
       // typed and must survive a calendar that is unreachable; the push adds a
       // remote id to it rather than being the thing that makes it real.
       saveCalendarEvents([nextEvent, ...events.filter((event) => event.id !== nextEvent.id)]);
+      if (!existing && nextEvent.sourceId && nextEvent.sourceModule !== "calendar") {
+        const origin = linkedRecordTitle(nextEvent.sourceModule, nextEvent.sourceId);
+        if (origin) linkRecords(origin, { module: "calendar", id: nextEvent.id, title: nextEvent.title });
+      }
       const pushed = await pushEventToProvider(nextEvent, existing ? "update" : "create");
       if (pushed !== nextEvent) {
         saveCalendarEvents([pushed, ...loadCalendarEvents().filter((event) => event.id !== pushed.id)]);
@@ -19289,6 +19332,11 @@ function runFinanceAction(action: DexNestActionDefinition, source: DexNestAction
       const existing = existingId ? transactions.find((transaction) => transaction.id === existingId) : undefined;
       const nextTransaction = normalizeFinanceTransaction({ ...existing, ...input, id: existing?.id ?? input.id }, existing);
       saveFinanceTransactions([nextTransaction, ...transactions.filter((transaction) => transaction.id !== nextTransaction.id)]);
+      const sent = payload as { sourceModule?: unknown; sourceId?: unknown } | null;
+      if (!existing && typeof sent?.sourceModule === "string" && typeof sent.sourceId === "string" && sent.sourceModule !== "finance") {
+        const origin = linkedRecordTitle(sent.sourceModule, sent.sourceId);
+        if (origin) linkRecords(origin, { module: "finance", id: nextTransaction.id, title: nextTransaction.store });
+      }
       logFinanceEvent(action.id, "success", source, `${existing ? "Updated" : "Created"} DexNest Finance transaction.`, financeTransactionMetadata(nextTransaction), startedAt);
       return { ok: true, actionId: action.id, transaction: nextTransaction, financeState: financeState() };
     }
@@ -19453,11 +19501,65 @@ function findCaptureItem(captureId: string): CaptureItem {
   return item;
 }
 
+/** The record an id names in a module that can be linked, with its title as it is now. Null when there is none. */
+function linkedRecordTitle(module: string, id: string): RecordRef | null {
+  const found = (title: string | undefined | null): RecordRef | null => (title === undefined || title === null ? null : { module, id, title });
+  switch (module) {
+    case "capture": return found(loadCaptureItems().find((item) => item.id === id)?.title);
+    case "journal": { const entry = loadJournalEntries().find((item) => item.id === id); return entry ? found(entry.title || `Journal, ${entry.date}`) : null; }
+    case "finance": return found(loadFinanceTransactions().find((item) => item.id === id)?.store ?? loadFinanceRecurring().find((item) => item.id === id)?.name);
+    case "vault": return found(loadVaultDocuments().find((item) => item.id === id)?.title);
+    case "object": return found(loadFinderItems().find((item) => item.id === id)?.itemName);
+    default: return null;
+  }
+}
+
+function loadRecordLinks(): RecordLink[] {
+  return normalizeLinks(readJsonFile<unknown>(recordLinksPath, []));
+}
+
+/** Whether a linked record is still there. A module that is not running keeps its links. */
+function linkedRecordExists(ref: RecordRef): boolean {
+  switch (ref.module) {
+    case "capture": return loadCaptureItems().some((item) => item.id === ref.id && item.status !== "deleted");
+    case "journal": return loadJournalEntries().some((entry) => entry.id === ref.id);
+    case "calendar": return loadCalendarEvents().some((event) => event.id === ref.id);
+    case "finance": return loadFinanceTransactions().some((entry) => entry.id === ref.id) || loadFinanceRecurring().some((entry) => entry.id === ref.id);
+    case "vault": return loadVaultDocuments().some((document) => document.id === ref.id);
+    case "object": return objectOsHost ? loadFinderItems().some((item) => item.id === ref.id) : true;
+    default: return false;
+  }
+}
+
+/**
+ * Remembers that one record was made from another. Never fails the action
+ * that made the record: a link is a convenience, the record is the point.
+ */
+function linkRecords(from: RecordRef, to: RecordRef): void {
+  try {
+    const links = loadRecordLinks();
+    const next = addLink(links, from, to, new Date().toISOString(), () => createId("link"));
+    if (next.length !== links.length) writeJsonFile(recordLinksPath, next);
+  } catch (error) {
+    console.warn("[DexNest] A link between two records was not saved.", error);
+  }
+}
+
+/** The links one screen shows, with the ones whose other end was deleted dropped for good. */
+function recordLinkChips(module: string) {
+  const links = loadRecordLinks();
+  const live = pruneLinks(links, linkedRecordExists);
+  if (live.length !== links.length) writeJsonFile(recordLinksPath, live);
+  return chipsFor(live, module);
+}
+
 function saveRoutedCaptureItem(item: CaptureItem, routedTo: string): CaptureItem {
   const updated = { ...item, status: "routed" as CaptureItemStatus, routedTo, updatedAt: new Date().toISOString() };
   saveCaptureItems([updated, ...loadCaptureItems().filter((entry) => entry.id !== item.id)]);
   return updated;
 }
+
+const captureRef = (item: CaptureItem): RecordRef => ({ module: "capture", id: item.id, title: item.title || "Capture" });
 
 function runCaptureAction(action: DexNestActionDefinition, source: DexNestActionTrigger, payload: unknown = {}) {
   const startedAt = Date.now();
@@ -19499,10 +19601,12 @@ function runCaptureAction(action: DexNestActionDefinition, source: DexNestAction
       if (route === "journal") {
         const journal = normalizeJournalCapture(item);
         saveJournalEntries([journal, ...loadJournalEntries().filter((entry) => entry.id !== journal.id)]);
+        linkRecords(captureRef(item), { module: "journal", id: journal.id, title: journal.title || `Journal, ${journal.date}` });
       }
       if (route === "calendar") {
         const event = normalizeCalendarInput({ title: item.title, date: input.date || todayDateString(), allDay: true, sourceModule: "capture", sourceId: item.id, reminderLevel: "normal", notes: "From DexNest Capture." });
         saveCalendarEvents([event, ...loadCalendarEvents()]);
+        linkRecords(captureRef(item), { module: "calendar", id: event.id, title: event.title });
       }
       if (route === "vault") {
         if (!item.filePath) {
@@ -19512,16 +19616,19 @@ function runCaptureAction(action: DexNestActionDefinition, source: DexNestAction
         if (!imported.ok) {
           throw new Error(imported.error ?? "Vault import failed.");
         }
+        for (const document of imported.documents ?? []) linkRecords(captureRef(item), { module: "vault", id: document.id, title: document.title });
       }
       if (route === "finance") {
         const amountMatch = item.text.match(/(?:\$|CAD\s*)?(\d+(?:\.\d{1,2})?)/i);
         const transaction = normalizeFinanceTransaction({ date: input.date || todayDateString(), store: item.title, amount: input.amount ?? amountMatch?.[1] ?? 0, category: "Capture", paymentType: "other", notes: item.text, tags: item.tags, receiptPath: item.filePath ?? null });
         saveFinanceTransactions([transaction, ...loadFinanceTransactions()]);
+        linkRecords(captureRef(item), { module: "finance", id: transaction.id, title: transaction.store });
       }
       if (route === "finder") {
         const itemName = input.title || item.title;
         const location = typeof input.location === "string" && input.location.trim() ? input.location.trim() : windowlessLocationFromText(item.text);
-        rememberItem(locator(), { itemName, location, notes: item.text, tags: locatedTags(item.tags) ?? [] });
+        const located = rememberItem(locator(), { itemName, location, notes: item.text, tags: locatedTags(item.tags) ?? [] });
+        linkRecords(captureRef(item), { module: "object", id: located.id, title: located.itemName });
         scheduleSearchReindex();
       }
       if (route === "drop") {
@@ -22862,6 +22969,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("dexnest:list-pinned-actions", () => loadPinnedActions());
   ipcMain.handle("dexnest:get-sidebar-prefs", () => readJsonFile<unknown>(sidebarPrefsPath, {}));
+  ipcMain.handle("dexnest:record-links", (_event, module: unknown) => (typeof module === "string" ? recordLinkChips(module) : []));
   ipcMain.handle("dexnest:save-sidebar-prefs", (_event, prefs: unknown) => {
     // Two short lists of module ids; anything else is dropped before it is written.
     const ids = (value: unknown) => (Array.isArray(value) ? value.filter((id): id is string => typeof id === "string" && /^[a-z][a-z0-9_-]{0,39}$/.test(id)).slice(0, 100) : []);

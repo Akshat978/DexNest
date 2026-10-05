@@ -49,6 +49,14 @@ const MODULE_NAMES: Record<string, string> = {
   reality_rpg: "Reality RPG",
   ghost_os: "GhostOS",
   object_os: "ObjectOS",
+  // The same modules by the id of their screen, which is what Search uses.
+  today: "Today",
+  skills: "Skills",
+  rpg: "Reality RPG",
+  ghost: "GhostOS",
+  object: "ObjectOS",
+  reminders: "Reminders",
+  tools_ocr: "Tools (OCR)",
   external_devices: "External Devices"
 };
 

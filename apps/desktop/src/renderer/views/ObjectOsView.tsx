@@ -61,6 +61,7 @@ import {
 } from "./objectOsModel";
 import { LocatePanel, WhereaboutsCard, type LocateInitial, type ObjectOsLocateBridge } from "./ObjectOsLocate";
 import "./ObjectOs.css";
+import { RecordLinkChips, useRecordLinks, type RecordLinksBridge } from "./RecordLinks";
 
 /** The preload methods this view uses. Every change is an object_os.* action. */
 export interface ObjectOsBridge extends ObjectOsLocateBridge {
@@ -193,6 +194,8 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<{ category: string; status: string; location: string }>({ category: "", status: "", location: "" });
   const [history, setHistory] = useState<TimelineItem[]>(initial?.history ?? []);
+  // What this object was sent on to (Calendar, Finance, the Vault), kept by the shell, not by ObjectOS.
+  const links = useRecordLinks(bridge as RecordLinksBridge, "object", detail);
   const [moreHistory, setMoreHistory] = useState(false);
   const [showAllAttention, setShowAllAttention] = useState(false);
   // Bumped after every action, so "where is it" reads its lists again.
@@ -559,6 +562,8 @@ export function ObjectOsView({ bridge, onAction, initial }: ObjectOsViewProps) {
                     </Button>
                   </div>
                 </div>
+
+                <RecordLinkChips chips={links} recordId={detail.object.id} />
 
                 <WhereaboutsCard
                   bridge={bridge}
@@ -1280,6 +1285,7 @@ function FilesPanel({ detail, busy, run, ask }: PanelProps) {
         <Button disabled={busy} onClick={() => void run("object_os.file.attach", { objectId: o.id, role })}>Attach a file…</Button>
       </div>
       <p className="objectos-hint">Files are copied into DexNest's data folder for this object (up to 200 MB each) and never run. Files that could run a program are shown in their folder instead of opened.</p>
+      <p className="objectos-hint">"Send to Vault" gives the Vault its own copy of one file, when you click. ObjectOS keeps its file and reads nothing from the Vault.</p>
       {detail.files.length === 0 ? (
         <p className="objectos-hint">No files attached.</p>
       ) : (
@@ -1295,6 +1301,7 @@ function FilesPanel({ detail, busy, run, ask }: PanelProps) {
                 <td>
                   <span className="button-row">
                     <Button size="sm" disabled={busy} aria-label={`Open ${f.name}`} onClick={() => void run("object_os.file.open", { fileId: f.id })}>Open</Button>
+                    <SendTo label="Send to Vault" done="Copied to the Vault" actionId="vault.import_from_object" params={{ fileId: f.id }} run={run} busy={busy} />
                     <Button variant="ghost" size="sm" disabled={busy} aria-label={`Remove ${f.name}`} onClick={() => ask({ actionId: "object_os.file.remove", params: { fileId: f.id }, title: `Remove ${f.name}?`, detail: "The copy in DexNest is deleted; the original, wherever it came from, is not touched.", confirmLabel: "Remove" })}>Remove…</Button>
                   </span>
                 </td>

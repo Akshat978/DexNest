@@ -375,8 +375,8 @@ export function scheduleCalendarEvent(o: Pick<ObjectRecord, "id" | "name">, titl
 }
 
 /** The Finance entry for a purchase. Null until it has both a price and a day. */
-export function purchaseFinanceEntry(o: Pick<ObjectRecord, "name">, purchase: Pick<Purchase, "purchasedOn" | "price" | "shop"> | null): Record<string, unknown> | null {
+export function purchaseFinanceEntry(o: Pick<ObjectRecord, "id" | "name">, purchase: Pick<Purchase, "purchasedOn" | "price" | "shop"> | null): Record<string, unknown> | null {
   if (!purchase?.price || !purchase.purchasedOn) return null;
   const amount = purchase.price.amount / 10 ** decimalsOf(purchase.price.currency);
-  return { date: purchase.purchasedOn, store: purchase.shop || o.name, amount, currency: purchase.price.currency, category: "Purchases", paymentType: "other", notes: `${o.name} (sent from ObjectOS)` };
+  return { sourceModule: "object", sourceId: o.id, date: purchase.purchasedOn, store: purchase.shop || o.name, amount, currency: purchase.price.currency, category: "Purchases", paymentType: "other", notes: `${o.name} (sent from ObjectOS)` };
 }

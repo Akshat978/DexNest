@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld("dexNest", {
   clearCommandResult: (actionId: string) => ipcRenderer.invoke("dexnest:clear-command-result", actionId),
   listPinnedActions: () => ipcRenderer.invoke("dexnest:list-pinned-actions"),
   getSidebarPrefs: () => ipcRenderer.invoke("dexnest:get-sidebar-prefs"),
+  getRecordLinks: (module: string) => ipcRenderer.invoke("dexnest:record-links", module),
   saveSidebarPrefs: (prefs: { order: string[]; hidden: string[] }) => ipcRenderer.invoke("dexnest:save-sidebar-prefs", prefs),
   savePinnedActions: (actionIds: string[]) => ipcRenderer.invoke("dexnest:save-pinned-actions", actionIds),
   getPins: () => ipcRenderer.invoke("dexnest:get-pins"),

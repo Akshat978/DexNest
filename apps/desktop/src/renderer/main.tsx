@@ -34,6 +34,9 @@ import { InlineLoadingState } from "./components/ui/ModuleLoading";
 import { accentStyle, ErrorState, LoadingState, PageHeader as KitPageHeader, Segmented } from "./components/ui/kit";
 import { previewForUi, formatBytes, formatDate, formatDuration } from "./lib/format";
 import { accentTint, MODULE_META, SIDEBAR_VIEWS, SIDEBAR_HIDDEN_VIEWS, type ViewId } from "./lib/moduleMeta";
+import { viewForSearchSource } from "./lib/searchSources";
+import { NAVIGATE_EVENT, RecordLinkChips, RecordLinksList, useRecordLinks, type RecordLinkChip } from "./views/RecordLinks";
+import { moduleName } from "./lib/activityLabels";
 import { arrangeSidebar, canHide, EMPTY_SIDEBAR_PREFS, moveSidebarView, normalizeSidebarPrefs, setSidebarHidden, type SidebarPrefs } from "./lib/sidebarLayout";
 import { getPerfStats, subscribePerf, recordModuleSwitch, recordModuleDataLoaded } from "./lib/perf";
 import {
@@ -2072,6 +2075,7 @@ export interface DexNestBridge extends SkillConstellationBridge, RealityRpgBridg
   clearCommandResult: (actionId: string) => Promise<void>;
   listPinnedActions: () => Promise<string[]>;
   getSidebarPrefs: () => Promise<unknown>;
+  getRecordLinks?: (module: string) => Promise<RecordLinkChip[]>;
   saveSidebarPrefs: (prefs: { order: string[]; hidden: string[] }) => Promise<unknown>;
   savePinnedActions: (actionIds: string[]) => Promise<string[]>;
   getPins: () => Promise<{ pins: DexNestPin[]; pinsPath: string }>;
@@ -2253,6 +2257,19 @@ const moduleCards = [
   ["heatmap", "Heatmap", "Local app usage and goals.", "available"]
 ] as const;
 
+/**
+ * Things said as a question that a screen answers. DexNest opens the screen
+ * and the answer is read there: nothing a module holds is spoken or sent on.
+ */
+const voiceScreenQuestions: readonly { pattern: RegExp; module: ViewId; actionId: string; explanation: string }[] = [
+  { pattern: /\b(what|anything|does anything)\b.*\bneeds? (me|my attention|attention)\b/i, module: "today", actionId: "standup.open", explanation: "Opens Today, which lists what needs you." },
+  { pattern: /\b(where did i leave off|where was i|what was i working on)\b/i, module: "today", actionId: "standup.open", explanation: "Opens Today, which shows where you left off." },
+  { pattern: /\b(what are|what's|whats|show)\b.*\bmy (top |best |strongest )?skills\b/i, module: "skills", actionId: "skill_constellation.open", explanation: "Opens Skills." },
+  { pattern: /\b(what is|what's|whats|show)\b.*\bmy (level|xp|quests|achievements)\b/i, module: "rpg", actionId: "reality_rpg.open", explanation: "Opens Reality RPG, which shows your level, quests and achievements." },
+  { pattern: /\b(what is|what's|whats|show)\b.*\bmy (timeline|history)\b/i, module: "ghost", actionId: "ghost_os.open", explanation: "Opens GhostOS, which keeps your timeline." },
+  { pattern: /\b(what|which)\b.*\b(maintenance|warrant(y|ies))\b.*\b(due|ending|expir)/i, module: "object", actionId: "object_os.open", explanation: "Opens ObjectOS, which lists maintenance due and warranties ending." }
+];
+
 function viewFromAction(action?: ActionDefinition): ViewId | null {
   if (!action?.handlerRef.startsWith("desktop.view.")) {
     return null;
@@ -2298,6 +2315,25 @@ const voiceModuleAliases: Record<string, { module: ViewId; actionId: string }> =
   health: { module: "health", actionId: "system.health.open" },
   performance: { module: "settings", actionId: "system.performance.open" },
   "performance mode": { module: "settings", actionId: "system.performance.open" },
+  // The newer screens. Longer names come first so "reality rpg" is not read as something shorter.
+  "activity log": { module: "audit", actionId: "audit.open_history" },
+  "skill constellation": { module: "skills", actionId: "skill_constellation.open" },
+  skills: { module: "skills", actionId: "skill_constellation.open" },
+  "reality rpg": { module: "rpg", actionId: "reality_rpg.open" },
+  rpg: { module: "rpg", actionId: "reality_rpg.open" },
+  quests: { module: "rpg", actionId: "reality_rpg.open" },
+  achievements: { module: "rpg", actionId: "reality_rpg.open" },
+  "ghost os": { module: "ghost", actionId: "ghost_os.open" },
+  ghostos: { module: "ghost", actionId: "ghost_os.open" },
+  ghost: { module: "ghost", actionId: "ghost_os.open" },
+  "object os": { module: "object", actionId: "object_os.open" },
+  objectos: { module: "object", actionId: "object_os.open" },
+  objects: { module: "object", actionId: "object_os.open" },
+  "my things": { module: "object", actionId: "object_os.open" },
+  projects: { module: "dev", actionId: "dev.open_dashboard" },
+  autopilot: { module: "autopilot", actionId: "autopilot.open" },
+  standup: { module: "today", actionId: "standup.open" },
+  today: { module: "today", actionId: "standup.open" },
   "stream deck": { module: "deck", actionId: "deck.test_endpoint" }
 };
 
@@ -3029,8 +3065,22 @@ function routeVoiceCommand(input: string, actions: ActionDefinition[], workflowS
     };
   }
 
+  const screenQuestion = voiceScreenQuestions.find((entry) => entry.pattern.test(normalized));
+  if (screenQuestion) {
+    return {
+      intent: "open_module",
+      targetModule: screenQuestion.module,
+      actionId: screenQuestion.actionId,
+      params: {},
+      confidence: "high",
+      requiresConfirmation: false,
+      sensitivity: "none",
+      explanation: screenQuestion.explanation
+    };
+  }
+
   for (const [alias, target] of Object.entries(voiceModuleAliases)) {
-    if (new RegExp(`\\b(open|show|go to)\\s+${alias}\\b`, "i").test(normalized)) {
+    if (new RegExp(`\\b(open|show|go to)\\s+(?:my\\s+|the\\s+)?${alias}\\b`, "i").test(normalized)) {
       return {
         intent: "open_module",
         targetModule: target.module,
@@ -5581,6 +5631,15 @@ function DexNestApp() {
   }, []);
 
   useEffect(() => {
+    const onLinked = (event: Event) => {
+      const view = viewForSearchSource(String((event as CustomEvent<unknown>).detail ?? "")) as ViewId;
+      if (views.some((item) => item.id === view)) setActiveView(view);
+    };
+    window.addEventListener(NAVIGATE_EVENT, onLinked);
+    return () => window.removeEventListener(NAVIGATE_EVENT, onLinked);
+  }, []);
+
+  useEffect(() => {
     const unsubscribe = getBridge().onOpenView?.((payload) => {
       const view = payload.view as ViewId;
       if (!views.some((item) => item.id === view)) {
@@ -6074,6 +6133,7 @@ function DexNestApp() {
                   type="button"
                   title={view.label}
                   data-testid={`nav-${view.id}`}
+                  aria-current={active ? "page" : undefined}
                   onClick={() => void navigate(view.id)}
                   className={`group relative flex w-full items-center gap-3 rounded-lg border px-2.5 py-2 text-sm outline-none transition-colors ${sidebarCollapsed ? "justify-center" : ""} ${active ? "border-transparent text-[#F5F5F5]" : "border-transparent text-[#A3A3A3] hover:bg-[#0f0f0f] hover:text-[#F5F5F5]"}`}
                   style={active ? { background: accentTint(meta.accent, 7), borderColor: accentTint(meta.accent, 15), boxShadow: `inset 0 0 18px ${accentTint(meta.accent, 6)}` } : undefined}
@@ -6353,6 +6413,7 @@ function DexNestApp() {
           )}
           {activeView === "search" && (
             <SearchView
+              onNavigate={(view) => void navigate(view)}
               searchState={searchState}
               actions={actions}
               assistantSettings={assistantSettings}
@@ -9088,6 +9149,7 @@ function VaultView({
   }>;
   onRefresh: () => Promise<void>;
 }) {
+  const vaultLinks = useRecordLinks(getBridge(), "vault", vaultState);
   const [selectedFiles, setSelectedFiles] = useState<ToolsSelectedFile[]>([]);
   const [category, setCategory] = useState("Other");
   const [tags, setTags] = useState("");
@@ -9431,6 +9493,7 @@ function VaultView({
                 </div>
                 <div className="button-row" style={{ marginTop: 12, flexWrap: "wrap" }}>
                   <PinButton input={{ type: "document", module: "vault", entityId: detailDoc.id, title: detailDoc.title, subtitle: detailDoc.category }} />
+                  <RecordLinkChips chips={vaultLinks} recordId={detailDoc.id} />
                   <button type="button" onClick={() => void runDocumentAction("vault.open_document", detailDoc)}>Open file</button>
                   <button type="button" onClick={() => void runDocumentAction("vault.open_document_folder", detailDoc)}>Open folder</button>
                   <button type="button" onClick={() => startEdit(detailDoc)}>Edit metadata</button>
@@ -10127,6 +10190,7 @@ function JournalView({
   }>;
   onRefresh: () => Promise<void>;
 }) {
+  const journalLinks = useRecordLinks(getBridge(), "journal", journalState);
   const [entryId, setEntryId] = useState<string | undefined>(journalState.todayEntry?.id);
   const [date, setDate] = useState(journalState.today);
   const [title, setTitle] = useState(journalState.todayEntry?.title ?? "");
@@ -10346,6 +10410,7 @@ function JournalView({
                       {entry.mood && <StatusChip tone="info" dot={false} style={{ color: ACCENT_JOURNAL, borderColor: `${ACCENT_JOURNAL}33`, background: `${ACCENT_JOURNAL}12` }}>{entry.mood}</StatusChip>}
                       <span className="ml-auto font-mono text-[10px] text-[#525252]">{entry.productivity ? `prod ${entry.productivity} · ` : ""}{journalWords(entry.cleanedText || entry.rawText)}w</span>
                     </button>
+                    <RecordLinkChips chips={journalLinks} recordId={entry.id} />
                     <button type="button" onClick={() => void deleteEntry(entry)} title="Delete entry" className="min-h-0 shrink-0 border-0 bg-transparent px-1 text-[#A3A3A3] hover:text-[#EF4444]"><Trash2 className="h-3.5 w-3.5" /></button>
                   </div>
                 ))}
@@ -11948,6 +12013,7 @@ function CalendarView({
   onAction: (actionId: string, source?: string, params?: unknown) => Promise<{ ok: boolean; error?: string; event?: CalendarEvent; calendarState?: CalendarState }>;
   onRefresh: () => Promise<void>;
 }) {
+  const calendarLinks = useRecordLinks(getBridge(), "calendar", calendarState);
   const [editingId, setEditingId] = useState<string | undefined>();
   const [title, setTitle] = useState("");
   const [date, setDate] = useState(calendarState.today);
@@ -12730,6 +12796,7 @@ function CalendarView({
                     >
                       <div className="flex h-8 w-8 items-center justify-center rounded-lg" style={{ background: `${ACCENT_CAL}14`, color: ACCENT_CAL }}>{bday ? <Cake className="h-4 w-4" /> : <CalendarDays className="h-4 w-4" />}</div>
                       <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{e.title}</p><p className="font-mono text-[10px] text-[#525252]">{formatLocalDate(e.date)} / {e.allDay ? "all-day" : e.startTime || "-"}</p></div>
+                      <RecordLinkChips chips={calendarLinks} recordId={e.id} />
                       <PinButton input={{ type: "event", module: "calendar", entityId: e.id, title: e.title, subtitle: formatLocalDate(e.date) }} />
                       <span className="font-mono text-[10px] text-[#14B8A6]">{e.sourceModule}</span>
                     </div>
@@ -12897,6 +12964,7 @@ function FinanceView({
   }>;
   onRefresh: () => Promise<void>;
 }) {
+  const financeLinks = useRecordLinks(getBridge(), "finance", financeState);
   const [transactionForm, setTransactionForm] = useState(emptyFinanceTransactionForm);
   const [recurringForm, setRecurringForm] = useState(emptyFinanceRecurringForm);
   const [toast, setToast] = useState<{ message: string; tone: "success" | "error" } | null>(null);
@@ -13234,6 +13302,13 @@ function FinanceView({
             )}
           </GlassCard>
 
+          {financeLinks.length > 0 && (
+            <GlassCard hover={false}>
+              <SectionTitle>Linked entries</SectionTitle>
+              <RecordLinksList chips={financeLinks} />
+            </GlassCard>
+          )}
+
           <GlassCard accent="#3B82F6" hover={false}>
             <SectionTitle action={<button type="button" onClick={() => startAddRecurring()} className="min-h-0 rounded-md border border-[#262626] bg-transparent px-2 py-0.5 text-[10px] text-[#A3A3A3] hover:border-[#3B82F6]/40 hover:text-[#3B82F6]">+ Add</button>}>Recurring</SectionTitle>
             {financeState.recurring.length === 0 ? <p className="text-xs text-[#525252]">No recurring expenses.</p> : (
@@ -13400,6 +13475,7 @@ function CaptureView({
   onAction: (actionId: string, source?: string, params?: unknown) => Promise<{ ok: boolean; error?: string; captureState?: CaptureState }>;
   onRefresh: () => Promise<void>;
 }) {
+  const captureLinks = useRecordLinks(getBridge(), "capture", captureState);
   const [form, setForm] = useState(emptyCaptureForm);
   const [toast, setToast] = useState<{ message: string; tone: "success" | "error" } | null>(null);
 
@@ -13657,6 +13733,13 @@ function CaptureView({
             <button type="button" onClick={() => void createFromClipboard()} className="mt-2 w-full rounded-md border border-[#262626] py-1.5 text-xs text-[#A3A3A3] hover:text-[#F5F5F5]">Capture clipboard</button>
           </GlassCard>
 
+          {captureLinks.length > 0 && (
+            <GlassCard hover={false}>
+              <SectionTitle>Sent on</SectionTitle>
+              <RecordLinksList chips={captureLinks} />
+            </GlassCard>
+          )}
+
           <GlassCard hover={false}>
             <SectionTitle>Capture types</SectionTitle>
             <div className="space-y-1.5">
@@ -13719,8 +13802,10 @@ function SearchView({
   onFinderMemorySaved,
   onAction,
   assistantAction,
-  onRefresh
+  onRefresh,
+  onNavigate
 }: {
+  onNavigate: (view: ViewId) => void;
   searchState: SearchState;
   actions: ActionDefinition[];
   assistantSettings: AssistantSettings;
@@ -14026,7 +14111,7 @@ function SearchView({
                   className="rounded-full border px-3 py-1 text-xs font-medium transition-all hover:brightness-125"
                   style={on ? { borderColor: `${c}55`, background: `${c}1a`, color: c } : { borderColor: "#262626", color: "#A3A3A3" }}
                 >
-                  {source}
+                  {moduleName(source)}
                 </button>
               );
             })}
@@ -14089,10 +14174,11 @@ function SearchView({
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium text-[#F5F5F5]">{result.title}</p>
                         <p className="truncate text-xs text-[#A3A3A3]">{result.textPreview || result.matchReason}</p>
-                        <p className="mt-1 font-mono text-[10px] text-[#525252]">{result.sourceModule} · {result.entityType}{result.fileType ? ` · ${result.fileType}` : ""}{result.sourceModule === "finance" && result.profileName ? ` · profile: ${result.profileName}` : ""}</p>
+                        <p className="mt-1 font-mono text-[10px] text-[#525252]">{moduleName(result.sourceModule)} · {result.entityType.replace(/_/g, " ")}{result.fileType && result.fileType !== "metadata" ? ` · ${result.fileType}` : ""}{result.sourceModule === "finance" && result.profileName ? ` · profile: ${result.profileName}` : ""}</p>
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
                         <PinButton input={{ type: "result", module: "search", entityId: result.id, title: result.title, subtitle: result.sourceModule }} />
+                        <button type="button" title={`Open ${moduleName(result.sourceModule)}`} aria-label={`Open ${moduleName(result.sourceModule)}`} onClick={() => onNavigate(viewForSearchSource(result.sourceModule) as ViewId)} className="record-link">Open</button>
                         {result.filePath && <button type="button" title="Open file" onClick={() => void resultAction("search.open_result", result.id)} className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#1a1a1a] hover:text-[#F5F5F5]"><ExternalLink className="h-3.5 w-3.5" /></button>}
                         {result.filePath && <button type="button" title="Send to phone" onClick={() => void resultAction("search.send_result_to_drop", result.id)} className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#1a1a1a] hover:text-[#F5F5F5]"><Copy className="h-3.5 w-3.5" /></button>}
                       </div>

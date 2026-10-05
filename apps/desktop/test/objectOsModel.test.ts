@@ -243,6 +243,8 @@ test("sending to Calendar and Finance: only what there is, in their own shapes",
   assert.equal(scheduleCalendarEvent(o, "x", { state: "ok", kind: "usage", measurementKey: "hours", left: 5, dueAtReading: 200 } as never), null, "a counter has no day to put in a calendar");
 
   assert.deepEqual(purchaseFinanceEntry(o, { purchasedOn: "2026-01-15", price: { amount: 79900, currency: "EUR" }, shop: "Prusa" }), {
+    // Which object it came from, so the Finance entry and the object can point at each other.
+    sourceModule: "object", sourceId: "7K3F9QXM",
     date: "2026-01-15", store: "Prusa", amount: 799, currency: "EUR", category: "Purchases", paymentType: "other", notes: "Workshop printer (sent from ObjectOS)"
   });
   assert.equal((purchaseFinanceEntry(o, { purchasedOn: "2026-01-15", price: { amount: 5000, currency: "JPY" }, shop: "" }) as { amount: number; store: string }).amount, 5000, "a currency with no decimals is not divided");

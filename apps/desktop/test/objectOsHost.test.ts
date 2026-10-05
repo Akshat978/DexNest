@@ -223,11 +223,18 @@ test("changes run only from DexNest's own window: the Stream Deck endpoint and a
   assert.deepEqual(s.objectEvents(), []);
   // The command palette may turn reminders on, as its registry entry allows.
   assert.equal((await s.run(A.remindersEnable, {}, "command"))?.ok, true);
-  // No ObjectOS action has opted in to the phone or the Stream Deck.
+  // No ObjectOS action has opted in to the phone, and none that reads or
+  // changes anything has opted in to the Stream Deck or voice. Opening the
+  // screen is the one exception: it shows ObjectOS on the desktop and hands
+  // nothing back.
   for (const a of seededActions.filter((x) => x.moduleId === "object_os")) {
     assert.equal("phone" in a && a.phone !== undefined, false, a.id);
-    for (const t of a.allowedTriggers) assert.ok(["module_ui", "command"].includes(t), `${a.id} allows ${t}`);
+    const allowed = a.id === A.open ? ["module_ui", "command", "deck", "voice"] : ["module_ui", "command"];
+    for (const t of a.allowedTriggers) assert.ok(allowed.includes(t), `${a.id} allows ${t}`);
   }
+  const open = seededActions.find((x) => x.id === A.open);
+  assert.equal(open?.handlerRef, "desktop.view.object", "opening only changes the screen");
+  assert.equal(await runObjectOsAction(s.host, A.open, {}, { source: "stream_deck_http", allowedTriggers: open?.allowedTriggers ?? [] }), null, "and is not an ObjectOS operation at all");
 });
 
 test("every object_os action but open has a handler", async () => {
