@@ -1,11 +1,16 @@
 // Outside AI: the one place, besides Autopilot, where DexNest may ask a service
 // on the internet for help. See the "Outside AI" section of AGENTS.md.
 //
-// What it does today: when the local rules cannot tell what a command means,
-// the words of that command are sent to a decision model (Jev, through
-// OpenRouter, with the user's own key) which picks one intent from a fixed
-// list. DexNest then builds the action itself, exactly as it does for the
-// local model: the service never names an action or a parameter.
+// What it does today, each behind its own switch:
+//
+//  - Commands. When the local rules cannot tell what a command means, the
+//    words of that command are sent to a decision model (Jev, through
+//    OpenRouter, with the user's own key) which picks one intent from a fixed
+//    list. DexNest then builds the action itself, exactly as it does for the
+//    local model: the service never names an action or a parameter.
+//  - Capture. When the user clicks Suggest on a note in the Capture inbox,
+//    the words of that note are sent and the model picks where it belongs.
+//    Nothing moves until the user clicks the suggestion.
 //
 // It is off until the user turns it on, per surface. A command that looks
 // private never leaves, and the local path stays the fallback for everything.
@@ -19,12 +24,12 @@ export const DECISION_MODEL = "typesafe/jev-1.13";
 /** Longest command sent. A command is a sentence, not a document. */
 export const MAX_COMMAND_CHARS = 300;
 
-export type OutsideAiSurface = "voice" | "typed";
+export type OutsideAiSurface = "voice" | "typed" | "capture";
 
 export interface OutsideAiSettings {
   /** The master switch. Off by default. */
   enabled: boolean;
-  /** Which surfaces may use it. Both off by default, so turning the master switch on sends nothing yet. */
+  /** Which surfaces may use it. All off by default, so turning the master switch on sends nothing yet. */
   surfaces: Record<OutsideAiSurface, boolean>;
   /** The least confidence (0 to 1) at which the answer is used. Below it, the local path decides. */
   minConfidence: number;
@@ -32,7 +37,7 @@ export interface OutsideAiSettings {
 
 export const DEFAULT_OUTSIDE_AI_SETTINGS: OutsideAiSettings = {
   enabled: false,
-  surfaces: { voice: false, typed: false },
+  surfaces: { voice: false, typed: false, capture: false },
   minConfidence: 0.7
 };
 
@@ -42,7 +47,7 @@ export function normalizeOutsideAiSettings(value: unknown): OutsideAiSettings {
   const confidence = typeof raw.minConfidence === "number" && Number.isFinite(raw.minConfidence) ? raw.minConfidence : DEFAULT_OUTSIDE_AI_SETTINGS.minConfidence;
   return {
     enabled: raw.enabled === true,
-    surfaces: { voice: surfaces.voice === true, typed: surfaces.typed === true },
+    surfaces: { voice: surfaces.voice === true, typed: surfaces.typed === true, capture: surfaces.capture === true },
     // Never below one half: a coin toss is not a decision.
     minConfidence: Math.min(0.99, Math.max(0.5, Math.round(confidence * 100) / 100))
   };
@@ -186,9 +191,62 @@ export function confidentEnough(decision: Decision, minConfidence: number): bool
   return true;
 }
 
+/**
+ * Where a captured note can be suggested to go. The Vault and Finance are not
+ * on the list on purpose: a note that reads like either is never sent, so the
+ * model is never asked about one.
+ */
+export const CAPTURE_CRITERIA: Record<string, string> = {
+  calendar: "Something to do or attend at a time or on a day: an appointment, a deadline, a reminder.",
+  journal: "A reflection, a thought about the day, something that happened.",
+  finder: "Where a physical thing is or was put.",
+  drop: "Something to have on the phone: a link-free snippet, a list to carry.",
+  keep: "None of these, or not clear. Leave it in the inbox."
+};
+
+export function buildCaptureRequest(text: string): Record<string, unknown> {
+  return {
+    model: DECISION_MODEL,
+    state: { note: text.trim() },
+    questions: {
+      route: { type: "choice", instructions: "The user jotted this note into an inbox. Where does it belong?", criteria: CAPTURE_CRITERIA }
+    },
+    provider: { data_collection: "deny" }
+  };
+}
+
+export interface CaptureSuggestion {
+  /** A key of CAPTURE_CRITERIA. */
+  route: string;
+  confidence: number;
+  model: string;
+  inputTokens: number | null;
+  cost: number | null;
+}
+
+export function parseCaptureSuggestion(body: unknown): CaptureSuggestion | null {
+  if (typeof body !== "object" || body === null) return null;
+  const raw = body as Record<string, unknown>;
+  if (typeof raw.answers !== "object" || raw.answers === null) return null;
+  const route = choice(raw.answers as Record<string, unknown>, "route", CAPTURE_CRITERIA);
+  if (!route) return null;
+  const usage = typeof raw.usage === "object" && raw.usage !== null ? (raw.usage as Record<string, unknown>) : {};
+  return {
+    route: route.choice,
+    confidence: route.confidence,
+    model: typeof raw.model === "string" ? raw.model.slice(0, 80) : DECISION_MODEL,
+    inputTokens: typeof usage.input_tokens === "number" ? usage.input_tokens : null,
+    cost: typeof usage.cost === "number" ? usage.cost : null
+  };
+}
+
+export type Failure = { ok: false; reason: "off" | "no_key" | "private" | "timeout" | "network" | "http" | "bad_answer"; detail?: string; status?: number; latencyMs: number };
+
+export type CaptureOutcome = { ok: true; suggestion: CaptureSuggestion; used: boolean; latencyMs: number } | Failure;
+
 export type RouteOutcome =
   | { ok: true; decision: Decision; used: boolean; latencyMs: number }
-  | { ok: false; reason: "off" | "no_key" | "private" | "timeout" | "network" | "http" | "bad_answer"; detail?: string; status?: number; latencyMs: number };
+  | Failure;
 
 export interface RouteDeps {
   fetch: (url: string, init: { method: string; headers: Record<string, string>; body: string; signal: AbortSignal }) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
@@ -205,6 +263,24 @@ export interface RouteDeps {
  * as a reason, never as a throw: the caller carries on with the local path.
  */
 export async function routeCommand(text: string, surface: OutsideAiSurface, deps: RouteDeps): Promise<RouteOutcome> {
+  const asked = await ask(text, surface, deps, buildDecisionRequest, parseDecision);
+  if (!asked.ok) return asked;
+  return { ok: true, decision: asked.value, used: confidentEnough(asked.value, deps.settings.minConfidence), latencyMs: asked.latencyMs };
+}
+
+/**
+ * Asks where a captured note belongs. The same switches, the same private
+ * check and the same failures as a command; "keep" is never a suggestion.
+ */
+export async function suggestCaptureRoute(text: string, deps: RouteDeps): Promise<CaptureOutcome> {
+  const asked = await ask(text, "capture", deps, buildCaptureRequest, parseCaptureSuggestion);
+  if (!asked.ok) return asked;
+  const used = asked.value.route !== "keep" && asked.value.confidence >= deps.settings.minConfidence;
+  return { ok: true, suggestion: asked.value, used, latencyMs: asked.latencyMs };
+}
+
+/** The one place a request leaves from: the switches, the private check and the key are checked here, in that order. */
+async function ask<T>(text: string, surface: OutsideAiSurface, deps: RouteDeps, build: (text: string) => Record<string, unknown>, parse: (body: unknown) => T | null): Promise<{ ok: true; value: T; latencyMs: number } | Failure> {
   const now = deps.now ?? Date.now;
   const started = now();
   const took = () => now() - started;
@@ -220,13 +296,13 @@ export async function routeCommand(text: string, surface: OutsideAiSurface, deps
     const response = await deps.fetch(deps.url ?? OPENROUTER_DECISIONS_URL, {
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify(buildDecisionRequest(text)),
+      body: JSON.stringify(build(text)),
       signal: controller.signal
     });
     if (!response.ok) return { ok: false, reason: "http", status: response.status, latencyMs: took() };
-    const decision = parseDecision(await response.json().catch(() => null));
-    if (!decision) return { ok: false, reason: "bad_answer", latencyMs: took() };
-    return { ok: true, decision, used: confidentEnough(decision, deps.settings.minConfidence), latencyMs: took() };
+    const value = parse(await response.json().catch(() => null));
+    if (value === null) return { ok: false, reason: "bad_answer", latencyMs: took() };
+    return { ok: true, value, latencyMs: took() };
   } catch (error) {
     const aborted = error instanceof Error && error.name === "AbortError";
     return { ok: false, reason: aborted ? "timeout" : "network", latencyMs: took() };
@@ -236,8 +312,8 @@ export async function routeCommand(text: string, surface: OutsideAiSurface, deps
 }
 
 /** In plain words, for the Settings page and the assistant. */
-export function outcomeInWords(outcome: RouteOutcome): string {
-  if (outcome.ok) return outcome.used ? "Answered." : "Answered, but not sure enough to act on; the local rules decide.";
+export function outcomeInWords(outcome: RouteOutcome | CaptureOutcome): string {
+  if (outcome.ok) return outcome.used ? "Answered." : "Answered, but not sure enough to act on.";
   switch (outcome.reason) {
     case "off": return "Outside AI is off for this.";
     case "no_key": return "No OpenRouter key is saved.";

@@ -86,7 +86,7 @@ export function OutsideAiSettings({ bridge, onAction }: { bridge: OutsideAiBridg
           DexNest understands commands with rules on this computer. When they cannot tell what you meant, this lets the words of that one command be sent to a decision service (Jev, through OpenRouter, with your own key), which picks one meaning from a fixed list. DexNest then does the rest itself.
         </p>
         <ul className="modset-hint">
-          <li><strong>Sent:</strong> the words of the command, up to 300 characters.</li>
+          <li><strong>Sent:</strong> the words of the command, up to 300 characters. With Capture switched on below, also the words of a note when you click Suggest on it.</li>
           <li><strong>Never sent:</strong> anything from the Vault, Finance or Journal, files, the clipboard, search results, or your projects. A command that mentions a password, an identity document, money, a long number, an email or a link is not sent either.</li>
           <li><strong>Logged:</strong> every request, in the activity log: when, how long, what was decided. The words themselves are not logged.</li>
           <li>With this on, DexNest is not fully offline. OpenRouter is asked not to keep or train on the request; what it and the model's provider do with it is governed by their terms, not by DexNest.</li>
@@ -119,6 +119,11 @@ export function OutsideAiSettings({ bridge, onAction }: { bridge: OutsideAiBridg
             <input type="checkbox" checked={settings.surfaces.typed} disabled={busy || !settings.enabled} onChange={(e) => void change({ surfaces: { ...settings.surfaces, typed: e.target.checked } }, "Saved.")} />
             For commands you type into Ask DexNest
           </label>
+          <label className="modset-check">
+            <input type="checkbox" checked={settings.surfaces.capture} disabled={busy || !settings.enabled} onChange={(e) => void change({ surfaces: { ...settings.surfaces, capture: e.target.checked } }, "Saved.")} />
+            For Capture: a Suggest button on each note, which asks where it belongs
+          </label>
+          <p className="modset-hint">Suggest sends that one note's title and text when you click it, never an attached file. It only suggests Calendar, Journal, ObjectOS or Drop, and nothing moves until you click the suggestion. A note that reads like a Vault or Finance item is not sent.</p>
           <Field label="How sure the answer must be (%)" htmlFor="outside-ai-confidence" hint="50 to 99. Below this, the answer is ignored and DexNest's own rules decide.">
             <TextInput id="outside-ai-confidence" className="technical" inputMode="numeric" value={percent} onChange={(e) => setPercent(e.target.value)} onBlur={() => { const next = confidenceFromPercent(percent, settings.minConfidence); if (next !== settings.minConfidence) void change({ minConfidence: next }, "Saved."); else setPercent(String(Math.round(next * 100))); }} />
           </Field>

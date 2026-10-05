@@ -67,14 +67,18 @@ OpenRouter key. It is an approved, narrow exception, not a general licence to ca
 external services. The code is `apps/desktop/src/main/outsideAi.ts`.
 
 - Off by default. Nothing is sent until the user has saved a key, turned Outside AI on,
-  and turned on the place it is used (spoken commands, typed commands). Each is a
-  separate switch in Settings.
+  and turned on the place it is used (spoken commands, typed commands, Capture). Each is
+  a separate switch in Settings.
 - The key is the user's own. It is stored encrypted in the integration keychain, read
   only at the moment a request is made, never logged, and never sent to the renderer.
-- What may be sent is listed in code, per use. Today that is one thing: the words of a
-  command the local rules could not place (300 characters at most), so a decision model
-  can pick one intent from a fixed list. DexNest builds the action itself; the service
-  never names an action or a parameter, and what it suggests waits for a confirmation.
+- What may be sent is listed in code, per use. Today that is two things, 300 characters
+  at most each, for a decision model to pick one answer from a fixed list:
+  - the words of a command the local rules could not place, to pick an intent;
+  - the title and text of one note in the Capture inbox, when the user clicks Suggest on
+    it, to pick where it belongs (Calendar, Journal, ObjectOS, Drop, or leave it).
+  DexNest builds the action itself; the service never names an action or a parameter,
+  and what it suggests waits for the user: a confirmation for a command, a click for a
+  note. A suggestion never moves anything by itself.
 - Never sent: anything from the Vault, Finance or Journal; files, documents or OCR text;
   the clipboard; search results; captures; repository contents, paths or names; anything
   under `local-data/`; secrets of any kind. A command that looks private (credentials,

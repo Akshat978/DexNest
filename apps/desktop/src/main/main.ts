@@ -20,7 +20,7 @@ import { startSlotHook, stopSlotHook, isSlotHookRunning } from "./clipboardSlotH
 import { PDFDocument } from "pdf-lib";
 import { Jimp } from "jimp";
 import { decodeHeicFile, isHeicPath, toBgra } from "./heic.js";
-import { DECISION_MODEL, looksLikeOpenRouterKey, normalizeOutsideAiSettings, outcomeInWords, routeCommand, type OutsideAiSettings, type OutsideAiSurface, type RouteOutcome } from "./outsideAi.js";
+import { DECISION_MODEL, looksLikeOpenRouterKey, normalizeOutsideAiSettings, outcomeInWords, routeCommand, suggestCaptureRoute, type CaptureOutcome, type OutsideAiSettings, type OutsideAiSurface, type RouteOutcome } from "./outsideAi.js";
 import { addLink, chipsFor, normalizeLinks, pruneLinks, type RecordLink, type RecordRef } from "./recordLinks.js";
 import { ghostRecords, LIVE_SEARCH_SOURCES, objectRecords, reminderRecords, rpgRecords, skillRecords, timetableRecords, type ModuleSearchRecord } from "./moduleSearch.js";
 import { createActionRegistry, createStreamDeckActionCatalog, seededActions, streamDeckCatalogItems } from "@dexnest/action-registry";
@@ -4381,7 +4381,7 @@ async function runOutsideAiAction(actionId: string, source: DexNestActionTrigger
     const before = loadOutsideAiSettings();
     const next = normalizeOutsideAiSettings({ ...before, ...(typeof params.settings === "object" && params.settings !== null ? params.settings : {}) });
     writeJsonFile(outsideAiSettingsPath, next);
-    logOutsideAi(actionId, "outside_ai_settings_changed", "success", source, next.enabled ? "Outside AI is on." : "Outside AI is off.", { enabled: next.enabled, voice: next.surfaces.voice, typed: next.surfaces.typed, minConfidence: next.minConfidence });
+    logOutsideAi(actionId, "outside_ai_settings_changed", "success", source, next.enabled ? "Outside AI is on." : "Outside AI is off.", { enabled: next.enabled, voice: next.surfaces.voice, typed: next.surfaces.typed, capture: next.surfaces.capture, minConfidence: next.minConfidence });
     return { ok: true, actionId, state: outsideAiState() };
   }
   if (actionId === "outside_ai.clear_key") {
@@ -4392,13 +4392,46 @@ async function runOutsideAiAction(actionId: string, source: DexNestActionTrigger
     logOutsideAi(actionId, "outside_ai_key_removed", "success", source, "Removed the OpenRouter key and turned Outside AI off.", {});
     return { ok: true, actionId, state: outsideAiState() };
   }
+  if (actionId === "outside_ai.suggest_capture_route") {
+    // One note, when the user clicks Suggest on it. Only what they typed or
+    // dictated: never an attached file, and never a note that reads as private.
+    const item = loadCaptureItems().find((entry) => entry.id === String(params.captureId ?? "") && entry.status === "inbox");
+    if (!item) return { ok: false, actionId, error: "That capture is no longer in the inbox." };
+    if (item.filePath) return { ok: false, actionId, error: "A capture with a file attached is not sent anywhere." };
+    const text = [item.title, item.text].filter(Boolean).join(". ");
+    const settings = loadOutsideAiSettings();
+    const outcome: CaptureOutcome = settings.enabled && performanceModePauses("assistant")
+      ? { ok: false, reason: "off", latencyMs: 0 }
+      : await suggestCaptureRoute(text, {
+          fetch: (url, init) => fetch(url, init),
+          key: () => getIntegrationCredentialValue(OUTSIDE_AI_PROVIDER),
+          settings,
+          ...outsideAiTestUrl()
+        });
+    const sent = outcome.ok || ["timeout", "network", "http", "bad_answer"].includes(outcome.reason);
+    logOutsideAi(actionId, sent ? "outside_ai_request" : "outside_ai_not_sent", outcome.ok ? "success" : sent ? "failed" : "skipped", source, outcomeInWords(outcome), {
+      service: "openrouter",
+      model: outcome.ok ? outcome.suggestion.model : DECISION_MODEL,
+      surface: "capture",
+      sent,
+      textLength: text.trim().length,
+      latencyMs: outcome.latencyMs,
+      ...(outcome.ok
+        ? { route: outcome.suggestion.route, confidence: outcome.suggestion.confidence, used: outcome.used, inputTokens: outcome.suggestion.inputTokens, cost: outcome.suggestion.cost }
+        : { reason: outcome.reason, detail: outcome.detail ?? null, httpStatus: outcome.status ?? null })
+    });
+    if (!outcome.ok) return { ok: false, actionId, error: outcomeInWords(outcome) };
+    return outcome.used
+      ? { ok: true, actionId, route: outcome.suggestion.route, confidence: outcome.suggestion.confidence }
+      : { ok: true, actionId, route: null, message: "No clear suggestion for this one." };
+  }
   if (actionId === "outside_ai.test") {
     // A fixed, harmless phrase, sent whatever the switches say: the user pressed Test.
     const settings = loadOutsideAiSettings();
     const outcome = await routeCommand("open the settings screen", "typed", {
       fetch: (url, init) => fetch(url, init),
       key: () => getIntegrationCredentialValue(OUTSIDE_AI_PROVIDER),
-      settings: { ...settings, enabled: true, surfaces: { voice: true, typed: true } },
+      settings: { ...settings, enabled: true, surfaces: { ...settings.surfaces, typed: true } },
       ...outsideAiTestUrl()
     });
     logOutsideAi(actionId, "outside_ai_test", outcome.ok ? "success" : "failed", source, `Outside AI test: ${outcomeInWords(outcome)}`, { service: "openrouter", model: DECISION_MODEL, latencyMs: outcome.latencyMs, ...(outcome.ok ? { intent: outcome.decision.intent, confidence: outcome.decision.intentConfidence } : { reason: outcome.reason, httpStatus: outcome.status ?? null }) });

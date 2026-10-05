@@ -4683,6 +4683,24 @@ export const seededActions = [
     status: "available"
   },
   {
+    id: "outside_ai.suggest_capture_route",
+    title: "Ask Outside AI Where a Capture Belongs",
+    moduleId: "command",
+    module: "command",
+    description: "Send the words of one note in the Capture inbox to the decision service, when the user clicks Suggest. Never files, and never private-looking notes. Nothing is moved.",
+    category: "settings",
+    dangerLevel: "caution",
+    requiresConfirmation: false,
+    confirmationRule: null,
+    reversible: false,
+    undoActionId: null,
+    handlerType: "internal_function",
+    handlerRef: "outside_ai.suggest_capture_route",
+    allowedTriggers: ["module_ui"],
+    enabled: true,
+    status: "available"
+  },
+  {
     id: "outside_ai.route_command",
     title: "Ask Outside AI What a Command Means",
     moduleId: "command",

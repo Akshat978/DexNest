@@ -13576,6 +13576,23 @@ function CaptureView({
     await onRefresh();
   }
 
+  // Outside AI's Suggest button: shown only when the user has switched it on for Capture.
+  const [suggestOn, setSuggestOn] = useState(false);
+  const [suggestions, setSuggestions] = useState<Record<string, { route: string | null; note: string }>>({});
+  useEffect(() => {
+    let live = true;
+    void (getBridge().getOutsideAiState?.() ?? Promise.resolve(null))
+      .then((state) => { if (live) setSuggestOn(Boolean(state?.settings.enabled && state.settings.surfaces.capture && state.hasKey)); })
+      .catch(() => undefined);
+    return () => { live = false; };
+  }, []);
+
+  async function suggestRoute(item: CaptureItem): Promise<void> {
+    const result = await onAction("outside_ai.suggest_capture_route", "module_ui", { captureId: item.id }) as { ok?: boolean; route?: string | null; error?: string; message?: string };
+    const note = result.ok === false ? (result.error ?? "No suggestion.") : result.route ? "" : (result.message ?? "No clear suggestion for this one.");
+    setSuggestions((current) => ({ ...current, [item.id]: { route: result.ok === false ? null : result.route ?? null, note } }));
+  }
+
   async function archiveCapture(item: CaptureItem): Promise<void> {
     const result = await onAction("capture.archive_item", "module_ui", { captureId: item.id });
     showToast(result.ok ? "Capture archived." : result.error ?? "Archive failed.", result.ok ? "success" : "error");
@@ -13729,6 +13746,7 @@ function CaptureView({
                         </div>
                         <div className="flex shrink-0 items-center gap-1">
                           <PinButton input={{ type: "item", module: "capture", entityId: item.id, title: item.title || `Capture ${m.label}`, subtitle: "Capture" }} />
+                          {suggestOn && !item.filePath && <button type="button" onClick={() => void suggestRoute(item)} title="Ask Outside AI where this note belongs. Sends this note's words." className="record-link">Suggest</button>}
                           {item.status !== "archived" && <button type="button" onClick={() => void archiveCapture(item)} title="Archive this capture" className="inline-flex items-center gap-1 rounded-md border border-[#262626] px-2 py-1 text-[10px] text-[#A3A3A3] hover:text-[#F5F5F5]"><Archive className="h-3 w-3" />Archive</button>}
                           <button type="button" onClick={() => void deleteCapture(item)} title="Delete this capture" className="inline-flex items-center gap-1 rounded-md border border-[#262626] px-2 py-1 text-[10px] text-[#A3A3A3] hover:border-[#EF4444]/40 hover:text-[#EF4444]"><Trash2 className="h-3 w-3" />Delete</button>
                         </div>
@@ -13745,6 +13763,16 @@ function CaptureView({
                           );
                         })}
                       </div>
+                      {suggestions[item.id] && (() => {
+                        const suggested = captureRoutes.find((r) => r.id === suggestions[item.id]!.route);
+                        return (
+                          <p className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[#A3A3A3]" role="status">
+                            {suggested
+                              ? <>Outside AI suggests: <button type="button" className="record-link" onClick={() => void routeCapture(suggested.action, item, suggested.success)}>Send to {suggested.label}</button> Nothing has moved yet.</>
+                              : suggestions[item.id]!.note}
+                          </p>
+                        );
+                      })()}
                     </GlassCard>
                   );
                 }}
