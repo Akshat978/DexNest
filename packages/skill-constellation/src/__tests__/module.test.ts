@@ -258,11 +258,12 @@ describe('registered actions', () => {
     expect(ours.map((a) => a.id).sort()).toEqual([...SKILL_CONSTELLATION_MANIFEST.actionIds].sort());
   });
 
-  it('are safe, not phone- or Deck-exposed, and the view opens through desktop.view.skills', () => {
+  it('are safe, not phone-exposed, off the Deck except for opening the screen, and the view opens through desktop.view.skills', () => {
+    // The owner allowed the open action on the Stream Deck on 5 October 2026: it shows the screen and sends nothing back.
     for (const action of ours) {
       expect(action.dangerLevel).toBe('safe');
       expect(action.phone).toBeUndefined();
-      expect(action.allowedTriggers).not.toContain('deck');
+      expect(action.allowedTriggers.includes('deck'), action.id).toBe(action.id === SKILL_ACTION_IDS.open);
       expect(action.enabled).toBe(true);
     }
     expect(ours.find((a) => a.id === SKILL_ACTION_IDS.open)!.handlerRef).toBe('desktop.view.skills');

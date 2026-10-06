@@ -130,12 +130,14 @@ describe('registration', () => {
     for (const a of registered) expect(a.handlerRef).toBe(a.id === GHOST_ACTION_IDS.open ? 'desktop.view.ghost' : a.id);
   });
 
-  it('only forget and turning a source off are caution, with a confirmation; nothing is phone- or Deck-exposed', () => {
+  it('only forget and turning a source off are caution, with a confirmation; nothing but opening the screen is on the Deck', () => {
+    // The owner allowed the open action on the Stream Deck on 5 October 2026: it shows the screen and sends nothing back.
     const registered = seededActions.filter((a) => a.moduleId === 'ghost_os');
     const caution = registered.filter((a) => a.dangerLevel !== 'safe');
     expect(caution.map((a) => a.id).sort()).toEqual([GHOST_ACTION_IDS.adapterDisable, GHOST_ACTION_IDS.forget].sort());
     for (const a of caution) expect(a.requiresConfirmation && a.confirmationRule).toBeTruthy();
-    for (const a of registered) expect(a.allowedTriggers).not.toContain('deck');
+    for (const a of registered) expect(a.allowedTriggers.includes('deck'), a.id).toBe(a.id === GHOST_ACTION_IDS.open);
+    for (const a of registered) expect('phone' in a && (a as { phone?: unknown }).phone !== undefined, a.id).toBe(false);
   });
 
   it('every action that writes has a fixed audit summary', () => {

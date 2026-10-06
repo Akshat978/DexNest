@@ -3,8 +3,9 @@
  *
  * Rules, quests and achievements written so nobody has to know an event
  * type's name to play. Each rule names an event DexNest really writes (the
- * tests check every one against the list of known events), and none from
- * vault, finance or journal: those are still not read, even by type.
+ * tests check every one against the list of known events). Three of them
+ * count that an entry was made in the journal, finance or the vault; nothing
+ * else of those modules is read (see privacy.ts).
  *
  * `STARTER_INFO` says, for each rule, what earns it in plain words and which
  * group it sits under; `recommended` ones are ticked when the game is first
@@ -77,6 +78,11 @@ export const STARTER_RULES: readonly unknown[] = [
   // --- day to day ---
   { id: 'block-done', name: 'Finished a timetable block', enabled: false, match: audit(['timetable_mark_done', 'action_executed'], ['timetable.mark_done']), award: { xp: 5, stat: 'Focus' }, dailyCap: 12 },
   { id: 'maintenance-logged', name: 'Looked after something you own', enabled: false, match: { types: ['object.maintenance_logged'], stream: 'object' }, award: { xp: 10, stat: 'Order' }, dailyCap: 5 },
+
+  // --- that an entry was made, never what it says (privacy.ts, COUNTED_ENTRIES) ---
+  { id: 'journal-written', name: 'Wrote in your journal', enabled: false, match: audit(['journal_action'], ['journal.create_entry']), award: { xp: 8, stat: 'Focus' }, dailyCap: 1 },
+  { id: 'expense-logged', name: 'Logged what you spent', enabled: false, match: audit(['finance_action'], ['finance.create_transaction']), award: { xp: 2, stat: 'Order' }, dailyCap: 10 },
+  { id: 'document-filed', name: 'Filed a document in the Vault', enabled: false, match: audit(['vault_action'], ['vault.import_documents']), award: { xp: 4, stat: 'Order' }, dailyCap: 5 },
 ];
 
 export const STARTER_INFO: Readonly<Record<string, StarterInfo>> = {
@@ -98,6 +104,9 @@ export const STARTER_INFO: Readonly<Record<string, StarterInfo>> = {
   'memory-written': { group: 'dexnest', when: 'you add a memory, decision, person or place in GhostOS', recommended: false },
   'block-done': { group: 'life', when: 'you mark a timetable block done', recommended: true },
   'maintenance-logged': { group: 'life', when: 'you log maintenance on an object in ObjectOS', recommended: true },
+  'journal-written': { group: 'life', when: 'you start a journal entry for the day (only that you did, never what it says)', recommended: true },
+  'expense-logged': { group: 'life', when: 'you log something you spent in Finance (only that you did, never the amount)', recommended: false },
+  'document-filed': { group: 'life', when: 'you add a document to the Vault (only that you did, never which)', recommended: false },
 };
 
 const xp = (id: string, name: string, target: number, description = `Earn ${target.toLocaleString('en')} XP.`) => ({ id, name, description, condition: { kind: 'xp', target } });
@@ -134,6 +143,12 @@ export const STARTER_ACHIEVEMENTS: readonly unknown[] = [
   days('routine-month', 'A month of routine', 'Finish a timetable block on 30 different days.', 'block-done', 30),
   count('maintenance-3', 'Looked after', 'Log maintenance 3 times.', 'maintenance-logged', 3),
   count('maintenance-25', 'Well kept', 'Log maintenance 25 times.', 'maintenance-logged', 25),
+  // That an entry was made.
+  days('journal-week', 'A week of journalling', 'Write in your journal on 7 different days.', 'journal-written', 7),
+  days('journal-month', 'A month of journalling', 'Write in your journal on 30 different days.', 'journal-written', 30),
+  days('journal-hundred', 'A hundred days written', 'Write in your journal on 100 different days.', 'journal-written', 100),
+  count('expenses-50', 'Fifty entries logged', 'Log 50 things you spent.', 'expense-logged', 50),
+  count('documents-10', 'Ten documents filed', 'Add 10 documents to the Vault.', 'document-filed', 10),
 ];
 
 /** Quests offered at turn-on. Each needs the rule it counts; `needs` names it so the two are picked together. */
@@ -144,5 +159,7 @@ export const STARTER_QUESTS: readonly { id: string; title: string; needs: string
   { id: 'clean-3-week', title: 'Leave nothing uncommitted, 3 times this week', needs: 'working-tree-cleaned', recommended: false, condition: { kind: 'count', ruleIds: ['working-tree-cleaned'], target: 3 }, window: { kind: 'weekly' } },
   { id: 'backup-week', title: 'Back up this week', needs: 'backup-completed', recommended: true, condition: { kind: 'count', ruleIds: ['backup-completed'], target: 1 }, window: { kind: 'weekly' } },
   { id: 'blocks-3-day', title: 'Finish 3 timetable blocks today', needs: 'block-done', recommended: true, condition: { kind: 'count', ruleIds: ['block-done'], target: 3 }, window: { kind: 'daily' } },
+  { id: 'journal-5-week', title: 'Write in your journal on 5 days this week', needs: 'journal-written', recommended: true, condition: { kind: 'days', ruleIds: ['journal-written'], target: 5 }, window: { kind: 'weekly' } },
+  { id: 'expenses-week', title: 'Log what you spent on 3 days this week', needs: 'expense-logged', recommended: false, condition: { kind: 'days', ruleIds: ['expense-logged'], target: 3 }, window: { kind: 'weekly' } },
   { id: 'maintenance-3', title: 'Log maintenance 3 times', needs: 'maintenance-logged', recommended: false, condition: { kind: 'count', ruleIds: ['maintenance-logged'], target: 3 }, window: { kind: 'none' } },
 ];

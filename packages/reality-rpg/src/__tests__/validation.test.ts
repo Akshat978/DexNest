@@ -128,9 +128,20 @@ describe('starter pack', () => {
     expect(Object.values(STARTER_INFO).filter((i) => i.recommended).length).toBeGreaterThanOrEqual(5);
   });
 
-  it('names nothing from vault, finance or journal, even where an action touches them', () => {
-    const text = JSON.stringify(STARTER_RULES);
+  it('names nothing from vault, finance or journal except the three "an entry was made" actions', () => {
+    // The owner allowed these three on 5 October 2026 (privacy.ts, COUNTED_ENTRIES). Nothing else of those modules is named.
+    const counted = ['journal-written', 'expense-logged', 'document-filed'];
+    const rules = STARTER_RULES as { id: string; match: { types: string[]; stream?: string; actionIds?: string[]; status?: string; module?: string } }[];
+    const others = rules.filter((r) => !counted.includes(r.id));
+    const text = JSON.stringify(others);
     for (const word of ['vault', 'finance', 'journal']) expect(text, word).not.toContain(word);
+    expect(rules.filter((r) => counted.includes(r.id)).map((r) => [r.id, r.match.types, r.match.actionIds, r.match.stream, r.match.status, r.match.module])).toEqual([
+      ['journal-written', ['journal_action'], ['journal.create_entry'], 'audit', 'success', undefined],
+      ['expense-logged', ['finance_action'], ['finance.create_transaction'], 'audit', 'success', undefined],
+      ['document-filed', ['vault_action'], ['vault.import_documents'], 'audit', 'success', undefined],
+    ]);
+    // Filing a capture into one of them is still not counted by the capture rule.
+    expect(JSON.stringify(rules.find((r) => r.id === 'capture-filed'))).not.toMatch(/route_to_(vault|finance|journal)/);
   });
 
   it('achievements come in tiers, and the level ones sit on the level curve', () => {

@@ -100,9 +100,12 @@ test("nothing destructive that is kept off the Deck can be reached through its e
   for (const id of ["system.data.execute_delete", "backup.delete_file", "projects.remove", "projects.git.discard", "projects.git.delete_branch", "tools.delete_output_file", "outside_ai.update_settings", "outside_ai.clear_key", "vault.import_from_object", "object_os.object.save", "ghost_os.forget"]) {
     assert.ok(ids.includes(id), `${id} is not marked for the Deck`);
   }
-  // Everything of these modules stays off it, opening included.
-  for (const prefix of ["skill_constellation.", "reality_rpg.", "ghost_os.", "object_os.", "outside_ai."]) {
-    assert.deepEqual(seededActions.filter((a) => a.id.startsWith(prefix) && a.allowedTriggers.includes("deck")).map((a) => a.id), [], prefix);
+  // Of these modules only "open the screen" is on the Deck (the owner said yes on 5 October 2026); Outside AI has nothing there.
+  for (const [prefix, open] of [["skill_constellation.", "skill_constellation.open"], ["reality_rpg.", "reality_rpg.open"], ["ghost_os.", "ghost_os.open"], ["object_os.", "object_os.open"], ["outside_ai.", null]] as const) {
+    assert.deepEqual(seededActions.filter((a) => a.id.startsWith(prefix) && a.allowedTriggers.includes("deck")).map((a) => a.id), open ? [open] : [], prefix);
+  }
+  for (const id of ["standup.open", "skill_constellation.open", "reality_rpg.open", "ghost_os.open", "object_os.open"]) {
+    assert.match(seededActions.find((a) => a.id === id)!.handlerRef, /^desktop\.view\./, `${id} only changes the screen`);
   }
   // Projects offers the Deck a few things that open something (an editor, a folder); nothing that changes a repository.
   const projectsOnDeck = seededActions.filter((a) => a.id.startsWith("projects.") && a.allowedTriggers.includes("deck"));

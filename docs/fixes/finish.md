@@ -101,3 +101,15 @@ to `l6-*.md` and `l7-to-l12-decisions.md`.
 - Trigger lists are enforced for the Deck endpoint and for data deletion,
   not yet for voice, hotkeys and routines.
 - The fix branch `fix/phase-1-scanner-truth` is not merged into `main`.
+
+## After L9 and L10
+
+- Version **0.5.1**. `apps/desktop/release/DexNest Setup 0.5.1.exe`,
+  SHA-256 `04b3c547c808e7efed5e3ef92e69caa15949cdd045e1dc705b71fbf8e627e25b`.
+  The packaged app passed the same smoke test on a scratch data root. The
+  installer itself was not run.
+- `pnpm test`: 2,437 tests pass; typecheck clean.
+- L9 and L10 are in `l9-l10-counted-entries-and-deck-screens.md`.
+- Still open: Outside AI with a real key (L11); L12, for which the owner
+  asked for settings that say which data the AI may see; the phone; triggers
+  for voice, hotkeys and routines; merging the branch.

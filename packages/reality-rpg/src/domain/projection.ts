@@ -8,7 +8,9 @@
  * and every other field are not copied.
  *
  * Events from denied modules and the game's own events are dropped here, so
- * nothing downstream can see them even by mistake.
+ * nothing downstream can see them even by mistake. The three "an entry was
+ * made" actions (see privacy.ts) pass, as a name and a time like any other
+ * event, and without the module's name.
  *
  * So is history. A repository's first scan records the commits it already
  * held, marked `baseline`; they were not made now, and a rule that rewards a
@@ -16,7 +18,7 @@
  * flag is read as a boolean and nothing else from the payload is.
  */
 
-import { isDeniedModule, isDeniedName, isSelfFeeding, isSelfName } from './privacy.ts';
+import { isCountedEntry, isDeniedModule, isDeniedName, isSelfFeeding, isSelfName } from './privacy.ts';
 import type { ObservedEvent, RawEvent } from './types.ts';
 
 export type Projection =
@@ -47,7 +49,9 @@ export function projectEvent(raw: RawEvent): Projection {
   const actionId = raw.module === null ? identifier(raw.payload, 'actionId') : null;
   const status = raw.module === null ? identifier(raw.payload, 'status') : null;
 
-  if (isDeniedModule(module) || isDeniedName(module) || isDeniedName(actionId) || isDeniedName(raw.type)) {
+  // "An entry was made" in a private module: counted, when it succeeded and was logged the usual way.
+  const counted = raw.module === null && raw.stream === 'audit' && status === 'success' && isCountedEntry(raw.type, actionId);
+  if (!counted && (isDeniedModule(module) || isDeniedName(module) || isDeniedName(actionId) || isDeniedName(raw.type))) {
     return { kept: false, reason: 'denied' };
   }
   if (isSelfName(module) || isSelfName(actionId)) return { kept: false, reason: 'self' };
@@ -60,7 +64,7 @@ export function projectEvent(raw: RawEvent): Projection {
       seq: raw.seq,
       type: raw.type,
       stream: raw.stream,
-      module,
+      module: counted ? null : module,
       actionId,
       status,
       occurredAt: raw.occurredAt,

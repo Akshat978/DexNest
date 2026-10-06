@@ -334,11 +334,12 @@ describe('registered actions', () => {
     expect(ours.map((a) => a.id).sort()).toEqual([...REALITY_RPG_MANIFEST.actionIds].sort());
   });
 
-  it('are safe, never phone- or Deck-exposed, and the view opens through desktop.view.rpg', () => {
+  it('are safe, never phone-exposed, off the Deck except for opening the screen, and the view opens through desktop.view.rpg', () => {
+    // The owner allowed the open action on the Stream Deck on 5 October 2026: it shows the screen and sends nothing back.
     for (const a of ours) {
       expect(a.dangerLevel).toBe('safe');
       expect(a.phone).toBeUndefined();
-      expect(a.allowedTriggers).not.toContain('deck');
+      expect(a.allowedTriggers.includes('deck'), a.id).toBe(a.id === RPG_ACTION_IDS.open);
     }
     expect(ours.find((a) => a.id === RPG_ACTION_IDS.open)!.handlerRef).toBe('desktop.view.rpg');
   });

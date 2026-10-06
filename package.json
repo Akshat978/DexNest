@@ -1,6 +1,6 @@
 {
   "name": "dexnest",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": true,
   "description": "DexNest offline-first desktop workspace.",
   "packageManager": "pnpm@9.15.0",

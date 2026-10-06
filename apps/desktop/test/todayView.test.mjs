@@ -267,7 +267,8 @@ test("Today is routed, registered and opened by a logged action", () => {
   const shell = readSource(join(desktop, "src/renderer/main.tsx"));
   assert.match(shell, /activeView === "today" && <TodayView bridge=\{getBridge\(\)\} onAction=\{\(actionId, params\) => runUiAction\(actionId, "module_ui", params \?\? \{\}\)\} \/>/);
   const registry = readSource(join(desktop, "../../packages/action-registry/src/index.ts"));
-  assert.match(registry, /id: "standup\.open",[\s\S]{0,700}?handlerRef: "desktop\.view\.today",\n\s*allowedTriggers: \["command", "module_ui"\]/, "not phone- or Deck-exposed");
+  assert.match(registry, /id: "standup\.open",[\s\S]{0,700}?handlerRef: "desktop\.view\.today",\n\s*allowedTriggers: \["command", "deck", "module_ui"\]/, "a Deck button may open the screen (the owner said yes on 5 October 2026); nothing of a Standup is sent to it");
+  assert.doesNotMatch(registry, /id: "standup\.open",[\s\S]{0,700}?phone:/, "not phone-exposed");
   assert.match(readSource(join(desktop, "src/main/main.ts")), /"standup\.open": \{ view: "today"/);
 });
 

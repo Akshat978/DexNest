@@ -10,7 +10,7 @@
  * - awards zero, negative, fractional or outsized XP.
  */
 
-import { isDeniedModule, isDeniedName, isSelfFeeding, isSelfName } from './privacy.ts';
+import { countsEntriesOnly, isDeniedModule, isDeniedName, isSelfFeeding, isSelfName } from './privacy.ts';
 import type { AchievementDef, Condition, Quest, QuestStatus, QuestWindow, Rule, RuleMatch } from './types.ts';
 
 export const LIMITS = {
@@ -102,7 +102,8 @@ function parseMatch(v: unknown, errors: string[]): RuleMatch {
 
   // Privacy and self-feeding.
   const named = [...match.types, ...(match.actionIds ?? []), ...(match.module ? [match.module] : [])];
-  if (isDeniedModule(match.module) || named.some((n) => isDeniedName(n))) {
+  // The one thing a rule may ask of those modules is that an entry was made (privacy.ts).
+  if (!countsEntriesOnly(match) && (isDeniedModule(match.module) || named.some((n) => isDeniedName(n)))) {
     errors.push('rules may not name vault, finance or journal activity');
   }
   if (isSelfFeeding(match.stream, null) || match.types.some((t) => isSelfFeeding(null, t)) || named.some((n) => isSelfName(n))) {

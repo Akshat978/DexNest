@@ -1,4 +1,4 @@
-# DexNest 0.5.0: hands-on checklist
+# DexNest 0.5.1: hands-on checklist
 
 For checking the fixes on your own data. Each line is something to try and
 what you should see. Tick what works; anything that does not is worth a note.
@@ -12,7 +12,7 @@ it gets checked on yours.
       included. This version changes the database on first start (below), and
       a backup is the way back.
 - [ ] Close the DexNest that is running, then either install
-      `apps/desktop/release/DexNest Setup 0.5.0.exe` or start it with
+      `apps/desktop/release/DexNest Setup 0.5.1.exe` or start it with
       `pnpm dev`. Both run the same code.
 
 ### What happens once, on first start
@@ -207,8 +207,17 @@ test, so go in this order.
 - [ ] Below the window heatmap there is "Done in DexNest · last 28 days",
       with cells lit for the hours you used DexNest.
 
+### Reality RPG: journal, spending, documents
+
+- [ ] Turning the game on offers "Wrote in your journal", "Logged what you
+      spent" and "Filed a document in the Vault".
+- [ ] Starting today's journal entry earns XP once. Editing it earns nothing.
+- [ ] Nothing in Reality RPG shows a journal title, an amount or a file name.
+
 ### Stream Deck
 
+- [ ] Re-export the button pack: the Screens group now has Open Today,
+      Skills, Reality RPG, GhostOS and ObjectOS. Each opens its screen.
 - [ ] Your existing Deck buttons still work. (The endpoint now refuses
       actions that are not meant for the Deck; every button DexNest exports
       is unaffected. If a button you made by hand stopped working, tell me
@@ -216,8 +225,8 @@ test, so go in this order.
 
 ## Things that are known and not done
 
-- No Deck button opens Today, Skills, Reality RPG, GhostOS or ObjectOS.
-  Those modules were built not to be offered to the Deck.
+- The phone shows nothing of Today, Skills, Reality RPG, GhostOS or
+  ObjectOS. That needs phone screens, which is a project of its own.
 - A link chip opens the other module's screen; it does not jump to the
   record.
 - A HEIC file renamed to `.jpg` is not recognised.
@@ -225,4 +234,3 @@ test, so go in this order.
   late in the evening something can show tomorrow's date.
 - The Stream Deck endpoint and "delete data" are limited to what they are
   meant to run. Voice, hotkeys and routines are not yet limited the same way.
-- Reality RPG does not count journal, finance or vault entries.
