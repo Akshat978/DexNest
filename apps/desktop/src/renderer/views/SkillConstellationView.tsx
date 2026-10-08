@@ -63,6 +63,8 @@ import {
   viewState,
   visibleSkills
 } from "./skillConstellationModel";
+import { useOutsideAi } from "./outsideAiUse";
+import "./OutsideAi.css";
 import "./SkillConstellation.css";
 
 /** The preload methods this view uses. */
@@ -229,6 +231,7 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
       {state.kind === "ready" && (
         <>
           <StatusLine snapshot={state.snapshot} showHidden={showHidden} onToggleHidden={() => setShowHidden((v) => !v)} />
+          <ToolingCheck bridge={bridge} onChanged={load} />
           <StatGrid columns={4}>
             <StatTile label="Skills" value={String(stats.count)} icon={<Stars />} hint={`${stats.languages} language${stats.languages === 1 ? "" : "s"}`} />
             <StatTile label="Strongest" value={stats.strongest?.name ?? "—"} icon={<Star />} tone="warning" hint={stats.strongest ? `strength ${percent(stats.strongest.strength.score)}` : undefined} />
@@ -385,6 +388,48 @@ export function SkillConstellationView({ bridge, onAction, initial }: SkillConst
         </p>
       )}
     </section>
+  );
+}
+
+/**
+ * With Outside AI switched on for it: asks which of the names Skills shows are
+ * tooling and not skills. It only lists them; hiding one is the user's click.
+ */
+function ToolingCheck({ bridge, onChanged }: { bridge: SkillConstellationBridge; onChanged(): Promise<void> | void }) {
+  const ai = useOutsideAi<{ asked?: number; tooling?: { id: string; name: string }[] }>("skills", "outside_ai.sort_skills");
+  const [found, setFound] = useState<{ asked: number; tooling: { id: string; name: string }[] } | null>(null);
+  if (!ai.on) return null;
+  const hide = async (ids: string[]) => {
+    const settings = await bridge.skillConstellationSettings();
+    await bridge.skillConstellationUpdateSettings({ ...settings, hiddenSkills: [...new Set([...settings.hiddenSkills, ...ids])] });
+    setFound((current) => current && { ...current, tooling: current.tooling.filter((skill) => !ids.includes(skill.id)) });
+    await onChanged();
+  };
+  return (
+    <div className="skill-status" role="group" aria-label="Sort skills from tooling">
+      <div className="outside-ai-row">
+        <button type="button" className="skill-link-button" disabled={ai.busy} onClick={() => void ai.ask().then((result) => { if (result) setFound({ asked: result.asked ?? 0, tooling: result.tooling ?? [] }); })}>
+          {ai.busy ? "Asking…" : "Ask which are tooling"}
+        </button>
+        <span className="skill-hint">Sends the names of up to 40 of these (not the languages) to Outside AI. Names only.</span>
+      </div>
+      {ai.error && <p className="skill-stale" role="alert">{ai.error}</p>}
+      {found && !ai.error && (found.tooling.length === 0 ? (
+        <p className="skill-hint" role="status">Of the {found.asked} names sent, none {found.asked === 1 ? "was" : "were"} marked as tooling.</p>
+      ) : (
+        <>
+          <p className="skill-hint" role="status">Outside AI marked these as tooling, not skills. It can be wrong; hide only the ones you agree with. A hidden skill can be shown again.</p>
+          <ul className="outside-ai-sources">
+            {found.tooling.map((skill) => (
+              <li key={skill.id}>
+                {skill.name} <button type="button" className="skill-link-button" onClick={() => void hide([skill.id])}>Hide</button>
+              </li>
+            ))}
+          </ul>
+          {found.tooling.length > 1 && <button type="button" className="skill-link-button" onClick={() => void hide(found.tooling.map((skill) => skill.id))}>Hide all {found.tooling.length}</button>}
+        </>
+      ))}
+    </div>
   );
 }
 

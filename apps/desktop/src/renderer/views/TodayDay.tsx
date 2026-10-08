@@ -10,7 +10,9 @@ import type { StandupReport } from "@dexnest/dev-intelligence-contracts";
 import type { AttentionView } from "@dexnest/object-os";
 import type { TodayAgenda } from "@dexnest/today";
 import { AlertTriangle, Bell, CalendarDays, CheckCircle2, Clock, History, ListTodo } from "lucide-react";
-import { Badge, Button, Card, EmptyNote, ListRow, SectionTitle } from "../components/ui/kit";
+import { Badge, Button, Card, EmptyNote, InlineError, ListRow, SectionTitle } from "../components/ui/kit";
+import { useOutsideAi } from "./outsideAiUse";
+import "./OutsideAi.css";
 import {
   dayLine,
   dayRows,
@@ -125,23 +127,55 @@ export function TodoCard({ todos, nameOf }: { todos: readonly OpenTodo[]; nameOf
   return (
     <Card aria-labelledby="today-todos">
       <SectionTitle id="today-todos" count={todos.length}>Open TODOs</SectionTitle>
-      {groups.map((group) => (
-        <details key={group.repositoryId} className="today-todos">
-          <summary>
-            <ListTodo aria-hidden="true" /> {group.name} <span className="technical">{group.todos.length}</span>
-          </summary>
-          <ul>
-            {group.todos.slice(0, 50).map((todo, i) => (
-              <li key={`${todo.filePath}:${todo.line ?? i}:${i}`}>
-                <span className="technical today-todos__place">{todoPlace(todo)}</span>
-                <span>{todo.text || todo.kind}</span>
-              </li>
-            ))}
-            {group.todos.length > 50 && <li className="today-note">and {group.todos.length - 50} more in this project.</li>}
-          </ul>
-        </details>
-      ))}
+      {groups.map((group) => <TodoGroupRows key={group.repositoryId} group={group} />)}
     </Card>
+  );
+}
+
+const todoKey = (filePath: string, line: number | null | undefined): string => `${filePath}:${line ?? ""}`;
+
+/** One project's open TODOs. With Outside AI switched on for it, a button asks which of them are real tasks. */
+function TodoGroupRows({ group }: { group: ReturnType<typeof todoGroups>[number] }) {
+  const ai = useOutsideAi<{ checked?: number; notReal?: { filePath: string; line: number | null }[] }>("todos", "outside_ai.check_todos");
+  const [verdict, setVerdict] = useState<{ checked: number; notReal: Set<string> } | null>(null);
+  return (
+    <details className="today-todos">
+      <summary>
+        <ListTodo aria-hidden="true" /> {group.name} <span className="technical">{group.todos.length}</span>
+      </summary>
+      {ai.on && (
+        <div className="outside-ai-row">
+          <Button
+            size="sm"
+            disabled={ai.busy}
+            onClick={() => void ai.ask({ repositoryId: group.repositoryId }).then((result) => {
+              if (result) setVerdict({ checked: result.checked ?? 0, notReal: new Set((result.notReal ?? []).map((todo) => todoKey(todo.filePath, todo.line))) });
+            })}
+          >
+            {ai.busy ? "Checking…" : "Check which are real"}
+          </Button>
+          <span className="today-note">Sends the words of up to 25 of these comments to Outside AI, not the files they are in.</span>
+        </div>
+      )}
+      {ai.error && <InlineError>{ai.error}</InlineError>}
+      {verdict && !ai.error && (
+        <p className="today-note" role="status">
+          Outside AI read {verdict.checked} and marked {verdict.notReal.size} as probably not a task. Nothing was changed; it can be wrong.
+        </p>
+      )}
+      <ul>
+        {group.todos.slice(0, 50).map((todo, i) => (
+          <li key={`${todo.filePath}:${todo.line ?? i}:${i}`}>
+            <span className="technical today-todos__place">{todoPlace(todo)}</span>
+            <span>
+              {todo.text || todo.kind}
+              {verdict?.notReal.has(todoKey(todo.filePath, todo.line)) && <span className="outside-ai-tag">probably not a task</span>}
+            </span>
+          </li>
+        ))}
+        {group.todos.length > 50 && <li className="today-note">and {group.todos.length - 50} more in this project.</li>}
+      </ul>
+    </details>
   );
 }
 

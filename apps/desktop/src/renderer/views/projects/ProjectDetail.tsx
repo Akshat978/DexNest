@@ -243,7 +243,7 @@ export function ProjectDetail(props: ProjectDetailProps) {
         {tab === "branches" && (
           <BranchesTab project={project} state={state} now={now} staleDays={props.staleDays} allBranches={allBranches} onShowAll={() => setAllBranches(true)} onAsk={ask} onOpenGithub={(branch, base) => void open("github", { branch, base })} onSetDeployed={(branch) => void setDeployed(branch)} />
         )}
-        {tab === "changes" && <ChangesTab state={state} stat={stat} onAsk={ask} onOpenVsCode={() => void open("vscode")} onIgnore={(paths) => void ignore(paths)} showIgnored={showIgnored} onToggleIgnored={setShowIgnored} />}
+        {tab === "changes" && <ChangesTab projectId={project.id} state={state} stat={stat} onAsk={ask} onOpenVsCode={() => void open("vscode")} onIgnore={(paths) => void ignore(paths)} showIgnored={showIgnored} onToggleIgnored={setShowIgnored} />}
         {tab === "history" && <HistoryTab entries={history ?? []} now={now} loading={history === null} />}
         {tab === "run" && (
           <RunTab

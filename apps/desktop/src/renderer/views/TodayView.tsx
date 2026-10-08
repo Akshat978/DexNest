@@ -57,6 +57,7 @@ import {
   type TodayStatus
 } from "./todayModel";
 import { DayCards, HistoryCard, TodoCard, useDay, type DayData, type TodayDayBridge } from "./TodayDay";
+import { StandupWords } from "./OutsideAiBits";
 import "./Today.css";
 
 // Today: the morning screen.
@@ -405,6 +406,7 @@ function Report({
       <DashboardGrid
         main={
           <>
+            {report && <StandupWords />}
             <Card aria-labelledby="today-attention">
               <SectionTitle id="today-attention" count={sectionTotal(report, "NeedsAttention")}>Needs attention</SectionTitle>
               {attention.length === 0 ? (

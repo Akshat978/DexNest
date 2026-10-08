@@ -1,4 +1,4 @@
-# DexNest 0.5.1: hands-on checklist
+# DexNest 0.6.0: hands-on checklist
 
 For checking the fixes on your own data. Each line is something to try and
 what you should see. Tick what works; anything that does not is worth a note.
@@ -12,7 +12,7 @@ it gets checked on yours.
       included. This version changes the database on first start (below), and
       a backup is the way back.
 - [ ] Close the DexNest that is running, then either install
-      `apps/desktop/release/DexNest Setup 0.5.1.exe` or start it with
+      `apps/desktop/release/DexNest Setup 0.6.0.exe` or start it with
       `pnpm dev`. Both run the same code.
 
 ### What happens once, on first start
@@ -144,15 +144,46 @@ test, so go in this order.
 - [ ] Paste your OpenRouter key, **Save key**. The box empties.
 - [ ] **Test**. It should say it works. If it does not, stop here and tell me
       what it said: the service's shape may have changed.
-- [ ] Turn on "Use Outside AI" and "For commands you type into Ask DexNest".
+- [ ] Turn on "Use Outside AI". Under "What Outside AI may see" tick "What
+      you say or type to DexNest", then under "Where it is used" tick "For
+      commands you type into Ask DexNest". (A use cannot be ticked until the
+      data it needs is on.)
 - [ ] In Ask DexNest, type something the rules will not understand, such as
       "show me what I am good at". You should get "Outside AI suggests: …"
       with Confirm and Cancel. Nothing happens until you confirm.
 - [ ] Type "what is my passport number". It must go to the local lookup.
 - [ ] Activity log → filter to Settings: each request is there, with no text.
-- [ ] Optional: turn on Capture, then **Suggest** on a note in the inbox.
+- [ ] Optional: tick "Capture notes" and the Capture use, then **Suggest**
+      on a note in the inbox.
 - [ ] Try your own usual phrases and note which it gets right and wrong.
       That is what decides whether it is worth building on.
+
+### Outside AI: what it may see, and six more uses
+
+Each needs its kind of data ticked first, then its own switch. Try one at a
+time; the activity log shows each request, without its text.
+
+- [ ] **Test the writing model**. If it fails, put another OpenRouter model
+      name in "Model that writes text" and try again. Tell me which worked.
+- [ ] "Project names and commit subjects" + "On Today: the Standup in a few
+      plain sentences": Today has **Say it in plain words**.
+- [ ] "Lines of your code" + "On Today: check which open TODOs are real":
+      open a project under Open TODOs, **Check which are real**.
+- [ ] "Lines of your code" + "In Projects: draft a commit message": Changes
+      has **Draft message**. Read what it says was not sent. Nothing is
+      committed, and the draft is not the message until you click "Use this
+      as the message".
+- [ ] "Package and tool names" + the Skills use: Skills has **Ask which are
+      tooling**. Nothing is hidden until you click Hide.
+- [ ] "What you say or type" + the Reality RPG use: Rules has "Or describe
+      it in a sentence". The form fills in; nothing is saved until you save.
+- [ ] "What you say or type" + "Search results from the newer screens" + the
+      Search use: Search has **Answer from these**.
+- [ ] Untick a kind of data: the buttons that need it are gone the next time
+      you open their screen.
+- [ ] Before a commit draft on a project with real secrets in it, read
+      `docs/fixes/l12-outside-ai-data-switches.md`, "What keeps it safe". The
+      secret check goes by shape and can miss one.
 
 ## Added after the first fifteen phases
 

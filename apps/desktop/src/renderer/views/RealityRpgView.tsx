@@ -61,6 +61,8 @@ import {
   type Tab
 } from "./realityRpgModel";
 import { BuiltInSet, FirstXp, StartPicker } from "./RealityRpgStart";
+import { useOutsideAi } from "./outsideAiUse";
+import "./OutsideAi.css";
 import "./RealityRpg.css";
 
 /** The preload methods this view uses. */
@@ -465,6 +467,20 @@ function HistoryPanel({ snapshot, bridge }: { snapshot: RealityRpgSnapshot; brid
 function RulesPanel({ snapshot, busy, run, ask }: { snapshot: RealityRpgSnapshot; busy: boolean; run(actionId: string, params?: Record<string, unknown>): Promise<boolean>; ask: Ask }) {
   const [form, setForm] = useState<RuleForm>(EMPTY_RULE_FORM);
   const [choice, setChoice] = useState("");
+  // Outside AI, when switched on for it: a sentence picks one of the built-in rules and fills the form in.
+  const describe = useOutsideAi<{ ruleId?: string | null; xp?: number; message?: string }>("rpg_rule", "outside_ai.rpg_rule");
+  const [sentence, setSentence] = useState("");
+  const [described, setDescribed] = useState<string | null>(null);
+  const fillFromSentence = async () => {
+    setDescribed(null);
+    const result = await describe.ask({ sentence });
+    if (!result) return;
+    const template = snapshot.starter.rules.find((r) => r.id === result.ruleId);
+    if (!template) { setDescribed(result.message ?? "None of the built-in rules clearly fits that."); return; }
+    setChoice(template.id);
+    setForm({ ...formFromTemplate({ ...form, name: "", stat: "" }, template), xp: String(result.xp ?? template.award.xp) });
+    setDescribed(`Filled in from "${template.name}". Check it, change what you like, then save. Nothing is saved yet.`);
+  };
   const invalid = snapshot.invalid.rules.length + snapshot.invalid.achievements.length + snapshot.invalid.quests.length;
 
   return (
@@ -492,6 +508,18 @@ function RulesPanel({ snapshot, busy, run, ask }: { snapshot: RealityRpgSnapshot
       >
         <h3>A rule of your own</h3>
         <p className="rpg-hint">Choose what should earn XP, then how much. A rule only sees that something happened - never its content - and can never count vault, finance or journal activity.</p>
+        {describe.on && (
+          <div role="group" aria-label="Describe a rule">
+            <Field label="Or describe it in a sentence" hint="Sent to Outside AI, which picks one of the built-in rules and a size of reward. A sentence that looks private is not sent.">
+              <TextInput value={sentence} maxLength={300} placeholder="Give me a little XP every time I commit" onChange={(e) => setSentence(e.target.value)} />
+            </Field>
+            <div className="outside-ai-row">
+              <Button type="button" size="sm" disabled={busy || describe.busy || !sentence.trim()} onClick={() => void fillFromSentence()}>{describe.busy ? "Asking…" : "Fill in from this"}</Button>
+            </div>
+            {describe.error && <InlineError>{describe.error}</InlineError>}
+            {described && !describe.error && <p className="rpg-hint" role="status">{described}</p>}
+          </div>
+        )}
         <Field label="Name"><TextInput value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required /></Field>
         <Field label="What earns it">
           <Select

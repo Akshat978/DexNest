@@ -23,7 +23,8 @@ import { decodeHeicFile, isHeicFile, toBgra } from "./heic.js";
 import { createThumbnailer, fitWithin, mayBePicture } from "./thumbnails.js";
 import { buildActivityOverlay, OVERLAY_READ_LIMIT } from "./activityOverlay.js";
 import { clearGhost, clearObjects, clearProjects, countGhost, countObjects, countProjects, type ClearOutcome } from "./moduleClear.js";
-import { DECISION_MODEL, looksLikeOpenRouterKey, normalizeOutsideAiSettings, outcomeInWords, routeCommand, suggestCaptureRoute, type CaptureOutcome, type OutsideAiSettings, type OutsideAiSurface, type RouteOutcome } from "./outsideAi.js";
+import { answerFromRecords, checkTodos, draftCommitMessage, isSecretFile, MAX_NAMES, questionWords, recordsForQuestion, RULE_SIZE_XP, scrubDiff, sortSkillNames, suggestRule, testWriting, writeStandup, type UseOutcome } from "./outsideAiUses.js";
+import { DECISION_MODEL, looksLikeOpenRouterKey, mayUse, normalizeOutsideAiSettings, outcomeInWords, routeCommand, suggestCaptureRoute, USE_NEEDS, type CaptureOutcome, type OutsideAiSettings, type OutsideAiSurface, type RouteDeps, type RouteOutcome } from "./outsideAi.js";
 import { addLink, backfillFromCalendar, chipsFor, normalizeLinks, pruneLinks, type RecordLink, type RecordRef } from "./recordLinks.js";
 import { ghostRecords, LIVE_SEARCH_SOURCES, objectRecords, reminderRecords, standupRecords, type StandupLike, rpgRecords, skillRecords, timetableRecords, type ModuleSearchRecord } from "./moduleSearch.js";
 import { createActionRegistry, createStreamDeckActionCatalog, seededActions, streamDeckCatalogItems } from "@dexnest/action-registry";
@@ -4346,9 +4347,11 @@ const OUTSIDE_AI_PROVIDER = "openrouter";
  * Tests point the request at a stand-in on this computer. Only a loopback
  * address is honoured, so the variable cannot be used to send the key elsewhere.
  */
-function outsideAiTestUrl(): { url?: string } {
+function outsideAiTestUrl(): { url?: string; chatUrl?: string } {
+  const loopback = /^http:\/\/127\.0\.0\.1:\d{2,5}\/[\w/.-]*$/;
   const url = process.env.DEXNEST_OUTSIDE_AI_URL ?? "";
-  return /^http:\/\/127\.0\.0\.1:\d{2,5}\/[\w/.-]*$/.test(url) ? { url } : {};
+  const chatUrl = process.env.DEXNEST_OUTSIDE_AI_CHAT_URL ?? "";
+  return { ...(loopback.test(url) ? { url } : {}), ...(loopback.test(chatUrl) ? { chatUrl } : {}) };
 }
 
 function loadOutsideAiSettings(): OutsideAiSettings {
@@ -4422,7 +4425,7 @@ async function runOutsideAiAction(actionId: string, source: DexNestActionTrigger
     const before = loadOutsideAiSettings();
     const next = normalizeOutsideAiSettings({ ...before, ...(typeof params.settings === "object" && params.settings !== null ? params.settings : {}) });
     writeJsonFile(outsideAiSettingsPath, next);
-    logOutsideAi(actionId, "outside_ai_settings_changed", "success", source, next.enabled ? "Outside AI is on." : "Outside AI is off.", { enabled: next.enabled, voice: next.surfaces.voice, typed: next.surfaces.typed, capture: next.surfaces.capture, minConfidence: next.minConfidence });
+    logOutsideAi(actionId, "outside_ai_settings_changed", "success", source, next.enabled ? "Outside AI is on." : "Outside AI is off.", { enabled: next.enabled, voice: next.surfaces.voice, typed: next.surfaces.typed, capture: next.surfaces.capture, minConfidence: next.minConfidence, uses: Object.entries(next.surfaces).filter(([, on]) => on).map(([use]) => use), data: Object.entries(next.data).filter(([, on]) => on).map(([kind]) => kind), writingModel: next.writingModel });
     return { ok: true, actionId, state: outsideAiState() };
   }
   if (actionId === "outside_ai.clear_key") {
@@ -4466,6 +4469,7 @@ async function runOutsideAiAction(actionId: string, source: DexNestActionTrigger
       ? { ok: true, actionId, route: outcome.suggestion.route, confidence: outcome.suggestion.confidence }
       : { ok: true, actionId, route: null, message: "No clear suggestion for this one." };
   }
+  if (Object.hasOwn(OUTSIDE_AI_USE_ACTIONS, actionId)) return runOutsideAiUse(actionId, source, params);
   if (actionId === "outside_ai.test") {
     // A fixed, harmless phrase, sent whatever the switches say: the user pressed Test.
     const settings = loadOutsideAiSettings();
@@ -4479,6 +4483,159 @@ async function runOutsideAiAction(actionId: string, source: DexNestActionTrigger
     return { ok: outcome.ok, actionId, message: outcomeInWords(outcome), ...(outcome.ok ? { intent: outcome.decision.intent, screen: outcome.decision.screen, confidence: outcome.decision.intentConfidence, latencyMs: outcome.latencyMs } : { error: outcomeInWords(outcome) }) };
   }
   return { ok: false, actionId, error: "Unknown Outside AI action." };
+}
+
+// The further uses (see outsideAiUses.ts). Each gathers its own data here, in
+// the main process, from the one place it is allowed to read; the window sends
+// an id or a question, never the data. Each works only with its own switch and
+// the kinds of data it needs switched on, and each writes one log line with
+// counts and no text.
+const OUTSIDE_AI_USE_ACTIONS: Record<string, OutsideAiSurface> = {
+  "outside_ai.rpg_rule": "rpg_rule",
+  "outside_ai.sort_skills": "skills",
+  "outside_ai.standup_words": "standup",
+  "outside_ai.draft_commit": "commit",
+  "outside_ai.check_todos": "todos",
+  "outside_ai.answer": "answer",
+  "outside_ai.test_writing": "standup"
+};
+
+function outsideAiDeps(settings: OutsideAiSettings): RouteDeps {
+  return { fetch: (url, init) => fetch(url, init), key: () => getIntegrationCredentialValue(OUTSIDE_AI_PROVIDER), settings, ...outsideAiTestUrl() };
+}
+
+function logOutsideUse<T>(actionId: string, source: DexNestActionTrigger, surface: OutsideAiSurface, model: string, outcome: UseOutcome<T>, counts: Record<string, unknown> = {}): void {
+  const sent = outcome.ok || ["timeout", "network", "http", "bad_answer"].includes(outcome.reason);
+  logOutsideAi(actionId, sent ? "outside_ai_request" : "outside_ai_not_sent", outcome.ok ? "success" : sent ? "failed" : "skipped", source, outcomeInWords(outcome), {
+    service: "openrouter",
+    model: outcome.ok ? outcome.model : model,
+    surface,
+    data: USE_NEEDS[surface],
+    sent,
+    textLength: outcome.sentChars,
+    latencyMs: outcome.latencyMs,
+    ...(outcome.ok ? { inputTokens: outcome.inputTokens, cost: outcome.cost } : { reason: outcome.reason, detail: outcome.detail ?? null, httpStatus: outcome.status ?? null }),
+    ...counts
+  });
+}
+
+async function runOutsideAiUse(actionId: string, source: DexNestActionTrigger, params: Record<string, unknown>) {
+  const surface = OUTSIDE_AI_USE_ACTIONS[actionId]!;
+  const settings = loadOutsideAiSettings();
+  const deps = outsideAiDeps(settings);
+  const refuse = (error: string) => ({ ok: false, actionId, error });
+  if (settings.enabled && performanceModePauses("assistant")) return refuse("Outside AI is paused while Performance Mode is on.");
+
+  if (actionId === "outside_ai.test_writing") {
+    // A fixed phrase and nothing of the user's, sent whatever the switches say: the user pressed Test.
+    const outcome = await testWriting(deps);
+    logOutsideAi(actionId, "outside_ai_test", outcome.ok ? "success" : "failed", source, `Outside AI writing test: ${outcomeInWords(outcome)}`, { service: "openrouter", model: outcome.ok ? outcome.model : settings.writingModel, latencyMs: outcome.latencyMs, ...(outcome.ok ? {} : { reason: outcome.reason, httpStatus: outcome.status ?? null }) });
+    return outcome.ok ? { ok: true, actionId, message: `The writing model answered (${outcome.model}).` } : refuse(outcomeInWords(outcome));
+  }
+
+  // Off means the data is not even read. The request itself is checked again where it leaves.
+  if (!mayUse(settings, surface)) {
+    logOutsideAi(actionId, "outside_ai_not_sent", "skipped", source, "Outside AI is off for this.", { service: "openrouter", surface, data: USE_NEEDS[surface], sent: false, textLength: 0, reason: "off" });
+    return refuse("Outside AI is off for this.");
+  }
+
+  if (actionId === "outside_ai.rpg_rule") {
+    // The sentence the user typed for this, and DexNest's own list of built-in rules to pick from.
+    if (!realityRpgHost) return refuse("Reality RPG is not running.");
+    const starter = realityRpgHost.module.snapshot().starter;
+    const rules = starter.rules.flatMap((rule) => { const info = starter.info[rule.id]; return info ? [{ ruleId: rule.id, when: info.when }] : []; });
+    const outcome = await suggestRule(String(params.sentence ?? ""), rules, deps);
+    logOutsideUse(actionId, source, surface, DECISION_MODEL, outcome, outcome.ok ? { ruleId: outcome.value.ruleId, confidence: outcome.value.confidence, used: outcome.value.used } : {});
+    if (!outcome.ok) return refuse(outcomeInWords(outcome));
+    return outcome.value.used
+      ? { ok: true, actionId, ruleId: outcome.value.ruleId, xp: RULE_SIZE_XP[outcome.value.size ?? "medium"] ?? 15 }
+      : { ok: true, actionId, ruleId: null, message: "None of the built-in rules clearly fits that." };
+  }
+
+  if (actionId === "outside_ai.sort_skills") {
+    // Names only: what Skills already shows, strongest first, languages left out.
+    if (!skillConstellationHost) return refuse("Skills is not running.");
+    const skills = skillConstellationHost.module.constellation().skills
+      .filter((skill) => skill.category !== "language" && !skill.hidden)
+      .sort((a, b) => b.strength.score - a.strength.score)
+      .slice(0, MAX_NAMES);
+    const outcome = await sortSkillNames(skills.map((skill) => skill.name), deps);
+    logOutsideUse(actionId, source, surface, settings.writingModel, outcome, { names: skills.length, ...(outcome.ok ? { tooling: outcome.value.tooling.length } : {}) });
+    if (!outcome.ok) return refuse(outcomeInWords(outcome));
+    const picked = new Set(outcome.value.tooling.map((i) => outcome.value.names[i]));
+    return { ok: true, actionId, asked: outcome.value.names.length, tooling: skills.filter((skill) => picked.has(skill.name)).map((skill) => ({ id: skill.id, name: skill.name })) };
+  }
+
+  if (actionId === "outside_ai.standup_words") {
+    // The latest Standup's lines, as Today and Search show them.
+    await refreshStandupForSearch();
+    // Today shows a project by its name where the Standup holds an id; so does this.
+    const projectNames = new Map((devIntelligenceHost ? await devIntelligenceHost.module.listRepositories() : []).map((repo) => [repo.id, repo.displayName]));
+    const lines = standupRecords(standupForSearch, new Date().toISOString()).map((line) => `${line.category}: ${line.title}`.replace(/repo_[0-9A-Za-z]{6,}/g, (id) => projectNames.get(id) ?? id));
+    if (lines.length === 0) return refuse("There is no Standup to put into words yet.");
+    const outcome = await writeStandup(lines, deps);
+    logOutsideUse(actionId, source, surface, settings.writingModel, outcome, { lines: lines.length });
+    return outcome.ok ? { ok: true, actionId, text: outcome.value, model: outcome.model } : refuse(outcomeInWords(outcome));
+  }
+
+  if (actionId === "outside_ai.draft_commit") {
+    // The diff of one project's uncommitted changes, read here by git and
+    // scrubbed before it goes: no secrets files, no secret-looking lines.
+    const project = projectsHost?.module.get(String(params.projectId ?? ""));
+    if (!project || !existsSync(project.path)) return refuse("That project could not be found.");
+    const asked = (Array.isArray(params.files) ? params.files : [])
+      .filter((file): file is string => typeof file === "string" && file.length > 0 && file.length < 400 && !file.startsWith("-") && !/^(?:[a-zA-Z]:|[\\/])/.test(file) && !/(?:^|[\\/])\.\.(?:[\\/]|$)/.test(file))
+      .slice(0, 200);
+    const files = asked.filter((file) => !isSecretFile(file));
+    if (asked.length > 0 && files.length === 0) return refuse("Those files are not sent anywhere.");
+    const scope = ["--", ...(files.length > 0 ? files : ["."])];
+    const flags = ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--unified=1"];
+    let diff = await runGit(project.path, [...flags, "HEAD", ...scope], 15_000);
+    if (!diff.ok) diff = await runGit(project.path, [...flags, "--cached", ...scope], 15_000);
+    if (!diff.ok) return refuse("git could not read the change, or it is too large to draft from.");
+    const untracked = await runGit(project.path, ["ls-files", "--others", "--exclude-standard", ...scope], 15_000);
+    const scrubbed = scrubDiff(diff.stdout);
+    const newFiles = untracked.ok ? untracked.stdout.split("\n").map((line) => line.trim()).filter(Boolean) : [];
+    const outcome = await draftCommitMessage(scrubbed, newFiles, deps);
+    logOutsideUse(actionId, source, surface, settings.writingModel, outcome, { files: scrubbed.files, withheldFiles: scrubbed.withheldFiles, withheldLines: scrubbed.withheldLines, truncated: scrubbed.truncated });
+    return outcome.ok
+      ? { ok: true, actionId, text: outcome.value, model: outcome.model, withheldFiles: scrubbed.withheldFiles, withheldLines: scrubbed.withheldLines, truncated: scrubbed.truncated }
+      : refuse(outcomeInWords(outcome));
+  }
+
+  if (actionId === "outside_ai.check_todos") {
+    // The words of one project's open TODO comments. Not the files they are in.
+    if (!devIntelligenceHost) return refuse("The repository scan is not running.");
+    const repositoryId = String(params.repositoryId ?? "");
+    const repository = (await devIntelligenceHost.module.listRepositories()).find((repo) => repo.id === repositoryId);
+    if (!repository) return refuse("That project is not in the repository scan.");
+    const todos = (await devIntelligenceHost.module.persistence.todos.listByRepository(repository.id, { status: "open" })).slice(0, 200);
+    const outcome = await checkTodos(todos.map((todo) => todo.text), deps);
+    logOutsideUse(actionId, source, surface, settings.writingModel, outcome, { todos: todos.length, ...(outcome.ok ? { checked: outcome.value.sent.length, notReal: outcome.value.notReal.length } : {}) });
+    if (!outcome.ok) return refuse(outcomeInWords(outcome));
+    return {
+      ok: true,
+      actionId,
+      repositoryId,
+      checked: outcome.value.sent.length,
+      notReal: outcome.value.notReal.map((i) => todos[i]!).map((todo) => ({ filePath: todo.filePath, line: todo.line ?? null }))
+    };
+  }
+
+  // outside_ai.answer: a question, and the few search results that share its
+  // words, from the newer modules only (LIVE_SEARCH_SOURCES). The index of
+  // documents, the Vault, Finance, the Journal and the clipboard are not read.
+  const question = String(params.question ?? "").slice(0, 400);
+  await refreshStandupForSearch();
+  const pool = new Map<string, ModuleSearchRecord>();
+  for (const query of [question, ...questionWords(question)]) {
+    for (const record of liveModuleRecords(query)) pool.set(record.id, record);
+  }
+  const records = recordsForQuestion(question, [...pool.values()], LIVE_SEARCH_SOURCES);
+  const outcome = await answerFromRecords(question, records, deps);
+  logOutsideUse(actionId, source, surface, settings.writingModel, outcome, { records: records.length });
+  if (!outcome.ok) return refuse(outcome.reason === "nothing" ? "Nothing in Today, Skills, Reality RPG, GhostOS, ObjectOS, the Timetable or reminders matches that, so nothing was sent." : outcomeInWords(outcome));
+  return { ok: true, actionId, text: outcome.value, model: outcome.model, sources: records.map((record) => ({ title: record.title, sourceModule: record.sourceModule })) };
 }
 
 function getIntegrationCredentialValue(provider: string, id?: string | null): string | null {

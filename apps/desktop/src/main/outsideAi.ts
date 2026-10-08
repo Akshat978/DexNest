@@ -15,6 +15,10 @@
 // It is off until the user turns it on, per surface. A command that looks
 // private never leaves, and the local path stays the fallback for everything.
 //
+// The user also says which kinds of data it may see (OutsideAiDataKind). A use
+// works only when its own switch and every kind of data it needs are on; the
+// further uses built on that are in outsideAiUses.ts.
+//
 // Electron-free: main.ts supplies the key, the settings and `fetch`.
 
 /** OpenRouter's Decisions endpoint. Marked alpha by OpenRouter: this is the one place its shape is known. */
@@ -24,32 +28,86 @@ export const DECISION_MODEL = "typesafe/jev-1.13";
 /** Longest command sent. A command is a sentence, not a document. */
 export const MAX_COMMAND_CHARS = 300;
 
-export type OutsideAiSurface = "voice" | "typed" | "capture";
+/** The places Outside AI can be used. Each has its own switch. */
+export const OUTSIDE_AI_SURFACES = ["voice", "typed", "capture", "rpg_rule", "skills", "standup", "commit", "todos", "answer"] as const;
+export type OutsideAiSurface = (typeof OUTSIDE_AI_SURFACES)[number];
+
+/**
+ * The kinds of data the user can let Outside AI see. Each has its own switch,
+ * and all are off by default. There is no kind for the Vault, Finance, the
+ * Journal, files, documents, the clipboard or secrets: those cannot be
+ * switched on because nothing here ever reads them.
+ */
+export const OUTSIDE_AI_DATA_KINDS = ["words", "notes", "packages", "commits", "code", "records"] as const;
+export type OutsideAiDataKind = (typeof OUTSIDE_AI_DATA_KINDS)[number];
+
+/** What each use needs to see. A use is off unless every kind it needs is on. */
+export const USE_NEEDS: Record<OutsideAiSurface, readonly OutsideAiDataKind[]> = {
+  voice: ["words"],
+  typed: ["words"],
+  capture: ["notes"],
+  rpg_rule: ["words"],
+  skills: ["packages"],
+  standup: ["commits"],
+  commit: ["code"],
+  todos: ["code"],
+  answer: ["words", "records"]
+};
+
+/** The model asked to write text (a summary, a draft). The user can name another in Settings. */
+export const DEFAULT_WRITING_MODEL = "anthropic/claude-haiku-4.5";
 
 export interface OutsideAiSettings {
   /** The master switch. Off by default. */
   enabled: boolean;
   /** Which surfaces may use it. All off by default, so turning the master switch on sends nothing yet. */
   surfaces: Record<OutsideAiSurface, boolean>;
+  /** Which kinds of data it may see. All off by default. */
+  data: Record<OutsideAiDataKind, boolean>;
   /** The least confidence (0 to 1) at which the answer is used. Below it, the local path decides. */
   minConfidence: number;
+  /** The OpenRouter model asked when text has to be written. */
+  writingModel: string;
 }
+
+const allOff = <K extends string>(keys: readonly K[]): Record<K, boolean> => Object.fromEntries(keys.map((key) => [key, false])) as Record<K, boolean>;
 
 export const DEFAULT_OUTSIDE_AI_SETTINGS: OutsideAiSettings = {
   enabled: false,
-  surfaces: { voice: false, typed: false, capture: false },
-  minConfidence: 0.7
+  surfaces: allOff(OUTSIDE_AI_SURFACES),
+  data: allOff(OUTSIDE_AI_DATA_KINDS),
+  minConfidence: 0.7,
+  writingModel: DEFAULT_WRITING_MODEL
 };
+
+/** A model name as OpenRouter writes them: maker/model. Anything else is the default. */
+export function normalizeWritingModel(value: unknown): string {
+  return typeof value === "string" && /^[a-z0-9][a-z0-9._-]{0,39}\/[a-z0-9][a-z0-9._:-]{0,59}$/i.test(value.trim()) ? value.trim() : DEFAULT_WRITING_MODEL;
+}
+
+/** Whether a use may send anything: the master switch, its own switch, and every kind of data it needs. */
+export function mayUse(settings: OutsideAiSettings, surface: OutsideAiSurface): boolean {
+  return settings.enabled && settings.surfaces[surface] === true && USE_NEEDS[surface].every((kind) => settings.data[kind] === true);
+}
 
 export function normalizeOutsideAiSettings(value: unknown): OutsideAiSettings {
   const raw = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
   const surfaces = typeof raw.surfaces === "object" && raw.surfaces !== null ? (raw.surfaces as Record<string, unknown>) : {};
   const confidence = typeof raw.minConfidence === "number" && Number.isFinite(raw.minConfidence) ? raw.minConfidence : DEFAULT_OUTSIDE_AI_SETTINGS.minConfidence;
+  const data = typeof raw.data === "object" && raw.data !== null ? (raw.data as Record<string, unknown>) : null;
+  const on = Object.fromEntries(OUTSIDE_AI_SURFACES.map((key) => [key, surfaces[key] === true])) as Record<OutsideAiSurface, boolean>;
   return {
     enabled: raw.enabled === true,
-    surfaces: { voice: surfaces.voice === true, typed: surfaces.typed === true, capture: surfaces.capture === true },
+    surfaces: on,
+    // A settings file from before the data switches existed says nothing about
+    // them. What it already allowed (the words of a command, a Capture note)
+    // stays allowed; every other kind starts off.
+    data: data
+      ? (Object.fromEntries(OUTSIDE_AI_DATA_KINDS.map((key) => [key, data[key] === true])) as Record<OutsideAiDataKind, boolean>)
+      : { ...allOff(OUTSIDE_AI_DATA_KINDS), words: on.voice || on.typed, notes: on.capture },
     // Never below one half: a coin toss is not a decision.
-    minConfidence: Math.min(0.99, Math.max(0.5, Math.round(confidence * 100) / 100))
+    minConfidence: Math.min(0.99, Math.max(0.5, Math.round(confidence * 100) / 100)),
+    writingModel: normalizeWritingModel(raw.writingModel)
   };
 }
 
@@ -109,7 +167,7 @@ export const SCREEN_CRITERIA: Record<string, string> = {
 // Words that mark a command as private. Anything matching stays on this
 // computer: identity documents, credentials, money, health, and the three
 // modules whose content is never sent anywhere.
-const PRIVATE_WORDS = /\b(password|passcode|passphrase|pin|otp|secret|token|api key|sin|ssn|social insurance|social security|passport|health card|work permit|study permit|permit number|document number|uci|licen[cs]e number|account number|card number|credit card|debit card|cvv|iban|swift|routing number|bank|balance|salary|wage|income|tax|taxes|invoice|receipt|owe|owed|paid|spent|bought|cost|price|diagnos\w*|prescription|medication|medical|vault|finance|journal|diary)\b/i;
+const PRIVATE_WORDS = /\b(password|passcode|passphrase|pin|otp|secret|token|api key|sin|ssn|social insurance|social security|passport|health card|work permit|study permit|permit number|document number|uci|licen[cs]e number|account number|card number|credit card|debit card|cvv|iban|swift|routing number|bank|balance|salary|wage|income|tax|taxes|invoice|receipt|owe|owed|pay|pays|paying|payment|payments|paid|spent|bought|cost|price|diagnos\w*|prescription|medication|medical|vault|finance|journal|diary)\b/i;
 const MONEY = /[$€£¥₹]|\b\d+(?:[.,]\d+)?\s?(?:dollars?|bucks|euros?|pounds?|rupees?|cad|usd|eur|gbp|inr)\b/i;
 const LONG_NUMBER = /\d[\d\s-]{5,}\d/;
 const CONTACT = /[\w.+-]+@[\w-]+\.[\w.]+|https?:\/\/\S+/i;
@@ -240,7 +298,7 @@ export function parseCaptureSuggestion(body: unknown): CaptureSuggestion | null 
   };
 }
 
-export type Failure = { ok: false; reason: "off" | "no_key" | "private" | "timeout" | "network" | "http" | "bad_answer"; detail?: string; status?: number; latencyMs: number };
+export type Failure = { ok: false; reason: "off" | "no_key" | "private" | "nothing" | "timeout" | "network" | "http" | "bad_answer"; detail?: string; status?: number; latencyMs: number };
 
 export type CaptureOutcome = { ok: true; suggestion: CaptureSuggestion; used: boolean; latencyMs: number } | Failure;
 
@@ -256,6 +314,8 @@ export interface RouteDeps {
   timeoutMs?: number;
   now?: () => number;
   url?: string;
+  /** Where text is written, when a test points it at a stand-in. */
+  chatUrl?: string;
 }
 
 /**
@@ -263,7 +323,7 @@ export interface RouteDeps {
  * as a reason, never as a throw: the caller carries on with the local path.
  */
 export async function routeCommand(text: string, surface: OutsideAiSurface, deps: RouteDeps): Promise<RouteOutcome> {
-  const asked = await ask(text, surface, deps, buildDecisionRequest, parseDecision);
+  const asked = await askOutside(text, surface, deps, buildDecisionRequest, parseDecision);
   if (!asked.ok) return asked;
   return { ok: true, decision: asked.value, used: confidentEnough(asked.value, deps.settings.minConfidence), latencyMs: asked.latencyMs };
 }
@@ -273,27 +333,43 @@ export async function routeCommand(text: string, surface: OutsideAiSurface, deps
  * check and the same failures as a command; "keep" is never a suggestion.
  */
 export async function suggestCaptureRoute(text: string, deps: RouteDeps): Promise<CaptureOutcome> {
-  const asked = await ask(text, "capture", deps, buildCaptureRequest, parseCaptureSuggestion);
+  const asked = await askOutside(text, "capture", deps, buildCaptureRequest, parseCaptureSuggestion);
   if (!asked.ok) return asked;
   const used = asked.value.route !== "keep" && asked.value.confidence >= deps.settings.minConfidence;
   return { ok: true, suggestion: asked.value, used, latencyMs: asked.latencyMs };
 }
 
-/** The one place a request leaves from: the switches, the private check and the key are checked here, in that order. */
-async function ask<T>(text: string, surface: OutsideAiSurface, deps: RouteDeps, build: (text: string) => Record<string, unknown>, parse: (body: unknown) => T | null): Promise<{ ok: true; value: T; latencyMs: number } | Failure> {
+export interface AskOptions {
+  /** Where the request goes. The decision service unless a use says otherwise. */
+  url?: string;
+  timeoutMs?: number;
+  /**
+   * How the text is checked before it leaves. The strict check for a command
+   * unless a use brings its own (code and commit subjects are checked for
+   * secrets instead, line by line, before they get here).
+   */
+  check?: (text: string) => string | null;
+}
+
+/**
+ * The one place a request leaves from: the switches (the use's own, and every
+ * kind of data it needs), the private check and the key are checked here, in
+ * that order.
+ */
+export async function askOutside<T>(text: string, surface: OutsideAiSurface, deps: RouteDeps, build: (text: string) => Record<string, unknown>, parse: (body: unknown) => T | null, options: AskOptions = {}): Promise<{ ok: true; value: T; latencyMs: number } | Failure> {
   const now = deps.now ?? Date.now;
   const started = now();
   const took = () => now() - started;
-  if (!deps.settings.enabled || deps.settings.surfaces[surface] !== true) return { ok: false, reason: "off", latencyMs: 0 };
-  const refused = privateReason(text);
+  if (!mayUse(deps.settings, surface)) return { ok: false, reason: "off", latencyMs: 0 };
+  const refused = (options.check ?? privateReason)(text);
   if (refused) return { ok: false, reason: "private", detail: refused, latencyMs: 0 };
   const key = deps.key();
   if (!key) return { ok: false, reason: "no_key", latencyMs: 0 };
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? 4000);
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? deps.timeoutMs ?? 4000);
   try {
-    const response = await deps.fetch(deps.url ?? OPENROUTER_DECISIONS_URL, {
+    const response = await deps.fetch(options.url ?? deps.url ?? OPENROUTER_DECISIONS_URL, {
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
       body: JSON.stringify(build(text)),
@@ -312,10 +388,11 @@ async function ask<T>(text: string, surface: OutsideAiSurface, deps: RouteDeps, 
 }
 
 /** In plain words, for the Settings page and the assistant. */
-export function outcomeInWords(outcome: RouteOutcome | CaptureOutcome): string {
-  if (outcome.ok) return outcome.used ? "Answered." : "Answered, but not sure enough to act on.";
+export function outcomeInWords(outcome: { ok: true; used?: boolean } | Failure): string {
+  if (outcome.ok) return outcome.used === false ? "Answered, but not sure enough to act on." : "Answered.";
   switch (outcome.reason) {
     case "off": return "Outside AI is off for this.";
+    case "nothing": return "There was nothing that could be sent.";
     case "no_key": return "No OpenRouter key is saved.";
     case "private": return "That looked private, so it was not sent.";
     case "timeout": return "The service did not answer in time.";

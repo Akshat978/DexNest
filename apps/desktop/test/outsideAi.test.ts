@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  buildDecisionRequest, confidentEnough, DECISION_MODEL, DEFAULT_OUTSIDE_AI_SETTINGS, INTENT_CRITERIA, looksLikeOpenRouterKey, MAX_COMMAND_CHARS,
+  buildDecisionRequest, confidentEnough, DECISION_MODEL, DEFAULT_OUTSIDE_AI_SETTINGS, DEFAULT_WRITING_MODEL, INTENT_CRITERIA, looksLikeOpenRouterKey, MAX_COMMAND_CHARS,
   normalizeOutsideAiSettings, OPENROUTER_DECISIONS_URL, outcomeInWords, parseDecision, privateReason, routeCommand, SCREEN_CRITERIA, type OutsideAiSettings, type RouteDeps,
   buildCaptureRequest, CAPTURE_CRITERIA, parseCaptureSuggestion, suggestCaptureRoute
 } from "../src/main/outsideAi.ts";
@@ -20,8 +20,10 @@ import { seededActions } from "../../../packages/action-registry/src/index.ts";
 const desktop = fileURLToPath(new URL("..", import.meta.url));
 const read = (path: string) => readFileSync(join(desktop, path), "utf8").replace(/\r\n/g, "\n");
 
-const ON: OutsideAiSettings = { enabled: true, surfaces: { voice: true, typed: true, capture: true }, minConfidence: 0.7 };
-const NOWHERE = { voice: false, typed: false, capture: false };
+const NOWHERE = { voice: false, typed: false, capture: false, rpg_rule: false, skills: false, standup: false, commit: false, todos: false, answer: false };
+const NOTHING = { words: false, notes: false, packages: false, commits: false, code: false, records: false };
+// What could be switched on before the data switches existed: commands and Capture, with the data they need.
+const ON: OutsideAiSettings = { enabled: true, surfaces: { ...NOWHERE, voice: true, typed: true, capture: true }, data: { ...NOTHING, words: true, notes: true }, minConfidence: 0.7, writingModel: DEFAULT_WRITING_MODEL };
 const KEY = `sk-or-${"a".repeat(40)}`;
 const answer = (intent: string, confidence: number, screen = "none", screenConfidence = 0.9) => ({
   id: "gen-dec-1", model: "typesafe/jev-1.13-20260917", provider: "TypeSafe",
@@ -39,15 +41,20 @@ function service(body: unknown, status = 200) {
 }
 
 test("it is off by default, and anything unreadable in the settings file means off", () => {
-  assert.deepEqual(DEFAULT_OUTSIDE_AI_SETTINGS, { enabled: false, surfaces: NOWHERE, minConfidence: 0.7 });
-  for (const junk of [null, undefined, "on", 1, [], { enabled: "yes" }, { enabled: 1, surfaces: { voice: "true" } }]) {
+  assert.deepEqual(DEFAULT_OUTSIDE_AI_SETTINGS, { enabled: false, surfaces: NOWHERE, data: NOTHING, minConfidence: 0.7, writingModel: DEFAULT_WRITING_MODEL });
+  for (const junk of [null, undefined, "on", 1, [], { enabled: "yes" }, { enabled: 1, surfaces: { voice: "true" } }, { data: { code: "true", words: 1 } }, { data: "all" }]) {
     const s = normalizeOutsideAiSettings(junk);
     assert.equal(s.enabled, false);
     assert.deepEqual(s.surfaces, NOWHERE);
+    assert.deepEqual(s.data, NOTHING);
   }
   assert.equal(normalizeOutsideAiSettings({ minConfidence: 0.1 }).minConfidence, 0.5, "never below a coin toss");
   assert.equal(normalizeOutsideAiSettings({ minConfidence: 5 }).minConfidence, 0.99);
-  assert.deepEqual(normalizeOutsideAiSettings({ enabled: true, surfaces: { voice: true }, minConfidence: 0.8 }), { enabled: true, surfaces: { voice: true, typed: false, capture: false }, minConfidence: 0.8 });
+  // A file saved before the data switches existed keeps what it already allowed, and gains nothing else.
+  assert.deepEqual(normalizeOutsideAiSettings({ enabled: true, surfaces: { voice: true }, minConfidence: 0.8 }), { enabled: true, surfaces: { ...NOWHERE, voice: true }, data: { ...NOTHING, words: true }, minConfidence: 0.8, writingModel: DEFAULT_WRITING_MODEL });
+  assert.deepEqual(normalizeOutsideAiSettings({ enabled: true, surfaces: { capture: true, commit: true } }).data, { ...NOTHING, notes: true }, "a use that is new does not bring its data with it");
+  // Once the file has data switches, they alone decide.
+  assert.deepEqual(normalizeOutsideAiSettings({ enabled: true, surfaces: { voice: true }, data: {} }).data, NOTHING);
 });
 
 test("nothing is sent while it is off, while a surface is off, or with no key", async () => {
@@ -55,7 +62,9 @@ test("nothing is sent while it is off, while a surface is off, or with no key", 
   const key = () => KEY;
   assert.deepEqual(await routeCommand("show me what I am good at", "voice", { fetch: s.fetch, key, settings: DEFAULT_OUTSIDE_AI_SETTINGS }), { ok: false, reason: "off", latencyMs: 0 });
   assert.equal((await routeCommand("show me what I am good at", "voice", { fetch: s.fetch, key, settings: { ...ON, enabled: false } })).ok, false);
-  assert.equal((await routeCommand("show me what I am good at", "typed", { fetch: s.fetch, key, settings: { ...ON, surfaces: { voice: true, typed: false, capture: true } } })).ok, false);
+  assert.equal((await routeCommand("show me what I am good at", "typed", { fetch: s.fetch, key, settings: { ...ON, surfaces: { ...ON.surfaces, typed: false } } })).ok, false);
+  const noWords = await routeCommand("show me what I am good at", "typed", { fetch: s.fetch, key, settings: { ...ON, data: { ...ON.data, words: false } } });
+  assert.deepEqual([noWords.ok, noWords.ok ? "" : noWords.reason], [false, "off"], "the use is on, but the data it needs is not");
   let keyRead = 0;
   const none = await routeCommand("show me what I am good at", "voice", { fetch: s.fetch, key: () => { keyRead += 1; return null; }, settings: ON });
   assert.deepEqual([none.ok, none.ok ? "" : none.reason], [false, "no_key"]);
@@ -176,7 +185,10 @@ test("the main process keeps the key to itself and logs each request without its
 
 test("its actions run from DexNest's own window only", () => {
   const actions = seededActions.filter((a) => a.id.startsWith("outside_ai."));
-  assert.deepEqual(actions.map((a) => a.id).sort(), ["outside_ai.clear_key", "outside_ai.route_command", "outside_ai.set_key", "outside_ai.suggest_capture_route", "outside_ai.test", "outside_ai.update_settings"]);
+  assert.deepEqual(actions.map((a) => a.id).sort(), [
+    "outside_ai.answer", "outside_ai.check_todos", "outside_ai.clear_key", "outside_ai.draft_commit", "outside_ai.route_command", "outside_ai.rpg_rule", "outside_ai.set_key",
+    "outside_ai.sort_skills", "outside_ai.standup_words", "outside_ai.suggest_capture_route", "outside_ai.test", "outside_ai.test_writing", "outside_ai.update_settings"
+  ]);
   for (const a of actions) {
     assert.deepEqual(a.allowedTriggers, ["module_ui"], a.id);
     assert.equal("phone" in a && a.phone !== undefined, false, a.id);
@@ -207,8 +219,11 @@ test("AGENTS.md states the rule the code keeps", () => {
   assert.match(rules, /External AI is allowed in two places only, both off until the user turns them on:\n  Autopilot and Outside AI\./);
   assert.match(rules, /## Outside AI\n/);
   assert.match(rules, /- Off by default\./);
-  assert.match(rules, /- Never sent: anything from the Vault, Finance or Journal;/);
-  assert.match(rules, /Today that is two things/);
+  assert.match(rules, /The user chooses which kinds of data it may see\./);
+  assert.match(rules, /Today\n  there are six kinds, all off by default:/);
+  assert.match(rules, /- Never sent, whatever is switched on: anything from the Vault, Finance or Journal;/);
+  assert.match(rules, /There is no\n  switch for these\./);
+  assert.match(rules, /do not add a kind for the Vault, Finance or the Journal/);
   assert.match(rules, /A suggestion never moves anything by itself\./);
   assert.match(rules, /Do not describe DexNest as fully offline while Outside AI is on\./);
   assert.doesNotMatch(rules, /Autopilot is the one approved exception/);
@@ -218,7 +233,7 @@ const captureAnswer = (route: string, confidence: number) => ({ model: "typesafe
 
 test("Capture: a note is sent only with its own switch on, and only its words", async () => {
   const s = service(captureAnswer("calendar", 0.9));
-  const off = await suggestCaptureRoute("Dentist on Thursday at three", { fetch: s.fetch, key: () => KEY, settings: { ...ON, surfaces: { voice: true, typed: true, capture: false } } });
+  const off = await suggestCaptureRoute("Dentist on Thursday at three", { fetch: s.fetch, key: () => KEY, settings: { ...ON, surfaces: { ...ON.surfaces, capture: false } } });
   assert.deepEqual([off.ok, off.ok ? "" : off.reason, s.calls.length], [false, "off", 0], "the command switches do not turn Capture on");
   const outcome = await suggestCaptureRoute("Dentist on Thursday at three", { fetch: s.fetch, key: () => KEY, settings: ON });
   assert.equal(s.calls.length, 1);
@@ -255,7 +270,7 @@ test("Capture: the action takes a note by id, never text or a file, and moves no
   assert.doesNotMatch(handler, /readFileSync|params\.text|saveCaptureItems|route_to_/, "no file is read, no text is taken from the request, nothing is moved");
   assert.match(handler, /textLength: text\.trim\(\)\.length/);
   const shell = read("src/renderer/main.tsx");
-  assert.match(shell, /setSuggestOn\(Boolean\(state\?\.settings\.enabled && state\.settings\.surfaces\.capture && state\.hasKey\)\)/, "no button unless it is switched on");
+  assert.match(shell, /setSuggestOn\(canUse\(state, "capture"\)\)/, "no button unless it is switched on, with the data it needs");
   assert.match(shell, /\{suggestOn && !item\.filePath && <button type="button" onClick=\{\(\) => void suggestRoute\(item\)\}/, "and never on a capture with a file");
   assert.match(shell, /Outside AI suggests: <button type="button" className="record-link" onClick=\{\(\) => void routeCapture\(suggested\.action, item, suggested\.success\)\}>/, "moving it is the user's click");
 });

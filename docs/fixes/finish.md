@@ -113,3 +113,17 @@ to `l6-*.md` and `l7-to-l12-decisions.md`.
 - Still open: Outside AI with a real key (L11); L12, for which the owner
   asked for settings that say which data the AI may see; the phone; triggers
   for voice, hotkeys and routines; merging the branch.
+
+## After L12
+
+- L12 is in `l12-outside-ai-data-switches.md`: six switches for what Outside
+  AI may see, and six more uses, all off by default.
+- Version **0.6.0**. `pnpm test`: 2,451 tests pass; typecheck clean.
+- `apps/desktop/release/DexNest Setup 0.6.0.exe`, 145,093,955 bytes.
+  SHA-256 `24e4b4e973e9f084ebbff9e6c95897d4bcb0e9eaa62bd0e1153285aebf697e68`.
+  The packaged app passed the same smoke test on a scratch data root, with
+  Outside AI off and no use or kind of data on. The installer itself was not
+  run, and its signature was not checked.
+- Still open: Outside AI with a real key (L11), which now also covers the
+  writing model; the Autopilot risk check; the phone; triggers for voice,
+  hotkeys and routines; merging the branch.

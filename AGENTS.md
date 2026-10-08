@@ -67,23 +67,45 @@ OpenRouter key. It is an approved, narrow exception, not a general licence to ca
 external services. The code is `apps/desktop/src/main/outsideAi.ts`.
 
 - Off by default. Nothing is sent until the user has saved a key, turned Outside AI on,
-  and turned on the place it is used (spoken commands, typed commands, Capture). Each is
-  a separate switch in Settings.
+  turned on the place it is used, and turned on every kind of data that use needs. Each
+  is a separate switch in Settings, and the main process checks all of them again at the
+  one place a request leaves from (`askOutside`).
 - The key is the user's own. It is stored encrypted in the integration keychain, read
   only at the moment a request is made, never logged, and never sent to the renderer.
-- What may be sent is listed in code, per use. Today that is two things, 300 characters
-  at most each, for a decision model to pick one answer from a fixed list:
-  - the words of a command the local rules could not place, to pick an intent;
-  - the title and text of one note in the Capture inbox, when the user clicks Suggest on
-    it, to pick where it belongs (Calendar, Journal, ObjectOS, Drop, or leave it).
-  DexNest builds the action itself; the service never names an action or a parameter,
-  and what it suggests waits for the user: a confirmation for a command, a click for a
-  note. A suggestion never moves anything by itself.
-- Never sent: anything from the Vault, Finance or Journal; files, documents or OCR text;
-  the clipboard; search results; captures; repository contents, paths or names; anything
-  under `local-data/`; secrets of any kind. A command that looks private (credentials,
-  identity documents, money, long numbers, emails, links) is not sent and is handled
-  locally.
+- The user chooses which kinds of data it may see. The kinds, and what each use needs,
+  are listed in code (`OUTSIDE_AI_DATA_KINDS` and `USE_NEEDS` in `outsideAi.ts`). Today
+  there are six kinds, all off by default:
+  - words: what the user says or types to DexNest (a command, a question, a sentence),
+    300 characters at most;
+  - notes: the title and text of one note in the Capture inbox;
+  - packages: the names of packages and tools, as Skills lists them;
+  - commits: project names and commit subjects, as the Standup lists them;
+  - code: the diff of a change about to be committed, with the names of the files in
+    it, and the words of TODO comments;
+  - records: titles and short previews of search results from Today, Skills, Reality
+    RPG, GhostOS, ObjectOS, the Timetable and reminders, eight at most.
+- The uses, each with its own switch: a command the local rules could not place (spoken,
+  typed); where a Capture note belongs; a Reality RPG rule from a sentence; which skills
+  are tooling; the Standup in plain words; a commit message draft; which open TODOs are
+  real; a short answer in Search. The code for the last six is
+  `apps/desktop/src/main/outsideAiUses.ts`.
+- The main process gathers what is sent, from the one place each kind lives. The window
+  sends an id or a question, never the data.
+- Two kinds of model are asked. A decision model picks one answer from a fixed list. A
+  writing model writes a few sentences, or answers from a fixed set that DexNest checks.
+  Neither names an action or a parameter. Text that comes back is shown, or offered for
+  a box the user can edit; it is never run, saved or acted on.
+  DexNest builds the action itself, and what is suggested waits for the user: a
+  confirmation for a command, a click for everything else.
+  A suggestion never moves anything by itself.
+- Never sent, whatever is switched on: anything from the Vault, Finance or Journal;
+  files, documents or OCR text; the document search index; the clipboard; a capture with
+  a file; anything under `local-data/`; secrets of any kind. There is no
+  switch for these. A command, question, note or search result that looks private
+  (credentials, identity documents, money, long numbers, emails, links) is not sent.
+  Code and commit subjects are checked line by line: a file whose name says it holds
+  secrets is left out whole, and a line shaped like a key, a token or a password is
+  replaced before anything leaves.
 - Every request writes one line to the shared event log: the service, the model, where
   it was used, how long the text was, how long it took and what was decided. The text
   itself is not logged.
@@ -94,8 +116,9 @@ external services. The code is `apps/desktop/src/main/outsideAi.ts`.
 - Requests ask the provider not to retain or train on the data. That is a request, not a
   guarantee DexNest can enforce; say so in the interface.
 - No telemetry is added because Outside AI exists.
-- A new use of Outside AI (a new kind of content sent, a new module) needs the user's
-  explicit approval and its own switch. Do not widen what is sent to make a feature work.
+- A new use of Outside AI needs the user's explicit approval and its own switch. A new
+  kind of data needs the same, and its own data switch. Do not widen what a kind covers,
+  and do not add a kind for the Vault, Finance or the Journal, to make a feature work.
 
 Do not describe DexNest as fully offline while Outside AI is on. With it off, which is
 the default, nothing in this section sends anything.

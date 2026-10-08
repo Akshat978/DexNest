@@ -68,6 +68,8 @@ import { TodayView, type TodayBridge } from "./views/TodayView";
 import { bellBadge, dayRows, needsYou } from "./views/todayDayModel";
 import { ModuleSettings } from "./views/ModuleSettings";
 import { OutsideAiSettings, type OutsideAiState } from "./views/OutsideAiSettings";
+import { OutsideAiAnswer } from "./views/OutsideAiBits";
+import { canUse } from "./views/outsideAiModel";
 import type { ActivityRow } from "./lib/activityLabels";
 import { GhostOsView, type GhostOsBridge } from "./views/GhostOsView";
 import { ObjectOsView, type ObjectOsBridge } from "./views/ObjectOsView";
@@ -13657,7 +13659,7 @@ function CaptureView({
   useEffect(() => {
     let live = true;
     void (getBridge().getOutsideAiState?.() ?? Promise.resolve(null))
-      .then((state) => { if (live) setSuggestOn(Boolean(state?.settings.enabled && state.settings.surfaces.capture && state.hasKey)); })
+      .then((state) => { if (live) setSuggestOn(canUse(state, "capture")); })
       .catch(() => undefined);
     return () => { live = false; };
   }, []);
@@ -14305,6 +14307,8 @@ function SearchView({
               </div>
             )}
           </GlassCard>
+
+          <OutsideAiAnswer question={query} />
 
           <div className="space-y-2.5">
             {results.length === 0 ? (

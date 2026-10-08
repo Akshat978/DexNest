@@ -7,7 +7,9 @@ import { Activity, Box, Code2, Cpu, ExternalLink, FileText, FolderOpen, GitBranc
 
 import type { HistoryEntry, LeftOff, ProjectGroup } from "@dexnest/projects";
 import { githubLinks, isDirty, projectBadge, type Project, type RepoState } from "@dexnest/projects/domain";
-import { Badge, Button, Card, SectionTitle, Technical } from "../../components/ui/kit";
+import { Badge, Button, Card, InlineError, SectionTitle, Technical } from "../../components/ui/kit";
+import { OutsideAiText } from "../OutsideAiBits";
+import { useOutsideAi } from "../outsideAiUse";
 import { ProjectFormFields } from "./ProjectForm";
 import {
   availability,
@@ -387,8 +389,11 @@ export function ChangesTab({
   onOpenVsCode,
   onIgnore,
   showIgnored = false,
-  onToggleIgnored
+  onToggleIgnored,
+  projectId
 }: {
+  /** With it, and Outside AI switched on for commit drafts, a "Draft message" button is offered. */
+  projectId?: string;
   state: RepoState | null;
   stat: Parameters<typeof changeRows>[1];
   onAsk: Ask;
@@ -400,6 +405,8 @@ export function ChangesTab({
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [message, setMessage] = useState("");
+  const drafting = useOutsideAi<{ text?: string; withheldFiles?: number; withheldLines?: number; truncated?: boolean }>("commit", "outside_ai.draft_commit");
+  const [draft, setDraft] = useState<{ text: string; left: string } | null>(null);
   const rows = changeRows(state, stat);
   const repo = state?.isRepo ? state : null;
   if (!repo) return <p className="projects-muted">{state && !state.isRepo ? state.reason : "Reading git state…"}</p>;
@@ -480,6 +487,36 @@ export function ChangesTab({
         <Card className="projects-commit">
           <label htmlFor="projects-commit-message">Commit message</label>
           <textarea id="projects-commit-message" rows={3} value={message} placeholder="Describe the change" onChange={(e) => setMessage(e.target.value)} />
+          {drafting.on && projectId && (
+            <div className="outside-ai-row">
+              <Button
+                variant="ghost"
+                disabled={drafting.busy}
+                onClick={() => void drafting.ask({ projectId, files: chosen }).then((result) => {
+                  if (!result?.text) return;
+                  const left = [
+                    result.withheldFiles ? `${result.withheldFiles} file${result.withheldFiles === 1 ? "" : "s"} that may hold secrets` : "",
+                    result.withheldLines ? `${result.withheldLines} line${result.withheldLines === 1 ? "" : "s"} that looked like a secret` : "",
+                    result.truncated ? "everything past the first page of the change" : ""
+                  ].filter(Boolean).join(", ");
+                  setDraft({ text: result.text, left });
+                })}
+              >
+                {drafting.busy ? "Drafting…" : "Draft message"}
+              </Button>
+              <span className="projects-muted">Sends the diff of {chosen.length > 0 ? "the selected files" : "every change"} to Outside AI. Files that hold secrets and lines that look like one are left out.</span>
+            </div>
+          )}
+          {drafting.error && <InlineError>{drafting.error}</InlineError>}
+          {draft && !drafting.error && (
+            <>
+              <OutsideAiText from="the diff">{draft.text}</OutsideAiText>
+              {draft.left && <p className="projects-muted">Not sent: {draft.left}.</p>}
+              <div className="outside-ai-row">
+                <Button variant="ghost" onClick={() => { setMessage(draft.text); setDraft(null); }}>Use this as the message</Button>
+              </div>
+            </>
+          )}
           {warnings.length > 0 && (
             <div className="projects-commit__warn" role="note">
               <p>Before you commit everything:</p>

@@ -1,17 +1,17 @@
 /**
  * Settings → Outside AI.
  *
- * DexNest works without it. Turned on, it lets a command the local rules
- * cannot place be sent, as words, to a decision service on the internet,
- * using the user's own OpenRouter key. This card says exactly what leaves the
- * computer and what never does, and nothing is sent until both the main
- * switch and a place to use it are on.
+ * DexNest works without it. Turned on, it lets DexNest ask a service on the
+ * internet for help, using the user's own OpenRouter key. The user chooses
+ * which kinds of data it may see and where it is used; this card says exactly
+ * what leaves the computer and what never does. Nothing is sent until the
+ * main switch, a use, and the data that use needs are all on.
  */
 
 import React, { useEffect, useState } from "react";
 import { Button, Card, Field, InlineError, Notice, SectionTitle, TextInput } from "../components/ui/kit";
 
-import { confidenceFromPercent, sendingSummary, type OutsideAiSettingsValue, type OutsideAiState } from "./outsideAiModel";
+import { confidenceFromPercent, DATA_LABELS, missingData, OUTSIDE_AI_DATA, OUTSIDE_AI_USES, sendingSummary, USE_LABELS, type OutsideAiSettingsValue, type OutsideAiState } from "./outsideAiModel";
 
 export type { OutsideAiState } from "./outsideAiModel";
 
@@ -26,6 +26,7 @@ export function OutsideAiSettings({ bridge, onAction }: { bridge: OutsideAiBridg
   const [state, setState] = useState<OutsideAiState | null>(null);
   const [key, setKey] = useState("");
   const [percent, setPercent] = useState("70");
+  const [model, setModel] = useState("");
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -33,6 +34,7 @@ export function OutsideAiSettings({ bridge, onAction }: { bridge: OutsideAiBridg
     if (!next) return;
     setState(next);
     setPercent(String(Math.round(next.settings.minConfidence * 100)));
+    setModel(next.settings.writingModel);
   };
 
   useEffect(() => {
@@ -83,12 +85,12 @@ export function OutsideAiSettings({ bridge, onAction }: { bridge: OutsideAiBridg
         <div className="modset-form">
         <p role="status">{sendingSummary(state)}</p>
         <p className="modset-hint">
-          DexNest understands commands with rules on this computer. When they cannot tell what you meant, this lets the words of that one command be sent to a decision service (Jev, through OpenRouter, with your own key), which picks one meaning from a fixed list. DexNest then does the rest itself.
+          DexNest works without this. Turned on, it lets DexNest ask a service on the internet (through OpenRouter, with your own key) for help with the things you choose below, using only the kinds of data you choose below. A decision model picks an answer from a fixed list; a writing model writes a few sentences. DexNest does the rest itself.
         </p>
         <ul className="modset-hint">
-          <li><strong>Sent:</strong> the words of the command, up to 300 characters. With Capture switched on below, also the words of a note when you click Suggest on it.</li>
-          <li><strong>Never sent:</strong> anything from the Vault, Finance or Journal, files, the clipboard, search results, or your projects. A command that mentions a password, an identity document, money, a long number, an email or a link is not sent either.</li>
-          <li><strong>Logged:</strong> every request, in the activity log: when, how long, what was decided. The words themselves are not logged.</li>
+          <li><strong>Sent:</strong> only the kinds of data you switch on under "What Outside AI may see", and only for the uses you switch on under "Where it is used".</li>
+          <li><strong>Never sent:</strong> anything from the Vault, Finance or Journal, files and documents, the clipboard, or anything secret. A command, question or note that mentions a password, an identity document, money, a long number, an email or a link is not sent either.</li>
+          <li><strong>Logged:</strong> every request, in the activity log: when, for what, how much text, how long it took. The words themselves are not logged.</li>
           <li>With this on, DexNest is not fully offline. OpenRouter is asked not to keep or train on the request; what it and the model's provider do with it is governed by their terms, not by DexNest.</li>
         </ul>
         </div>
@@ -104,29 +106,52 @@ export function OutsideAiSettings({ bridge, onAction }: { bridge: OutsideAiBridg
             <Button type="button" variant="ghost" disabled={busy || !state.hasKey} onClick={() => void act("outside_ai.clear_key", {}, "Key removed. Outside AI is off.")}>Remove key</Button>
           </div>
           <p className="modset-hint">Test sends the fixed phrase "open the settings screen" and nothing of yours.</p>
+          <p className="modset-hint">None of this has been tried against the real service yet, only against a stand-in. If Test fails, turn it off and say what it showed.</p>
         </form>
 
-        <div className="modset-form" role="group" aria-label="Where Outside AI may be used">
+        <div className="modset-form" role="group" aria-label="Use Outside AI">
           <label className="modset-check">
             <input type="checkbox" checked={settings.enabled} disabled={busy || (!state.hasKey && !settings.enabled)} onChange={(e) => void change({ enabled: e.target.checked }, e.target.checked ? "Outside AI is on." : "Outside AI is off.")} />
             Use Outside AI
           </label>
-          <label className="modset-check">
-            <input type="checkbox" checked={settings.surfaces.voice} disabled={busy || !settings.enabled} onChange={(e) => void change({ surfaces: { ...settings.surfaces, voice: e.target.checked } }, "Saved.")} />
-            For commands you speak
-          </label>
-          <label className="modset-check">
-            <input type="checkbox" checked={settings.surfaces.typed} disabled={busy || !settings.enabled} onChange={(e) => void change({ surfaces: { ...settings.surfaces, typed: e.target.checked } }, "Saved.")} />
-            For commands you type into Ask DexNest
-          </label>
-          <label className="modset-check">
-            <input type="checkbox" checked={settings.surfaces.capture} disabled={busy || !settings.enabled} onChange={(e) => void change({ surfaces: { ...settings.surfaces, capture: e.target.checked } }, "Saved.")} />
-            For Capture: a Suggest button on each note, which asks where it belongs
-          </label>
+        </div>
+
+        <div className="modset-form" role="group" aria-labelledby="outside-ai-data">
+          <h3 id="outside-ai-data">What Outside AI may see</h3>
+          <p className="modset-hint">Each kind is off until you turn it on. Something that needs a kind you have left off does not work and sends nothing. There is no switch for the Vault, Finance, the Journal, your files and documents, the clipboard or anything secret: those are never sent.</p>
+          {OUTSIDE_AI_DATA.map((kind) => (
+            <label key={kind} className="modset-check">
+              <input type="checkbox" checked={settings.data[kind]} disabled={busy || !settings.enabled} onChange={(e) => void change({ data: { ...settings.data, [kind]: e.target.checked } }, "Saved.")} />
+              <span><strong>{DATA_LABELS[kind].name}.</strong> {DATA_LABELS[kind].detail}</span>
+            </label>
+          ))}
+        </div>
+
+        <div className="modset-form" role="group" aria-labelledby="outside-ai-uses">
+          <h3 id="outside-ai-uses">Where it is used</h3>
+          {OUTSIDE_AI_USES.map((use) => {
+            const missing = missingData(settings, use);
+            return (
+              <label key={use} className="modset-check">
+                <input type="checkbox" checked={settings.surfaces[use]} disabled={busy || !settings.enabled || (missing.length > 0 && !settings.surfaces[use])} onChange={(e) => void change({ surfaces: { ...settings.surfaces, [use]: e.target.checked } }, "Saved.")} />
+                <span>
+                  {USE_LABELS[use].name}
+                  {missing.length > 0 && <span className="modset-hint"> (needs: {missing.map((kind) => DATA_LABELS[kind].name).join(", ")}{settings.surfaces[use] ? "; sends nothing until then" : ""})</span>}
+                </span>
+              </label>
+            );
+          })}
+          <p className="modset-hint">Commands are sent only when DexNest's own rules cannot tell what you meant. Everything else is sent only when you click its button, and nothing it suggests happens until you click again: a note is not moved, a rule is not saved, a skill is not hidden, a commit is not made.</p>
           <p className="modset-hint">Suggest sends that one note's title and text when you click it, never an attached file. It only suggests Calendar, Journal, ObjectOS or Drop, and nothing moves until you click the suggestion. A note that reads like a Vault or Finance item is not sent.</p>
           <Field label="How sure the answer must be (%)" htmlFor="outside-ai-confidence" hint="50 to 99. Below this, the answer is ignored and DexNest's own rules decide.">
             <TextInput id="outside-ai-confidence" className="technical" inputMode="numeric" value={percent} onChange={(e) => setPercent(e.target.value)} onBlur={() => { const next = confidenceFromPercent(percent, settings.minConfidence); if (next !== settings.minConfidence) void change({ minConfidence: next }, "Saved."); else setPercent(String(Math.round(next * 100))); }} />
           </Field>
+          <Field label="Model that writes text" htmlFor="outside-ai-writing-model" hint="Used for the Standup in words, commit drafts, sorting skills, checking TODOs and answers. Any model OpenRouter offers, written as maker/model. Picking from a list (commands, Capture, rules) always uses the decision model.">
+            <TextInput id="outside-ai-writing-model" className="technical" value={model} onChange={(e) => setModel(e.target.value)} onBlur={() => { if (model.trim() !== settings.writingModel) void change({ writingModel: model.trim() }, "Saved."); }} />
+          </Field>
+          <div className="button-row">
+            <Button type="button" disabled={busy || !state.hasKey} onClick={() => void act("outside_ai.test_writing", {}, "The writing model answered.")}>Test the writing model</Button>
+          </div>
         </div>
         {note && (note.ok ? <Notice>{note.text}</Notice> : <InlineError>{note.text}</InlineError>)}
       </Card>
