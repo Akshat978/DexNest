@@ -4689,7 +4689,7 @@ function DexNestApp() {
       captureStaleDays: 14
     }
   });
-  const [calendarInitialView, setCalendarInitialView] = useState<"day" | "week" | "month">("day");
+  const [calendarInitialView, setCalendarInitialView] = useState<"day" | "week" | "month">("month");
   const [timetableState, setTimetableState] = useState<TimetableState>(defaultTimetableState);
   const [utilitiesState, setUtilitiesState] = useState<UtilitiesState>(defaultUtilitiesState);
   const [weatherState, setWeatherState] = useState<WeatherState>(defaultWeatherState);
@@ -5988,7 +5988,9 @@ function DexNestApp() {
 
   async function runUiAction(actionId: string, source = "module_ui", params: unknown = {}) {
     const action = actions.find((item) => item.id === actionId);
-    if (actionId === "calendar.show_today" || actionId === "calendar.open") {
+    if (actionId === "calendar.open") {
+      setCalendarInitialView("month");
+    } else if (actionId === "calendar.show_today") {
       setCalendarInitialView("day");
     } else if (actionId === "calendar.show_upcoming") {
       setCalendarInitialView("week");
@@ -12391,7 +12393,7 @@ function CalendarView({
   }
 
   async function deleteEvent(event: CalendarEvent): Promise<void> {
-    if (!window.confirm("Delete this Calendar event?")) {
+    if (!window.confirm(isProviderEvent(event) ? `Delete this event from Google Calendar (${event.accountEmail})?` : "Delete this Calendar event?")) {
       return;
     }
     const result = await onAction("calendar.delete_event", "module_ui", { eventId: event.id, confirmedDangerous: true });
@@ -12855,18 +12857,23 @@ function CalendarView({
                 <p><span>Source</span><strong>{isProviderEvent(selectedEvent) ? selectedEvent.accountEmail : selectedEvent.sourceModule}</strong></p>
                 {selectedEvent.notes && <p>{selectedEvent.notes}</p>}
                 <p className="technical">{selectedEvent.id}</p>
-                {isProviderEvent(selectedEvent) ? (
-                  // No Edit, no Delete. DexNest holds a read-only token for
-                  // this account, so both would fail at the provider - and a
-                  // button that cannot work is worse than no button, because
-                  // it is only discovered to be broken after it is trusted.
+                {isProviderEvent(selectedEvent) && selectedEvent.provider === "google" && selectedEvent.writable ? (
+                  // Changed in the Google account itself; DexNest's copy follows once Google accepts.
+                  <>
+                    <p className="technical">Lives in Google Calendar ({selectedEvent.accountEmail}). Edit and Delete change it there. Repeats and reminders are kept as Google has them.</p>
+                    <div className="button-row">
+                      <button type="button" onClick={() => { loadEvent(selectedEvent); setShowEventModal(true); }}>Edit</button>
+                      <button type="button" className="danger-button" onClick={() => void deleteEvent(selectedEvent)}>Delete</button>
+                    </div>
+                  </>
+                ) : isProviderEvent(selectedEvent) ? (
+                  // No Edit, no Delete: the token cannot write here, so both
+                  // would fail at the provider.
                   <p className="technical">
                     Lives in {selectedEvent.provider === "google" ? "Google Calendar" : "Outlook"}.
                     {selectedEvent.provider === "microsoft"
                       ? " DexNest can show it but not change it."
-                      : selectedEvent.writable
-                        ? " Editing from DexNest is not wired up yet."
-                        : " Reconnect this account in Settings to let DexNest edit it."}
+                      : " Reconnect this account in Settings to let DexNest edit it."}
                   </p>
                 ) : (
                   <div className="button-row">

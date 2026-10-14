@@ -14080,6 +14080,73 @@ async function calendarAccessToken(account: CalendarAccount): Promise<string> {
 }
 
 /**
+ * Edits or deletes an event that lives in a connected Google account.
+ *
+ * Unlike a DexNest event, the account's copy is the real one, so the change is
+ * made there first and the local copy follows only once Google has accepted
+ * it. A failure is returned to the person: nothing changes on either side.
+ */
+async function changeProviderEvent(eventId: string, verb: "update" | "delete", input: CalendarEventInput = {}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const synced = loadSyncedEvents().find((event) => event.id === eventId);
+  if (!synced) return { ok: false, error: "That event is no longer in the last sync. Sync the calendar and try again." };
+  const account = loadCalendarAccounts().find((item) => item.id === synced.accountId && item.enabled);
+  if (!account) return { ok: false, error: "The account this event belongs to is not connected." };
+  if (account.provider !== "google") return { ok: false, error: "DexNest can show Outlook events but not change them." };
+  if (!accountCanWrite(account)) return { ok: false, error: "Reconnect this account in Settings to let DexNest change its events." };
+  const prefix = `google:${synced.accountId}:`;
+  const remoteId = synced.id.startsWith(prefix) ? synced.id.slice(prefix.length) : "";
+  if (!remoteId) return { ok: false, error: "This event has no Google id DexNest can use." };
+
+  const startedAt = Date.now();
+  const allDay = input.allDay ?? synced.allDay;
+  const next: SyncedEvent = {
+    ...synced,
+    title: input.title?.trim() || synced.title,
+    date: input.date || synced.date,
+    allDay,
+    startTime: allDay ? null : (input.startTime !== undefined ? input.startTime : synced.startTime) ?? null,
+    endTime: allDay ? null : (input.endTime !== undefined ? input.endTime : synced.endTime) ?? null,
+    notes: input.notes !== undefined ? input.notes : synced.notes
+  };
+  try {
+    const accessToken = await calendarAccessToken(account);
+    if (verb === "delete") {
+      await writeEvents.remove(accessToken, remoteId);
+      saveSyncedEvents(loadSyncedEvents().filter((event) => event.id !== synced.id));
+    } else {
+      const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+      await writeEvents.update(accessToken, remoteId, { title: next.title, date: next.date, startTime: next.startTime, endTime: next.endTime, allDay: next.allDay, notes: next.notes }, timeZone);
+      saveSyncedEvents(loadSyncedEvents().map((event) => (event.id === synced.id ? next : event)));
+    }
+    localDb.appendActionEvent({
+      module: "DexNest Calendar",
+      actionId: `calendar.provider_${verb}`,
+      eventType: "calendar_provider_changed",
+      status: "success",
+      source: "module_ui",
+      summary: `${verb === "delete" ? "Deleted" : "Updated"} an event in ${account.email}.`,
+      metadataJson: { accountId: account.id, provider: account.provider },
+      durationMs: Date.now() - startedAt
+    });
+    return { ok: true };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "Google did not accept the change.";
+    localDb.appendActionEvent({
+      module: "DexNest Calendar",
+      actionId: `calendar.provider_${verb}`,
+      eventType: "calendar_provider_changed",
+      status: "failed",
+      source: "module_ui",
+      summary: `Could not ${verb} an event in ${account.email}.`,
+      metadataJson: { accountId: account.id, provider: account.provider },
+      errorMessage: reason,
+      durationMs: Date.now() - startedAt
+    });
+    return { ok: false, error: `Google did not accept the change: ${reason}` };
+  }
+}
+
+/**
  * Sends one local event to Google, and records where it landed.
  *
  * Never throws. A calendar that refuses a write is a problem worth reporting,
@@ -19416,6 +19483,18 @@ async function runCalendarAction(action: DexNestActionDefinition, source: DexNes
       refreshNudges(source, true);
       logNudgeEvent(action.id, "nudge_settings_updated", "success", source, "Updated DexNest nudge settings.", { enabled: next.enabled, backupReminderAfterDays: next.backupReminderAfterDays }, startedAt);
       return { ok: true, actionId: action.id, nudgeSettings: next, calendarState: calendarState() };
+    }
+
+    // An event from a connected Google account is changed in that account.
+    if (action.id === "calendar.update_event" && input.id?.startsWith("google:")) {
+      const changed = await changeProviderEvent(input.id, "update", input);
+      logCalendarEvent(action.id, changed.ok ? "success" : "failed", source, changed.ok ? "Updated a Google Calendar event." : changed.error, { provider: "google" }, startedAt, changed.ok ? undefined : changed.error);
+      return changed.ok ? { ok: true, actionId: action.id, calendarState: calendarState() } : { ok: false, actionId: action.id, error: changed.error };
+    }
+    if (action.id === "calendar.delete_event" && String(input.eventId ?? input.id ?? "").startsWith("google:")) {
+      const changed = await changeProviderEvent(String(input.eventId ?? input.id), "delete");
+      logCalendarEvent(action.id, changed.ok ? "success" : "failed", source, changed.ok ? "Deleted a Google Calendar event." : changed.error, { provider: "google" }, startedAt, changed.ok ? undefined : changed.error);
+      return changed.ok ? { ok: true, actionId: action.id, calendarState: calendarState() } : { ok: false, actionId: action.id, error: changed.error };
     }
 
     if (action.id === "calendar.create_event" || action.id === "calendar.update_event") {

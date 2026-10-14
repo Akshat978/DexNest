@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import QRCode from "qrcode";
-import { Image as ImageIcon, ClipboardCopy, Copy, Download, FileText, FolderOpen, Inbox, Monitor, QrCode, RefreshCw, Share2, ShieldCheck, Smartphone, Trash2, Upload } from "lucide-react";
+import { Image as ImageIcon, ClipboardCopy, Copy, FileText, FolderOpen, Inbox, Monitor, QrCode, RefreshCw, Share2, ShieldCheck, Smartphone, Trash2, Upload } from "lucide-react";
 import { GlassCard, SectionTitle } from "../components/ui/GlassCard";
 import { StatusChip } from "../components/ui/StatusChip";
 import { ActionButton } from "../components/ui/ActionButton";
@@ -401,8 +401,8 @@ export function DropView({
                       <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{item.type === "text" ? (item.preview || "Text") : (item.originalName ?? item.fileName ?? "File")}</p><p className="font-mono text-[10px] text-[#525252]">{formatBytes(item.byteLength)} · from phone · {formatDate(item.createdAt)}</p></div>
                       <div className="flex shrink-0 items-center gap-1">
                         {item.type === "text"
-                          ? <button type="button" onClick={() => void copyIncomingText(item.id)} title="Copy" className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#1a1a1a] hover:text-[#38BDF8]"><Copy className="h-4 w-4" /></button>
-                          : <button type="button" onClick={() => void onAction("drop.open_incoming_folder")} title="Open folder" className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#1a1a1a] hover:text-[#38BDF8]"><Download className="h-4 w-4" /></button>}
+                          ? <button type="button" onClick={() => void copyIncomingText(item.id)} title="Copy this text" aria-label="Copy text" className="drop-row-button"><Copy aria-hidden="true" />Copy</button>
+                          : <button type="button" onClick={() => void onAction("drop.open_incoming_folder")} title="Open the folder it was saved in" aria-label="Open folder" className="drop-row-button"><FolderOpen aria-hidden="true" />Folder</button>}
                         {couldBeReceipt && (
                           <button
                             type="button"
@@ -417,7 +417,7 @@ export function DropView({
                           </button>
                         )}
                         <button type="button" title="Remove from this list (keeps the file on disk)" aria-label="Remove from list" onClick={() => void (async () => { const r = await onAction("drop.remove_incoming_item", "module_ui", { id: item.id }) as { ok?: boolean }; if (r.ok) { await onRefresh(); } })()} className="flex h-7 shrink-0 items-center gap-1 rounded-md border border-[#262626] px-2 text-[11px] font-medium text-[#A3A3A3] transition-colors hover:border-[#3a3a3a] hover:bg-[#1a1a1a] hover:text-[#F5F5F5]">Remove</button>
-                        {item.type === "file" && <button type="button" title="Delete the received file from disk (permanent)" aria-label="Delete file from disk" onClick={() => void (async () => { if (!window.confirm("Delete this received file from disk? This cannot be undone.")) { return; } const r = await onAction("drop.delete_incoming_file", "module_ui", { id: item.id, confirmedDangerous: true }) as { ok?: boolean }; if (r.ok) { await onRefresh(); } })()} className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-[#EF4444]/30 text-[#EF4444]/80 transition-colors hover:border-[#EF4444]/60 hover:bg-[#EF4444]/15 hover:text-[#EF4444]"><Trash2 className="h-3.5 w-3.5" /></button>}
+                        {item.type === "file" && <button type="button" title="Delete the received file from disk (permanent)" aria-label="Delete file from disk" onClick={() => void (async () => { if (!window.confirm("Delete this received file from disk? This cannot be undone.")) { return; } const r = await onAction("drop.delete_incoming_file", "module_ui", { id: item.id, confirmedDangerous: true }) as { ok?: boolean }; if (r.ok) { await onRefresh(); } })()} className="drop-row-button drop-row-button--danger"><Trash2 aria-hidden="true" />Delete</button>}
                       </div>
                     </div>
                   );
@@ -436,7 +436,7 @@ export function DropView({
                       <div key={item.id} className="glass-card flex items-center gap-3 p-2.5">
                         <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#38BDF8]/12 text-[#38BDF8]"><ClipboardCopy className="h-4 w-4" /></div>
                         <div className="min-w-0 flex-1"><p className="truncate text-sm text-[#F5F5F5]">{item.preview || "Text drop"}</p><p className="font-mono text-[10px] text-[#525252]">{formatBytes(item.byteLength)} · to phone</p></div>
-                        <button type="button" onClick={() => void copyTextToClipboard(item.id, "Drop ID copied")} title="Copy ID" className="flex h-7 w-7 items-center justify-center rounded-md text-[#A3A3A3] hover:bg-[#1a1a1a] hover:text-[#38BDF8]"><Copy className="h-4 w-4" /></button>
+                        <button type="button" onClick={() => void copyTextToClipboard(item.id, "Drop ID copied")} title="Copy this item's Drop ID" aria-label="Copy Drop ID" className="drop-row-button"><Copy aria-hidden="true" />Copy ID</button>
                       </div>
                     ))}
                     {dropState.outgoingFiles.map((item) => (

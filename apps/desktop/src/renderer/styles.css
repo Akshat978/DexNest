@@ -209,6 +209,52 @@ button:focus-visible {
   transition: border-color 160ms ease, background 160ms ease, color 160ms ease, transform 160ms ease;
 }
 
+/* The small buttons on each Drop row: an icon that can be seen, and a word. */
+.drop-row-button {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.35rem;
+  height: 2rem;
+  padding: 0 0.6rem;
+  border-radius: 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--accent-drop) 30%, var(--border));
+  background: color-mix(in srgb, var(--accent-drop) 8%, var(--surface));
+  color: var(--text);
+  font-size: 0.72rem;
+  font-weight: 600;
+  transition: border-color 160ms ease, background 160ms ease, color 160ms ease;
+}
+
+.drop-row-button svg {
+  width: 0.95rem;
+  height: 0.95rem;
+  flex: none;
+}
+
+.drop-row-button:hover {
+  border-color: color-mix(in srgb, var(--accent-drop) 70%, var(--border));
+  background: color-mix(in srgb, var(--accent-drop) 16%, var(--surface-hover));
+  color: var(--accent-drop);
+}
+
+.drop-row-button--danger {
+  border-color: color-mix(in srgb, var(--error) 40%, var(--border));
+  background: color-mix(in srgb, var(--error) 8%, var(--surface));
+  color: var(--error);
+}
+
+.drop-row-button--danger:hover {
+  border-color: color-mix(in srgb, var(--error) 75%, var(--border));
+  background: color-mix(in srgb, var(--error) 16%, var(--surface-hover));
+  color: var(--error);
+}
+
+.drop-row-button:focus-visible {
+  outline: 2px solid var(--focus-outline);
+  outline-offset: 2px;
+}
+
 .drop-url-copy-button:hover {
   border-color: color-mix(in srgb, var(--accent-drop) 70%, var(--border));
   background: color-mix(in srgb, var(--accent-drop) 18%, var(--surface-hover));
